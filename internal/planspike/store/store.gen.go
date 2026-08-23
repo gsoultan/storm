@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/gsoultan/raorm/internal/planspike/store/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/post"
 	"github.com/gsoultan/raorm/internal/planspike/store/user"
 	"github.com/gsoultan/raorm/runtime"
 )
@@ -19,6 +20,7 @@ import (
 var FlushOrder = map[string]int{
 	"orgs":  1,
 	"users": 2,
+	"posts": 3,
 }
 
 // NewUnit stages writes across this context and flushes them in foreign-key
@@ -519,6 +521,121 @@ func (p OrgWithUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgW
 	return out, nil
 }
 
+// PostWithAuthorRow is posts with its Author loaded.
+type PostWithAuthorRow struct {
+	post.Row
+	Author user.Row
+}
+
+type PostWithAuthorQuery struct {
+	q post.Query
+}
+
+// PostWithAuthor starts the plan.
+func PostWithAuthor() PostWithAuthorQuery { return PostWithAuthorQuery{q: post.New()} }
+
+func (p PostWithAuthorQuery) Where(ps ...post.Pred) PostWithAuthorQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p PostWithAuthorQuery) WhereIf(cond bool, pr post.Pred) PostWithAuthorQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p PostWithAuthorQuery) Any(ps ...post.Pred) PostWithAuthorQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p PostWithAuthorQuery) Not(pr post.Pred) PostWithAuthorQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p PostWithAuthorQuery) NotAny(ps ...post.Pred) PostWithAuthorQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p PostWithAuthorQuery) Order(ts ...post.Sort) PostWithAuthorQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p PostWithAuthorQuery) Limit(n int64) PostWithAuthorQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p PostWithAuthorQuery) Offset(n int64) PostWithAuthorQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p PostWithAuthorQuery) After(r PostWithAuthorRow) PostWithAuthorQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p PostWithAuthorQuery) Err() error { return p.q.Err() }
+
+// All runs the plan in exactly TWO round trips. Distinct parent keys are
+// de-duplicated before the second, so a thousand rows pointing at three
+// orgs fetch three orgs.
+func (p PostWithAuthorQuery) All(ctx context.Context, ex runtime.Executor) ([]PostWithAuthorRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]PostWithAuthorRow, len(parents))
+	seen := make(map[[16]byte]bool, len(parents))
+	ids := make([][16]byte, 0, len(parents))
+	for i, r := range parents {
+		out[i] = PostWithAuthorRow{Row: r}
+		key := r.AuthorID
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	targets, err := user.New().
+		Where(user.ID.In(ids...)).
+		Limit(int64(len(ids))).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key := out[i].AuthorID
+		j, ok := by[key]
+		if !ok {
+			// A foreign key pointing at a row that is not there. The database
+			// forbids it, so reaching this means the constraint was dropped.
+			return nil, fmt.Errorf("raorm: %s references a missing %s row", "posts", "users")
+		}
+		out[i].Author = targets[j]
+	}
+	return out, nil
+}
+
 // UserWithOrgRow is users with its Org loaded.
 type UserWithOrgRow struct {
 	user.Row
@@ -632,4 +749,625 @@ func (p UserWithOrgQuery) All(ctx context.Context, ex runtime.Executor) ([]UserW
 		out[i].Org = targets[j]
 	}
 	return out, nil
+}
+
+// UserWithPostsRow is users with its Posts loaded.
+//
+// Posts is a field HERE and nowhere else: user.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type UserWithPostsRow struct {
+	user.Row
+	Posts []post.Row
+}
+
+// UserWithPostsQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type UserWithPostsQuery struct {
+	q          user.Query
+	childLimit int64
+	childOrder []post.Sort
+	childTop   int64
+}
+
+// UserWithPosts starts the plan.
+func UserWithPosts() UserWithPostsQuery {
+	return UserWithPostsQuery{q: user.New(), childLimit: defaultChildLimit}
+}
+
+func (p UserWithPostsQuery) Where(ps ...user.Pred) UserWithPostsQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p UserWithPostsQuery) WhereIf(cond bool, pr user.Pred) UserWithPostsQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p UserWithPostsQuery) Any(ps ...user.Pred) UserWithPostsQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p UserWithPostsQuery) Not(pr user.Pred) UserWithPostsQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p UserWithPostsQuery) NotAny(ps ...user.Pred) UserWithPostsQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p UserWithPostsQuery) Order(ts ...user.Sort) UserWithPostsQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p UserWithPostsQuery) Limit(n int64) UserWithPostsQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p UserWithPostsQuery) Offset(n int64) UserWithPostsQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p UserWithPostsQuery) After(r UserWithPostsRow) UserWithPostsQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p UserWithPostsQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	post.New().Where(post.AuthorID.Eq(id)).Order(...).After(last).Limit(20)
+func (p UserWithPostsQuery) ChildLimit(n int64) UserWithPostsQuery {
+	p.childLimit = n
+	return p
+}
+
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+func (p UserWithPostsQuery) ChildTop(n int64) UserWithPostsQuery {
+	p.childTop = n
+	return p
+}
+
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p UserWithPostsQuery) ChildOrder(ts ...post.Sort) UserWithPostsQuery {
+	p.childOrder = ts
+	return p
+}
+
+// All runs the plan in exactly TWO round trips, whatever the parent count.
+//
+// The mechanism is `= ANY($1)`: one placeholder binds the whole id list, so
+// fifty parents and five thousand produce the same SQL and share one
+// compiled statement. No join is involved, which is why M3 was never
+// actually blocked on join support.
+func (p UserWithPostsQuery) All(ctx context.Context, ex runtime.Executor) ([]UserWithPostsRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// Round two would be `= ANY('{}')`, a guaranteed-empty query. Not
+		// issuing it is the difference between costing 2 round trips when
+		// there is work and 2 when there is none.
+		return nil, nil
+	}
+	out := make([]UserWithPostsRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = UserWithPostsRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	var kids []post.Row
+	if p.childTop > 0 {
+		// Per-parent limit: one query with the limit expressed in SQL.
+		kids, err = post.BatchTopByAuthorID(ctx, ex, ids, p.childTop, p.childOrder...)
+	} else {
+		cq := post.New().Where(post.AuthorID.In(ids...)).Limit(p.childLimit)
+		if len(p.childOrder) > 0 {
+			cq = cq.Order(p.childOrder...)
+		}
+		kids, err = cq.All(ctx, ex, nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so. A per-parent load
+	// is bounded by construction, so the global guard does not apply.
+	if p.childTop == 0 && int64(len(kids)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		if i, ok := at[k.AuthorID]; ok {
+			out[i].Posts = append(out[i].Posts, k)
+		}
+	}
+	return out, nil
+}
+
+// OrgTreeRow is orgs with 2 relation(s) loaded.
+//
+// One type per DECLARED plan. Generating a type per With(...)
+// combination would be 2^n per entity; you get the plans you named.
+type OrgTreeRow struct {
+	org.Row
+	Children []org.Row
+	Users    []user.Row
+}
+
+type OrgTreeQuery struct {
+	q          org.Query
+	childLimit int64
+}
+
+// OrgTree starts the plan. It costs 3 round trips: one for the parents and
+// one per relation, whatever the row count.
+func OrgTree() OrgTreeQuery {
+	return OrgTreeQuery{q: org.New(), childLimit: defaultChildLimit}
+}
+
+func (p OrgTreeQuery) Where(ps ...org.Pred) OrgTreeQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p OrgTreeQuery) WhereIf(cond bool, pr org.Pred) OrgTreeQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p OrgTreeQuery) Any(ps ...org.Pred) OrgTreeQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p OrgTreeQuery) Not(pr org.Pred) OrgTreeQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p OrgTreeQuery) NotAny(ps ...org.Pred) OrgTreeQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p OrgTreeQuery) Order(ts ...org.Sort) OrgTreeQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p OrgTreeQuery) Limit(n int64) OrgTreeQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p OrgTreeQuery) Offset(n int64) OrgTreeQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p OrgTreeQuery) After(r OrgTreeRow) OrgTreeQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p OrgTreeQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps each relation's fetch. A guard, not a page size.
+func (p OrgTreeQuery) ChildLimit(n int64) OrgTreeQuery {
+	p.childLimit = n
+	return p
+}
+
+// All runs the plan in 3 round trips.
+func (p OrgTreeQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgTreeRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]OrgTreeRow, len(parents))
+	for i, r := range parents {
+		out[i] = OrgTreeRow{Row: r}
+	}
+	if err := p.load0(ctx, ex, out); err != nil {
+		return nil, err
+	}
+	if err := p.load1(ctx, ex, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// load0 fetches Children.
+func (p OrgTreeQuery) load0(ctx context.Context, ex runtime.Executor, out []OrgTreeRow) error {
+	ids := make([][16]byte, len(out))
+	at := make(map[[16]byte]int, len(out))
+	for i := range out {
+		ids[i] = out[i].ID
+		at[out[i].ID] = i
+	}
+	kids, err := org.New().Where(org.ParentID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	if err != nil {
+		return err
+	}
+	if int64(len(kids)) >= p.childLimit {
+		return runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		key, ok := k.ParentID.Get()
+		if !ok {
+			continue
+		}
+		if j, ok := at[key]; ok {
+			out[j].Children = append(out[j].Children, k)
+		}
+	}
+	return nil
+}
+
+// load1 fetches Users.
+func (p OrgTreeQuery) load1(ctx context.Context, ex runtime.Executor, out []OrgTreeRow) error {
+	ids := make([][16]byte, len(out))
+	at := make(map[[16]byte]int, len(out))
+	for i := range out {
+		ids[i] = out[i].ID
+		at[out[i].ID] = i
+	}
+	kids, err := user.New().Where(user.OrgID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	if err != nil {
+		return err
+	}
+	if int64(len(kids)) >= p.childLimit {
+		return runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		if j, ok := at[k.OrgID]; ok {
+			out[j].Users = append(out[j].Users, k)
+		}
+	}
+	return nil
+}
+
+// UserFeedRow is users with 2 relation(s) loaded.
+//
+// One type per DECLARED plan. Generating a type per With(...)
+// combination would be 2^n per entity; you get the plans you named.
+type UserFeedRow struct {
+	user.Row
+	Posts []post.Row
+	Org   org.Row
+}
+
+type UserFeedQuery struct {
+	q          user.Query
+	childLimit int64
+}
+
+// UserFeed starts the plan. It costs 3 round trips: one for the parents and
+// one per relation, whatever the row count.
+func UserFeed() UserFeedQuery {
+	return UserFeedQuery{q: user.New(), childLimit: defaultChildLimit}
+}
+
+func (p UserFeedQuery) Where(ps ...user.Pred) UserFeedQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p UserFeedQuery) WhereIf(cond bool, pr user.Pred) UserFeedQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p UserFeedQuery) Any(ps ...user.Pred) UserFeedQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p UserFeedQuery) Not(pr user.Pred) UserFeedQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p UserFeedQuery) NotAny(ps ...user.Pred) UserFeedQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p UserFeedQuery) Order(ts ...user.Sort) UserFeedQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p UserFeedQuery) Limit(n int64) UserFeedQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p UserFeedQuery) Offset(n int64) UserFeedQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p UserFeedQuery) After(r UserFeedRow) UserFeedQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p UserFeedQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps each relation's fetch. A guard, not a page size.
+func (p UserFeedQuery) ChildLimit(n int64) UserFeedQuery {
+	p.childLimit = n
+	return p
+}
+
+// All runs the plan in 3 round trips.
+func (p UserFeedQuery) All(ctx context.Context, ex runtime.Executor) ([]UserFeedRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]UserFeedRow, len(parents))
+	for i, r := range parents {
+		out[i] = UserFeedRow{Row: r}
+	}
+	if err := p.load0(ctx, ex, out); err != nil {
+		return nil, err
+	}
+	if err := p.load1(ctx, ex, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// load0 fetches Posts.
+func (p UserFeedQuery) load0(ctx context.Context, ex runtime.Executor, out []UserFeedRow) error {
+	ids := make([][16]byte, len(out))
+	at := make(map[[16]byte]int, len(out))
+	for i := range out {
+		ids[i] = out[i].ID
+		at[out[i].ID] = i
+	}
+	kids, err := post.New().Where(post.AuthorID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	if err != nil {
+		return err
+	}
+	if int64(len(kids)) >= p.childLimit {
+		return runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		if j, ok := at[k.AuthorID]; ok {
+			out[j].Posts = append(out[j].Posts, k)
+		}
+	}
+	return nil
+}
+
+// load1 fetches Org.
+func (p UserFeedQuery) load1(ctx context.Context, ex runtime.Executor, out []UserFeedRow) error {
+	seen := make(map[[16]byte]bool, len(out))
+	ids := make([][16]byte, 0, len(out))
+	for i := range out {
+		key := out[i].OrgID
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	targets, err := org.New().Where(org.ID.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)
+	if err != nil {
+		return err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key := out[i].OrgID
+		j, ok := by[key]
+		if !ok {
+			return fmt.Errorf("raorm: %s references a missing %s row", "users", "orgs")
+		}
+		out[i].Org = targets[j]
+	}
+	return nil
+}
+
+// UserSummaryRow is users with 1 relation(s) loaded.
+//
+// One type per DECLARED plan. Generating a type per With(...)
+// combination would be 2^n per entity; you get the plans you named.
+type UserSummaryRow struct {
+	user.Row
+	Org org.Row
+}
+
+type UserSummaryQuery struct {
+	q          user.Query
+	childLimit int64
+}
+
+// UserSummary starts the plan. It costs 2 round trips: one for the parents and
+// one per relation, whatever the row count.
+func UserSummary() UserSummaryQuery {
+	return UserSummaryQuery{q: user.New(), childLimit: defaultChildLimit}
+}
+
+func (p UserSummaryQuery) Where(ps ...user.Pred) UserSummaryQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p UserSummaryQuery) WhereIf(cond bool, pr user.Pred) UserSummaryQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p UserSummaryQuery) Any(ps ...user.Pred) UserSummaryQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p UserSummaryQuery) Not(pr user.Pred) UserSummaryQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p UserSummaryQuery) NotAny(ps ...user.Pred) UserSummaryQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p UserSummaryQuery) Order(ts ...user.Sort) UserSummaryQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p UserSummaryQuery) Limit(n int64) UserSummaryQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p UserSummaryQuery) Offset(n int64) UserSummaryQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p UserSummaryQuery) After(r UserSummaryRow) UserSummaryQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p UserSummaryQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps each relation's fetch. A guard, not a page size.
+func (p UserSummaryQuery) ChildLimit(n int64) UserSummaryQuery {
+	p.childLimit = n
+	return p
+}
+
+// All runs the plan in 2 round trips.
+func (p UserSummaryQuery) All(ctx context.Context, ex runtime.Executor) ([]UserSummaryRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]UserSummaryRow, len(parents))
+	for i, r := range parents {
+		out[i] = UserSummaryRow{Row: r}
+	}
+	if err := p.load0(ctx, ex, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// load0 fetches Org.
+func (p UserSummaryQuery) load0(ctx context.Context, ex runtime.Executor, out []UserSummaryRow) error {
+	seen := make(map[[16]byte]bool, len(out))
+	ids := make([][16]byte, 0, len(out))
+	for i := range out {
+		key := out[i].OrgID
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	targets, err := org.New().Where(org.ID.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)
+	if err != nil {
+		return err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key := out[i].OrgID
+		j, ok := by[key]
+		if !ok {
+			return fmt.Errorf("raorm: %s references a missing %s row", "users", "orgs")
+		}
+		out[i].Org = targets[j]
+	}
+	return nil
 }

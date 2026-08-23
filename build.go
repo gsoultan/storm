@@ -56,6 +56,12 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.callSchemas(mi)
 	}
+	// Pass 4b: fetch plans, after Schema so a plan names relations whose
+	// declarations are final, and after pass 3b so a has-many named by a plan
+	// has already been validated to have a key on the other side.
+	for _, mi := range b.ordered {
+		b.callPlans(mi)
+	}
 	// Pass 5: index every foreign key nothing already covers. Last, so a user
 	// index leading with the same column suppresses the redundant one.
 	for _, mi := range b.ordered {
@@ -123,11 +129,12 @@ func (b *builder) register(m any) error {
 func (b *builder) buildColumns(mi *modelInfo) {
 	st := &schema.Table{Name: tableName(mi.typ.Name()), GoName: mi.typ.Name()}
 	tbl := &Table{
-		base: unsafe.Pointer(mi.ptr.Pointer()),
-		typ:  mi.typ,
-		out:  st,
-		off:  map[uintptr]*col{},
-		errs: b.errs,
+		base:   unsafe.Pointer(mi.ptr.Pointer()),
+		typ:    mi.typ,
+		out:    st,
+		off:    map[uintptr]*col{},
+		relOff: map[uintptr]string{},
+		errs:   b.errs,
 	}
 	mi.tbl = tbl
 	b.outSch.Tables = append(b.outSch.Tables, st)
@@ -200,6 +207,9 @@ func (b *builder) walk(mi *modelInfo, t reflect.Type, base uintptr, tbl *Table) 
 
 		// Relation?
 		if rel := b.relationFor(f); rel != nil {
+			// Every relation field is addressable by a plan, whether or not it
+			// carries a column.
+			tbl.relOff[off] = f.Name
 			if rel.toMany {
 				// Has-many: the foreign key lives on the other table, so no
 				// column here. Recorded so the inverse can be validated.
@@ -392,6 +402,19 @@ func (b *builder) resolveRelations(mi *modelInfo) {
 		})
 		mi.fkCols = append(mi.fkCols, rel.colName)
 	}
+}
+
+// callPlans runs a model's Plans method, if it has one.
+//
+// Optional by design: a model with no plans still gets the one-plan-per-
+// relation tier, which is finite by construction. Declaring plans is how you
+// ask for combinations, and only combinations can explode.
+func (b *builder) callPlans(mi *modelInfo) {
+	p, ok := mi.ptr.Interface().(Planner)
+	if !ok {
+		return
+	}
+	p.Plans(&Plans{t: mi.tbl, out: &mi.tbl.out.Plans})
 }
 
 // validateHasMany checks that every has-many has a matching key on the other

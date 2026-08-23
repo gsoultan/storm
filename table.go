@@ -17,6 +17,12 @@ type Table struct {
 	out  *schema.Table    // what we are filling in
 	off  map[uintptr]*col // field offset -> column being built
 	errs *errorList
+
+	// relOff maps a RELATION field's offset to its Go field name. Separate
+	// from off because a has-many contributes no column — the key lives on the
+	// other table — so `&u.Posts` has nothing in off to resolve to, and a plan
+	// still has to be able to name it.
+	relOff map[uintptr]string
 }
 
 // col carries build-time state that does not live in the IR.

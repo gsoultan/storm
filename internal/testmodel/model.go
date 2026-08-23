@@ -102,6 +102,18 @@ func (u *User) Schema(t *raorm.Table) {
 	t.Check("age IS NULL OR age BETWEEN 0 AND 150")
 }
 
+// Plans is the one reviewable file's worth of load patterns for User — every
+// way this system reads a user with its relations, in one place a reviewer can
+// count round trips from.
+func (u *User) Plans(p *raorm.Plans) {
+	p.Named("Feed").With(&u.Posts).With(&u.Org)
+	p.Named("Summary").With(&u.Org)
+}
+
+func (o *Org) Plans(p *raorm.Plans) {
+	p.Named("Tree").With(&o.Children).With(&o.Users)
+}
+
 type Profile struct {
 	raorm.Model
 

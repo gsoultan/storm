@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/gsoultan/raorm/schema"
@@ -165,6 +166,255 @@ func (g *gen) parentMethods(q string, p relPlan) {
 	g.p("// mixed ordering to page. Terminals return it too; this is for checking")
 	g.p("// a composed plan before running it.")
 	g.p("func (p %s) Err() error { return p.q.Err() }", q)
+	g.p("")
+}
+
+// namedPlansFor turns each declared plan into the relation plans it loads.
+//
+// A plan naming a relation whose other end is generated elsewhere is a
+// generation error, not a silently smaller plan: the developer asked for that
+// relation by name, and quietly dropping it is how an N+1 gets reintroduced by
+// a package boundary.
+func namedPlansFor(s *schema.Schema, tables []string) ([]namedPlan, error) {
+	in := make(map[string]bool, len(tables))
+	for _, t := range tables {
+		in[t] = true
+	}
+	var out []namedPlan
+	for _, name := range tables {
+		t := s.Table(name)
+		if t == nil {
+			continue
+		}
+		for _, pl := range t.Plans {
+			np := namedPlan{parent: t, Name: exportName(t.GoName) + pl.Name}
+			pkg, err := PackageName(t.GoName, t.Name)
+			if err != nil {
+				return nil, err
+			}
+			np.ParentPkg = pkg
+			for _, field := range pl.Fields {
+				rel := relationByField(t, field)
+				if rel == nil {
+					return nil, fmt.Errorf(
+						"codegen: table %s plan %s names %s, which is not a relation",
+						t.Name, pl.Name, field)
+				}
+				if !in[rel.Target] {
+					return nil, fmt.Errorf(
+						"codegen: table %s plan %s loads %s from table %s, which is not generated "+
+							"in this context — split the plan or generate both tables together",
+						t.Name, pl.Name, field, rel.Target)
+				}
+				child := s.Table(rel.Target)
+				m, err := planFor(t, child, rel)
+				if err != nil {
+					return nil, err
+				}
+				if m == nil {
+					return nil, fmt.Errorf(
+						"codegen: table %s plan %s cannot load %s — a composite key needs an "+
+							"explicit join", t.Name, pl.Name, field)
+				}
+				np.members = append(np.members, *m)
+			}
+			out = append(out, np)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// namedPlan is a declared plan: one parent, several relations loaded together.
+type namedPlan struct {
+	parent    *schema.Table
+	Name      string
+	ParentPkg string
+	members   []relPlan
+}
+
+func relationByField(t *schema.Table, field string) *schema.Relation {
+	for _, r := range t.Relations {
+		if r.Field == field {
+			return r
+		}
+	}
+	return nil
+}
+
+// emitNamedPlans writes one type per declared plan.
+func (g *gen) emitNamedPlans(plans []namedPlan) {
+	for _, np := range plans {
+		g.emitNamedPlan(np)
+	}
+}
+
+func (g *gen) emitNamedPlan(np namedPlan) {
+	q := np.Name + "Query"
+
+	g.p("// %sRow is %s with %d relation(s) loaded.", np.Name, np.parent.Name, len(np.members))
+	g.p("//")
+	g.p("// One type per DECLARED plan. Generating a type per With(...)")
+	g.p("// combination would be 2^n per entity; you get the plans you named.")
+	g.p("type %sRow struct {", np.Name)
+	g.p("	%s.Row", np.ParentPkg)
+	for _, m := range np.members {
+		g.p("	%s", planField(m))
+	}
+	g.p("}")
+	g.p("")
+	g.p("type %s struct {", q)
+	g.p("	q %s.Query", np.ParentPkg)
+	g.p("	childLimit int64")
+	g.p("}")
+	g.p("")
+	g.p("// %s starts the plan. It costs %d round trips: one for the parents and", np.Name, len(np.members)+1)
+	g.p("// one per relation, whatever the row count.")
+	g.p("func %s() %s {", np.Name, q)
+	g.p("	return %s{q: %s.New(), childLimit: defaultChildLimit}", q, np.ParentPkg)
+	g.p("}")
+	g.p("")
+	g.parentMethods(q, relPlan{Name: np.Name, ParentPkg: np.ParentPkg})
+	g.p("// ChildLimit caps each relation's fetch. A guard, not a page size.")
+	g.p("func (p %s) ChildLimit(n int64) %s {", q, q)
+	g.p("	p.childLimit = n")
+	g.p("	return p")
+	g.p("}")
+	g.p("")
+
+	g.p("// All runs the plan in %d round trips.", len(np.members)+1)
+	g.p("func (p %s) All(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", q, np.Name)
+	g.p("	parents, err := p.q.All(ctx, ex, nil)")
+	g.p("	if err != nil {")
+	g.p("		return nil, err")
+	g.p("	}")
+	g.p("	if len(parents) == 0 {")
+	g.p("		return nil, nil")
+	g.p("	}")
+	g.p("	out := make([]%sRow, len(parents))", np.Name)
+	g.p("	for i, r := range parents {")
+	g.p("		out[i] = %sRow{Row: r}", np.Name)
+	g.p("	}")
+	for i, m := range np.members {
+		g.p("	if err := p.load%d(ctx, ex, out); err != nil {", i)
+		g.p("		return nil, err")
+		g.p("	}")
+		_ = m
+	}
+	g.p("	return out, nil")
+	g.p("}")
+	g.p("")
+
+	for i, m := range np.members {
+		g.emitNamedMember(np, m, i, q)
+	}
+}
+
+// planField is the struct field one relation contributes.
+func planField(m relPlan) string {
+	name := exportName(m.rel.Field)
+	if m.rel.ToMany {
+		return name + " []" + m.ChildPkg + ".Row"
+	}
+	if m.KeyNullable {
+		return name + " *" + m.ChildPkg + ".Row"
+	}
+	return name + " " + m.ChildPkg + ".Row"
+}
+
+// emitNamedMember writes the loader for one relation of a plan.
+func (g *gen) emitNamedMember(np namedPlan, m relPlan, i int, q string) {
+	field := exportName(m.rel.Field)
+	g.p("// load%d fetches %s.", i, m.rel.Field)
+	g.p("func (p %s) load%d(ctx context.Context, ex runtime.Executor, out []%sRow) error {", q, i, np.Name)
+	if m.rel.ToMany {
+		keyField := exportName(m.ParentKey)
+		childKey := exportName(m.rel.Column)
+		g.p("	ids := make([]%s, len(out))", m.KeyGo)
+		g.p("	at := make(map[%s]int, len(out))", m.KeyGo)
+		g.p("	for i := range out {")
+		g.p("		ids[i] = out[i].%s", keyField)
+		g.p("		at[out[i].%s] = i", keyField)
+		g.p("	}")
+		g.p("	kids, err := %s.New().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
+			m.ChildPkg, m.ChildPkg, childKey)
+		g.p("	if err != nil {")
+		g.p("		return err")
+		g.p("	}")
+		g.p("	if int64(len(kids)) >= p.childLimit {")
+		g.p("		return runtime.ErrChildLimit")
+		g.p("	}")
+		g.p("	for _, k := range kids {")
+		if m.KeyNullable {
+			g.p("		key, ok := k.%s.Get()", childKey)
+			g.p("		if !ok {")
+			g.p("			continue")
+			g.p("		}")
+			g.p("		if j, ok := at[key]; ok {")
+		} else {
+			g.p("		if j, ok := at[k.%s]; ok {", childKey)
+		}
+		g.p("			out[j].%s = append(out[j].%s, k)", field, field)
+		g.p("		}")
+		g.p("	}")
+		g.p("	return nil")
+		g.p("}")
+		g.p("")
+		return
+	}
+
+	own := exportName(m.rel.Column)
+	childKey := exportName(m.ParentKey)
+	g.p("	seen := make(map[%s]bool, len(out))", m.KeyGo)
+	g.p("	ids := make([]%s, 0, len(out))", m.KeyGo)
+	g.p("	for i := range out {")
+	if m.KeyNullable {
+		g.p("		key, ok := out[i].%s.Get()", own)
+		g.p("		if !ok {")
+		g.p("			continue")
+		g.p("		}")
+	} else {
+		g.p("		key := out[i].%s", own)
+	}
+	g.p("		if !seen[key] {")
+	g.p("			seen[key] = true")
+	g.p("			ids = append(ids, key)")
+	g.p("		}")
+	g.p("	}")
+	g.p("	if len(ids) == 0 {")
+	g.p("		return nil")
+	g.p("	}")
+	g.p("	targets, err := %s.New().Where(%s.%s.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)",
+		m.ChildPkg, m.ChildPkg, childKey)
+	g.p("	if err != nil {")
+	g.p("		return err")
+	g.p("	}")
+	g.p("	by := make(map[%s]int, len(targets))", m.KeyGo)
+	g.p("	for i := range targets {")
+	g.p("		by[targets[i].%s] = i", childKey)
+	g.p("	}")
+	g.p("	for i := range out {")
+	if m.KeyNullable {
+		g.p("		key, ok := out[i].%s.Get()", own)
+		g.p("		if !ok {")
+		g.p("			continue")
+		g.p("		}")
+	} else {
+		g.p("		key := out[i].%s", own)
+	}
+	g.p("		j, ok := by[key]")
+	g.p("		if !ok {")
+	g.p("			return fmt.Errorf(\"raorm: %%s references a missing %%s row\", %q, %q)",
+		np.parent.Name, m.child.Name)
+	g.p("		}")
+	if m.KeyNullable {
+		g.p("		out[i].%s = &targets[j]", field)
+	} else {
+		g.p("		out[i].%s = targets[j]", field)
+	}
+	g.p("	}")
+	g.p("	return nil")
+	g.p("}")
 	g.p("")
 }
 

@@ -35,7 +35,7 @@ func run() error {
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           dir,
 		Import:        "github.com/gsoultan/raorm",
-		Only:          []string{"orgs", "users"},
+		Only:          []string{"orgs", "users", "posts"},
 		Package:       "store",
 		PackageImport: "github.com/gsoultan/raorm/internal/planspike/store",
 	})

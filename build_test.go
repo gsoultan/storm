@@ -227,3 +227,87 @@ func TestBuild_Deterministic(t *testing.T) {
 		}
 	}
 }
+
+// Plan declaration errors. Each is a mistake that would otherwise surface as a
+// generated type that does not compile, or worse, one that does.
+func TestPlans_DeclarationErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model any
+		want  string
+	}{
+		{"scalar field is not a relation", &planScalar{}, "not a relation"},
+		{"duplicate plan name", &planDupName{}, "declared twice"},
+		{"same relation twice in one plan", &planDupRel{}, "twice"},
+		{"plan name is not an exported identifier", &planBadName{}, "exported Go identifier"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := raorm.Build(tc.model, &planTarget{})
+			if err == nil {
+				t.Fatal("expected a build error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should mention %q, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+type planTarget struct {
+	raorm.Model
+	Name string
+}
+
+type planScalar struct {
+	raorm.Model
+	Name    string
+	Targets []planTarget
+}
+
+func (p *planScalar) Plans(pl *raorm.Plans) { pl.Named("Bad").With(&p.Name) }
+
+type planDupName struct {
+	raorm.Model
+	Targets []planTarget
+}
+
+func (p *planDupName) Plans(pl *raorm.Plans) {
+	pl.Named("Feed").With(&p.Targets)
+	pl.Named("Feed").With(&p.Targets)
+}
+
+type planDupRel struct {
+	raorm.Model
+	Targets []planTarget
+}
+
+func (p *planDupRel) Plans(pl *raorm.Plans) {
+	pl.Named("Feed").With(&p.Targets).With(&p.Targets)
+}
+
+type planBadName struct {
+	raorm.Model
+	Targets []planTarget
+}
+
+func (p *planBadName) Plans(pl *raorm.Plans) { pl.Named("feed").With(&p.Targets) }
+
+// A value receiver copies the struct, so the field pointer points into the copy
+// and the offset is garbage. Same trap as Schema, and it must be caught the
+// same way rather than producing a plan that silently names the wrong field.
+func TestPlans_ValueReceiverIsAnError(t *testing.T) {
+	_, err := raorm.Build(&planValueRecv{}, &planTarget{})
+	if err == nil {
+		t.Fatal("a value receiver must be an error")
+	}
+	if !strings.Contains(err.Error(), "POINTER receiver") {
+		t.Errorf("the error should name the fix, got: %v", err)
+	}
+}
+
+type planValueRecv struct {
+	raorm.Model
+	Targets []planTarget
+}
+
+func (p planValueRecv) Plans(pl *raorm.Plans) { pl.Named("Feed").With(&p.Targets) }

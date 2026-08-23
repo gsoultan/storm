@@ -50,12 +50,30 @@ type Table struct {
 	// the database sees.
 	Relations []*Relation
 
+	// Plans are the named fetch plans the model declared. The generator emits
+	// exactly these and no others — which is the whole answer to the
+	// projection-type explosion: you get the plans you name, not every subset
+	// of the relations you have.
+	Plans []*Plan
+
 	PrimaryKey  []string
 	Uniques     []*Unique
 	Indexes     []*Index
 	ForeignKeys []*ForeignKey
 	Checks      []*Check
 	Excludes    []*Exclude
+}
+
+// Plan is a named fetch plan: a set of relations loaded together.
+type Plan struct {
+	// Name is the plan's name as declared, e.g. "Feed". The generated type is
+	// the model name plus this, e.g. UserFeed.
+	Name string
+
+	// Fields are the Go field names of the relations to load, in declaration
+	// order. Order is preserved because it is the order the loads are issued,
+	// and a reviewer counting round trips should be able to read them off.
+	Fields []string
 }
 
 // Relation is one declared link between two models.
