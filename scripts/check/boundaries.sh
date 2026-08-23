@@ -43,12 +43,17 @@ if ! go test ./codegen/ -run TestNoSQLTextInCodegen -count=1 >/dev/null 2>&1; th
 fi
 
 echo "== generated code is not stale =="
+# raorm verify fails CI on stale output; these are the in-tree instances of it.
+stale() { # <sha-before> <generator> <label>
+  if [ "$1" != "$2" ]; then note "generated code is stale — run '$3' and commit"; fi
+}
 before=$(shasum -a 256 bench/genuser/user.gen.go 2>/dev/null | cut -d' ' -f1)
 go run ./cmd/genbench >/dev/null 2>&1
-after=$(shasum -a 256 bench/genuser/user.gen.go 2>/dev/null | cut -d' ' -f1)
-if [ "$before" != "$after" ]; then
-  note "generated code is stale — run 'go run ./cmd/genbench' and commit"
-fi
+stale "$before" "$(shasum -a 256 bench/genuser/user.gen.go 2>/dev/null | cut -d' ' -f1)" "go run ./cmd/genbench"
+
+before=$(cat internal/planspike/gen/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+go run ./cmd/genspike >/dev/null 2>&1
+stale "$before" "$(cat internal/planspike/gen/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./cmd/genspike"
 
 echo "== gofmt =="
 if [ -n "$(gofmt -l . 2>/dev/null)" ]; then

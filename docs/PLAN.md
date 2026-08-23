@@ -83,7 +83,7 @@ findings from reading the code as it actually stands drove the reordering:
 | **P0** | git baseline + this plan | — | hours |
 | **P1a** | multi-table package generation, `raorm generate` | prereq | ~4 d |
 | **P1b** | relocate query lowering into `compile/pgsql` + CI check | R9 | ~2 d |
-| **P2** | plan-type ergonomics spike, hand-written | de-risks M3 | 3 d |
+| **P2** | plan-type ergonomics spike, hand-written ✅ | de-risks M3 | 3 d |
 | **P3** | writes, unit of work, batching | **M4** | 2 wk |
 | **P4** | relations, named plans, `= ANY` alloc fix | **M3** | 4 wk |
 | **P5** | joins, ordering, pagination, projections, CTEs, windows | **M2** rest | 4 wk+ |
@@ -149,6 +149,49 @@ compile error names the plan to add.
 
 **Kill criterion.** Unusable → adopt plan B (runtime-checked plan) **on day 3**,
 not in week four.
+
+#### Result: PASSED (2026-08-24). Plan B is not needed.
+
+`internal/planspike/` — two genuinely generated table packages (`org`, `user`)
+with a hand-written plan layer above them. **50 parents + 25,000 children in
+exactly 2 round trips**, asserted at parent counts 1, 7 and 50 so a loader that
+batches per parent cannot pass. Empty parent set costs 1, not 2. Parent
+predicates compose exactly as on a bare query.
+
+Reading an unloaded relation does not compile, and the message is the one
+[[API]] promised:
+
+```
+rows[0].Users undefined (type org.Row has no field or method Users)
+```
+
+`testdata/compilefail/` asserts it, each case carrying a `// want:` line, so a
+refactor cannot quietly turn ADR-0003 back into a convention.
+
+**Four findings, in descending order of how much they change M3.**
+
+1. **`Load(plan)` as written in [[API]] §7 cannot be built.** Go methods may not
+   have type parameters, so `q.Load(UserFeed)` has no way to vary its return
+   type by plan — `.All()` after it could only return one type for every plan.
+   The plan must be the **entry point** (`store.OrgsWithUsers().Where(…)`) or a
+   generated method per plan. The doc needs correcting; the design survives.
+2. **The plan layer cannot live in a table package.** A plan names two tables,
+   and a table package importing a sibling reintroduces the import cycle that
+   one-package-per-table exists to avoid — `Org` has `Users`, `User` has an
+   `Org`, and no spelling of the fields makes that compile. Plans belong in the
+   parent package, which imports every table package and is imported by none.
+   [[API]] already put `plans.go` there; this is the structural reason it must be.
+3. **Every builder method must be redeclared on the plan type.** Go has no
+   delegation, and embedding `org.Query` would make `Where()` return `org.Query`
+   — dropping straight out of the plan. It is pure boilerplate, but a
+   *generator* writes it, so it costs nobody anything. Not a reason to stop.
+4. **The default `limit: 1000` silently truncates a relation load.** Sensible
+   as a guard on a single-table read; on a child fetch it drops rows and every
+   count computed from the result is wrong. The spike's own first run failed
+   this way at 50×500. Settled: **reaching the child limit is an error, never a
+   partial result.** Open for M3: what the limit should be — derived from the
+   parent limit times a declared per-parent bound, or required from the plan.
+   Any constant is arbitrary.
 
 ### P3 — writes = M4 (2 weeks)
 
