@@ -80,11 +80,11 @@ findings from reading the code as it actually stands drove the reordering:
 
 | Phase | Work | Milestone | Est. |
 |---|---|---|---|
-| **P0** | git baseline + this plan | — | hours |
-| **P1a** | multi-table package generation, `raorm generate` | prereq | ~4 d |
-| **P1b** | relocate query lowering into `compile/pgsql` + CI check | R9 | ~2 d |
+| **P0** | git baseline + this plan ✅ | — | hours |
+| **P1a** | multi-table package generation, `raorm generate` ✅ | prereq | ~4 d |
+| **P1b** | relocate query lowering into `compile/pgsql` + CI check ✅ | R9 | ~2 d |
 | **P2** | plan-type ergonomics spike, hand-written ✅ | de-risks M3 | 3 d |
-| **P3** | writes, unit of work, batching | **M4** | 2 wk |
+| **P3** | writes, unit of work, batching ◐ | **M4** | 2 wk |
 | **P4** | relations, named plans, `= ANY` alloc fix | **M3** | 4 wk |
 | **P5** | joins, ordering, pagination, projections, CTEs, windows | **M2** rest | 4 wk+ |
 
@@ -193,12 +193,43 @@ refactor cannot quietly turn ADR-0003 back into a convention.
    parent limit times a declared per-parent bound, or required from the plan.
    Any constant is arbitrary.
 
-### P3 — writes = M4 (2 weeks)
+### P3 — writes = M4 (2 weeks) ◐ single-row path shipped 2026-08-24
 
 Ahead of relations, against the numeric order, because: it is independent of the
 IR work, it carries no design risk, its exit gates are already written, and
 **`anubis` cannot adopt a read-only ORM at M6.** It consumes P1a's multi-table
-output for FK ordering. Gates unchanged — see M4 below.
+output for FK ordering.
+
+**Shipped.** A masked insert builder (`Create()`), a dirty-mask update
+(`Mutate(row)`), delete by primary key, and generated optimistic locking on the
+version column. Absence is tracked by the mask, never inferred from a zero
+value — the inference other ORMs make is why they cannot insert a `false`, a `0`
+or an empty string into a column with a default.
+
+Gates met: dirty set **0 allocs**; one compiled statement per distinct mask;
+16 concurrent writers on one version → exactly 1 wins and 15 get
+`ErrStaleWrite`; the SET list names only assigned columns, asserted on the SQL
+text rather than behaviourally (a behavioural test passes even if every column
+is rewritten to its existing value).
+
+**Two bugs the tests found, both real.** `runtime.CountingExecutor` raced — it
+is exported for use in *user* tests, and tests are where concurrency lives, so
+a contention test wrapping it failed under `-race` reporting a race in the tool
+instead of the bug being hunted. And a NOT NULL column with no default that the
+generator cannot bind made every INSERT fail at runtime; it is a generation
+error now, and it fired on the fixture immediately.
+
+**Still outstanding for M4:**
+
+| | why it is not done |
+|---|---|
+| `COPY` for bulk insert | needs a third Executor method; the port is 2 today and AGENTS.md budgets 5 |
+| `pgx.Batch` for mixed statements | same port question |
+| `raorm.Unit`, FK-ordered flush | needs a table-agnostic staged-write interface **and** deferred id handles ([[API]] §8), which is the real design work |
+| `ON CONFLICT` upserts | straightforward once the above settles |
+
+The port change is the decision blocking all four, and it should be made
+deliberately rather than as a side effect of the first feature that needs it.
 
 ### P4 — relations = M3 (4 weeks)
 
