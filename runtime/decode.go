@@ -53,6 +53,19 @@ type Null[T any] struct {
 
 func (n Null[T]) Get() (T, bool) { return n.V, n.Valid }
 
+// Ptr is what a bulk load binds: a pointer to the value, or a nil *T for NULL.
+//
+// Pointer, not value, because boxing a value into an `any` allocates and boxing
+// a pointer does not. On a COPY of a thousand rows that is the difference
+// between one allocation per column per row and none — the same trick that took
+// the read path's binder to zero.
+func (n *Null[T]) Ptr() *T {
+	if !n.Valid {
+		return nil
+	}
+	return &n.V
+}
+
 // Arg is what a driver binds for this column: the value, or nil for NULL.
 //
 // Writes build a []any regardless, so the box here is not an allocation the

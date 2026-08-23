@@ -100,6 +100,50 @@ func CopyTarget(table string, cols []string) (string, []string) {
 	return table, out
 }
 
+// Upsert lowering.
+//
+// The conflict target is a *column list*, never a constraint name. A constraint
+// name is a database artifact the model does not control and a migration can
+// rename; the columns are in the model, so a target that stops existing is a
+// generation error rather than a runtime one.
+//
+// EXCLUDED is how Postgres names the row the INSERT tried to write. Every
+// target dialect spells this differently — MySQL has ON DUPLICATE KEY UPDATE
+// with VALUES(), MSSQL has MERGE with a different shape entirely — which is
+// exactly why it lives here and not in codegen.
+
+// ConflictNothing means "insert if absent, otherwise leave it alone". That is a
+// real intent, not a degenerate case of an update.
+func ConflictNothing(conflict []string) string {
+	return conflictTarget(conflict) + " DO NOTHING"
+}
+
+// ConflictHead introduces the assignment list.
+func ConflictHead(conflict []string) string {
+	return conflictTarget(conflict) + " DO UPDATE SET "
+}
+
+// ExcludedAssign assigns one column from the rejected row.
+func ExcludedAssign(col string) string {
+	return Ident(col) + " = EXCLUDED." + Ident(col)
+}
+
+// ConflictAssignSep joins assignments.
+const ConflictAssignSep = ", "
+
+func conflictTarget(conflict []string) string {
+	var b strings.Builder
+	b.WriteString(" ON CONFLICT (")
+	for i, c := range conflict {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(Ident(c))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
 // InsertParts is the punctuation an INSERT needs when its column list is not
 // known until run time.
 //

@@ -706,6 +706,12 @@ func (m *Mut) SetParentIDNull() {
 type Ins struct {
 	row Row
 	set uint64
+
+	// conflict is the upsert target, as a bit per unique-constraint
+	// column set. Zero means a plain insert, and a duplicate is an error
+	// — which is the right default: silently updating a row you meant to
+	// create is a data-loss bug that looks like success.
+	conflict uint8
 }
 
 // Create stages a new row.
@@ -746,8 +752,92 @@ func (n *Ins) SetParentIDNull() {
 	n.set |= iParentID
 }
 
-func stmtForInsert(mask uint64) *runtime.Stmt {
-	if st := insCache.Get(mask); st != nil {
+// upsertTails builds the ON CONFLICT tail for one target, given the
+// insert mask — an upsert must only overwrite the columns the caller
+// assigned, or it silently reverts every column it did not.
+var upsertTails = []func(uint64) string{
+	func(mask uint64) string {
+		set := make([]string, 0, 3)
+		if mask&(1<<2) != 0 {
+			set = append(set, "updated_at")
+		}
+		if mask&(1<<3) != 0 {
+			set = append(set, "name")
+		}
+		if mask&(1<<4) != 0 {
+			set = append(set, "parent_id")
+		}
+		return onConflictID(set)
+	},
+	func(mask uint64) string {
+		set := make([]string, 0, 3)
+		if mask&(1<<2) != 0 {
+			set = append(set, "updated_at")
+		}
+		if mask&(1<<3) != 0 {
+			set = append(set, "name")
+		}
+		if mask&(1<<4) != 0 {
+			set = append(set, "parent_id")
+		}
+		return onConflictName(set)
+	},
+}
+
+func onConflictID(set []string) string {
+	switch len(set) {
+	case 0:
+		return " ON CONFLICT (\"id\") DO NOTHING"
+	}
+	return " ON CONFLICT (\"id\") DO UPDATE SET " + joinAssign(set)
+}
+
+// OnConflictID upserts on the unique key (id).
+func (n *Ins) OnConflictID() *Ins {
+	n.conflict = 1
+	return n
+}
+
+func onConflictName(set []string) string {
+	switch len(set) {
+	case 0:
+		return " ON CONFLICT (\"name\") DO NOTHING"
+	}
+	return " ON CONFLICT (\"name\") DO UPDATE SET " + joinAssign(set)
+}
+
+// OnConflictName upserts on the unique key (name).
+func (n *Ins) OnConflictName() *Ins {
+	n.conflict = 2
+	return n
+}
+
+// joinAssign renders the DO UPDATE SET list for the columns the caller
+// assigned. The punctuation comes from the back end, never from here.
+func joinAssign(set []string) string {
+	out := ""
+	for i, c := range set {
+		if i > 0 {
+			out += ", "
+		}
+		out += assignExcluded(c)
+	}
+	return out
+}
+
+var assignFor = map[string]string{
+	"updated_at": "\"updated_at\" = EXCLUDED.\"updated_at\"",
+	"name":       "\"name\" = EXCLUDED.\"name\"",
+	"parent_id":  "\"parent_id\" = EXCLUDED.\"parent_id\"",
+}
+
+func assignExcluded(c string) string { return assignFor[c] }
+
+func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
+	// The conflict target is part of the statement, so it must be part of
+	// the key. Packing it above the column bits keeps one cache for both.
+	key := mask | uint64(conflict)<<nInsertable
+	if st := insCache.Get(key); st != nil {
 		return st
 	}
 	cols := make([]string, 0, nInsertable)
@@ -756,7 +846,11 @@ func stmtForInsert(mask uint64) *runtime.Stmt {
 			cols = append(cols, insCols[i])
 		}
 	}
-	return insCache.Put(mask, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, insReturning))
+	suffix := insReturning
+	if conflict > 0 {
+		suffix = upsertTails[conflict-1](mask) + insReturning
+	}
+	return insCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // Insert writes the assigned columns and reads every column back, so
@@ -766,7 +860,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	if n.set == 0 {
 		return Row{}, runtime.ErrNothingAssigned
 	}
-	st := stmtForInsert(n.set)
+	st := stmtForInsert(n.set, n.conflict)
 	args := make([]any, 0, st.NArg)
 	for i := 0; i < nInsertable; i++ {
 		if n.set&(1<<uint(i)) == 0 {
@@ -837,6 +931,127 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	scan(rows.RawValues(), r, &sl)
 	return rows.Err()
 }
+
+// copyCols is the fixed column list of a bulk load. Unlike Ins there is
+// no mask: COPY sends one shape for the whole stream, so every row must
+// supply every column and database defaults do not apply. Fill the row
+// yourself, or use Create() per row and give up the bulk path.
+var copyCols = []string{
+	"id",
+	"created_at",
+	"updated_at",
+	"name",
+	"parent_id",
+}
+
+// rowSource walks a []Row for CopyFrom without copying any of it.
+type rowSource struct {
+	rows []Row
+	i    int
+	buf  [5]any
+}
+
+func (s *rowSource) Next() bool {
+	s.i++
+	return s.i <= len(s.rows)
+}
+
+// Values reuses one buffer across every row, and fills it with POINTERS
+// into the caller's slice rather than copies.
+//
+// Both halves matter. The driver consumes each slice before asking for
+// the next, so one buffer is safe. And boxing a pointer into an `any`
+// does not allocate while boxing a value does — at a thousand rows that
+// is one allocation per column per row, or none. Measured: the first cut
+// boxed values and cost 7 allocations per row.
+func (s *rowSource) Values() []any {
+	r := &s.rows[s.i-1]
+	s.buf[0] = &r.ID
+	s.buf[1] = &r.CreatedAt
+	s.buf[2] = &r.UpdatedAt
+	s.buf[3] = &r.Name
+	s.buf[4] = r.ParentID.Ptr()
+	return s.buf[:]
+}
+
+func (s *rowSource) Err() error { return nil }
+
+// InsertAll bulk-loads rows through the driver's COPY protocol: ONE round
+// trip regardless of row count, because COPY is a different wire path and
+// not a faster loop over INSERT.
+//
+// It returns no rows. COPY has no RETURNING, so a caller who needs
+// database-generated ids must supply them — which is why the primary key
+// is in copyCols and must be set on every row.
+func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, error) {
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	src := &rowSource{rows: rows}
+	return ex.CopyFrom(ctx, "orgs", copyCols, src)
+}
+
+// InsertOp is an insert as a queueable statement. It writes every
+// insertable column, because a batch of a thousand rows that each chose
+// a different column set would compile a thousand statements and defeat
+// the point of batching them.
+//
+// WantRows is false: a batched insert reports a count. Asking for
+// RETURNING here would mean scanning a result per statement, which is
+// exactly the per-row work a batch exists to avoid.
+func InsertOp(r Row) runtime.BatchOp {
+	var mask uint64
+	mask |= 1 << 0
+	mask |= 1 << 1
+	mask |= 1 << 2
+	mask |= 1 << 3
+	mask |= 1 << 4
+	st := stmtForInsert(mask, 0)
+	args := make([]any, 0, 5)
+	args = append(args, r.ID)
+	args = append(args, r.CreatedAt)
+	args = append(args, r.UpdatedAt)
+	args = append(args, r.Name)
+	args = append(args, r.ParentID.Arg())
+	return runtime.BatchOp{SQL: st.SQL, Args: args}
+}
+
+// UpdateOp is this Mut's update as a queueable statement.
+//
+// The optimistic lock still applies, but the caller must check the
+// affected count the batch reports: a stale write inside a batch is not
+// an error the driver raises, it is a zero the caller has to notice.
+func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
+	if m.dirty == 0 {
+		return runtime.BatchOp{}, false
+	}
+	st := stmtForMask(m.dirty)
+	args := make([]any, 0, st.NArg)
+	for i := 0; i < nUpdatable; i++ {
+		if m.dirty&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, m.row.UpdatedAt)
+		case 1:
+			args = append(args, m.row.Name)
+		case 2:
+			args = append(args, m.row.ParentID.Arg())
+		}
+	}
+	args = append(args, m.row.ID)
+	return runtime.BatchOp{SQL: st.SQL, Args: args}, true
+}
+
+// DeleteOp is a delete as a queueable statement.
+func DeleteOp(iD [16]byte) runtime.BatchOp {
+	return runtime.BatchOp{SQL: deleteSQL, Args: []any{iD}}
+}
+
+// Table is the table these statements write, so a Unit can order a mixed
+// batch by foreign key without knowing what any of them are.
+const Table = "orgs"
 
 // stmtForMask compiles the UPDATE for one dirty mask, once.
 func stmtForMask(mask uint64) *runtime.Stmt {

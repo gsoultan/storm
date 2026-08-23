@@ -33,4 +33,68 @@ type rows struct{ pgx.Rows }
 
 func (r rows) Close() { r.Rows.Close() }
 
+// CopyFrom uses the real COPY protocol, which is the point: it skips statement
+// parsing and per-row protocol overhead entirely, so a bulk load is one
+// conversation with the server rather than one per row.
+func (e Pool) CopyFrom(ctx context.Context, table string, cols []string, src runtime.CopySource) (int64, error) {
+	return e.P.CopyFrom(ctx, pgx.Identifier{table}, cols, copySrc{src})
+}
+
+// copySrc adapts raorm's driver-free CopySource to pgx's. The two have the same
+// shape on purpose; this exists so that pgx.CopyFromSource does not have to be
+// named anywhere outside this package.
+type copySrc struct{ s runtime.CopySource }
+
+func (c copySrc) Next() bool             { return c.s.Next() }
+func (c copySrc) Values() ([]any, error) { return c.s.Values(), c.s.Err() }
+func (c copySrc) Err() error             { return c.s.Err() }
+
+// Batch pipelines every statement before reading any result, so N statements
+// cost one round trip.
+//
+// Results are consumed strictly in order and each is closed before the next is
+// requested — pgx invalidates the previous result when the batch advances, so
+// holding one across the loop would read freed memory.
+func (e Pool) Batch(ctx context.Context, ops []runtime.BatchOp, each func(int, runtime.Rows, int64, error) error) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	b := &pgx.Batch{}
+	for _, op := range ops {
+		b.Queue(op.SQL, op.Args...)
+	}
+	br := e.P.SendBatch(ctx, b)
+	// Close must happen even on an early return: an unclosed batch leaves the
+	// connection with unread results and poisons it for the next borrower.
+	defer br.Close()
+
+	for i, op := range ops {
+		if !op.WantRows {
+			tag, err := br.Exec()
+			if cbErr := each(i, nil, tag.RowsAffected(), err); cbErr != nil {
+				return cbErr
+			}
+			continue
+		}
+		r, err := br.Query()
+		if err != nil {
+			if cbErr := each(i, nil, 0, err); cbErr != nil {
+				return cbErr
+			}
+			continue
+		}
+		cbErr := each(i, rows{r}, 0, nil)
+		r.Close() // invalidates r; nothing may hold it past here
+		if cbErr != nil {
+			return cbErr
+		}
+		if err := r.Err(); err != nil {
+			if cbErr := each(i, nil, 0, err); cbErr != nil {
+				return cbErr
+			}
+		}
+	}
+	return nil
+}
+
 var _ runtime.Executor = Pool{}

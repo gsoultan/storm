@@ -114,6 +114,8 @@ func (g *gen) writes() {
 	g.mutType(upd)
 	g.insType(ins)
 	g.insertFn(ins)
+	g.copyFn(ins)
+	g.batchOps(ins, upd, pk)
 	g.updateFn(upd, pk)
 	g.deleteFn(pk)
 }
@@ -275,6 +277,131 @@ func mutAssign(c colInfo) string {
 	return "v"
 }
 
+// upsertTargets emits one OnConflict method per unique key the model declares.
+//
+// One method per *declared* key, rather than a general OnConflict(cols...),
+// because the conflict target has to match a real unique index or Postgres
+// rejects the statement at run time. Generating only the keys that exist turns
+// that into a compile error, and renaming a constraint in the model breaks the
+// call site instead of production.
+func (g *gen) upsertTargets(ins []colInfo) {
+	keys := uniqueKeys(g.t)
+	if len(keys) == 0 {
+		g.p("// No upsert methods: %s declares no unique key, so there is no", g.t.Name)
+		g.p("// conflict target. Add one to the model to get OnConflict...().")
+		g.p("")
+		g.p("var upsertTails []func(uint64) string")
+		g.p("")
+		return
+	}
+	if len(keys) > 255 {
+		g.err = fmt.Errorf("codegen: table %s has %d unique keys; the conflict target is a uint8", g.t.Name, len(keys))
+		return
+	}
+
+	// The assignable set is every updatable column, chosen from the mask at
+	// compile time so an upsert only overwrites what the caller actually set.
+	upd := updatable(g.t)
+	g.p("// upsertTails builds the ON CONFLICT tail for one target, given the")
+	g.p("// insert mask — an upsert must only overwrite the columns the caller")
+	g.p("// assigned, or it silently reverts every column it did not.")
+	g.p("var upsertTails = []func(uint64) string{")
+	for _, k := range keys {
+		g.p("\tfunc(mask uint64) string {")
+		g.p("\t\tset := make([]string, 0, %d)", len(upd))
+		for _, c := range upd {
+			// Only columns that are both insertable and updatable can be
+			// assigned from EXCLUDED.
+			idx := insertIndex(ins, c.Name())
+			if idx < 0 {
+				continue
+			}
+			g.p("\t\tif mask&(1<<%d) != 0 {", idx)
+			g.p("\t\t\tset = append(set, %q)", c.Name())
+			g.p("\t\t}")
+		}
+		g.p("\t\treturn onConflict%s(set)", exportKeyName(k))
+		g.p("\t},")
+	}
+	g.p("}")
+	g.p("")
+	for i, k := range keys {
+		name := exportKeyName(k)
+		g.p("func onConflict%s(set []string) string {", name)
+		g.p("\tswitch len(set) {")
+		g.p("\tcase 0:")
+		g.p("\t\treturn %q", pgsql.ConflictNothing(k))
+		g.p("\t}")
+		g.p("\treturn %q + joinAssign(set)", pgsql.ConflictHead(k))
+		g.p("}")
+		g.p("")
+		g.p("// OnConflict%s upserts on the unique key (%s).", name, joinStr(k, ", "))
+		g.p("func (n *Ins) OnConflict%s() *Ins {", name)
+		g.p("\tn.conflict = %d", i+1)
+		g.p("\treturn n")
+		g.p("}")
+		g.p("")
+	}
+	g.p("// joinAssign renders the DO UPDATE SET list for the columns the caller")
+	g.p("// assigned. The punctuation comes from the back end, never from here.")
+	g.p("func joinAssign(set []string) string {")
+	g.p("\tout := \"\"")
+	g.p("\tfor i, c := range set {")
+	g.p("\t\tif i > 0 {")
+	g.p("\t\t\tout += %q", pgsql.ConflictAssignSep)
+	g.p("\t\t}")
+	g.p("\t\tout += assignExcluded(c)")
+	g.p("\t}")
+	g.p("\treturn out")
+	g.p("}")
+	g.p("")
+	g.p("var assignFor = map[string]string{")
+	for _, c := range upd {
+		if insertIndex(ins, c.Name()) < 0 {
+			continue
+		}
+		g.p("\t%q: %q,", c.Name(), pgsql.ExcludedAssign(c.Name()))
+	}
+	g.p("}")
+	g.p("")
+	g.p("func assignExcluded(c string) string { return assignFor[c] }")
+	g.p("")
+}
+
+// uniqueKeys is every unique column set an upsert may target: the primary key
+// plus each declared UNIQUE constraint. Expression-based unique indexes are
+// excluded — a conflict target cannot name one by column.
+func uniqueKeys(t *schema.Table) [][]string {
+	var out [][]string
+	if len(t.PrimaryKey) > 0 {
+		out = append(out, t.PrimaryKey)
+	}
+	for _, u := range t.Uniques {
+		if len(u.Columns) == 0 {
+			continue
+		}
+		out = append(out, u.Columns)
+	}
+	return out
+}
+
+func insertIndex(ins []colInfo, name string) int {
+	for i, c := range ins {
+		if c.Name() == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func exportKeyName(cols []string) string {
+	out := ""
+	for _, c := range cols {
+		out += exportName(c)
+	}
+	return out
+}
+
 // insType emits the masked insert builder.
 func (g *gen) insType(ins []colInfo) {
 	g.p("// Ins stages a new row. Unlike Mut it has a setter for every insertable")
@@ -288,6 +415,12 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("type Ins struct {")
 	g.p("\trow Row")
 	g.p("\tset uint64")
+	g.p("")
+	g.p("\t// conflict is the upsert target, as a bit per unique-constraint")
+	g.p("\t// column set. Zero means a plain insert, and a duplicate is an error")
+	g.p("\t// — which is the right default: silently updating a row you meant to")
+	g.p("\t// create is a data-loss bug that looks like success.")
+	g.p("\tconflict uint8")
 	g.p("}")
 	g.p("")
 	g.p("// Create stages a new row.")
@@ -314,8 +447,12 @@ func (g *gen) insType(ins []colInfo) {
 		}
 	}
 
-	g.p("func stmtForInsert(mask uint64) *runtime.Stmt {")
-	g.p("\tif st := insCache.Get(mask); st != nil {")
+	g.upsertTargets(ins)
+	g.p("func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {")
+	g.p("\t// The conflict target is part of the statement, so it must be part of")
+	g.p("\t// the key. Packing it above the column bits keeps one cache for both.")
+	g.p("\tkey := mask | uint64(conflict)<<nInsertable")
+	g.p("\tif st := insCache.Get(key); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
 	g.p("\tcols := make([]string, 0, nInsertable)")
@@ -324,7 +461,11 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\t\t\tcols = append(cols, insCols[i])")
 	g.p("\t\t}")
 	g.p("\t}")
-	g.p("\treturn insCache.Put(mask, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, insReturning))")
+	g.p("\tsuffix := insReturning")
+	g.p("\tif conflict > 0 {")
+	g.p("\t\tsuffix = upsertTails[conflict-1](mask) + insReturning")
+	g.p("\t}")
+	g.p("\treturn insCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
 	g.p("")
 
@@ -335,7 +476,7 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\tif n.set == 0 {")
 	g.p("\t\treturn Row{}, runtime.ErrNothingAssigned")
 	g.p("\t}")
-	g.p("\tst := stmtForInsert(n.set)")
+	g.p("\tst := stmtForInsert(n.set, n.conflict)")
 	g.p("\targs := make([]any, 0, st.NArg)")
 	g.p("\tfor i := 0; i < nInsertable; i++ {")
 	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
@@ -513,6 +654,156 @@ func (g *gen) deleteFn(pk []colInfo) {
 	g.p("\treturn nil")
 	g.p("}")
 	g.p("")
+}
+
+// batchOps emits the statement constructors a Unit or a caller queues into a
+// batch. They build the statement and its args and issue nothing, so ordering
+// and grouping stay the caller's decision.
+func (g *gen) batchOps(ins, upd, pk []colInfo) {
+	g.p("// InsertOp is an insert as a queueable statement. It writes every")
+	g.p("// insertable column, because a batch of a thousand rows that each chose")
+	g.p("// a different column set would compile a thousand statements and defeat")
+	g.p("// the point of batching them.")
+	g.p("//")
+	g.p("// WantRows is false: a batched insert reports a count. Asking for")
+	g.p("// RETURNING here would mean scanning a result per statement, which is")
+	g.p("// exactly the per-row work a batch exists to avoid.")
+	g.p("func InsertOp(r Row) runtime.BatchOp {")
+	g.p("\tvar mask uint64")
+	for i := range ins {
+		g.p("\tmask |= 1 << %d", i)
+	}
+	g.p("\tst := stmtForInsert(mask, 0)")
+	g.p("\targs := make([]any, 0, %d)", len(ins))
+	for _, c := range ins {
+		g.p("\targs = append(args, %s)", writeArg(c, "r."+exportName(c.Name())))
+	}
+	g.p("\treturn runtime.BatchOp{SQL: st.SQL, Args: args}")
+	g.p("}")
+	g.p("")
+
+	g.p("// UpdateOp is this Mut's update as a queueable statement.")
+	g.p("//")
+	g.p("// The optimistic lock still applies, but the caller must check the")
+	g.p("// affected count the batch reports: a stale write inside a batch is not")
+	g.p("// an error the driver raises, it is a zero the caller has to notice.")
+	g.p("func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {")
+	g.p("\tif m.dirty == 0 {")
+	g.p("\t\treturn runtime.BatchOp{}, false")
+	g.p("\t}")
+	g.p("\tst := stmtForMask(m.dirty)")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range upd {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	for _, c := range pk {
+		g.p("\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
+	}
+	if v := versionCol(g.t); v != nil {
+		g.p("\targs = append(args, m.row.%s)", exportName(v.Name))
+	}
+	g.p("\treturn runtime.BatchOp{SQL: st.SQL, Args: args}, true")
+	g.p("}")
+	g.p("")
+
+	g.p("// DeleteOp is a delete as a queueable statement.")
+	sig := make([]string, 0, len(pk))
+	call := make([]string, 0, len(pk))
+	for _, c := range pk {
+		sig = append(sig, fmt.Sprintf("%s %s", lowerFirst(exportName(c.Name())), c.goBase))
+		call = append(call, lowerFirst(exportName(c.Name())))
+	}
+	g.p("func DeleteOp(%s) runtime.BatchOp {", joinStr(sig, ", "))
+	g.p("\treturn runtime.BatchOp{SQL: deleteSQL, Args: []any{%s}}", joinStr(call, ", "))
+	g.p("}")
+	g.p("")
+	g.p("// Table is the table these statements write, so a Unit can order a mixed")
+	g.p("// batch by foreign key without knowing what any of them are.")
+	g.p("const Table = %q", g.t.Name)
+	g.p("")
+}
+
+// copyFn emits the bulk loader.
+func (g *gen) copyFn(ins []colInfo) {
+	names := make([]string, len(ins))
+	for i, c := range ins {
+		names[i] = c.Name()
+	}
+
+	g.p("// copyCols is the fixed column list of a bulk load. Unlike Ins there is")
+	g.p("// no mask: COPY sends one shape for the whole stream, so every row must")
+	g.p("// supply every column and database defaults do not apply. Fill the row")
+	g.p("// yourself, or use Create() per row and give up the bulk path.")
+	g.p("var copyCols = []string{")
+	for _, n := range names {
+		g.p("\t%q,", n)
+	}
+	g.p("}")
+	g.p("")
+
+	g.p("// rowSource walks a []Row for CopyFrom without copying any of it.")
+	g.p("type rowSource struct {")
+	g.p("\trows []Row")
+	g.p("\ti    int")
+	g.p("\tbuf  [%d]any", len(ins))
+	g.p("}")
+	g.p("")
+	g.p("func (s *rowSource) Next() bool {")
+	g.p("\ts.i++")
+	g.p("\treturn s.i <= len(s.rows)")
+	g.p("}")
+	g.p("")
+	g.p("// Values reuses one buffer across every row, and fills it with POINTERS")
+	g.p("// into the caller's slice rather than copies.")
+	g.p("//")
+	g.p("// Both halves matter. The driver consumes each slice before asking for")
+	g.p("// the next, so one buffer is safe. And boxing a pointer into an `any`")
+	g.p("// does not allocate while boxing a value does — at a thousand rows that")
+	g.p("// is one allocation per column per row, or none. Measured: the first cut")
+	g.p("// boxed values and cost 7 allocations per row.")
+	g.p("func (s *rowSource) Values() []any {")
+	g.p("\tr := &s.rows[s.i-1]")
+	for i, c := range ins {
+		g.p("\ts.buf[%d] = %s", i, copyArg(c, "r."+exportName(c.Name())))
+	}
+	g.p("\treturn s.buf[:]")
+	g.p("}")
+	g.p("")
+	g.p("func (s *rowSource) Err() error { return nil }")
+	g.p("")
+
+	g.p("// InsertAll bulk-loads rows through the driver's COPY protocol: ONE round")
+	g.p("// trip regardless of row count, because COPY is a different wire path and")
+	g.p("// not a faster loop over INSERT.")
+	g.p("//")
+	g.p("// It returns no rows. COPY has no RETURNING, so a caller who needs")
+	g.p("// database-generated ids must supply them — which is why the primary key")
+	g.p("// is in copyCols and must be set on every row.")
+	g.p("func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, error) {")
+	g.p("\tif len(rows) == 0 {")
+	g.p("\t\treturn 0, nil")
+	g.p("\t}")
+	g.p("\tsrc := &rowSource{rows: rows}")
+	g.p("\treturn ex.CopyFrom(ctx, %q, copyCols, src)", g.t.Name)
+	g.p("}")
+	g.p("")
+}
+
+// copyArg is a pointer to a row field, so boxing it costs nothing. A nullable
+// field yields a *T that is nil for SQL NULL, which every driver understands.
+func copyArg(c colInfo, expr string) string {
+	if isNullable(c.col) {
+		return expr + ".Ptr()"
+	}
+	return "&" + expr
 }
 
 // writeArg unwraps a nullable field for binding: the driver wants the value or
