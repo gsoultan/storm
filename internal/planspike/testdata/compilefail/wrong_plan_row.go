@@ -6,10 +6,10 @@
 package compilefail
 
 import (
-	"github.com/gsoultan/raorm/internal/planspike"
+	"github.com/gsoultan/raorm/internal/planspike/store"
 	"github.com/gsoultan/raorm/internal/planspike/store/org"
 )
 
-func SubstitutePlanRow(r org.Row) planspike.OrgWithUsers {
+func SubstitutePlanRow(r org.Row) store.OrgWithUsersRow {
 	return r
 }

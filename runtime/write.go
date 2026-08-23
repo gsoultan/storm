@@ -156,3 +156,9 @@ func SpliceInsert(prefix string, p InsertParts, cols []string, placeholder, suff
 // naming no columns would take every default, which is almost never what the
 // caller meant and is never what they said.
 var ErrNothingAssigned = errors.New("raorm: insert with no columns assigned")
+
+// ErrChildLimit is returned when a relation load reached its child limit.
+//
+// A partial relation load is worse than a failed one: every count computed from
+// it is wrong and nothing says so. Raise ChildLimit or narrow the parent query.
+var ErrChildLimit = errors.New("raorm: relation load hit its child limit — the result would be silently partial")

@@ -33,10 +33,11 @@ func run() error {
 	}
 	dir := filepath.Join("internal", "planspike", "store")
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir:     dir,
-		Import:  "github.com/gsoultan/raorm",
-		Only:    []string{"orgs", "users"},
-		Package: "store",
+		Dir:           dir,
+		Import:        "github.com/gsoultan/raorm",
+		Only:          []string{"orgs", "users"},
+		Package:       "store",
+		PackageImport: "github.com/gsoultan/raorm/internal/planspike/store",
 	})
 	if err != nil {
 		return err

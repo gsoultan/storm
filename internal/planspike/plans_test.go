@@ -2,13 +2,14 @@ package planspike_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 
 	"github.com/gsoultan/raorm"
 	"github.com/gsoultan/raorm/compile/pgddl"
-	"github.com/gsoultan/raorm/internal/planspike"
+	"github.com/gsoultan/raorm/internal/planspike/store"
 	"github.com/gsoultan/raorm/internal/planspike/store/org"
 	"github.com/gsoultan/raorm/internal/testmodel"
 	"github.com/gsoultan/raorm/runtime"
@@ -99,7 +100,7 @@ func TestPlan_TwoRoundTrips(t *testing.T) {
 			ex, count := db(t)
 			count.Reset()
 
-			rows, err := planspike.OrgsWithUsers().Limit(parents).All(ctx, ex)
+			rows, err := store.OrgWithUsers().Limit(parents).All(ctx, ex)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -124,7 +125,7 @@ func TestPlan_NoParentsIsOneRoundTrip(t *testing.T) {
 	ex, count := db(t)
 	count.Reset()
 
-	rows, err := planspike.OrgsWithUsers().Where(org.Name.Eq("no such org")).All(ctx, ex)
+	rows, err := store.OrgWithUsers().Where(org.Name.Eq("no such org")).All(ctx, ex)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestPlan_ParentPredicatesCompose(t *testing.T) {
 	ex, count := db(t)
 	count.Reset()
 
-	rows, err := planspike.OrgsWithUsers().
+	rows, err := store.OrgWithUsers().
 		Where(org.Name.Gte("org-1"), org.Name.Lte("org-2")).
 		WhereIf(false, org.Name.Eq("ignored")).
 		Limit(5).
@@ -171,7 +172,7 @@ func TestPlan_ChildLimitIsAnErrorNotATruncation(t *testing.T) {
 	ctx := context.Background()
 	ex, _ := db(t)
 
-	_, err := planspike.OrgsWithUsers().Limit(10).ChildLimit(100).All(ctx, ex)
+	_, err := store.OrgWithUsers().Limit(10).ChildLimit(100).All(ctx, ex)
 	if err == nil {
 		t.Fatal("hitting the child limit must be an error, not a silently partial result")
 	}
@@ -188,4 +189,103 @@ func orgRows(ctx context.Context, ex runtime.Executor) ([][16]byte, error) {
 		out[i] = r.ID
 	}
 	return out, nil
+}
+
+// All four relation kinds the fixture declares, each in exactly two round
+// trips. The kinds differ in where the key lives and whether it is nullable,
+// which is precisely where a loader gets them wrong.
+func TestPlan_EveryRelationKindIsTwoRoundTrips(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("has-many", func(t *testing.T) {
+		ex, count := db(t)
+		count.Reset()
+		rows, err := store.OrgWithUsers().Limit(5).All(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 5 {
+			t.Fatalf("got %d orgs, want 5", len(rows))
+		}
+		for _, r := range rows {
+			if len(r.Users) != usersPerOrg {
+				t.Fatalf("org %s has %d users, want %d", r.Name, len(r.Users), usersPerOrg)
+			}
+		}
+		if n := count.RoundTrips(); n != 2 {
+			t.Errorf("%d round trips, want 2", n)
+		}
+	})
+
+	t.Run("belongs-to", func(t *testing.T) {
+		ex, count := db(t)
+		count.Reset()
+		// A thousand users pointing at fifty orgs must fetch fifty orgs, not a
+		// thousand: distinct keys are de-duplicated before the second query.
+		rows, err := store.UserWithOrg().Limit(1000).All(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1000 {
+			t.Fatalf("got %d users, want 1000", len(rows))
+		}
+		for _, r := range rows {
+			if r.Org.ID != r.OrgID {
+				t.Fatal("a user is joined to the wrong org")
+			}
+		}
+		if n := count.RoundTrips(); n != 2 {
+			t.Errorf("%d round trips, want 2", n)
+		}
+	})
+
+	t.Run("self-referential has-many", func(t *testing.T) {
+		ex, count := db(t)
+		count.Reset()
+		// orgs.parent_id is nullable — the root has nowhere to point — so this
+		// is the case where the relation's Go field and its column disagree
+		// about nullability.
+		rows, err := store.OrgWithChildren().Limit(5).All(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 5 {
+			t.Fatalf("got %d orgs, want 5", len(rows))
+		}
+		if n := count.RoundTrips(); n != 2 {
+			t.Errorf("%d round trips, want 2", n)
+		}
+	})
+
+	t.Run("self-referential to-one, all keys null", func(t *testing.T) {
+		ex, count := db(t)
+		count.Reset()
+		// Every seeded org is a root, so no parent key is bound at all and the
+		// second query must not be issued.
+		rows, err := store.OrgWithParent().Limit(5).All(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 5 {
+			t.Fatalf("got %d orgs, want 5", len(rows))
+		}
+		for _, r := range rows {
+			if r.Parent != nil {
+				t.Error("a seeded org has a parent it should not have")
+			}
+		}
+		if n := count.RoundTrips(); n != 1 {
+			t.Errorf("%d round trips, want 1 — no parent keys means nothing to fetch", n)
+		}
+	})
+}
+
+// The generated plan must reject a partial load, exactly as the hand-written
+// spike did.
+func TestPlan_GeneratedChildLimitIsAnError(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+	if _, err := store.OrgWithUsers().Limit(10).ChildLimit(100).All(ctx, ex); !errors.Is(err, runtime.ErrChildLimit) {
+		t.Errorf("hitting the child limit returned %v, want ErrChildLimit", err)
+	}
 }

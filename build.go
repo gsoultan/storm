@@ -382,6 +382,14 @@ func (b *builder) resolveRelations(mi *modelInfo) {
 			RefTable:   tgt.tbl.out.Name,
 			RefColumns: []string{pk[0]},
 		})
+		mi.tbl.out.Relations = append(mi.tbl.out.Relations, &schema.Relation{
+			Field:    rel.fieldName,
+			Target:   tgt.tbl.out.Name,
+			TargetGo: rel.target.Name(),
+			Column:   rel.colName,
+			Owner:    true,
+			Nullable: rel.nullable,
+		})
 		mi.fkCols = append(mi.fkCols, rel.colName)
 	}
 }
@@ -398,22 +406,37 @@ func (b *builder) validateHasMany(mi *modelInfo) {
 		if tgt == nil || tgt.tbl == nil {
 			continue // already reported
 		}
-		if !hasFKTo(tgt.tbl.out, mi.tbl.out.Name) {
+		col := fkColumnTo(tgt.tbl.out, mi.tbl.out.Name)
+		if col == "" {
 			b.errs.add(fmt.Errorf(
 				"%s.%s: has-many to %s, but %s has no field of type %s to carry the foreign key",
 				mi.tbl.out.Name, rel.fieldName, rel.target.Name(),
 				tgt.tbl.out.Name, mi.typ.Name()))
+			continue
 		}
+		// Column is the CHILD's column, not this table's: a batch loader
+		// filters children by it, and there is nothing on the parent to filter.
+		mi.tbl.out.Relations = append(mi.tbl.out.Relations, &schema.Relation{
+			Field:    rel.fieldName,
+			Target:   tgt.tbl.out.Name,
+			TargetGo: rel.target.Name(),
+			ToMany:   true,
+			Column:   col,
+			Owner:    false,
+		})
 	}
 }
 
-func hasFKTo(t *schema.Table, table string) bool {
+// fkColumnTo is the column on t that references table, or "" if none does.
+// A self-reference matches too — a hierarchy's children are found by the same
+// mechanism as any other has-many.
+func fkColumnTo(t *schema.Table, table string) string {
 	for _, fk := range t.ForeignKeys {
-		if fk.RefTable == table {
-			return true
+		if fk.RefTable == table && len(fk.Columns) == 1 {
+			return fk.Columns[0]
 		}
 	}
-	return false
+	return ""
 }
 
 func indexedFirst(t *schema.Table, col string) bool {

@@ -3,7 +3,14 @@
 
 package store
 
-import "github.com/gsoultan/raorm/runtime"
+import (
+	"context"
+	"fmt"
+
+	"github.com/gsoultan/raorm/internal/planspike/store/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/user"
+	"github.com/gsoultan/raorm/runtime"
+)
 
 // FlushOrder ranks tables so that every table's foreign-key targets rank
 // strictly lower. It is computed at generate time from the model, so no
@@ -17,3 +24,394 @@ var FlushOrder = map[string]int{
 // NewUnit stages writes across this context and flushes them in foreign-key
 // order as one round trip.
 func NewUnit() *runtime.Unit { return runtime.NewUnit(FlushOrder) }
+
+// defaultChildLimit caps a relation load. Any constant is arbitrary — too
+// low truncates a legitimate load, too high is the unbounded read the dba
+// profile vetoes — so what is settled here is only the BEHAVIOUR on
+// reaching it: an error, never a partial result. Override per plan with
+// ChildLimit.
+const defaultChildLimit = 1 << 20
+
+// OrgWithChildrenRow is orgs with its Children loaded.
+//
+// Children is a field HERE and nowhere else: org.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type OrgWithChildrenRow struct {
+	org.Row
+	Children []org.Row
+}
+
+// OrgWithChildrenQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type OrgWithChildrenQuery struct {
+	q          org.Query
+	childLimit int64
+}
+
+// OrgWithChildren starts the plan.
+func OrgWithChildren() OrgWithChildrenQuery {
+	return OrgWithChildrenQuery{q: org.New(), childLimit: defaultChildLimit}
+}
+
+func (p OrgWithChildrenQuery) Where(ps ...org.Pred) OrgWithChildrenQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p OrgWithChildrenQuery) WhereIf(cond bool, pr org.Pred) OrgWithChildrenQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p OrgWithChildrenQuery) Any(ps ...org.Pred) OrgWithChildrenQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p OrgWithChildrenQuery) Not(pr org.Pred) OrgWithChildrenQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p OrgWithChildrenQuery) Limit(n int64) OrgWithChildrenQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+// ChildLimit caps the total children fetched across all parents.
+func (p OrgWithChildrenQuery) ChildLimit(n int64) OrgWithChildrenQuery {
+	p.childLimit = n
+	return p
+}
+
+// All runs the plan in exactly TWO round trips, whatever the parent count.
+//
+// The mechanism is `= ANY($1)`: one placeholder binds the whole id list, so
+// fifty parents and five thousand produce the same SQL and share one
+// compiled statement. No join is involved, which is why M3 was never
+// actually blocked on join support.
+func (p OrgWithChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgWithChildrenRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// Round two would be `= ANY('{}')`, a guaranteed-empty query. Not
+		// issuing it is the difference between costing 2 round trips when
+		// there is work and 2 when there is none.
+		return nil, nil
+	}
+	out := make([]OrgWithChildrenRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = OrgWithChildrenRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	kids, err := org.New().
+		Where(org.ParentID.In(ids...)).
+		Limit(p.childLimit).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so.
+	if int64(len(kids)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		key, ok := k.ParentID.Get()
+		if !ok {
+			continue
+		}
+		if i, ok := at[key]; ok {
+			out[i].Children = append(out[i].Children, k)
+		}
+	}
+	return out, nil
+}
+
+// OrgWithParentRow is orgs with its Parent loaded.
+type OrgWithParentRow struct {
+	org.Row
+	// A pointer because the link is optional. nil means the row has no
+	// Parent, which is different from having one that failed to load.
+	Parent *org.Row
+}
+
+type OrgWithParentQuery struct {
+	q org.Query
+}
+
+// OrgWithParent starts the plan.
+func OrgWithParent() OrgWithParentQuery { return OrgWithParentQuery{q: org.New()} }
+
+func (p OrgWithParentQuery) Where(ps ...org.Pred) OrgWithParentQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p OrgWithParentQuery) WhereIf(cond bool, pr org.Pred) OrgWithParentQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p OrgWithParentQuery) Any(ps ...org.Pred) OrgWithParentQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p OrgWithParentQuery) Not(pr org.Pred) OrgWithParentQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p OrgWithParentQuery) Limit(n int64) OrgWithParentQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+// All runs the plan in exactly TWO round trips. Distinct parent keys are
+// de-duplicated before the second, so a thousand rows pointing at three
+// orgs fetch three orgs.
+func (p OrgWithParentQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgWithParentRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]OrgWithParentRow, len(parents))
+	seen := make(map[[16]byte]bool, len(parents))
+	ids := make([][16]byte, 0, len(parents))
+	for i, r := range parents {
+		out[i] = OrgWithParentRow{Row: r}
+		key, ok := r.ParentID.Get()
+		if !ok {
+			continue
+		}
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	targets, err := org.New().
+		Where(org.ID.In(ids...)).
+		Limit(int64(len(ids))).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key, ok := out[i].ParentID.Get()
+		if !ok {
+			continue
+		}
+		j, ok := by[key]
+		if !ok {
+			// A foreign key pointing at a row that is not there. The database
+			// forbids it, so reaching this means the constraint was dropped.
+			return nil, fmt.Errorf("raorm: %s references a missing %s row", "orgs", "orgs")
+		}
+		out[i].Parent = &targets[j]
+	}
+	return out, nil
+}
+
+// OrgWithUsersRow is orgs with its Users loaded.
+//
+// Users is a field HERE and nowhere else: org.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type OrgWithUsersRow struct {
+	org.Row
+	Users []user.Row
+}
+
+// OrgWithUsersQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type OrgWithUsersQuery struct {
+	q          org.Query
+	childLimit int64
+}
+
+// OrgWithUsers starts the plan.
+func OrgWithUsers() OrgWithUsersQuery {
+	return OrgWithUsersQuery{q: org.New(), childLimit: defaultChildLimit}
+}
+
+func (p OrgWithUsersQuery) Where(ps ...org.Pred) OrgWithUsersQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p OrgWithUsersQuery) WhereIf(cond bool, pr org.Pred) OrgWithUsersQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p OrgWithUsersQuery) Any(ps ...org.Pred) OrgWithUsersQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p OrgWithUsersQuery) Not(pr org.Pred) OrgWithUsersQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p OrgWithUsersQuery) Limit(n int64) OrgWithUsersQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+// ChildLimit caps the total children fetched across all parents.
+func (p OrgWithUsersQuery) ChildLimit(n int64) OrgWithUsersQuery {
+	p.childLimit = n
+	return p
+}
+
+// All runs the plan in exactly TWO round trips, whatever the parent count.
+//
+// The mechanism is `= ANY($1)`: one placeholder binds the whole id list, so
+// fifty parents and five thousand produce the same SQL and share one
+// compiled statement. No join is involved, which is why M3 was never
+// actually blocked on join support.
+func (p OrgWithUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgWithUsersRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// Round two would be `= ANY('{}')`, a guaranteed-empty query. Not
+		// issuing it is the difference between costing 2 round trips when
+		// there is work and 2 when there is none.
+		return nil, nil
+	}
+	out := make([]OrgWithUsersRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = OrgWithUsersRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	kids, err := user.New().
+		Where(user.OrgID.In(ids...)).
+		Limit(p.childLimit).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so.
+	if int64(len(kids)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		if i, ok := at[k.OrgID]; ok {
+			out[i].Users = append(out[i].Users, k)
+		}
+	}
+	return out, nil
+}
+
+// UserWithOrgRow is users with its Org loaded.
+type UserWithOrgRow struct {
+	user.Row
+	Org org.Row
+}
+
+type UserWithOrgQuery struct {
+	q user.Query
+}
+
+// UserWithOrg starts the plan.
+func UserWithOrg() UserWithOrgQuery { return UserWithOrgQuery{q: user.New()} }
+
+func (p UserWithOrgQuery) Where(ps ...user.Pred) UserWithOrgQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p UserWithOrgQuery) WhereIf(cond bool, pr user.Pred) UserWithOrgQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p UserWithOrgQuery) Any(ps ...user.Pred) UserWithOrgQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p UserWithOrgQuery) Not(pr user.Pred) UserWithOrgQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p UserWithOrgQuery) Limit(n int64) UserWithOrgQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+// All runs the plan in exactly TWO round trips. Distinct parent keys are
+// de-duplicated before the second, so a thousand rows pointing at three
+// orgs fetch three orgs.
+func (p UserWithOrgQuery) All(ctx context.Context, ex runtime.Executor) ([]UserWithOrgRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]UserWithOrgRow, len(parents))
+	seen := make(map[[16]byte]bool, len(parents))
+	ids := make([][16]byte, 0, len(parents))
+	for i, r := range parents {
+		out[i] = UserWithOrgRow{Row: r}
+		key := r.OrgID
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	targets, err := org.New().
+		Where(org.ID.In(ids...)).
+		Limit(int64(len(ids))).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key := out[i].OrgID
+		j, ok := by[key]
+		if !ok {
+			// A foreign key pointing at a row that is not there. The database
+			// forbids it, so reaching this means the constraint was dropped.
+			return nil, fmt.Errorf("raorm: %s references a missing %s row", "users", "orgs")
+		}
+		out[i].Org = targets[j]
+	}
+	return out, nil
+}

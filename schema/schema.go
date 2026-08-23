@@ -40,12 +40,49 @@ type Table struct {
 	// (SELECT *, COPY) so it must not be sorted.
 	Columns []*Column
 
+	// Relations are the Go-level links the model declared, kept because a
+	// foreign key alone cannot reconstruct them: it says users.org_id
+	// references orgs.id, not that the field is called Org, that Org has a
+	// Users slice pointing back, or which side the model considers the owner.
+	// Code generation needs all three.
+	//
+	// This is a raorm-level fact with no DDL of its own; ForeignKeys is what
+	// the database sees.
+	Relations []*Relation
+
 	PrimaryKey  []string
 	Uniques     []*Unique
 	Indexes     []*Index
 	ForeignKeys []*ForeignKey
 	Checks      []*Check
 	Excludes    []*Exclude
+}
+
+// Relation is one declared link between two models.
+type Relation struct {
+	// Field is the Go field name on this table's model: "Org", "Users".
+	Field string
+
+	// Target is the table referenced. TargetGo is its model type name, which
+	// is what the generated package for it is named after.
+	Target   string
+	TargetGo string
+
+	// ToMany distinguishes `Users []User` from `Org Org`.
+	ToMany bool
+
+	// Column is the foreign-key column. On the owning side it is a column of
+	// this table; on the inverse side it is a column of the Target, which is
+	// what a batch loader filters on.
+	Column string
+
+	// Owner says whether this side carries the key. Exactly one side of a link
+	// does — for one-to-one the required side, decided at build time — and the
+	// generator loads an owned relation and an inverse relation differently.
+	Owner bool
+
+	// Nullable is true when the link is optional (`*Profile`, a nullable FK).
+	Nullable bool
 }
 
 // Column is one attribute.

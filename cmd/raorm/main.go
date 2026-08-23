@@ -137,9 +137,10 @@ func connect(dsn string) (*pgx.Conn, context.Context, func(), error) {
 // `raorm verify` would then be comparing against a tree nobody intended.
 func generate(dir string, model *schema.Schema) error {
 	files, err := codegen.Package(model, codegen.PackageOptions{
-		Dir:     dir,
-		Import:  modulePath,
-		Package: filepath.Base(dir),
+		Dir:           dir,
+		Import:        modulePath,
+		Package:       filepath.Base(dir),
+		PackageImport: modulePath + "/" + filepath.ToSlash(dir),
 	})
 	if err != nil {
 		return err
