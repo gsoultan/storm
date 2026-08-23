@@ -85,7 +85,7 @@ findings from reading the code as it actually stands drove the reordering:
 | **P1b** | relocate query lowering into `compile/pgsql` + CI check ✅ | R9 | ~2 d |
 | **P2** | plan-type ergonomics spike, hand-written ✅ | de-risks M3 | 3 d |
 | **P3** | writes, unit of work, batching ✅ | **M4** | 2 wk |
-| **P4** | relations, named plans, `= ANY` alloc fix | **M3** | 4 wk |
+| **P4** | relations, named plans, `= ANY` alloc fix ◐ | **M3** | 4 wk |
 | **P5** | joins, ordering, pagination, projections, CTEs, windows | **M2** rest | 4 wk+ |
 
 ≈ 12 weeks to a write-capable, relation-capable Postgres ORM with the dialect
@@ -251,11 +251,35 @@ make every hierarchy unwritable.
 
 Gates unchanged — see M3 below. One addition:
 
-**Fold in the `= ANY` parameter-side allocation fix.** It costs ~2 allocations
-per bound id today, from pgx's array encoder on the *parameter* side, not our
-scan path. That is a curiosity now. Once every relation load is an `= ANY`, it
-becomes the per-parent cost of the differentiator. Same pooled-buffer trick that
-killed the `[]any` boxing in M0.
+**Fold in the `= ANY` parameter-side allocation fix.** Re-measured 2026-08-24
+now that the plan layer makes it the common path — numbers in
+`bench/RESULTS.md`, never from memory. It is ~2 allocations per bound id, on
+pgx's *parameter* side, not our scan path.
+
+**One hypothesis already killed:** `pgtype.FlatArray` — pgx's own array wrapper,
+and the obvious first thing to reach for — is within noise of a plain slice.
+Both pay the same per-element cost inside pgx's generic array codec, which boxes
+every element into an `any` and builds a per-element encode plan. The fix is a
+`pgtype.Codec` registered on the type map in `runtime/pgxdrv` (the only package
+allowed to name a pgx type), encoding the array straight into the output buffer,
+repeated per array element type a relation key can have.
+`BenchmarkAnyParam` and `BenchmarkEncodeIDArray` are the regression guard.
+
+### P4 status (2026-08-24)
+
+**Shipped:** relation metadata in the IR, and **one generated plan type per
+relation** — finite by construction (n relations, never 2ⁿ) and needing no
+declaration mechanism, so it lands without the `plans.go` front end. All four
+relation kinds in the fixture at **exactly 2 round trips**: has-many,
+belongs-to (keys de-duplicated, so 1,000 users on 50 orgs fetch 50 orgs),
+self-referential has-many, and self-referential to-one where every key is NULL
+(1 round trip, not 2). Unloaded relations still do not compile; the P2
+compile-fail suite now runs against generated code.
+
+**Outstanding:** named multi-relation plans (needs the `plans.go` front end),
+m2m with payload, polymorphic associations, greatest-n-per-group, recursive
+traversal, the `= ANY` fix above, and the strategy comparison in
+`bench/RESULTS.md`.
 
 ### P5 — read expressiveness = rest of M2 (4 weeks+)
 

@@ -479,3 +479,45 @@ fast?" is answered separately from "can a generator emit it?" (M2's job).
 `internal/spike` is ~330 lines: shape mask, indexed compiled-statement cache,
 fragment splicing, pooled binder, wire-bytes decoder, and a five-method
 executor port with the only pgx import behind it.
+
+---
+
+## `= ANY($1)` parameter side (2026-08-24)
+
+Measured because the generated relation plan layer makes this the common path:
+every plan batches children with `= ANY($1)`, so an allocation per bound id is
+an allocation per parent.
+
+`BenchmarkAnyParam` — one row returned, ids varied, so this is the parameter
+side and not the scan:
+
+| ids | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| 1 | 217,134 | 517 | 10 |
+| 50 | 2,229,303 | 7,714 | 114 |
+| 500 | 2,678,528 | 74,075 | 1,021 |
+
+**~2 allocations per bound id.** It is on pgx's *parameter* side, not raorm's
+scan path — the scan of a 1,000-row result is still a handful.
+
+`BenchmarkEncodeIDArray` isolates the encoder with no server and no scan:
+
+| shape | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `[][16]byte` | 15,225 | 16,056 | 1,003 |
+| `pgtype.FlatArray[[16]byte]` | 12,760 | 16,032 | 1,002 |
+
+**Negative result — do not re-try it.** `pgtype.FlatArray` is pgx's own array
+wrapper and the obvious first thing to reach for. It comes out within noise:
+both shapes pay ~2 allocations per element inside pgx's generic array codec,
+which boxes every element into an `any` and builds a per-element encode plan.
+
+The fix is therefore not a different pgx wrapper. It is a `pgtype.Codec`
+registered on the connection's type map in `runtime/pgxdrv`, encoding `uuid[]`
+straight into the output buffer — ndim, hasnull, element OID, one dimension,
+then 16 bytes per id. It has to live in the adapter because that is the only
+package allowed to name a pgx type, and it would have to be repeated per array
+element type (`text[]`, `int8[]`) that a relation key can have.
+
+**Not yet built.** The two benchmarks above are the regression guard for when it
+is.
