@@ -14,9 +14,15 @@ time, *including the dynamic queries*. A dynamic query has a bounded set of
 shapes — compile each once, cache under a `uint64` mask, warm calls allocate
 nothing to build SQL.
 
-**Status (2026-08-23): M0 PASSED — there is running code.** `internal/spike/`
-(~350 lines) + `bench/` with a real Postgres via `make db`. See [[m0_results]]
-and `bench/RESULTS.md`. M1 is next.
+**Status (2026-08-24).** M0, M1 and M2's read path passed; the repo has git
+history from this date (it had **none** before — 9,143 lines untracked, tagged
+`m2-read-path` at import). Since then: the dialect seam extracted and
+CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
+single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
+sequence**, which deliberately runs writes (M4) before relations (M3).
+
+See [[m0_results]] for the thesis numbers, [[seam_and_codegen]] for R9 and the
+generator, [[plan_types]] for why M3 is de-risked, [[write_path]] for M4.
 
 ## Read in this order
 1. `docs/COMPARISON.md` — Ent/GORM/Bun/Hibernate by mechanism; the five-property gap table
@@ -39,6 +45,12 @@ reasoning.
 - [[m0_results]] — the spike result and the three findings that amended the plan
 - [[decisions]] — the four load-bearing ADRs and what was rejected
 - [[boundaries]] — the scope line
+- [[seam_and_codegen]] — R9 finally mitigated; per-context generation; the
+  15-column truncation that outlived its design
+- [[plan_types]] — M3's ergonomics answered in 3 days, and why `Load(plan)`
+  cannot be written in Go
+- [[write_path]] — the dirty mask, optimistic locking, and the one decision
+  blocking the rest of M4
 
 ## Standing rule
 Never quote a performance number from memory. `bench/RESULTS.md` or nothing.
