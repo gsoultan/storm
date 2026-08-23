@@ -276,10 +276,31 @@ self-referential has-many, and self-referential to-one where every key is NULL
 (1 round trip, not 2). Unloaded relations still do not compile; the P2
 compile-fail suite now runs against generated code.
 
-**Outstanding:** named multi-relation plans (needs the `plans.go` front end),
-m2m with payload, polymorphic associations, greatest-n-per-group, recursive
-traversal, the `= ANY` fix above, and the strategy comparison in
-`bench/RESULTS.md`.
+**Shipped since (2026-08-24):**
+
+- **Plans page their parents.** `Order`, `Offset` and `After` were added to
+  `Query` *after* the plan delegation list was written and were missing from
+  every plan — a plan could filter but not page. The list is the bug surface;
+  anything added to `Query` belongs on it too.
+- **`ChildTop(n)` — greatest-n-per-group.** "Fifty tenants, each with its five
+  newest people" in one query, still 2 round trips. Requires `ChildOrder`, and
+  that ordering must be a strict total order: *"the first three by date"* with
+  ties returns an arbitrary three and a different arbitrary three next call.
+- **The default lowering was chosen by measurement, and the measurement
+  reversed the choice.** I defaulted to `row_number()` reasoning that one index
+  scan beats a per-parent nested loop. Wrong: the window form reads every child
+  of every matched parent, so its cost tracks the *total child count* while
+  `LATERAL`'s tracks the *rows returned* — 32.8× at a hundred parents. Both stay
+  generated; a default chosen by measurement needs something measured against.
+- **The `= ANY` parameter codec.** 1,003 allocations → **1** isolated; 1,021 →
+  **11** end to end at 500 ids, and now **flat in id count**. Byte-identical to
+  pgx's own output, asserted — a parameter encoder that is fast and subtly wrong
+  corrupts a query's meaning rather than failing it.
+- **Recursive traversal.** `Descend`/`Ascend` with a mandatory depth bound and a
+  path-array cycle guard, proven against a real cycle built in a real database.
+
+**Still outstanding for M3:** named multi-relation plans (needs the `plans.go`
+front end), m2m with payload, and polymorphic associations.
 
 ### P5 — read expressiveness = rest of M2 (4 weeks+)
 

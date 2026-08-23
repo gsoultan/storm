@@ -74,3 +74,38 @@ slice, because both pay per-element cost inside pgx's generic array codec. The
 fix is a `pgtype.Codec` in `runtime/pgxdrv`. Numbers in `bench/RESULTS.md`.
 
 See [[write_path]], [[seam_and_codegen]].
+
+## Relation loading, second pass (2026-08-24)
+
+**The delegation list is the bug surface.** Go has no delegation, so a plan
+redeclares every builder method of the parent `Query`. `Order`, `Offset` and
+`After` were added to `Query` later and were missing from every plan — a plan
+could filter its parents but not page them. **Anything added to `Query` has to
+be added there too.**
+
+**`ChildLimit` is a global guard, not a page size.** Fifty parents with
+`ChildLimit(100)` is an error, not a hundred each. Pinned by a test so nobody
+"fixes" it into a silent per-parent truncation.
+
+**`ChildTop(n)` is the per-parent limit** — greatest-n-per-group, still 2 round
+trips. Requires an ordering, and it must be a strict total order.
+
+**The lowering default was reversed by measurement.** I chose `row_number()` by
+argument: one index scan feeding a window beats a per-parent nested loop. Wrong.
+The window form reads **every child of every matched parent** and discards past
+n, so its cost tracks the *total child count*; `LATERAL`'s tracks the *rows
+returned*. 3.6× at one parent, 13× at ten, **32.8× at a hundred**. Both stay
+generated and exported — the gap narrows as n grows, and a default chosen by
+measurement needs something to have been measured against.
+
+**`= ANY` is fixed** — `pgxdrv.RegisterFastArrays`, 1,003 allocations → 1
+isolated, 1,021 → 11 end to end at 500 ids, **flat in id count**. Only `uuid[]`;
+`text[]` and `int8[]` still need it. `FlatArray` was the wrong fix and the
+negative result is why this was worth building.
+
+**Recursive traversal ships** with a mandatory depth bound and a path-array
+cycle guard. The guard **excludes** the repeating row rather than emitting it
+once — so a cycle puts no duplicate in the result set, which matters for a
+caller building a map by id.
+
+See [[write_path]], [[seam_and_codegen]].
