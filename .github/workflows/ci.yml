@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: raorm
+          POSTGRES_PASSWORD: raorm
+          POSTGRES_DB: raorm
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      RAORM_DSN: postgres://raorm:raorm@localhost:5432/raorm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: vet
+        run: go vet ./...
+
+      # AGENTS.md's rules are only real if something enforces them.
+      - name: boundaries
+        run: ./scripts/check/boundaries.sh
+
+      # -race catches the shape cache and binder pool; -shuffle catches tests
+      # that only pass in declaration order.
+      - name: test
+        run: go test -race -shuffle=on ./...
+
+      # Not a perf gate: it fails only if a benchmark stops compiling or
+      # errors, which is how benchmark rot usually starts.
+      - name: benchmarks compile and run
+        run: go test -run XXX -bench . -benchtime=1x ./bench/

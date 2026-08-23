@@ -1,0 +1,9 @@
+# Benchmark run output. RESULTS.md is curated and committed; last.txt is not.
+bench/last.txt
+
+# Local tool state
+graphify-out/
+
+# Go
+*.test
+*.out
