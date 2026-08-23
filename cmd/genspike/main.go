@@ -31,11 +31,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join("internal", "planspike", "gen")
+	dir := filepath.Join("internal", "planspike", "store")
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir:    dir,
-		Import: "github.com/gsoultan/raorm",
-		Only:   []string{"orgs", "users"},
+		Dir:     dir,
+		Import:  "github.com/gsoultan/raorm",
+		Only:    []string{"orgs", "users"},
+		Package: "store",
 	})
 	if err != nil {
 		return err

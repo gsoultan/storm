@@ -7,7 +7,7 @@ package compilefail
 
 import (
 	"github.com/gsoultan/raorm/internal/planspike"
-	"github.com/gsoultan/raorm/internal/planspike/gen/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/org"
 )
 
 func SubstitutePlanRow(r org.Row) planspike.OrgWithUsers {

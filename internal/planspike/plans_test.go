@@ -9,7 +9,7 @@ import (
 	"github.com/gsoultan/raorm"
 	"github.com/gsoultan/raorm/compile/pgddl"
 	"github.com/gsoultan/raorm/internal/planspike"
-	"github.com/gsoultan/raorm/internal/planspike/gen/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/org"
 	"github.com/gsoultan/raorm/internal/testmodel"
 	"github.com/gsoultan/raorm/runtime"
 	"github.com/gsoultan/raorm/runtime/pgxdrv"

@@ -43,7 +43,7 @@ they are called out here so the override is deliberate.
 | M1 | Model + schema IR + migration diff | ✅ | **PASSED 2026-08-24** — round-trip is a fixpoint; migrations converge on a live DB | *(cleared)* |
 | M2 | Query compiler + read codegen | ◐ | **read path shipped 2026-08-24** — end-to-end parity, 0 allocs, deterministic. Expressiveness (joins, CTEs, windows, ordering, pagination) outstanding → **P5** | *(cleared: codegen model is sound)* |
 | M3 | Relations without N+1 (named plans) | 4 | 2 round trips; unloaded read is a compile error; polymorphic integrity generated | plan types unusable → runtime-checked plan B |
-| M4 | Writes, unit of work, batching | 2 | 1,000 inserts = 1 `COPY`; FK order correct | — |
+| M4 | Writes, unit of work, batching | ✅ | **PASSED 2026-08-24** — 1,000 inserts = 1 `COPY`; 1,000 mixed = 1 batch; FK order correct with constraints *not* deferred | *(cleared)* |
 | M5 | Typed escape hatch | 2 | real analytical query, fully typed, no `any` | — |
 | M6 | First adopter: `anubis/authz` | 3 | authorize p95 does not regress | > 3 wks or p95 regression → freeze features |
 | M7 | Tooling gate + hardening | 2 | `explain`/`lint`/`verify` green in CI; fuzz clean | — |
@@ -84,7 +84,7 @@ findings from reading the code as it actually stands drove the reordering:
 | **P1a** | multi-table package generation, `raorm generate` ✅ | prereq | ~4 d |
 | **P1b** | relocate query lowering into `compile/pgsql` + CI check ✅ | R9 | ~2 d |
 | **P2** | plan-type ergonomics spike, hand-written ✅ | de-risks M3 | 3 d |
-| **P3** | writes, unit of work, batching ◐ | **M4** | 2 wk |
+| **P3** | writes, unit of work, batching ✅ | **M4** | 2 wk |
 | **P4** | relations, named plans, `= ANY` alloc fix | **M3** | 4 wk |
 | **P5** | joins, ordering, pagination, projections, CTEs, windows | **M2** rest | 4 wk+ |
 
@@ -193,7 +193,7 @@ refactor cannot quietly turn ADR-0003 back into a convention.
    parent limit times a declared per-parent bound, or required from the plan.
    Any constant is arbitrary.
 
-### P3 — writes = M4 (2 weeks) ◐ single-row path shipped 2026-08-24
+### P3 — writes = M4 ✅ PASSED (2026-08-24)
 
 Ahead of relations, against the numeric order, because: it is independent of the
 IR work, it carries no design risk, its exit gates are already written, and
@@ -219,17 +219,33 @@ instead of the bug being hunted. And a NOT NULL column with no default that the
 generator cannot bind made every INSERT fail at runtime; it is a generation
 error now, and it fired on the fixture immediately.
 
-**Still outstanding for M4:**
+**M4 complete (2026-08-24).** `COPY`, batching, `raorm.Unit` and upserts all
+landed on top of [[adr/0005-executor-port-width]], which grew the `Executor`
+port to four methods and left one of the five-method budget unspent.
 
-| | why it is not done |
-|---|---|
-| `COPY` for bulk insert | needs a third Executor method; the port is 2 today and AGENTS.md budgets 5 |
-| `pgx.Batch` for mixed statements | same port question |
-| `raorm.Unit`, FK-ordered flush | needs a table-agnostic staged-write interface **and** deferred id handles ([[API]] §8), which is the real design work |
-| `ON CONFLICT` upserts | straightforward once the above settles |
+Gates met, all four:
 
-The port change is the decision blocking all four, and it should be made
-deliberately rather than as a side effect of the first feature that needs it.
+- **1,000 inserts = one `COPY`** — exactly 1 round trip, re-read confirms 1,000
+- **1,000 mixed statements = one batch** — exactly 1 round trip, 1,000 affected
+- **a graph writes correctly with constraints NOT deferred** — the child is
+  staged *first*, and the test asserts against `pg_constraint` that the foreign
+  keys are not deferrable, so the database cannot forgive a mistake and let the
+  gate pass without ordering anything
+- **dirty set: 0 allocations**, and the bulk row source does not scale
+  allocations with row count
+
+**No deferred id handles, and none needed.** [[API]] §8 sketched them — insert a
+parent, get a placeholder, use it as a child's FK before the parent exists.
+`raorm.Model`'s id is a **client-generated UUID**, so the parent's key is known
+*before* the insert. Handles are only unavoidable when the database assigns the
+key, which is the sequence-id model raorm does not use.
+
+**Foreign-key cycles are a generation error** naming the cycle. A mutual
+reference has no write order that satisfies both, and the fix is a modelling
+decision (make one side nullable, write it in two steps) rather than something
+a generator should paper over by deferring a constraint. Self-references are
+not cycles: they order *rows*, not tables, and treating them as cycles would
+make every hierarchy unwritable.
 
 ### P4 — relations = M3 (4 weeks)
 

@@ -24,8 +24,8 @@ package planspike
 import (
 	"context"
 
-	"github.com/gsoultan/raorm/internal/planspike/gen/org"
-	"github.com/gsoultan/raorm/internal/planspike/gen/user"
+	"github.com/gsoultan/raorm/internal/planspike/store/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/user"
 	"github.com/gsoultan/raorm/runtime"
 )
 

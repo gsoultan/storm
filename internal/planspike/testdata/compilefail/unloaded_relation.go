@@ -7,7 +7,7 @@ package compilefail
 import (
 	"context"
 
-	"github.com/gsoultan/raorm/internal/planspike/gen/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/org"
 	"github.com/gsoultan/raorm/runtime"
 )
 

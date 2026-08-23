@@ -154,3 +154,37 @@ func TestPackage_RequiresImportPath(t *testing.T) {
 		t.Fatal("generating without an import path must fail")
 	}
 }
+
+// A mutual foreign-key reference has no write order that satisfies both, and
+// the generator must say so rather than emitting an arbitrary one.
+func TestFlushOrder_CycleIsAnError(t *testing.T) {
+	s := fixtureSchema(t)
+	a := &schema.Table{Name: "cyc_a", PrimaryKey: []string{"id"}}
+	b := &schema.Table{Name: "cyc_b", PrimaryKey: []string{"id"}}
+	a.ForeignKeys = []*schema.ForeignKey{{RefTable: "cyc_b"}}
+	b.ForeignKeys = []*schema.ForeignKey{{RefTable: "cyc_a"}}
+
+	s2 := *s
+	s2.Tables = append(append([]*schema.Table{}, s.Tables...), a, b)
+
+	_, err := codegen.FlushOrder(&s2)
+	if err == nil {
+		t.Fatal("a foreign-key cycle must be a generation error")
+	}
+	if !strings.Contains(err.Error(), "cyc_a") || !strings.Contains(err.Error(), "cyc_b") {
+		t.Errorf("the error must name the cycle, got: %v", err)
+	}
+}
+
+// A self-reference orders rows, not tables. Treating it as a cycle would make
+// every hierarchy unwritable.
+func TestFlushOrder_SelfReferenceIsNotACycle(t *testing.T) {
+	s := fixtureSchema(t)
+	rank, err := codegen.FlushOrder(s)
+	if err != nil {
+		t.Fatalf("the fixture has a self-referencing orgs table: %v", err)
+	}
+	if _, ok := rank["orgs"]; !ok {
+		t.Error("orgs is missing from the flush order")
+	}
+}

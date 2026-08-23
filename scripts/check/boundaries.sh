@@ -51,9 +51,9 @@ before=$(shasum -a 256 bench/genuser/user.gen.go 2>/dev/null | cut -d' ' -f1)
 go run ./cmd/genbench >/dev/null 2>&1
 stale "$before" "$(shasum -a 256 bench/genuser/user.gen.go 2>/dev/null | cut -d' ' -f1)" "go run ./cmd/genbench"
 
-before=$(cat internal/planspike/gen/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+before=$(cat internal/planspike/store/*.gen.go internal/planspike/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
 go run ./cmd/genspike >/dev/null 2>&1
-stale "$before" "$(cat internal/planspike/gen/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./cmd/genspike"
+stale "$before" "$(cat internal/planspike/store/*.gen.go internal/planspike/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./cmd/genspike"
 
 echo "== gofmt =="
 if [ -n "$(gofmt -l . 2>/dev/null)" ]; then

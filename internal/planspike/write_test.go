@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/planspike/gen/user"
+	"github.com/gsoultan/raorm/internal/planspike/store/user"
 	"github.com/gsoultan/raorm/runtime"
 )
 
