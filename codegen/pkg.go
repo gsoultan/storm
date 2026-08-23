@@ -22,9 +22,9 @@ type PackageOptions struct {
 	// in the schema.
 	Only []string
 
-	// OrderBy overrides the default ordering, keyed by table name. A table
-	// absent from the map orders by its primary key.
-	OrderBy map[string]string
+	// DefaultOrder overrides the default ordering per table. A table absent
+	// from the map orders by its primary key.
+	DefaultOrder map[string][]OrderTerm
 
 	// PackageImport is the import path of the generated tree, e.g.
 	// "example.com/app/internal/store". Required when Package is set.
@@ -90,10 +90,10 @@ func Package(s *schema.Schema, o PackageOptions) (map[string][]byte, error) {
 		seen[pkg] = name
 
 		src, err := File(s, Options{
-			Package: pkg,
-			Import:  o.Import,
-			Table:   name,
-			OrderBy: o.OrderBy[name],
+			Package:      pkg,
+			Import:       o.Import,
+			Table:        name,
+			DefaultOrder: o.DefaultOrder[name],
 		})
 		if err != nil {
 			return nil, err

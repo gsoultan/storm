@@ -62,7 +62,14 @@ type Query struct {
 	anyStr []string
 	hasAny bool
 
-	limit int64
+	// Order terms live in their own buffer and are appended to the stream
+	// after the predicate tree. Sharing one buffer would let a Where after
+	// an Order interleave the two, and the stream's order is its meaning.
+	otoks [4]runtime.Tok
+	no    uint8
+
+	limit  int64
+	offset int64
 	// over records that the query outgrew its fixed buffers. Terminals
 	// return it as an error rather than silently dropping a predicate.
 	over bool
@@ -73,6 +80,35 @@ func New() Query { return Query{limit: 1000} }
 
 // Limit caps the result set.
 func (q Query) Limit(n int64) Query { q.limit = n; return q }
+
+// Offset skips rows.
+//
+// It is here because callers expect it, not because it is a good idea: the
+// database still walks and discards every skipped row, so page 5,000 costs
+// 5,000 pages of work, and a row inserted mid-scroll shifts every later
+// page. Order by a unique key and filter past the last one you saw instead.
+func (q Query) Offset(n int64) Query { q.offset = n; return q }
+
+// Sort is one ORDER BY term, produced by a column handle: Email.Asc().
+type Sort runtime.Tok
+
+// Order replaces the ordering. Passing none restores the default.
+//
+// An ordering is part of a statement's identity, not a decoration on it:
+// two queries differing only in ORDER BY are different statements, so the
+// terms join the token stream that keys the compiled-statement cache.
+func (q Query) Order(ts ...Sort) Query {
+	q.no = 0
+	for _, t := range ts {
+		if int(q.no) >= len(q.otoks) {
+			q.over = true
+			return q
+		}
+		q.otoks[q.no] = runtime.Tok(t)
+		q.no++
+	}
+	return q
+}
 
 // Err reports a query that outgrew its buffers.
 func (q Query) Err() error {
@@ -98,13 +134,27 @@ func (q *Query) push(t runtime.Tok) {
 	q.nt++
 }
 
-// stream returns the token stream with top-level conjuncts ANDed.
-func (q Query) stream(buf *[17]runtime.Tok) []runtime.Tok {
+// preds returns the predicate stream with top-level conjuncts ANDed.
+// A count uses this: ordering a scalar is wasted work, and including the
+// terms would compile a second statement per ordering for no difference.
+func (q Query) preds(buf *[21]runtime.Tok) []runtime.Tok {
 	n := copy(buf[:], q.toks[:q.nt])
 	if q.top > 1 {
 		buf[n] = runtime.MakeGroup(runtime.KAnd, uint32(q.top))
 		n++
 	}
+	return buf[:n]
+}
+
+// stream is the predicates followed by the ordering — the whole statement
+// key. Order tokens go last so a splicer can find the boundary by kind.
+func (q Query) stream(buf *[21]runtime.Tok) []runtime.Tok {
+	n := len(q.preds(buf))
+	if q.no == 0 {
+		n += copy(buf[n:], defaultOrder[:])
+		return buf[:n]
+	}
+	n += copy(buf[n:], q.otoks[:q.no])
 	return buf[:n]
 }
 
@@ -147,12 +197,30 @@ var (
 // UUIDCol addresses a uuid column.
 type UUIDCol struct{ c uint8 }
 
+func (h UUIDCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h UUIDCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h UUIDCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h UUIDCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
 
 // TextCol addresses a text column.
 type TextCol struct{ c uint8 }
+
+func (h TextCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h TextCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h TextCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h TextCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
 
 func (h TextCol) Eq(v string) Pred    { return Pred{col: h.c, op: opEq, str: v} }
 func (h TextCol) NotEq(v string) Pred { return Pred{col: h.c, op: opNotEq, str: v} }
@@ -166,6 +234,15 @@ func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: 
 // NullInt32Col addresses a int4 column.
 type NullInt32Col struct{ c uint8 }
 
+func (h NullInt32Col) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h NullInt32Col) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h NullInt32Col) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h NullInt32Col) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
 func (h NullInt32Col) Eq(v int32) Pred    { return Pred{col: h.c, op: opEq, num: int64(v)} }
 func (h NullInt32Col) NotEq(v int32) Pred { return Pred{col: h.c, op: opNotEq, num: int64(v)} }
 func (h NullInt32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int64(v)} }
@@ -177,6 +254,15 @@ func (h NullInt32Col) IsNotNull() Pred    { return Pred{col: h.c, op: opIsNotNul
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
+
+func (h TimeCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h TimeCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h TimeCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h TimeCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
 
 func (h TimeCol) Eq(v time.Time) Pred    { return Pred{col: h.c, op: opEq, tim: v} }
 func (h TimeCol) NotEq(v time.Time) Pred { return Pred{col: h.c, op: opNotEq, tim: v} }
@@ -365,8 +451,72 @@ func (q Query) UpdatedAtLt(v time.Time) Query    { return q.Where(UpdatedAt.Lt(v
 func (q Query) UpdatedAtLte(v time.Time) Query   { return q.Where(UpdatedAt.Lte(v)) }
 
 const selectPrefix = `SELECT "id", "org_id", "email", "name", "age", "status", "created_at", "updated_at" FROM "users"`
-const orderSuffix = ` ORDER BY "created_at" DESC, "id" LIMIT $`
 const countPrefix = `SELECT count(*) FROM "users"`
+const limitSuffix = ` LIMIT $`
+const limitOffsetSuffix = ` LIMIT $ OFFSET $`
+
+var orderPunct = runtime.Order{Lead: " ORDER BY ", Sep: ", "}
+
+// orderTable is every ordering this table can express, lowered at build
+// time. ORDER BY is chosen per query, so it cannot be a constant — but it
+// still must not be built from strings at run time.
+var orderTable = [nCols][4]string{
+	{ // id
+		"\"id\"",
+		"\"id\" DESC",
+		"\"id\" ASC NULLS FIRST",
+		"\"id\" DESC NULLS LAST",
+	},
+	{ // org_id
+		"\"org_id\"",
+		"\"org_id\" DESC",
+		"\"org_id\" ASC NULLS FIRST",
+		"\"org_id\" DESC NULLS LAST",
+	},
+	{ // email
+		"\"email\"",
+		"\"email\" DESC",
+		"\"email\" ASC NULLS FIRST",
+		"\"email\" DESC NULLS LAST",
+	},
+	{ // name
+		"\"name\"",
+		"\"name\" DESC",
+		"\"name\" ASC NULLS FIRST",
+		"\"name\" DESC NULLS LAST",
+	},
+	{ // age
+		"\"age\"",
+		"\"age\" DESC",
+		"\"age\" ASC NULLS FIRST",
+		"\"age\" DESC NULLS LAST",
+	},
+	{ // status
+		"\"status\"",
+		"\"status\" DESC",
+		"\"status\" ASC NULLS FIRST",
+		"\"status\" DESC NULLS LAST",
+	},
+	{ // created_at
+		"\"created_at\"",
+		"\"created_at\" DESC",
+		"\"created_at\" ASC NULLS FIRST",
+		"\"created_at\" DESC NULLS LAST",
+	},
+	{ // updated_at
+		"\"updated_at\"",
+		"\"updated_at\" DESC",
+		"\"updated_at\" ASC NULLS FIRST",
+		"\"updated_at\" DESC NULLS LAST",
+	},
+}
+
+func orderOf(dir, col uint32) string {
+	if col >= nCols || int(dir) >= len(orderTable[0]) {
+		return ""
+	}
+	return orderTable[col][dir]
+}
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
@@ -484,40 +634,60 @@ func fragOf(op, col uint32) runtime.Frag {
 	return fragTable[col][op]
 }
 
+// defaultOrder is what a query with no Order() uses.
+//
+// It is never empty. A read without ORDER BY has no defined order, so
+// paging one is a bug waiting for a plan change to expose it — and the
+// primary key is the cheapest total order available.
+var defaultOrder = [2]runtime.Tok{
+	runtime.MakeOrder(runtime.Desc, 6), // created_at
+	runtime.MakeOrder(runtime.Asc, 0),  // id
+}
+
 var (
-	cache      = runtime.NewTreeCache()
-	countCache = runtime.NewTreeCache()
+	cache       = runtime.NewTreeCache()
+	offsetCache = runtime.NewTreeCache()
+	countCache  = runtime.NewTreeCache()
 )
 
 // Shapes reports how many distinct query structures have compiled.
 // `raorm lint` uses it to catch a builder minting a statement per request.
 func Shapes() int { return cache.Shapes() }
 
-func stmtFor(toks []runtime.Tok) *runtime.Stmt {
-	if st := cache.Get(toks); st != nil {
+// stmtFor compiles a read. LIMIT and LIMIT/OFFSET are different
+// statements with different placeholder counts, so they get different
+// caches rather than a sentinel token muddying the key.
+func stmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
+	c, suffix := cache, limitSuffix
+	if withOffset {
+		c, suffix = offsetCache, limitOffsetSuffix
+	}
+	if st := c.Get(toks); st != nil {
 		return st
 	}
-	return cache.Put(toks, runtime.SpliceTree(selectPrefix, toks, fragOf, orderSuffix, 1))
+	return c.Put(toks, runtime.SpliceTree(selectPrefix, toks, fragOf, orderOf, orderPunct, suffix))
 }
 
 func countStmtFor(toks []runtime.Tok) *runtime.Stmt {
 	if st := countCache.Get(toks); st != nil {
 		return st
 	}
-	return countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, fragOf, "", 0))
+	// A count ignores ordering as well as LIMIT: ordering a scalar is
+	// wasted work, and the token stream is trimmed before it gets here.
+	return countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, fragOf, orderOf, orderPunct, ""))
 }
 
 // Shape is a fingerprint of this query's structure — equal shapes share a
 // compiled statement. Values do not contribute, which is the point.
 func (q Query) Shape() uint64 {
-	var buf [17]runtime.Tok
+	var buf [21]runtime.Tok
 	return runtime.HashToks(q.stream(&buf))
 }
 
 // SQL returns the compiled text for this query's structure.
 func (q Query) SQL() string {
-	var buf [17]runtime.Tok
-	return stmtFor(q.stream(&buf)).SQL
+	var buf [21]runtime.Tok
+	return stmtFor(q.stream(&buf), q.offset > 0).SQL
 }
 
 // scan decodes one row straight from the wire. No reflect, no `any`, no
@@ -543,6 +713,7 @@ type binder struct {
 	anyRaw [][16]byte
 	anyStr []string
 	limit  int64
+	offset int64
 }
 
 var binders = runtime.NewPool(func() *binder {
@@ -615,6 +786,13 @@ func (q Query) bind(b *binder) []any {
 	}
 	b.limit = q.limit
 	v = append(v, &b.limit)
+	// LIMIT and OFFSET are bound last, in the order the suffix spells
+	// them. An offset of zero is absent from the statement, so binding it
+	// would leave an argument nothing consumes.
+	if q.offset > 0 {
+		b.offset = q.offset
+		v = append(v, &b.offset)
+	}
 	b.vals = v
 	return v
 }
@@ -630,8 +808,8 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	if err := q.Err(); err != nil {
 		return dst, err
 	}
-	var buf [17]runtime.Tok
-	st := stmtFor(q.stream(&buf))
+	var buf [21]runtime.Tok
+	st := stmtFor(q.stream(&buf), q.offset > 0)
 	sl.Reserve(st.SlabHint())
 	b := binders.Get()
 	defer binders.Put(b)
@@ -665,8 +843,8 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 	if err := q.Err(); err != nil {
 		return 0, err
 	}
-	var buf [17]runtime.Tok
-	st := countStmtFor(q.stream(&buf))
+	var buf [21]runtime.Tok
+	st := countStmtFor(q.preds(&buf))
 	b := binders.Get()
 	defer binders.Put(b)
 	args := q.bind(b)
@@ -690,8 +868,8 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 
 // Prepare resolves the structure and binds arguments without executing.
 func (q Query) Prepare(b *Binder) (string, []any) {
-	var buf [17]runtime.Tok
-	return stmtFor(q.stream(&buf)).SQL, q.bind(b)
+	var buf [21]runtime.Tok
+	return stmtFor(q.stream(&buf), q.offset > 0).SQL, q.bind(b)
 }
 
 // insertSQL does not vary: the column list is fixed by the table, so

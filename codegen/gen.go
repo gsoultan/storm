@@ -22,7 +22,21 @@ type Options struct {
 	Package string // package name for the generated file
 	Import  string // module path of the runtime, e.g. "github.com/gsoultan/raorm"
 	Table   string // which table to emit
-	OrderBy string // ORDER BY clause; defaults to the primary key
+
+	// DefaultOrder is the ordering a query with no Order() gets; empty means
+	// the primary key.
+	//
+	// Structured, not a raw SQL string: ordering is chosen per query now, so
+	// the terms have to become tokens, and a string cannot be one. A column
+	// that is not filterable is a generation error rather than SQL that fails
+	// on first use.
+	DefaultOrder []OrderTerm
+}
+
+// OrderTerm is one default ordering term.
+type OrderTerm struct {
+	Column string
+	Desc   bool
 }
 
 // File renders one table's package.
@@ -211,12 +225,30 @@ func (g *gen) chained() {
 
 func (g *gen) compile() {
 	g.p("const selectPrefix = `%s`", pgsql.SelectPrefix(g.t.Name, readableCols(g.t)))
-	ob := g.o.OrderBy
-	if ob == "" {
-		ob = pgsql.DefaultOrderBy(g.t.PrimaryKey, g.t.Columns[0].Name)
-	}
-	g.p("const orderSuffix = `%s`", pgsql.OrderSuffix(ob))
 	g.p("const countPrefix = `%s`", pgsql.CountPrefix(g.t.Name))
+	g.p("const limitSuffix = `%s`", pgsql.LimitOffsetSuffix(false))
+	g.p("const limitOffsetSuffix = `%s`", pgsql.LimitOffsetSuffix(true))
+	g.p("var orderPunct = runtime.Order{Lead: %q, Sep: %q}", pgsql.OrderLead, pgsql.OrderSep)
+	g.p("")
+	g.p("// orderTable is every ordering this table can express, lowered at build")
+	g.p("// time. ORDER BY is chosen per query, so it cannot be a constant — but it")
+	g.p("// still must not be built from strings at run time.")
+	g.p("var orderTable = [nCols][%d]string{", pgsql.NDirections)
+	for _, c := range g.cols {
+		g.p("\t{ // %s", c.Name())
+		for d := 0; d < pgsql.NDirections; d++ {
+			g.p("\t\t%q,", pgsql.OrderTerm(d, pgsql.Ident(c.Name())))
+		}
+		g.p("\t},")
+	}
+	g.p("}")
+	g.p("")
+	g.p("func orderOf(dir, col uint32) string {")
+	g.p("\tif col >= nCols || int(dir) >= len(orderTable[0]) {")
+	g.p("\t\treturn \"\"")
+	g.p("\t}")
+	g.p("\treturn orderTable[col][dir]")
+	g.p("}")
 	g.p("")
 	g.p("// fragTable is every predicate this table can produce, lowered at build")
 	g.p("// time. Runtime splices; it never formats.")
@@ -248,8 +280,20 @@ func (g *gen) compile() {
 	g.p("\treturn fragTable[col][op]")
 	g.p("}")
 	g.p("")
+	g.p("// defaultOrder is what a query with no Order() uses.")
+	g.p("//")
+	g.p("// It is never empty. A read without ORDER BY has no defined order, so")
+	g.p("// paging one is a bug waiting for a plan change to expose it — and the")
+	g.p("// primary key is the cheapest total order available.")
+	g.p("var defaultOrder = [%d]runtime.Tok{", len(g.defaultOrder()))
+	for _, t := range g.defaultOrder() {
+		g.p("\truntime.MakeOrder(%s, %d), // %s", t.dirConst, t.col, t.comment)
+	}
+	g.p("}")
+	g.p("")
 	g.p("var (")
 	g.p("\tcache      = runtime.NewTreeCache()")
+	g.p("\toffsetCache = runtime.NewTreeCache()")
 	g.p("\tcountCache = runtime.NewTreeCache()")
 	g.p(")")
 	g.p("")
@@ -257,31 +301,40 @@ func (g *gen) compile() {
 	g.p("// `raorm lint` uses it to catch a builder minting a statement per request.")
 	g.p("func Shapes() int { return cache.Shapes() }")
 	g.p("")
-	g.p("func stmtFor(toks []runtime.Tok) *runtime.Stmt {")
-	g.p("\tif st := cache.Get(toks); st != nil {")
+	g.p("// stmtFor compiles a read. LIMIT and LIMIT/OFFSET are different")
+	g.p("// statements with different placeholder counts, so they get different")
+	g.p("// caches rather than a sentinel token muddying the key.")
+	g.p("func stmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {")
+	g.p("\tc, suffix := cache, limitSuffix")
+	g.p("\tif withOffset {")
+	g.p("\t\tc, suffix = offsetCache, limitOffsetSuffix")
+	g.p("\t}")
+	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\treturn cache.Put(toks, runtime.SpliceTree(selectPrefix, toks, fragOf, orderSuffix, 1))")
+	g.p("\treturn c.Put(toks, runtime.SpliceTree(selectPrefix, toks, fragOf, orderOf, orderPunct, suffix))")
 	g.p("}")
 	g.p("")
 	g.p("func countStmtFor(toks []runtime.Tok) *runtime.Stmt {")
 	g.p("\tif st := countCache.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\treturn countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, fragOf, \"\", 0))")
+	g.p("\t// A count ignores ordering as well as LIMIT: ordering a scalar is")
+	g.p("\t// wasted work, and the token stream is trimmed before it gets here.")
+	g.p("\treturn countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, fragOf, orderOf, orderPunct, \"\"))")
 	g.p("}")
 	g.p("")
 	g.p("// Shape is a fingerprint of this query's structure — equal shapes share a")
 	g.p("// compiled statement. Values do not contribute, which is the point.")
 	g.p("func (q Query) Shape() uint64 {")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+1)
+	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
 	g.p("\treturn runtime.HashToks(q.stream(&buf))")
 	g.p("}")
 	g.p("")
 	g.p("// SQL returns the compiled text for this query's structure.")
 	g.p("func (q Query) SQL() string {")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+1)
-	g.p("\treturn stmtFor(q.stream(&buf)).SQL")
+	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\treturn stmtFor(q.stream(&buf), q.offset > 0).SQL")
 	g.p("}")
 	g.p("")
 }
@@ -327,8 +380,8 @@ func (g *gen) terminals() {
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+1)
-	g.p("\tst := stmtFor(q.stream(&buf))")
+	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tst := stmtFor(q.stream(&buf), q.offset > 0)")
 	g.p("\tsl.Reserve(st.SlabHint())")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer binders.Put(b)")
@@ -362,8 +415,8 @@ func (g *gen) terminals() {
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn 0, err")
 	g.p("\t}")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+1)
-	g.p("\tst := countStmtFor(q.stream(&buf))")
+	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tst := countStmtFor(q.preds(&buf))")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer binders.Put(b)")
 	g.p("\targs := q.bind(b)")
@@ -387,8 +440,8 @@ func (g *gen) terminals() {
 	g.p("")
 	g.p("// Prepare resolves the structure and binds arguments without executing.")
 	g.p("func (q Query) Prepare(b *Binder) (string, []any) {")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+1)
-	g.p("\treturn stmtFor(q.stream(&buf)).SQL, q.bind(b)")
+	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\treturn stmtFor(q.stream(&buf), q.offset > 0).SQL, q.bind(b)")
 	g.p("}")
 	g.p("")
 }
@@ -425,3 +478,59 @@ func exportName(col string) string {
 }
 
 var _ = sort.Strings
+
+// orderTerm is one default ORDER BY term, resolved to the ids generated code
+// uses.
+type orderTerm struct {
+	col      int
+	dirConst string
+	comment  string
+}
+
+// defaultOrder is the ordering a query with no Order() gets.
+//
+// It is never empty: a read without ORDER BY has no defined order, so paging
+// one is a bug waiting for a plan change to expose it. The primary key is the
+// cheapest total order available, and Options.DefaultOrder overrides it.
+func (g *gen) defaultOrder() []orderTerm {
+	if len(g.o.DefaultOrder) > 0 {
+		var out []orderTerm
+		for _, t := range g.o.DefaultOrder {
+			i := g.colIndex(t.Column)
+			if i < 0 {
+				g.err = fmt.Errorf(
+					"codegen: table %s: default order names column %s, which is not filterable",
+					g.t.Name, t.Column)
+				return []orderTerm{{col: 0, dirConst: "runtime.Asc", comment: "invalid"}}
+			}
+			out = append(out, orderTerm{col: i, dirConst: dirConst(t.Desc), comment: t.Column})
+		}
+		return out
+	}
+	var out []orderTerm
+	for _, k := range g.t.PrimaryKey {
+		if i := g.colIndex(k); i >= 0 {
+			out = append(out, orderTerm{col: i, dirConst: "runtime.Asc", comment: k})
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, orderTerm{col: 0, dirConst: "runtime.Asc", comment: g.cols[0].Name()})
+	}
+	return out
+}
+
+func dirConst(desc bool) string {
+	if desc {
+		return "runtime.Desc"
+	}
+	return "runtime.Asc"
+}
+
+func (g *gen) colIndex(name string) int {
+	for i, c := range g.cols {
+		if c.Name() == name {
+			return i
+		}
+	}
+	return -1
+}

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -26,6 +27,20 @@ const (
 	KAnd
 	KOr
 	KNot
+
+	// KOrder is one ORDER BY term. Order tokens are appended AFTER the
+	// predicate tree, so the same stream is the key for both — an ordering is
+	// part of a statement's identity exactly as a predicate is, and two queries
+	// that differ only in ordering must not share a compiled statement.
+	KOrder
+)
+
+// Sort directions, carried in an order token's operator field.
+const (
+	Asc uint32 = iota
+	Desc
+	AscNullsFirst
+	DescNullsLast
 )
 
 // MaxCols is how many columns a token can address: Col is ten bits wide.
@@ -35,6 +50,9 @@ const MaxCols = 1 << 10
 
 // MakeLeaf builds a predicate token.
 func MakeLeaf(op, col uint32) Tok { return Tok(KLeaf<<28 | op<<22 | col<<12) }
+
+// MakeOrder builds an ORDER BY term.
+func MakeOrder(dir, col uint32) Tok { return Tok(KOrder<<28 | dir<<22 | col<<12) }
 
 // MakeGroup builds an AND/OR/NOT token over the previous arity tokens.
 func MakeGroup(kind, arity uint32) Tok { return Tok(kind<<28 | arity&0xfff) }
@@ -150,9 +168,31 @@ type FragFn func(op, col uint32) Frag
 // SpliceTree renders a postfix token stream to SQL. Cold path: paid once per
 // distinct structure for the life of the process, so the string building here
 // costs nothing that matters.
-func SpliceTree(prefix string, toks []Tok, frag FragFn, suffix string, trailingArgs int) *Stmt {
+// OrderFn returns the SQL for one ORDER BY term. Generated code supplies it
+// from a table built by the back end at generate time.
+type OrderFn func(dir, col uint32) string
+
+// Order is the punctuation of an ORDER BY clause, chosen by the back end.
+type Order struct{ Lead, Sep string }
+
+// SpliceTree assembles a read statement.
+//
+// The token stream carries predicates first and ORDER BY terms after, and both
+// are part of the key: two queries differing only in ordering are different
+// statements, and sharing one would serve the wrong rows in the wrong order.
+func SpliceTree(prefix string, toks []Tok, frag FragFn, ord2 OrderFn, ob Order, suffix string) *Stmt {
 	var stack []string
 	ord := 0
+
+	orderAt := len(toks)
+	for i, t := range toks {
+		if t.Kind() == KOrder {
+			orderAt = i
+			break
+		}
+	}
+	orderToks := toks[orderAt:]
+	toks = toks[:orderAt]
 
 	for _, t := range toks {
 		switch t.Kind() {
@@ -194,20 +234,40 @@ func SpliceTree(prefix string, toks []Tok, frag FragFn, suffix string, trailingA
 	if len(stack) == 1 && stack[0] != "" {
 		sql += " WHERE " + unwrapOuter(stack[0])
 	}
-	sql += suffix
-	for i := 0; i < trailingArgs; i++ {
-		ord++
-		sql += itoa(ord)
-		if i+1 < trailingArgs {
-			sql += ", $"
+	for i, t := range orderToks {
+		if i == 0 {
+			sql += ob.Lead
+		} else {
+			sql += ob.Sep
+		}
+		sql += ord2(t.Op(), t.Col())
+	}
+	// Number every placeholder the suffix carries, in order.
+	//
+	// The previous version took a trailingArgs count, appended that many
+	// ordinals after the suffix and joined them with ", $". That spells
+	// `LIMIT $1` correctly and spells `LIMIT $ OFFSET $1, $2` for anything
+	// else. The suffix already says how many placeholders it has, so the count
+	// was a second source of truth that could disagree with it — and did.
+	var b strings.Builder
+	b.Grow(len(sql) + len(suffix) + 8)
+	b.WriteString(sql)
+	for i := 0; i < len(suffix); i++ {
+		b.WriteByte(suffix[i])
+		if suffix[i] == placeholderSigil {
+			ord++
+			b.WriteString(itoa(ord))
 		}
 	}
-	return &Stmt{SQL: sql, NArg: ord}
+	return &Stmt{SQL: b.String(), NArg: ord}
 }
 
 // takesArg reports whether a fragment ends in a placeholder needing an ordinal.
 // IS NULL and IS NOT NULL do not.
 //
+// placeholderSigil marks where an ordinal goes. See the seam note below.
+const placeholderSigil = '$'
+
 // KNOWN SEAM GAP, deliberate. This assumes the back end's placeholder is `$`
 // followed by an ordinal, which is Postgres and MSSQL but not MySQL's bare `?`
 // or Oracle's `:name`. P1b moved the read path's SQL text into compile/pgsql

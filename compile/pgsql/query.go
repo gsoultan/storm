@@ -97,3 +97,65 @@ func Frag(op, ident string) (a, b string, ok bool) {
 	}
 	return ident + f.a, f.b, true
 }
+
+// Ordering.
+//
+// ORDER BY is chosen at query time, not at generate time, so its text is built
+// from a table the back end fills here rather than baked into a constant. Two
+// queries differing only in ordering are different statements.
+
+// OrderLead and OrderSep punctuate the clause.
+const (
+	OrderLead = " ORDER BY "
+	OrderSep  = ", "
+)
+
+// Directions, in the order runtime's constants number them.
+const (
+	dirAsc = iota
+	dirDesc
+	dirAscNullsFirst
+	dirDescNullsLast
+)
+
+// OrderTerm lowers one ordering term.
+//
+// Defaults are not spelled out. ASC is Postgres's default direction, and NULLs
+// go last for ASC and first for DESC, so writing either again changes nothing
+// and makes the statement harder to read against a hand-written one. The other
+// two NULL combinations ARE spelled out: they are what a keyset paginator
+// needs, and leaving them implicit would silently change the order.
+//
+// This is not only cosmetic. bench asserts that generated SQL is byte-identical
+// to the hand-written M0 spike, so that the two are compared on one query plan
+// and not two — and a stray "ASC" is enough to break that.
+func OrderTerm(dir int, ident string) string {
+	switch dir {
+	case dirDesc:
+		return ident + " DESC"
+	case dirAscNullsFirst:
+		return ident + " ASC NULLS FIRST"
+	case dirDescNullsLast:
+		return ident + " DESC NULLS LAST"
+	default:
+		return ident
+	}
+}
+
+// NDirections is how many orderings OrderTerm distinguishes.
+const NDirections = 4
+
+// LimitOffsetSuffix is the tail of a paged read. Both take placeholders the
+// runtime numbers.
+//
+// OFFSET is generated because callers expect it, not because it is a good idea:
+// the database still walks and discards every skipped row, so page 5,000 costs
+// 5,000 pages of work. Keyset pagination is the answer, and `raorm lint` is
+// where a large constant offset should get flagged.
+func LimitOffsetSuffix(withOffset bool) string {
+	s := " LIMIT " + Placeholder
+	if withOffset {
+		s += " OFFSET " + Placeholder
+	}
+	return s
+}

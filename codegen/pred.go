@@ -81,6 +81,23 @@ func predCtor(c colInfo, op string, i int) string {
 // colHandles emits one typed handle per column. The handle's *type* decides
 // which predicates exist, so an ordering comparison on a uuid or a LIKE on an
 // integer is a compile error rather than a runtime surprise.
+// sortMethods emits Asc/Desc/AscNullsFirst/DescNullsLast on every column
+// handle. Every column is orderable, unlike predicates where the operator has
+// to suit the type.
+func (g *gen) sortMethods(typeName string, idx int) {
+	for _, m := range []struct{ name, dir string }{
+		{"Asc", "runtime.Asc"},
+		{"Desc", "runtime.Desc"},
+		{"AscNullsFirst", "runtime.AscNullsFirst"},
+		{"DescNullsLast", "runtime.DescNullsLast"},
+	} {
+		g.p("func (h %s) %s() Sort { return Sort(runtime.MakeOrder(%s, uint32(h.c))) }",
+			typeName, m.name, m.dir)
+	}
+	g.p("")
+	_ = idx
+}
+
 func (g *gen) colHandles() {
 	g.p("// b2i lets a bool ride in the numeric slot of a Pred.")
 	g.p("func b2i(b bool) int64 {")
@@ -110,6 +127,7 @@ func (g *gen) colHandles() {
 		g.p("// %s addresses a %s column.", ht, c.col.Type.SQL())
 		g.p("type %s struct{ c uint8 }", ht)
 		g.p("")
+		g.sortMethods(ht, i)
 		for _, op := range ops {
 			if !opApplies(op.name, c.kind, c.col) {
 				continue

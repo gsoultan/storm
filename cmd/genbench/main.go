@@ -22,7 +22,10 @@ func main() {
 		Table:   "users",
 		// Match the spike's statement exactly, so the comparison is of the
 		// generator and not of two different query plans.
-		OrderBy: `"created_at" DESC, "id"`,
+		DefaultOrder: []codegen.OrderTerm{
+			{Column: "created_at", Desc: true},
+			{Column: "id"},
+		},
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
