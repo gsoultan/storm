@@ -26,19 +26,19 @@ type Row struct {
 	UpdatedAt time.Time
 }
 
-// Operator ids. Four bits per column, packed into the shape key, so a
-// query's SQL identity is computed without hashing anything.
+// Operator ids. Argument-taking operators are numbered first, so the
+// bind loop tests `op-1 < opsWithArg` with one unsigned compare.
 const (
-	opEq        runtime.Shape = 1
-	opNotEq     runtime.Shape = 2
-	opGt        runtime.Shape = 3
-	opGte       runtime.Shape = 4
-	opLt        runtime.Shape = 5
-	opLte       runtime.Shape = 6
-	opLike      runtime.Shape = 7
-	opIn        runtime.Shape = 8
-	opIsNull    runtime.Shape = 9
-	opIsNotNull runtime.Shape = 10
+	opEq        runtime.Op = 1
+	opNotEq     runtime.Op = 2
+	opGt        runtime.Op = 3
+	opGte       runtime.Op = 4
+	opLt        runtime.Op = 5
+	opLte       runtime.Op = 6
+	opLike      runtime.Op = 7
+	opIn        runtime.Op = 8
+	opIsNull    runtime.Op = 9
+	opIsNotNull runtime.Op = 10
 )
 
 const nCols = 8
@@ -113,7 +113,7 @@ func (q Query) stream(buf *[17]runtime.Tok) []runtime.Tok {
 // assembled by Query into a token stream — see Where/Any/Not.
 type Pred struct {
 	col    uint8
-	op     runtime.Shape
+	op     runtime.Op
 	num    int64
 	str    string
 	raw    [16]byte
@@ -565,7 +565,7 @@ func (q Query) bind(b *binder) []any {
 		if t.Kind() != runtime.KLeaf {
 			continue
 		}
-		switch runtime.Shape(t.Op()) {
+		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
 		case opIn:

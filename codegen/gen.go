@@ -147,11 +147,11 @@ var ops = []struct {
 const opNone = 0 // nibble 0 means "no predicate on this column"
 
 func (g *gen) opConstants() {
-	g.p("// Operator ids. Four bits per column, packed into the shape key, so a")
-	g.p("// query's SQL identity is computed without hashing anything.")
+	g.p("// Operator ids. Argument-taking operators are numbered first, so the")
+	g.p("// bind loop tests `op-1 < opsWithArg` with one unsigned compare.")
 	g.p("const (")
 	for i, op := range ops {
-		g.p("\top%s runtime.Shape = %d", op.name, i+1)
+		g.p("\top%s runtime.Op = %d", op.name, i+1)
 	}
 	g.p(")")
 	g.p("")
@@ -159,49 +159,6 @@ func (g *gen) opConstants() {
 	g.p("")
 }
 
-func (g *gen) queryType() {
-	g.p("// Query is a value type: composing a query allocates nothing, because")
-	g.p("// every predicate lives in a fixed field and the shape lives in a uint64.")
-	g.p("type Query struct {")
-	g.p("\t// shape is four bits of operator per column — it is both the")
-	g.p("\t// compiled-statement key and the predicate set, so nothing is")
-	g.p("\t// recomputed and nothing is stored twice.")
-	g.p("\tshape runtime.Shape")
-	for _, c := range g.cols {
-		g.p("\tv_%s %s", c.Name(), c.goBase)
-	}
-	for _, c := range g.cols {
-		if inApplies(c) {
-			g.p("\ta_%s []%s", c.Name(), c.goBase)
-		}
-	}
-	g.p("\tlimit int64")
-	g.p("}")
-	g.p("")
-	g.p("// New starts a query with a sane default limit.")
-	g.p("func New() Query { return Query{limit: 1000} }")
-	g.p("")
-	g.p("// Limit caps the result set.")
-	g.p("func (q Query) Limit(n int64) Query { q.limit = n; return q }")
-	g.p("")
-	g.p("// Shape is this query's compiled-statement key: a field read, not a loop.")
-	g.p("func (q Query) Shape() runtime.Shape { return q.shape }")
-	g.p("")
-	g.p("// opAt reads one column's operator nibble. A package function taking the")
-	g.p("// shape, not a method on Query: a value receiver would copy the whole")
-	g.p("// struct on every call, which measured ~20ns across a wide table.")
-	g.p("func opAt(s runtime.Shape, i uint) runtime.Shape { return s >> (i * 4) & 0xf }")
-	g.p("")
-	g.p("// setOp replaces a column's nibble. Clearing first keeps a second")
-	g.p("// predicate on the same column from ORing into a bogus operator.")
-	g.p("func setOp(s runtime.Shape, i uint, op runtime.Shape) runtime.Shape {")
-	g.p("\treturn s&^(0xf<<(i*4)) | op<<(i*4)")
-	g.p("}")
-	g.p("")
-}
-
-// chained emits q.EmailEq(v) as sugar over Where(Email.Eq(v)). One code path:
-// the chained form cannot drift from the composable one.
 func (g *gen) chained() {
 	g.p("// Chained predicate sugar. Identical to Where(Col.Op(v)).")
 	for _, c := range g.cols {

@@ -19,7 +19,7 @@ func (g *gen) predType() {
 	g.p("// assembled by Query into a token stream — see Where/Any/Not.")
 	g.p("type Pred struct {")
 	g.p("\tcol uint8")
-	g.p("\top  runtime.Shape")
+	g.p("\top  runtime.Op")
 	g.p("\tnum int64")
 	g.p("\tstr string")
 	g.p("\traw [16]byte")

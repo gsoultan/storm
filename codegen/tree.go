@@ -282,7 +282,7 @@ func (g *gen) treeBind() {
 	g.p("\t\tif t.Kind() != runtime.KLeaf {")
 	g.p("\t\t\tcontinue")
 	g.p("\t\t}")
-	g.p("\t\tswitch runtime.Shape(t.Op()) {")
+	g.p("\t\tswitch runtime.Op(t.Op()) {")
 	g.p("\t\tcase opIsNull, opIsNotNull:")
 	g.p("\t\t\tcontinue")
 	g.p("\t\tcase opIn:")
