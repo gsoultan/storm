@@ -128,6 +128,46 @@ func planFor(parent, child *schema.Table, rel *schema.Relation) (*relPlan, error
 	return p, nil
 }
 
+// parentMethods redeclares the parent Query's builder on a plan.
+//
+// Go has no delegation, and embedding the Query would make Where() return the
+// Query — dropping straight out of the plan. So every method has to be listed,
+// and THE LIST IS THE BUG SURFACE: Order, Offset and After were added to Query
+// after this list was written and were simply missing from every plan, so a
+// plan could filter but not page. Anything added to Query belongs here too.
+func (g *gen) parentMethods(q string, p relPlan) {
+	pred := p.ParentPkg + ".Pred"
+	for _, m := range []struct{ name, args, call string }{
+		{"Where", "ps ..." + pred, "Where(ps...)"},
+		{"WhereIf", "cond bool, pr " + pred, "WhereIf(cond, pr)"},
+		{"Any", "ps ..." + pred, "Any(ps...)"},
+		{"Not", "pr " + pred, "Not(pr)"},
+		{"NotAny", "ps ..." + pred, "NotAny(ps...)"},
+		{"Order", "ts ..." + p.ParentPkg + ".Sort", "Order(ts...)"},
+		{"Limit", "n int64", "Limit(n)"},
+		{"Offset", "n int64", "Offset(n)"},
+	} {
+		g.p("func (p %s) %s(%s) %s {", q, m.name, m.args, q)
+		g.p("\tp.q = p.q.%s", m.call)
+		g.p("\treturn p")
+		g.p("}")
+		g.p("")
+	}
+	g.p("// After pages the PARENTS past one already seen — keyset pagination over")
+	g.p("// the plan. It takes the plan's row type, so the cursor is a row you")
+	g.p("// actually received rather than one you had to unwrap.")
+	g.p("func (p %s) After(r %sRow) %s {", q, p.Name, q)
+	g.p("\tp.q = p.q.After(r.Row)")
+	g.p("\treturn p")
+	g.p("}")
+	g.p("")
+	g.p("// Err reports a parent query that outgrew its buffers or was given a")
+	g.p("// mixed ordering to page. Terminals return it too; this is for checking")
+	g.p("// a composed plan before running it.")
+	g.p("func (p %s) Err() error { return p.q.Err() }", q)
+	g.p("")
+}
+
 // emitRelPlans writes the plan layer into the context package.
 func (g *gen) emitRelPlans(plans []relPlan) {
 	if len(plans) == 0 {
@@ -170,6 +210,7 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	g.p("type %s struct {", q)
 	g.p("\tq          %s.Query", p.ParentPkg)
 	g.p("\tchildLimit int64")
+	g.p("\tchildOrder []%s.Sort", p.ChildPkg)
 	g.p("}")
 	g.p("")
 	g.p("// %s starts the plan.", p.Name)
@@ -177,22 +218,34 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	g.p("\treturn %s{q: %s.New(), childLimit: defaultChildLimit}", q, p.ParentPkg)
 	g.p("}")
 	g.p("")
-	for _, m := range []struct{ name, args, call string }{
-		{"Where", "ps ..." + p.ParentPkg + ".Pred", "Where(ps...)"},
-		{"WhereIf", "cond bool, pr " + p.ParentPkg + ".Pred", "WhereIf(cond, pr)"},
-		{"Any", "ps ..." + p.ParentPkg + ".Pred", "Any(ps...)"},
-		{"Not", "pr " + p.ParentPkg + ".Pred", "Not(pr)"},
-		{"Limit", "n int64", "Limit(n)"},
-	} {
-		g.p("func (p %s) %s(%s) %s {", q, m.name, m.args, q)
-		g.p("\tp.q = p.q.%s", m.call)
-		g.p("\treturn p")
-		g.p("}")
-		g.p("")
-	}
-	g.p("// ChildLimit caps the total children fetched across all parents.")
+	g.parentMethods(q, p)
+	g.p("// ChildLimit caps the total children fetched ACROSS ALL PARENTS.")
+	g.p("//")
+	g.p("// It is a guard, not a page size. Fifty parents with ChildLimit(100) is")
+	g.p("// an error, not a hundred children each — the two queries fetch every")
+	g.p("// child of every matched parent in one batch, and the limit only exists")
+	g.p("// so that batch cannot silently come back partial.")
+	g.p("//")
+	g.p("// THERE IS NO PER-PARENT LIMIT. \"Each parent with its first twenty")
+	g.p("// children\" is greatest-n-per-group, and doing it in two round trips")
+	g.p("// needs LATERAL or row_number(); slicing in Go after the fact would")
+	g.p("// fetch everything and only look like a limit. It is not built yet.")
+	g.p("//")
+	g.p("// To page ONE parent's children — the common case — query the child")
+	g.p("// table directly, where Order, After and Limit all work:")
+	g.p("//")
+	g.p("//\t%s.New().Where(%s.%s.Eq(id)).Order(...).After(last).Limit(20)", p.ChildPkg, p.ChildPkg, exportName(p.rel.Column))
 	g.p("func (p %s) ChildLimit(n int64) %s {", q, q)
 	g.p("\tp.childLimit = n")
+	g.p("\treturn p")
+	g.p("}")
+	g.p("")
+	g.p("// ChildOrder orders the children within each parent.")
+	g.p("//")
+	g.p("// Without it they arrive in the child table's default order, which is its")
+	g.p("// primary key — defined, but almost never what a caller wanted to show.")
+	g.p("func (p %s) ChildOrder(ts ...%s.Sort) %s {", q, p.ChildPkg, q)
+	g.p("\tp.childOrder = ts")
 	g.p("\treturn p")
 	g.p("}")
 	g.p("")
@@ -222,10 +275,11 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	g.p("\t\tids[i] = r.%s", keyField)
 	g.p("\t\tat[r.%s] = i", keyField)
 	g.p("\t}")
-	g.p("\tkids, err := %s.New().", p.ChildPkg)
-	g.p("\t\tWhere(%s.%s.In(ids...)).", p.ChildPkg, childHandle)
-	g.p("\t\tLimit(p.childLimit).")
-	g.p("\t\tAll(ctx, ex, nil)")
+	g.p("\tcq := %s.New().Where(%s.%s.In(ids...)).Limit(p.childLimit)", p.ChildPkg, p.ChildPkg, childHandle)
+	g.p("\tif len(p.childOrder) > 0 {")
+	g.p("\t\tcq = cq.Order(p.childOrder...)")
+	g.p("\t}")
+	g.p("\tkids, err := cq.All(ctx, ex, nil)")
 	g.p("\tif err != nil {")
 	g.p("\t\treturn nil, err")
 	g.p("\t}")
@@ -278,19 +332,7 @@ func (g *gen) emitToOnePlan(p relPlan) {
 	g.p("// %s starts the plan.", p.Name)
 	g.p("func %s() %s { return %s{q: %s.New()} }", p.Name, q, q, p.ParentPkg)
 	g.p("")
-	for _, m := range []struct{ name, args, call string }{
-		{"Where", "ps ..." + p.ParentPkg + ".Pred", "Where(ps...)"},
-		{"WhereIf", "cond bool, pr " + p.ParentPkg + ".Pred", "WhereIf(cond, pr)"},
-		{"Any", "ps ..." + p.ParentPkg + ".Pred", "Any(ps...)"},
-		{"Not", "pr " + p.ParentPkg + ".Pred", "Not(pr)"},
-		{"Limit", "n int64", "Limit(n)"},
-	} {
-		g.p("func (p %s) %s(%s) %s {", q, m.name, m.args, q)
-		g.p("\tp.q = p.q.%s", m.call)
-		g.p("\treturn p")
-		g.p("}")
-		g.p("")
-	}
+	g.parentMethods(q, p)
 	g.p("// All runs the plan in exactly TWO round trips. Distinct parent keys are")
 	g.p("// de-duplicated before the second, so a thousand rows pointing at three")
 	g.p("// orgs fetch three orgs.")

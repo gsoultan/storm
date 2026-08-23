@@ -70,6 +70,10 @@ type Query struct {
 	// over records that the query outgrew its fixed buffers. Terminals
 	// return it as an error rather than silently dropping a predicate.
 	over bool
+
+	// mixed records an After() over an ordering that is not all in one
+	// direction. No single row comparison expresses that.
+	mixed bool
 }
 
 // New starts a query.
@@ -85,6 +89,92 @@ func (q Query) Limit(n int64) Query { q.limit = n; return q }
 // 5,000 pages of work, and a row inserted mid-scroll shifts every later
 // page. Order by a unique key and filter past the last one you saw instead.
 func (q Query) Offset(n int64) Query { q.offset = n; return q }
+
+// After filters past a row already seen: keyset pagination.
+//
+// The comparison follows the ACTIVE ordering, because it has to. Paging
+// `ORDER BY email DESC` with `> $1` walks away from the rows you have
+// not seen yet, and silently returns a wrong page rather than an error.
+// So After reads the ordering off the query and builds the matching row
+// comparison: (a, b) > ($1, $2) for ascending, < for descending.
+//
+// Unlike Offset the database does not walk the skipped rows — the
+// comparison seeks straight into the index — and a row inserted
+// mid-scroll cannot shift a page, because the cursor is a position in the
+// data rather than a count.
+//
+// Mixing ascending and descending terms in one ordering is a query error:
+// no single row comparison expresses it, and expanding it into ORs would
+// silently give up the index walk that makes this worth doing.
+func (q Query) After(r Row) Query {
+	terms := q.otoks[:q.no]
+	if q.no == 0 {
+		terms = defaultOrder[:]
+	}
+	if len(terms) == 0 {
+		return q
+	}
+	desc := terms[0].Op() == runtime.Desc || terms[0].Op() == runtime.DescNullsLast
+	for _, t := range terms {
+		d := t.Op() == runtime.Desc || t.Op() == runtime.DescNullsLast
+		if d != desc {
+			q.mixed = true
+			return q
+		}
+	}
+	for _, t := range terms {
+		q.push(runtime.MakeCol(t.Col()))
+		q.cursor(t.Col(), r)
+	}
+	op := runtime.CmpGt
+	if desc {
+		op = runtime.CmpLt
+	}
+	q.push(runtime.MakeRowCmp(op, uint32(len(terms))))
+	q.top++
+	return q
+}
+
+// cursor stores the bound value for one column of a keyset comparison.
+func (q *Query) cursor(col uint32, r Row) {
+	switch col {
+	case 0:
+		if int(q.nr) >= len(q.raws) {
+			q.over = true
+			return
+		}
+		q.raws[q.nr] = r.ID
+		q.nr++
+	case 1:
+		if int(q.ntm) >= len(q.tims) {
+			q.over = true
+			return
+		}
+		q.tims[q.ntm] = r.CreatedAt
+		q.ntm++
+	case 2:
+		if int(q.ntm) >= len(q.tims) {
+			q.over = true
+			return
+		}
+		q.tims[q.ntm] = r.UpdatedAt
+		q.ntm++
+	case 3:
+		if int(q.ns) >= len(q.strs) {
+			q.over = true
+			return
+		}
+		q.strs[q.ns] = r.Name
+		q.ns++
+	case 4:
+		if int(q.nr) >= len(q.raws) {
+			q.over = true
+			return
+		}
+		q.raws[q.nr] = r.ParentID.V
+		q.nr++
+	}
+}
 
 // Sort is one ORDER BY term, produced by a column handle: Email.Asc().
 type Sort runtime.Tok
@@ -112,8 +202,14 @@ func (q Query) Err() error {
 	if q.over {
 		return errTooComplex
 	}
+	if q.mixed {
+		return errMixedOrder
+	}
 	return nil
 }
+
+var errMixedOrder = errors.New(
+	"raorm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
 
 var errTooComplex = errors.New(
 	"raorm: query has more predicates than the generated buffers hold; split it, or raise the limits in codegen")
@@ -403,8 +499,6 @@ const countPrefix = `SELECT count(*) FROM "orgs"`
 const limitSuffix = ` LIMIT $`
 const limitOffsetSuffix = ` LIMIT $ OFFSET $`
 
-var orderPunct = runtime.Order{Lead: " ORDER BY ", Sep: ", "}
-
 // orderTable is every ordering this table can express, lowered at build
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
@@ -439,6 +533,37 @@ var orderTable = [nCols][4]string{
 		"\"parent_id\" ASC NULLS FIRST",
 		"\"parent_id\" DESC NULLS LAST",
 	},
+}
+
+// identTable is each column's bare quoted name, for the left side of a
+// row comparison.
+var identTable = [nCols]string{
+	"\"id\"",
+	"\"created_at\"",
+	"\"updated_at\"",
+	"\"name\"",
+	"\"parent_id\"",
+}
+
+var lowering = runtime.Lowering{
+	Frag:  fragOf,
+	Order: orderOf,
+	OB:    runtime.Order{Lead: " ORDER BY ", Sep: ", "},
+	Ident: func(col uint32) string {
+		if col >= nCols {
+			return ""
+		}
+		return identTable[col]
+	},
+	RowCmp: func(op uint32) string {
+		if op == runtime.CmpLt {
+			return " < "
+		}
+		return " > "
+	},
+	TupleOpen:  "(",
+	TupleSep:   ", ",
+	TupleClose: ")",
 }
 
 func orderOf(dir, col uint32) string {
@@ -555,7 +680,7 @@ func stmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 	if st := c.Get(toks); st != nil {
 		return st
 	}
-	return c.Put(toks, runtime.SpliceTree(selectPrefix, toks, fragOf, orderOf, orderPunct, suffix))
+	return c.Put(toks, runtime.SpliceTree(selectPrefix, toks, lowering, suffix))
 }
 
 func countStmtFor(toks []runtime.Tok) *runtime.Stmt {
@@ -564,7 +689,7 @@ func countStmtFor(toks []runtime.Tok) *runtime.Stmt {
 	}
 	// A count ignores ordering as well as LIMIT: ordering a scalar is
 	// wasted work, and the token stream is trimmed before it gets here.
-	return countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, fragOf, orderOf, orderPunct, ""))
+	return countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, lowering, ""))
 }
 
 // Shape is a fingerprint of this query's structure — equal shapes share a
@@ -620,7 +745,12 @@ func (q Query) bind(b *binder) []any {
 	var ns, nr, ntm uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
-		if t.Kind() != runtime.KLeaf {
+		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
+		// Both live in the same per-type arenas in stream order, so the
+		// column switch below handles them identically. A KCol carries no
+		// operator — its op is opNone, which matches no case in the
+		// operator switch and falls straight through.
+		if k := t.Kind(); k != runtime.KLeaf && k != runtime.KCol {
 			continue
 		}
 		switch runtime.Op(t.Op()) {

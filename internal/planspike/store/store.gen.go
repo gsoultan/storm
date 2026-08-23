@@ -48,6 +48,7 @@ type OrgWithChildrenRow struct {
 type OrgWithChildrenQuery struct {
 	q          org.Query
 	childLimit int64
+	childOrder []org.Sort
 }
 
 // OrgWithChildren starts the plan.
@@ -75,14 +76,66 @@ func (p OrgWithChildrenQuery) Not(pr org.Pred) OrgWithChildrenQuery {
 	return p
 }
 
+func (p OrgWithChildrenQuery) NotAny(ps ...org.Pred) OrgWithChildrenQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p OrgWithChildrenQuery) Order(ts ...org.Sort) OrgWithChildrenQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
 func (p OrgWithChildrenQuery) Limit(n int64) OrgWithChildrenQuery {
 	p.q = p.q.Limit(n)
 	return p
 }
 
-// ChildLimit caps the total children fetched across all parents.
+func (p OrgWithChildrenQuery) Offset(n int64) OrgWithChildrenQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p OrgWithChildrenQuery) After(r OrgWithChildrenRow) OrgWithChildrenQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p OrgWithChildrenQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	org.New().Where(org.ParentID.Eq(id)).Order(...).After(last).Limit(20)
 func (p OrgWithChildrenQuery) ChildLimit(n int64) OrgWithChildrenQuery {
 	p.childLimit = n
+	return p
+}
+
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p OrgWithChildrenQuery) ChildOrder(ts ...org.Sort) OrgWithChildrenQuery {
+	p.childOrder = ts
 	return p
 }
 
@@ -111,10 +164,11 @@ func (p OrgWithChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([]O
 		ids[i] = r.ID
 		at[r.ID] = i
 	}
-	kids, err := org.New().
-		Where(org.ParentID.In(ids...)).
-		Limit(p.childLimit).
-		All(ctx, ex, nil)
+	cq := org.New().Where(org.ParentID.In(ids...)).Limit(p.childLimit)
+	if len(p.childOrder) > 0 {
+		cq = cq.Order(p.childOrder...)
+	}
+	kids, err := cq.All(ctx, ex, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -170,10 +224,38 @@ func (p OrgWithParentQuery) Not(pr org.Pred) OrgWithParentQuery {
 	return p
 }
 
+func (p OrgWithParentQuery) NotAny(ps ...org.Pred) OrgWithParentQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p OrgWithParentQuery) Order(ts ...org.Sort) OrgWithParentQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
 func (p OrgWithParentQuery) Limit(n int64) OrgWithParentQuery {
 	p.q = p.q.Limit(n)
 	return p
 }
+
+func (p OrgWithParentQuery) Offset(n int64) OrgWithParentQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p OrgWithParentQuery) After(r OrgWithParentRow) OrgWithParentQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p OrgWithParentQuery) Err() error { return p.q.Err() }
 
 // All runs the plan in exactly TWO round trips. Distinct parent keys are
 // de-duplicated before the second, so a thousand rows pointing at three
@@ -246,6 +328,7 @@ type OrgWithUsersRow struct {
 type OrgWithUsersQuery struct {
 	q          org.Query
 	childLimit int64
+	childOrder []user.Sort
 }
 
 // OrgWithUsers starts the plan.
@@ -273,14 +356,66 @@ func (p OrgWithUsersQuery) Not(pr org.Pred) OrgWithUsersQuery {
 	return p
 }
 
+func (p OrgWithUsersQuery) NotAny(ps ...org.Pred) OrgWithUsersQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p OrgWithUsersQuery) Order(ts ...org.Sort) OrgWithUsersQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
 func (p OrgWithUsersQuery) Limit(n int64) OrgWithUsersQuery {
 	p.q = p.q.Limit(n)
 	return p
 }
 
-// ChildLimit caps the total children fetched across all parents.
+func (p OrgWithUsersQuery) Offset(n int64) OrgWithUsersQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p OrgWithUsersQuery) After(r OrgWithUsersRow) OrgWithUsersQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p OrgWithUsersQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	user.New().Where(user.OrgID.Eq(id)).Order(...).After(last).Limit(20)
 func (p OrgWithUsersQuery) ChildLimit(n int64) OrgWithUsersQuery {
 	p.childLimit = n
+	return p
+}
+
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p OrgWithUsersQuery) ChildOrder(ts ...user.Sort) OrgWithUsersQuery {
+	p.childOrder = ts
 	return p
 }
 
@@ -309,10 +444,11 @@ func (p OrgWithUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgW
 		ids[i] = r.ID
 		at[r.ID] = i
 	}
-	kids, err := user.New().
-		Where(user.OrgID.In(ids...)).
-		Limit(p.childLimit).
-		All(ctx, ex, nil)
+	cq := user.New().Where(user.OrgID.In(ids...)).Limit(p.childLimit)
+	if len(p.childOrder) > 0 {
+		cq = cq.Order(p.childOrder...)
+	}
+	kids, err := cq.All(ctx, ex, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -362,10 +498,38 @@ func (p UserWithOrgQuery) Not(pr user.Pred) UserWithOrgQuery {
 	return p
 }
 
+func (p UserWithOrgQuery) NotAny(ps ...user.Pred) UserWithOrgQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p UserWithOrgQuery) Order(ts ...user.Sort) UserWithOrgQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
 func (p UserWithOrgQuery) Limit(n int64) UserWithOrgQuery {
 	p.q = p.q.Limit(n)
 	return p
 }
+
+func (p UserWithOrgQuery) Offset(n int64) UserWithOrgQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p UserWithOrgQuery) After(r UserWithOrgRow) UserWithOrgQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p UserWithOrgQuery) Err() error { return p.q.Err() }
 
 // All runs the plan in exactly TWO round trips. Distinct parent keys are
 // de-duplicated before the second, so a thousand rows pointing at three

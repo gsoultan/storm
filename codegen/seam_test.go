@@ -55,12 +55,22 @@ func TestNoSQLTextInCodegen(t *testing.T) {
 			if err != nil {
 				return true
 			}
-			// A literal that starts with `//` is a comment being emitted into
-			// generated code, not SQL being written. Explaining that an
-			// UPDATE's identity is its column set is exactly the kind of
-			// comment the generated output should carry, and rewording it to
-			// dodge a regex would make the output worse to read.
-			if strings.HasPrefix(strings.TrimSpace(v), "//") {
+			// Two kinds of literal are prose, not SQL being written, and both
+			// are identified by a prefix the codebase already uses:
+			//
+			//   "//"      a comment emitted into generated code. Explaining
+			//             that an UPDATE's identity is its column set is
+			//             exactly what the output should carry.
+			//   "raorm: " an error message. One of them says `After() needs
+			//             every ORDER BY term in the same direction` — it is
+			//             naming the caller's own clause back to them, and
+			//             rewording it to dodge a regex makes the error worse.
+			//
+			// Neither exemption can hide a real leak: a SELECT this generator
+			// emits is a bare fragment, and prefixing it with either of these
+			// would not compile.
+			trimmed := strings.TrimSpace(v)
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "raorm: ") {
 				return true
 			}
 			if m := sqlText.FindString(v); m != "" {

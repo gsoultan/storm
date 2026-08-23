@@ -33,6 +33,18 @@ const (
 	// part of a statement's identity exactly as a predicate is, and two queries
 	// that differ only in ordering must not share a compiled statement.
 	KOrder
+
+	// KCol is a bare column reference, pushed to be consumed by KRowCmp.
+	KCol
+
+	// KRowCmp compares a whole row against a bound tuple: (a, b) > ($1, $2).
+	// Arity is how many preceding KCol tokens it takes.
+	//
+	// A row comparison, not the OR-expansion `a > $1 OR (a = $1 AND b > $2)`
+	// that hand-written pagination usually reaches for. The two mean the same
+	// thing; only the row comparison lets Postgres walk a multi-column index
+	// once instead of planning a disjunction.
+	KRowCmp
 )
 
 // Sort directions, carried in an order token's operator field.
@@ -41,6 +53,15 @@ const (
 	Desc
 	AscNullsFirst
 	DescNullsLast
+)
+
+// Row-comparison operators, carried in a KRowCmp token's operator field.
+//
+// Only strict inequality: a keyset paginator using >= would return the row it
+// just showed you.
+const (
+	CmpGt uint32 = iota
+	CmpLt
 )
 
 // MaxCols is how many columns a token can address: Col is ten bits wide.
@@ -53,6 +74,12 @@ func MakeLeaf(op, col uint32) Tok { return Tok(KLeaf<<28 | op<<22 | col<<12) }
 
 // MakeOrder builds an ORDER BY term.
 func MakeOrder(dir, col uint32) Tok { return Tok(KOrder<<28 | dir<<22 | col<<12) }
+
+// MakeCol builds a bare column reference for a row comparison.
+func MakeCol(col uint32) Tok { return Tok(KCol<<28 | col<<12) }
+
+// MakeRowCmp builds a row comparison over the preceding arity column tokens.
+func MakeRowCmp(op, arity uint32) Tok { return Tok(KRowCmp<<28 | op<<22 | arity&0xfff) }
 
 // MakeGroup builds an AND/OR/NOT token over the previous arity tokens.
 func MakeGroup(kind, arity uint32) Tok { return Tok(kind<<28 | arity&0xfff) }
@@ -175,12 +202,37 @@ type OrderFn func(dir, col uint32) string
 // Order is the punctuation of an ORDER BY clause, chosen by the back end.
 type Order struct{ Lead, Sep string }
 
+// Lowering is every piece of back-end text a read statement needs. It is a
+// struct rather than six parameters because the splicer is the one place they
+// all meet, and a growing parameter list is how a dialect assumption sneaks in
+// unnamed.
+//
+// Generated code fills it from compile/pgsql at build time. The runtime chooses
+// none of it.
+type Lowering struct {
+	Frag  FragFn
+	Order OrderFn
+	OB    Order
+
+	// Ident renders a bare column reference, for the left side of a row
+	// comparison.
+	Ident func(col uint32) string
+
+	// RowCmp renders a row-comparison operator, e.g. " > ".
+	RowCmp func(op uint32) string
+
+	// TupleOpen, TupleSep and TupleClose punctuate both sides of a row
+	// comparison.
+	TupleOpen, TupleSep, TupleClose string
+}
+
 // SpliceTree assembles a read statement.
 //
 // The token stream carries predicates first and ORDER BY terms after, and both
 // are part of the key: two queries differing only in ordering are different
 // statements, and sharing one would serve the wrong rows in the wrong order.
-func SpliceTree(prefix string, toks []Tok, frag FragFn, ord2 OrderFn, ob Order, suffix string) *Stmt {
+func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
+	frag, ord2, ob := lw.Frag, lw.Order, lw.OB
 	var stack []string
 	ord := 0
 
@@ -227,6 +279,32 @@ func SpliceTree(prefix string, toks []Tok, frag FragFn, ord2 OrderFn, ob Order, 
 				continue
 			}
 			stack[len(stack)-1] = "NOT (" + stack[len(stack)-1] + ")"
+
+		case KCol:
+			stack = append(stack, lw.Ident(t.Col()))
+
+		case KRowCmp:
+			n := t.Arity()
+			if n > len(stack) {
+				n = len(stack)
+			}
+			cols := stack[len(stack)-n:]
+			var b strings.Builder
+			b.WriteString(lw.TupleOpen)
+			b.WriteString(join(cols, lw.TupleSep))
+			b.WriteString(lw.TupleClose)
+			b.WriteString(lw.RowCmp(t.Op()))
+			b.WriteString(lw.TupleOpen)
+			for i := 0; i < n; i++ {
+				if i > 0 {
+					b.WriteString(lw.TupleSep)
+				}
+				ord++
+				b.WriteByte(placeholderSigil)
+				b.WriteString(itoa(ord))
+			}
+			b.WriteString(lw.TupleClose)
+			stack = append(stack[:len(stack)-n], b.String())
 		}
 	}
 

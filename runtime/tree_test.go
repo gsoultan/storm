@@ -23,6 +23,24 @@ func frag(op, col uint32) runtime.Frag {
 func leaf(op, col uint32) runtime.Tok { return runtime.MakeLeaf(op, col) }
 
 // ord and ob stand in for what the back end supplies at generate time.
+func lw(frag runtime.FragFn) runtime.Lowering {
+	return runtime.Lowering{
+		Frag:  frag,
+		Order: ord,
+		OB:    ob,
+		Ident: func(col uint32) string { return "c" + string(rune('0'+col)) },
+		RowCmp: func(op uint32) string {
+			if op == runtime.CmpLt {
+				return " < "
+			}
+			return " > "
+		},
+		TupleOpen:  "(",
+		TupleSep:   ", ",
+		TupleClose: ")",
+	}
+}
+
 var (
 	ord = func(dir, col uint32) string {
 		s := "c" + string(rune('0'+col))
@@ -42,9 +60,9 @@ func TestSpliceTree_OrderIsPartOfTheStatement(t *testing.T) {
 	base := []runtime.Tok{runtime.MakeLeaf(1, 0)}
 
 	asc := runtime.SpliceTree("SEL", append(append([]runtime.Tok{}, base...),
-		runtime.MakeOrder(runtime.Asc, 1)), frag, ord, ob, "")
+		runtime.MakeOrder(runtime.Asc, 1)), lw(frag), "")
 	desc := runtime.SpliceTree("SEL", append(append([]runtime.Tok{}, base...),
-		runtime.MakeOrder(runtime.Desc, 1)), frag, ord, ob, "")
+		runtime.MakeOrder(runtime.Desc, 1)), lw(frag), "")
 
 	if asc.SQL == desc.SQL {
 		t.Fatalf("ASC and DESC produced the same statement: %q", asc.SQL)
@@ -67,7 +85,7 @@ func TestSpliceTree_MultipleOrderTerms(t *testing.T) {
 	st := runtime.SpliceTree("SEL", []runtime.Tok{
 		runtime.MakeOrder(runtime.Desc, 2),
 		runtime.MakeOrder(runtime.Asc, 0),
-	}, frag, ord, ob, " LIMIT $")
+	}, lw(frag), " LIMIT $")
 	if want := "SEL ORDER BY c2 DESC, c0 ASC LIMIT $1"; st.SQL != want {
 		t.Errorf("got %q, want %q", st.SQL, want)
 	}
@@ -101,7 +119,7 @@ func TestSpliceTree(t *testing.T) {
 			"SEL WHERE a IS NULL AND b = $1 SUF", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			st := runtime.SpliceTree("SEL", tc.toks, frag, ord, ob, " SUF")
+			st := runtime.SpliceTree("SEL", tc.toks, lw(frag), " SUF")
 			if st.SQL != tc.want {
 				t.Errorf("\n got  %q\n want %q", st.SQL, tc.want)
 			}
@@ -117,7 +135,7 @@ func TestTreeCacheVerifiesTokens(t *testing.T) {
 	a := []runtime.Tok{leaf(1, 0)}
 	b := []runtime.Tok{leaf(2, 1)}
 
-	sa := runtime.SpliceTree("SEL", a, frag, ord, ob, "")
+	sa := runtime.SpliceTree("SEL", a, lw(frag), "")
 	c.Put(a, sa)
 
 	if got := c.Get(a); got != sa {
@@ -126,7 +144,7 @@ func TestTreeCacheVerifiesTokens(t *testing.T) {
 	if got := c.Get(b); got != nil {
 		t.Fatal("a different structure must not hit")
 	}
-	sb := runtime.SpliceTree("SEL", b, frag, ord, ob, "")
+	sb := runtime.SpliceTree("SEL", b, lw(frag), "")
 	c.Put(b, sb)
 	if c.Get(a) != sa || c.Get(b) != sb {
 		t.Fatal("entries interfered")
@@ -148,7 +166,7 @@ func TestTreeCacheConcurrent(t *testing.T) {
 			for i := 0; i < 500; i++ {
 				toks := []runtime.Tok{leaf(uint32(i%3+1), uint32(g%3))}
 				if st := c.Get(toks); st == nil {
-					c.Put(toks, runtime.SpliceTree("SEL", toks, frag, ord, ob, ""))
+					c.Put(toks, runtime.SpliceTree("SEL", toks, lw(frag), ""))
 				}
 			}
 		}(g)
@@ -158,5 +176,57 @@ func TestTreeCacheConcurrent(t *testing.T) {
 	}
 	if n := c.Shapes(); n < 1 || n > 9 {
 		t.Errorf("Shapes() = %d, want between 1 and 9", n)
+	}
+}
+
+// Keyset pagination lowers to a row comparison, not the OR-expansion that
+// hand-written pagination usually reaches for. Both mean the same thing; only
+// this one lets Postgres walk a multi-column index once.
+func TestSpliceTree_RowComparison(t *testing.T) {
+	frag := func(op, col uint32) runtime.Frag { return runtime.Frag{} }
+	st := runtime.SpliceTree("SEL", []runtime.Tok{
+		runtime.MakeCol(0),
+		runtime.MakeCol(1),
+		runtime.MakeRowCmp(runtime.CmpGt, 2),
+	}, lw(frag), "")
+
+	if want := "SEL WHERE (c0, c1) > ($1, $2)"; st.SQL != want {
+		t.Errorf("got %q, want %q", st.SQL, want)
+	}
+	if st.NArg != 2 {
+		t.Errorf("NArg = %d, want 2", st.NArg)
+	}
+}
+
+// A descending ordering pages the other way, and the operator must follow it.
+func TestSpliceTree_RowComparisonDescending(t *testing.T) {
+	frag := func(op, col uint32) runtime.Frag { return runtime.Frag{} }
+	st := runtime.SpliceTree("SEL", []runtime.Tok{
+		runtime.MakeCol(2),
+		runtime.MakeRowCmp(runtime.CmpLt, 1),
+	}, lw(frag), "")
+
+	if want := "SEL WHERE (c2) < ($1)"; st.SQL != want {
+		t.Errorf("got %q, want %q", st.SQL, want)
+	}
+}
+
+// A keyset filter ANDs with ordinary predicates and keeps its placeholders in
+// stream order.
+func TestSpliceTree_RowComparisonComposesWithPredicates(t *testing.T) {
+	frag := func(op, col uint32) runtime.Frag { return runtime.Frag{A: "s = $"} }
+	st := runtime.SpliceTree("SEL", []runtime.Tok{
+		runtime.MakeLeaf(1, 5),
+		runtime.MakeCol(0),
+		runtime.MakeCol(1),
+		runtime.MakeRowCmp(runtime.CmpGt, 2),
+		runtime.MakeGroup(runtime.KAnd, 2),
+	}, lw(frag), "")
+
+	if want := "SEL WHERE s = $1 AND (c0, c1) > ($2, $3)"; st.SQL != want {
+		t.Errorf("got %q, want %q", st.SQL, want)
+	}
+	if st.NArg != 3 {
+		t.Errorf("NArg = %d, want 3", st.NArg)
 	}
 }

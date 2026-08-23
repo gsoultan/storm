@@ -11,6 +11,7 @@ import (
 	"github.com/gsoultan/raorm/compile/pgddl"
 	"github.com/gsoultan/raorm/internal/planspike/store"
 	"github.com/gsoultan/raorm/internal/planspike/store/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/user"
 	"github.com/gsoultan/raorm/internal/testmodel"
 	"github.com/gsoultan/raorm/runtime"
 	"github.com/gsoultan/raorm/runtime/pgxdrv"
@@ -287,5 +288,87 @@ func TestPlan_GeneratedChildLimitIsAnError(t *testing.T) {
 	ex, _ := db(t)
 	if _, err := store.OrgWithUsers().Limit(10).ChildLimit(100).All(ctx, ex); !errors.Is(err, runtime.ErrChildLimit) {
 		t.Errorf("hitting the child limit returned %v, want ErrChildLimit", err)
+	}
+}
+
+// A plan must page its parents. Order, Offset and After exist on the table
+// Query and were missing from every generated plan, so a plan could filter but
+// not page — which is useless for the case plans exist for.
+func TestPlan_PagesItsParents(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	page1, err := store.OrgWithUsers().Order(org.Name.Asc()).Limit(3).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page1) != 3 {
+		t.Fatalf("page one has %d orgs, want 3", len(page1))
+	}
+	page2, err := store.OrgWithUsers().Order(org.Name.Asc()).
+		After(page1[len(page1)-1]).Limit(3).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2) == 0 {
+		t.Fatal("no second page of parents")
+	}
+	for _, a := range page1 {
+		for _, b := range page2 {
+			if a.ID == b.ID {
+				t.Fatal("page two repeats a parent from page one")
+			}
+		}
+	}
+	if page2[0].Name <= page1[len(page1)-1].Name {
+		t.Errorf("page two starts at %q, not after page one's last %q", page2[0].Name, page1[len(page1)-1].Name)
+	}
+	// The children must still be loaded on a paged plan.
+	for _, r := range page2 {
+		if len(r.Users) != usersPerOrg {
+			t.Fatalf("paged parent %s has %d users, want %d", r.Name, len(r.Users), usersPerOrg)
+		}
+	}
+}
+
+// Children arrive in a caller-chosen order, not the child table's primary key.
+func TestPlan_OrdersChildrenWithinEachParent(t *testing.T) {
+	ctx := context.Background()
+	ex, count := db(t)
+	count.Reset()
+
+	rows, err := store.OrgWithUsers().Limit(3).
+		ChildOrder(user.Email.Desc()).
+		All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("no rows")
+	}
+	for _, r := range rows {
+		for i := 1; i < len(r.Users); i++ {
+			if r.Users[i-1].Email < r.Users[i].Email {
+				t.Fatalf("org %s: children are not in descending email order at %d", r.Name, i)
+			}
+		}
+	}
+	if n := count.RoundTrips(); n != 2 {
+		t.Errorf("%d round trips, want 2 — ordering children must not cost a query", n)
+	}
+}
+
+// ChildLimit is a guard, not a page size, and the docs say so. This pins the
+// behaviour so nobody "fixes" it into a silent per-parent truncation.
+func TestPlan_ChildLimitIsGlobalNotPerParent(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	// 3 parents x usersPerOrg children, with a limit above one parent's worth
+	// but below three parents' worth: a per-parent limit would succeed, a
+	// global guard must refuse.
+	_, err := store.OrgWithUsers().Limit(3).ChildLimit(int64(usersPerOrg)+1).All(ctx, ex)
+	if err == nil {
+		t.Fatal("ChildLimit is a global guard — three parents' children must not fit under one parent's limit")
 	}
 }

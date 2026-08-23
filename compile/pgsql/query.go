@@ -159,3 +159,34 @@ func LimitOffsetSuffix(withOffset bool) string {
 	}
 	return s
 }
+
+// Row comparison — what keyset pagination filters with.
+//
+// `(a, b) > ($1, $2)` rather than the OR-expansion
+// `a > $1 OR (a = $1 AND b > $2)` that hand-written pagination usually reaches
+// for. The two mean the same thing; only the row comparison lets Postgres walk
+// a multi-column index once instead of planning a disjunction. It is also the
+// first thing M9 will have to look at again — MySQL supports row comparison,
+// SQL Server does not, and there the expansion is the only option.
+const (
+	TupleOpen  = "("
+	TupleSep   = ", "
+	TupleClose = ")"
+)
+
+// Row-comparison operators, in the order runtime numbers them.
+const (
+	cmpGt = iota
+	cmpLt
+)
+
+// RowCmpOp lowers a row-comparison operator.
+//
+// Only strict inequality. A keyset paginator that used >= would return the row
+// it just showed you, and one that used = has no ordering to follow.
+func RowCmpOp(op int) string {
+	if op == cmpLt {
+		return " < "
+	}
+	return " > "
+}
