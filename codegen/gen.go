@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/gsoultan/raorm/compile/pgsql"
+	"github.com/gsoultan/raorm/runtime"
 	"github.com/gsoultan/raorm/schema"
 )
 
@@ -30,10 +31,17 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	if t == nil {
 		return nil, fmt.Errorf("codegen: no table %q", o.Table)
 	}
+	// The old cap here was fifteen columns, because four bits of operator per
+	// column had to fit in a 64-bit shape. The tree IR replaced that mask with
+	// a token stream months ago and the cap outlived it, silently generating
+	// no predicates at all for a sixteenth column. The real limit is the width
+	// of Tok's column field, and exceeding it is an error.
 	cols := filterable(t)
-	if len(cols) > 15 {
-		// Four bits of op per column must fit in a 64-bit shape.
-		cols = cols[:15]
+	if len(cols) > runtime.MaxCols {
+		return nil, fmt.Errorf(
+			"codegen: table %s has %d filterable columns; the token column field holds %d — "+
+				"split the table, or narrow it with a projection",
+			t.Name, len(cols), runtime.MaxCols)
 	}
 
 	g := &gen{s: s, t: t, o: o, cols: cols}

@@ -121,7 +121,7 @@ func (b *builder) register(m any) error {
 }
 
 func (b *builder) buildColumns(mi *modelInfo) {
-	st := &schema.Table{Name: tableName(mi.typ.Name())}
+	st := &schema.Table{Name: tableName(mi.typ.Name()), GoName: mi.typ.Name()}
 	tbl := &Table{
 		base: unsafe.Pointer(mi.ptr.Pointer()),
 		typ:  mi.typ,

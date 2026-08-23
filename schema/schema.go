@@ -27,6 +27,15 @@ type Table struct {
 	Name    string
 	Comment string
 
+	// GoName is the model type this table was declared from — "User" for
+	// table "users". It is a raorm-level fact with no DDL of its own, like
+	// Column.Immutable, and it exists because pluralisation is not
+	// invertible: tableName() turns User into users by naive rules English
+	// does not actually follow, so codegen must not try to turn users back
+	// into User. Empty when the table came from introspection, where there is
+	// no Go type to remember.
+	GoName string
+
 	// Columns are kept in declaration order: DDL column order is observable
 	// (SELECT *, COPY) so it must not be sorted.
 	Columns []*Column

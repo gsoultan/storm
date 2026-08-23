@@ -12,16 +12,23 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/gsoultan/raorm"
+	"github.com/gsoultan/raorm/codegen"
 	"github.com/gsoultan/raorm/compile/pgddl"
 	"github.com/gsoultan/raorm/migrate"
 	"github.com/gsoultan/raorm/schema"
 	pgintro "github.com/gsoultan/raorm/schema/pg"
 	"github.com/jackc/pgx/v5"
 )
+
+// modulePath is raorm's own import path, which generated code imports for the
+// runtime. It is a constant because a generated package that pointed at a fork
+// or a stale vendor copy would compile and be subtly wrong.
+const modulePath = "github.com/gsoultan/raorm"
 
 // Models is set by the generated bootstrap in the user's module. Keeping it a
 // variable rather than a plugin keeps the tool a plain Go binary.
@@ -34,6 +41,7 @@ usage:
   raorm diff   <name>             write a migration from the live schema to the model
   raorm verify                    fail if the database has drifted from the model
   raorm import                    print the model implied by an existing database
+  raorm generate [dir]            emit one Go package per table (default internal/store)
 
 flags:
   -dsn        PostgreSQL connection string (or $RAORM_DSN)
@@ -81,6 +89,13 @@ func run(args []string) error {
 		}
 		return diff(*dsn, *ns, *out, fs.Arg(1), model, *allowDestructive)
 
+	case "generate":
+		dir := "internal/store"
+		if fs.NArg() > 1 {
+			dir = fs.Arg(1)
+		}
+		return generate(dir, model)
+
 	case "verify":
 		return verify(*dsn, *ns, model)
 
@@ -113,6 +128,40 @@ func connect(dsn string) (*pgx.Conn, context.Context, func(), error) {
 		return nil, nil, nil, err
 	}
 	return c, ctx, func() { c.Close(ctx); cancel() }, nil
+}
+
+// generate emits one package per table under dir.
+//
+// Every file is rendered before any is written. A generation that fails on the
+// ninth table must not leave eight new packages and a broken build behind —
+// `raorm verify` would then be comparing against a tree nobody intended.
+func generate(dir string, model *schema.Schema) error {
+	files, err := codegen.Package(model, codegen.PackageOptions{
+		Dir:    dir,
+		Import: modulePath,
+	})
+	if err != nil {
+		return err
+	}
+
+	paths := make([]string, 0, len(files))
+	for p := range files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths) // stable output order, so a diff of two runs is empty
+
+	for _, rel := range paths {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(full, files[rel], 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("→ %s (%d bytes)\n", full, len(files[rel]))
+	}
+	fmt.Printf("%d package(s) from %d table(s)\n", len(files), len(model.Tables))
+	return nil
 }
 
 func diff(dsn, ns, out, name string, model *schema.Schema, allowDestructive bool) error {

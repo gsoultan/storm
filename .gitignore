@@ -7,3 +7,6 @@ graphify-out/
 # Go
 *.test
 *.out
+
+# Scratch package a codegen test builds and removes; ignored in case it is killed mid-run.
+internal/gentest*/

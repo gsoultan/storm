@@ -28,6 +28,11 @@ const (
 	KNot
 )
 
+// MaxCols is how many columns a token can address: Col is ten bits wide.
+// Generated code checks against this rather than guessing, and a table with
+// more filterable columns is a generation error, never a truncation.
+const MaxCols = 1 << 10
+
 // MakeLeaf builds a predicate token.
 func MakeLeaf(op, col uint32) Tok { return Tok(KLeaf<<28 | op<<22 | col<<12) }
 
