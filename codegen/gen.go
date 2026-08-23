@@ -81,6 +81,7 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	g.treeBind()
 	g.terminals()
 	g.batchTop()
+	g.recursive()
 	g.writes()
 
 	if g.err != nil {

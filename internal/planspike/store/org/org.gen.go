@@ -987,6 +987,84 @@ func batchTopByParentIDLateralSQL(order []Sort) string {
 	return batchTopByParentIDLateralCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL
 }
 
+// Recursive traversal of orgs's self-reference through parent_id.
+//
+// ONE query for a whole subtree, with a MANDATORY depth bound and a cycle
+// guard. Neither is optional and neither has a default:
+//
+// An unbounded recursive query against production data is an outage, not
+// a slow query — it is the one shape where a missing bound turns into
+// unbounded work rather than a large result.
+//
+// And parent_id is a foreign key, which does not stop A pointing at B pointing
+// at A. The guard is an explicit path array: one array append per row,
+// against a hung connection.
+// ErrDepth is returned by a traversal given no positive depth bound.
+var ErrDepth = errors.New(
+	"raorm: recursive traversal needs a positive depth bound — unbounded recursion over a cycle does not return")
+
+// Descend returns the descendants: rows whose parent_id chain leads back to a root.
+//
+// The roots themselves are included, at depth 1. maxDepth counts them,
+// so maxDepth of 1 returns exactly the roots and 2 adds one level.
+//
+// Rows come back in no guaranteed order — a tree has no total order
+// and inventing one would be a lie. Every row carries its parent_id, so the
+// caller reassembles the shape it wanted.
+func Descend(ctx context.Context, ex runtime.Executor, roots [][16]byte, maxDepth int64) ([]Row, error) {
+	if len(roots) == 0 {
+		return nil, nil
+	}
+	if maxDepth <= 0 {
+		return nil, ErrDepth
+	}
+	rows, err := ex.Query(ctx, descendSQL, []any{roots, maxDepth})
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []Row
+	for rows.Next() {
+		out = append(out, Row{})
+		scan(rows.RawValues(), &out[len(out)-1], &sl)
+	}
+	return out, rows.Err()
+}
+
+const descendSQL = `WITH RECURSIVE "_raorm_r" AS (SELECT "id", "created_at", "updated_at", "name", "parent_id", 1 AS "_raorm_d", ARRAY["id"] AS "_raorm_path" FROM "orgs" WHERE "id" = ANY($1) UNION ALL SELECT "_raorm_rc"."id", "_raorm_rc"."created_at", "_raorm_rc"."updated_at", "_raorm_rc"."name", "_raorm_rc"."parent_id", "_raorm_r"."_raorm_d" + 1, "_raorm_r"."_raorm_path" || "_raorm_rc"."id" FROM "orgs" "_raorm_rc" JOIN "_raorm_r" ON "_raorm_rc"."parent_id" = "_raorm_r"."id" WHERE "_raorm_r"."_raorm_d" < $2 AND NOT "_raorm_rc"."id" = ANY("_raorm_r"."_raorm_path")) SELECT "id", "created_at", "updated_at", "name", "parent_id" FROM "_raorm_r"`
+
+// Ascend returns the ancestors: the parent_id chain upward from each row.
+//
+// The roots themselves are included, at depth 1. maxDepth counts them,
+// so maxDepth of 1 returns exactly the roots and 2 adds one level.
+//
+// Rows come back in no guaranteed order — a tree has no total order
+// and inventing one would be a lie. Every row carries its parent_id, so the
+// caller reassembles the shape it wanted.
+func Ascend(ctx context.Context, ex runtime.Executor, roots [][16]byte, maxDepth int64) ([]Row, error) {
+	if len(roots) == 0 {
+		return nil, nil
+	}
+	if maxDepth <= 0 {
+		return nil, ErrDepth
+	}
+	rows, err := ex.Query(ctx, ascendSQL, []any{roots, maxDepth})
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []Row
+	for rows.Next() {
+		out = append(out, Row{})
+		scan(rows.RawValues(), &out[len(out)-1], &sl)
+	}
+	return out, rows.Err()
+}
+
+const ascendSQL = `WITH RECURSIVE "_raorm_r" AS (SELECT "id", "created_at", "updated_at", "name", "parent_id", 1 AS "_raorm_d", ARRAY["id"] AS "_raorm_path" FROM "orgs" WHERE "id" = ANY($1) UNION ALL SELECT "_raorm_rc"."id", "_raorm_rc"."created_at", "_raorm_rc"."updated_at", "_raorm_rc"."name", "_raorm_rc"."parent_id", "_raorm_r"."_raorm_d" + 1, "_raorm_r"."_raorm_path" || "_raorm_rc"."id" FROM "orgs" "_raorm_rc" JOIN "_raorm_r" ON "_raorm_r"."parent_id" = "_raorm_rc"."id" WHERE "_raorm_r"."_raorm_d" < $2 AND NOT "_raorm_rc"."id" = ANY("_raorm_r"."_raorm_path")) SELECT "id", "created_at", "updated_at", "name", "parent_id" FROM "_raorm_r"`
+
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
 const insertSQL = `INSERT INTO "orgs" ("id", "created_at", "updated_at", "name", "parent_id") VALUES ($1, $2, $3, $4, $5) RETURNING "id", "created_at", "updated_at", "name", "parent_id"`
