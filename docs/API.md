@@ -297,11 +297,12 @@ var (
 )
 ```
 
-`raorm generate` emits one type per plan:
+`raorm generate` emits one type per plan. The plan is the **entry point**, and
+it lives in the package that owns `plans.go` — not on `user.Query`:
 
 ```go
-us, err := user.Query().Where(user.TenantID.Eq(tid)).Load(UserFeed).All(ctx, db)
-// us is []user.Feed
+us, err := store.UserFeed().Where(user.TenantID.Eq(tid)).All(ctx, db)
+// us is []store.UserFeed
 
 for _, u := range us {
     u.Org.Name                    // typed, guaranteed loaded
@@ -331,6 +332,19 @@ $ raorm lint --plans
 ```
 
 That output is the `@EntityGraph` idea plus a performance gate, in one command.
+
+> **Corrected 2026-08-24, after the P2 spike.** This section previously read
+> `user.Query().Where(…).Load(UserFeed).All(ctx, db)`. That signature cannot be
+> built: **Go methods may not have type parameters**, so a method taking a plan
+> *value* has no way to vary its return type by plan — every plan would have to
+> return the same row type, which defeats the point. The plan therefore has to
+> be the entry point (above) or a generated method per plan.
+>
+> For the same reason a plan cannot live in a table package: it names two
+> tables, and a table package importing a sibling reintroduces the import cycle
+> that one-package-per-table avoids (`Org` has `Users`, `User` has an `Org`).
+> Plans live in the parent package, which imports every table package and is
+> imported by none. See `internal/planspike/` and [[PLAN]] §P2.
 
 ## 8. Writes
 
