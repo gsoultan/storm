@@ -202,6 +202,14 @@ func SpliceTree(prefix string, toks []Tok, frag FragFn, suffix string, trailingA
 
 // takesArg reports whether a fragment ends in a placeholder needing an ordinal.
 // IS NULL and IS NOT NULL do not.
+//
+// KNOWN SEAM GAP, deliberate. This assumes the back end's placeholder is `$`
+// followed by an ordinal, which is Postgres and MSSQL but not MySQL's bare `?`
+// or Oracle's `:name`. P1b moved the read path's SQL text into compile/pgsql
+// and stopped there: the right carrier for placeholder policy is not knowable
+// from one back end, and inventing one now would be guessing. M9 decides it,
+// with two implementations in hand. Until then this is the one Postgres
+// assumption left inside runtime/, and it is written down rather than hidden.
 func takesArg(f Frag) bool {
 	return len(f.A) > 0 && f.A[len(f.A)-1] == '$'
 }

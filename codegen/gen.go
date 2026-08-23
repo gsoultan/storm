@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gsoultan/raorm/compile/pgsql"
 	"github.com/gsoultan/raorm/schema"
 )
 
@@ -49,6 +50,10 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	g.treeBind()
 	g.terminals()
 
+	if g.err != nil {
+		return nil, g.err
+	}
+
 	src, err := format.Source(g.buf.Bytes())
 	if err != nil {
 		return g.buf.Bytes(), fmt.Errorf("codegen: generated code does not parse: %w", err)
@@ -62,6 +67,11 @@ type gen struct {
 	t    *schema.Table
 	o    Options
 	cols []colInfo
+
+	// err is the first construct the target cannot express. Emitters set it
+	// and return; File reports it instead of writing a file that is quietly
+	// missing a predicate. Silence is not an option AGENTS.md allows.
+	err error
 }
 
 // colInfo is a filterable column with everything the emitters need, resolved
@@ -127,21 +137,27 @@ func (g *gen) rowType() {
 }
 
 // Operators, in a fixed order so the op nibble is stable across runs.
+// ops is the operator set as it appears in the *Go* API: the method suffix and
+// whether it binds a value. The SQL each one lowers to belongs to the back end
+// in compile/, not here — see pgsql.Frag.
+//
+// Argument-taking operators must come first: bind tests `op-1 < opsWithArg`
+// with a single unsigned compare and that range check is only valid if the
+// argument-less operators are last.
 var ops = []struct {
 	name string // method suffix
-	frag string // SQL, with the column substituted
 	args int
 }{
-	{"Eq", "%s = $", 1},
-	{"NotEq", "%s <> $", 1},
-	{"Gt", "%s > $", 1},
-	{"Gte", "%s >= $", 1},
-	{"Lt", "%s < $", 1},
-	{"Lte", "%s <= $", 1},
-	{"Like", "%s LIKE $", 1},
-	{"In", "%s = ANY($", 1},
-	{"IsNull", "%s IS NULL", 0},
-	{"IsNotNull", "%s IS NOT NULL", 0},
+	{"Eq", 1},
+	{"NotEq", 1},
+	{"Gt", 1},
+	{"Gte", 1},
+	{"Lt", 1},
+	{"Lte", 1},
+	{"Like", 1},
+	{"In", 1},
+	{"IsNull", 0},
+	{"IsNotNull", 0},
 }
 
 const opNone = 0 // nibble 0 means "no predicate on this column"
@@ -185,13 +201,13 @@ func (g *gen) chained() {
 }
 
 func (g *gen) compile() {
-	g.p("const selectPrefix = `SELECT %s FROM %s`", strings.Join(quotedCols(g.t), ", "), quote(g.t.Name))
+	g.p("const selectPrefix = `%s`", pgsql.SelectPrefix(g.t.Name, readableCols(g.t)))
 	ob := g.o.OrderBy
 	if ob == "" {
-		ob = orderBy(g.t)
+		ob = pgsql.DefaultOrderBy(g.t.PrimaryKey, g.t.Columns[0].Name)
 	}
-	g.p("const orderSuffix = ` ORDER BY %s LIMIT $`", ob)
-	g.p("const countPrefix = `SELECT count(*) FROM %s`", quote(g.t.Name))
+	g.p("const orderSuffix = `%s`", pgsql.OrderSuffix(ob))
+	g.p("const countPrefix = `%s`", pgsql.CountPrefix(g.t.Name))
 	g.p("")
 	g.p("// fragTable is every predicate this table can produce, lowered at build")
 	g.p("// time. Runtime splices; it never formats.")
@@ -204,7 +220,13 @@ func (g *gen) compile() {
 				g.p("\t\t{},")
 				continue
 			}
-			g.p("\t\t{A: %q, B: %q},", fmt.Sprintf(op.frag, quote(c.Name())), fragTail(op.name))
+			a, b, ok := pgsql.Frag(op.name, pgsql.Ident(c.Name()))
+			if !ok {
+				g.err = fmt.Errorf("codegen: table %s column %s: target postgres has no lowering for operator %s",
+					g.t.Name, c.Name(), op.name)
+				return
+			}
+			g.p("\t\t{A: %q, B: %q},", a, b)
 		}
 		g.p("\t},")
 	}
@@ -269,14 +291,6 @@ func (g *gen) scanner() {
 	}
 	g.p("}")
 	g.p("")
-}
-
-// fragTail closes a fragment that opened a bracket. Only ANY does.
-func fragTail(op string) string {
-	if op == "In" {
-		return ")"
-	}
-	return ""
 }
 
 // argOps counts the operators that take a bound value. They must be numbered
@@ -372,27 +386,16 @@ func (g *gen) terminals() {
 
 // ---- helpers ----
 
-func quote(s string) string { return `"` + s + `"` }
-
-func quotedCols(t *schema.Table) []string {
+// readableCols is every column a read projects, in table order. Unsupported
+// types are omitted rather than guessed at.
+func readableCols(t *schema.Table) []string {
 	var out []string
 	for _, c := range t.Columns {
 		if goKind(c) != kindUnsupported {
-			out = append(out, quote(c.Name))
+			out = append(out, c.Name)
 		}
 	}
 	return out
-}
-
-func orderBy(t *schema.Table) string {
-	if len(t.PrimaryKey) > 0 {
-		parts := make([]string, len(t.PrimaryKey))
-		for i, k := range t.PrimaryKey {
-			parts[i] = quote(k)
-		}
-		return strings.Join(parts, ", ")
-	}
-	return quote(t.Columns[0].Name)
 }
 
 func exportName(col string) string {

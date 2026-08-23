@@ -21,7 +21,7 @@ for f in $(git ls-files '*.go' 2>/dev/null | grep -v '_test.go' | grep -v '^benc
 done
 
 echo "== core packages are stdlib-only =="
-for p in ./schema ./compile/pgddl ./codegen; do
+for p in ./schema ./compile/pgddl ./compile/pgsql ./codegen; do
   if go list -deps "$p" 2>/dev/null | grep -v '^github.com/gsoultan/raorm' | grep -q '\.'; then
     note "$p has a third-party dependency:"
     go list -deps "$p" | grep -v '^github.com/gsoultan/raorm' | grep '\.' | sed 's/^/    /'
@@ -32,6 +32,14 @@ echo "== no fmt.Sprintf building SQL at runtime =="
 # Formatting on a hot path, and an injection surface.
 if grep -rn 'fmt.Sprintf' runtime/ 2>/dev/null | grep -v '_test.go'; then
   note "fmt.Sprintf in the runtime path"
+fi
+
+echo "== no SQL text in codegen/ (R9: the dialect seam) =="
+# The precise check is an AST walk over string literals; bash cannot tell a
+# keyword in a comment from one in a literal.
+if ! go test ./codegen/ -run TestNoSQLTextInCodegen -count=1 >/dev/null 2>&1; then
+  note "SQL text is being written in codegen/ — it belongs in compile/pgsql:"
+  go test ./codegen/ -run TestNoSQLTextInCodegen -count=1 2>&1 | grep 'SQL text' | sed 's/^/    /'
 fi
 
 echo "== generated code is not stale =="
