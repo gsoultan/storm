@@ -1,7 +1,6 @@
 # raorm — the write path (M4, part 1, 2026-08-24)
 
-Single-row writes ship. `COPY`, `pgx.Batch`, `raorm.Unit` and upserts do **not**;
-all four are blocked on one decision, below.
+**M4 is complete (2026-08-24).** All four exit gates pass.
 
 ## The design, in one sentence
 An UPDATE's identity is the **set** of columns it assigns, not the values — so a
@@ -61,3 +60,56 @@ that call deliberately, not as a side effect of the first feature that needs it.
 real design work, not the FK topological sort.
 
 See [[core]], [[seam_and_codegen]].
+
+## The port decision — settled by ADR-0005
+`Executor` is **four** methods: Query, Exec, CopyFrom, Batch. AGENTS.md budgets
+five; one is left unspent as a real constraint on future features.
+
+**Rejected: capability interfaces sniffed at run time.** The idiomatic Go answer
+(`io.Copy` probing for `WriterTo`) and forbidden by our own rule that
+capabilities are negotiated at *build* time. It brings the exact failure the
+rule exists to prevent: a bulk load silently degrading to 1,000 round trips
+because an adapter did not implement an interface nobody was told about, making
+a performance claim depend on which adapter you passed.
+
+**Rejected: one general `Send([]Statement)`.** Collapsing COPY into batching
+loses what makes COPY worth having — a different protocol, not a faster loop. A
+design where "1,000 inserts = one COPY" cannot be *stated* cannot be *asserted*.
+
+**Transactions stay out.** A transaction is an Executor you were *given*, not a
+method you call on one. Keeps `Unit` composable and keeps Begin/Commit/Rollback
+out of the budget.
+
+**`BatchOp.WantRows` is a field, not a probe.** A driver cannot report both rows
+and an affected count: the count arrives with the command tag, readable only
+once the rows are closed, and closing them is what invalidates them. The
+generator already knows which it wants.
+
+## Unit of work
+Order is computed at **generate** time (`codegen.FlushOrder`, Kahn over a stable
+name order) and emitted into the context package. No runtime code inspects a
+schema.
+
+**The gate runs with constraints NOT deferred**, and asserts against
+`pg_constraint` that they are not — otherwise Postgres forgives a wrong order
+and the test proves nothing. Deferring moves the failure to COMMIT, where the
+error names a constraint instead of the write that violated it, and only covers
+constraints somebody remembered to declare.
+
+Self-references are **not** cycles — they order rows, not tables; treating them
+as cycles makes every hierarchy unwritable. A genuine mutual reference **is** a
+generation error naming the cycle.
+
+**No deferred id handles, and none needed.** [[docs/API]] §8 sketched them.
+`raorm.Model`'s id is a **client-generated UUID**, so the parent's key is known
+*before* the insert. Handles are only unavoidable when the database assigns the
+key — the sequence-id model raorm does not use.
+
+## Measured fix worth remembering
+The first COPY row source boxed **values** into the `[]any` and cost 7
+allocations per row (701 at 100 rows vs 71 at 10). Boxing a **pointer** is free.
+`Null[T].Ptr()` yields a nil `*T` for SQL NULL. Same trick as the read path's
+binder. Asserted by comparing two row counts, so the test measures *scaling*
+rather than the fixed setup cost.
+
+See [[plan_types]] for the relation layer that sits on top.

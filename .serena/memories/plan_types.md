@@ -43,3 +43,34 @@ packages with a **hand-written** plan layer, the same split as the M0 spike.
 already delivers the N+1 guarantee without a single join. That claim is struck.
 
 See [[core]], [[seam_and_codegen]].
+
+## Generated, not hand-written (2026-08-24)
+The spike is deleted; its tests now run against **generated** code and still
+pass, compile-fail cases included. That is what writing it by hand first bought.
+
+**One plan type per RELATION, not per combination.** Finite by construction — n
+relations give n plan types, never 2ⁿ (R3's explosion) — and it needs no
+declaration mechanism, so it landed without the `plans.go` front end. Named
+multi-relation and nested plans still need that; this is the tier below.
+
+Relation metadata now reaches the IR (`schema.Table.Relations`). It used to be
+discovered during the model walk and discarded: a foreign key says
+`users.org_id → orgs.id`, but not that the field is `Org`, that `Org` has a
+`Users` slice pointing back, or which side owns the key.
+
+**The distinction that cost a compile round:** `Relation.Nullable` describes the
+*owning side's Go field*; a loader needs whether the *foreign-key column* is
+nullable. A self-referencing hierarchy is exactly where they disagree —
+`Org.Children` is a plain slice, but `orgs.parent_id` must be nullable or the
+root has nowhere to point. `relPlan.KeyNullable` is the column's.
+
+All four kinds at exactly 2 round trips: has-many; belongs-to (keys
+de-duplicated, so 1,000 users on 50 orgs fetch 50 orgs); self-referential
+has-many; self-referential to-one with every key NULL — **1** round trip, not 2.
+
+**`= ANY` parameter cost, re-measured:** ~2 allocations per bound id, on pgx's
+parameter side. **`pgtype.FlatArray` does not help** — within noise of a plain
+slice, because both pay per-element cost inside pgx's generic array codec. The
+fix is a `pgtype.Codec` in `runtime/pgxdrv`. Numbers in `bench/RESULTS.md`.
+
+See [[write_path]], [[seam_and_codegen]].
