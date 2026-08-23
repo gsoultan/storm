@@ -31,6 +31,37 @@ import (
 type Plans struct {
 	t   *Table
 	out *[]*schema.Plan
+	b   *builder
+}
+
+// Nested names a relation on a table OTHER than the one declaring the plan —
+// a post's comments, reached through a user's posts.
+//
+// It exists because a field pointer needs an instance to point into, and the
+// declaring model has no Post to hand. Into supplies one: the builder already
+// allocated a zero value of every registered model, so the closure is called
+// with that and the offset resolves against the right table.
+type Nested struct {
+	typ     reflect.Type
+	pick    func(ptr reflect.Value) any
+	nested  []Nested
+	invalid string
+}
+
+// Into names a relation on T, for use inside With.
+//
+//	p.Named("Feed").With(&u.Posts, raorm.Into(func(p *Post) any { return &p.Comments }))
+//
+// The type parameter is what says which table the field belongs to, so a
+// pointer into the wrong model is a compile error rather than a mis-resolved
+// offset.
+func Into[T any](pick func(*T) any, nested ...Nested) Nested {
+	var zero *T
+	return Nested{
+		typ:    reflect.TypeOf(zero).Elem(),
+		pick:   func(ptr reflect.Value) any { return pick(ptr.Interface().(*T)) },
+		nested: nested,
+	}
 }
 
 // Planner is implemented by models that declare fetch plans. Optional: a model
@@ -66,22 +97,50 @@ type PlanBuilder struct {
 	plan *schema.Plan
 }
 
-// With adds a relation to the plan, addressed by field pointer.
-func (b *PlanBuilder) With(relPtr any) *PlanBuilder {
+// With adds a relation to the plan, addressed by field pointer. Anything passed
+// after it is loaded THROUGH it and costs one more round trip each.
+func (b *PlanBuilder) With(relPtr any, nested ...Nested) *PlanBuilder {
 	name, err := b.p.t.resolveRel(relPtr)
 	if err != nil {
 		b.p.t.errs.add(fmt.Errorf("%s: plan %q: %w", b.p.t.out.Name, b.plan.Name, err))
 		return b
 	}
 	for _, ex := range b.plan.Fields {
-		if ex == name {
+		if ex.Field == name {
 			b.p.t.errs.add(fmt.Errorf(
 				"%s: plan %q loads %s twice", b.p.t.out.Name, b.plan.Name, name))
 			return b
 		}
 	}
-	b.plan.Fields = append(b.plan.Fields, name)
+	f := schema.PlanField{Field: name}
+	f.Nested = b.p.resolveNested(b.plan.Name, name, nested)
+	b.plan.Fields = append(b.plan.Fields, f)
 	return b
+}
+
+// resolveNested turns Into(...) values into field names on their own tables.
+func (p *Plans) resolveNested(plan, through string, nested []Nested) []schema.PlanField {
+	var out []schema.PlanField
+	for _, n := range nested {
+		mi := p.b.byType[n.typ]
+		if mi == nil || mi.tbl == nil {
+			p.t.errs.add(fmt.Errorf(
+				"%s: plan %q: %s is not registered — pass it to Build",
+				p.t.out.Name, plan, n.typ.Name()))
+			continue
+		}
+		name, err := mi.tbl.resolveRel(n.pick(mi.ptr))
+		if err != nil {
+			p.t.errs.add(fmt.Errorf(
+				"%s: plan %q: through %s into %s: %w",
+				p.t.out.Name, plan, through, n.typ.Name(), err))
+			continue
+		}
+		f := schema.PlanField{Field: name}
+		f.Nested = p.resolveNested(plan, name, n.nested)
+		out = append(out, f)
+	}
+	return out
 }
 
 // resolveRel turns a relation field pointer into its Go field name.

@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/gsoultan/raorm/internal/planspike/store"
+	"github.com/gsoultan/raorm/internal/planspike/store/comment"
 	"github.com/gsoultan/raorm/internal/planspike/store/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/post"
 	"github.com/gsoultan/raorm/internal/planspike/store/user"
 )
 
@@ -131,6 +133,102 @@ func TestNamedPlan_PredicatesNarrowTheRelations(t *testing.T) {
 	for _, u := range rows[0].Users {
 		if u.OrgID != one[0].ID {
 			t.Fatal("the relation load ignored the parent predicate")
+		}
+	}
+}
+
+// A nested plan loads a relation of a relation: users, their posts, and those
+// posts' comments. THREE round trips — one per relation plus the parents —
+// whatever the row counts. This is also the shape m2m-with-payload takes: the
+// join entity is the middle relation and its far side is the nested one.
+func TestNamedPlan_NestedIsOneRoundTripPerRelation(t *testing.T) {
+	ctx := context.Background()
+	ex, count := db(t)
+
+	// Seed a small graph: one user, two posts, comments on each.
+	u := mustCreate(t, ctx, ex, "nested@example.com", "Nested")
+	var postIDs [][16]byte
+	for i := range 2 {
+		np := post.Create()
+		np.SetTitle("post " + string(rune('a'+i)))
+		np.SetBody("body")
+		np.SetAuthorID(u.ID)
+		pr, err := np.Insert(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		postIDs = append(postIDs, pr.ID)
+		for j := range 3 {
+			nc := comment.Create()
+			nc.SetBody("comment " + string(rune('a'+j)))
+			nc.SetPostID(pr.ID)
+			nc.SetAuthorID(u.ID)
+			if _, err := nc.Insert(ctx, ex); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(func() {
+		for _, id := range postIDs {
+			_ = post.Delete(ctx, ex, id) // comments cascade
+		}
+		_ = user.Delete(ctx, ex, u.ID)
+	})
+
+	count.Reset()
+	rows, err := store.UserFeed().Where(user.ID.Eq(u.ID)).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := count.RoundTrips(); n != 4 {
+		t.Errorf("%d round trips, want 4 — users, posts, comments, orgs", n)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d users, want 1", len(rows))
+	}
+	if len(rows[0].Posts) != 2 {
+		t.Fatalf("got %d posts, want 2", len(rows[0].Posts))
+	}
+	for _, p := range rows[0].Posts {
+		if len(p.Comments) != 3 {
+			t.Errorf("post %q has %d comments, want 3", p.Title, len(p.Comments))
+		}
+		for _, c := range p.Comments {
+			if c.PostID != p.ID {
+				t.Error("a comment was attached to the wrong post")
+			}
+		}
+	}
+}
+
+// The round-trip count must not grow with the row count — that is the whole
+// difference between a nested plan and an N+1.
+//
+// It is CONSTANT, not always four: a level with nothing to fetch issues no
+// query, so a plan over users with no posts costs three rather than four. Not
+// issuing a guaranteed-empty query is the same rule the empty-parent case
+// follows, and asserting a fixed four would have pinned the wrong thing.
+func TestNamedPlan_NestedDoesNotScaleWithRowCount(t *testing.T) {
+	ctx := context.Background()
+	ex, count := db(t)
+
+	var first int
+	for i, users := range []int64{1, 10, 50, 200} {
+		count.Reset()
+		if _, err := store.UserFeed().Limit(users).All(ctx, ex); err != nil {
+			t.Fatal(err)
+		}
+		n := count.RoundTrips()
+		if n > 4 {
+			t.Fatalf("%d users cost %d round trips; a three-relation plan can never exceed 4", users, n)
+		}
+		if i == 0 {
+			first = n
+			continue
+		}
+		if n != first {
+			t.Errorf("round trips changed with row count: %d at 1 user, %d at %d — that is an N+1",
+				first, n, users)
 		}
 	}
 }

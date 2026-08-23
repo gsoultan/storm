@@ -106,7 +106,11 @@ func (u *User) Schema(t *raorm.Table) {
 // way this system reads a user with its relations, in one place a reviewer can
 // count round trips from.
 func (u *User) Plans(p *raorm.Plans) {
-	p.Named("Feed").With(&u.Posts).With(&u.Org)
+	// Posts carry their comments: one round trip for the users, one for the
+	// posts, one for the comments — three, whatever the row counts.
+	p.Named("Feed").
+		With(&u.Posts, raorm.Into(func(p *Post) any { return &p.Comments })).
+		With(&u.Org)
 	p.Named("Summary").With(&u.Org)
 }
 

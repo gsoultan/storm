@@ -70,10 +70,21 @@ type Plan struct {
 	// the model name plus this, e.g. UserFeed.
 	Name string
 
-	// Fields are the Go field names of the relations to load, in declaration
-	// order. Order is preserved because it is the order the loads are issued,
-	// and a reviewer counting round trips should be able to read them off.
-	Fields []string
+	// Fields are the relations to load, in declaration order. Order is
+	// preserved because it is the order the loads are issued, and a reviewer
+	// counting round trips should be able to read them off.
+	Fields []PlanField
+}
+
+// PlanField is one relation in a plan, with anything loaded through it.
+type PlanField struct {
+	// Field is the Go field name on the plan's model: "Posts".
+	Field string
+
+	// Nested are relations loaded through this one — a post's comments, or the
+	// far side of a join table. Each costs one more round trip, and the count
+	// is what a reviewer should be able to read off a plan.
+	Nested []PlanField
 }
 
 // Relation is one declared link between two models.

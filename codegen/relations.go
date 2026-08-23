@@ -194,27 +194,9 @@ func namedPlansFor(s *schema.Schema, tables []string) ([]namedPlan, error) {
 			}
 			np.ParentPkg = pkg
 			for _, field := range pl.Fields {
-				rel := relationByField(t, field)
-				if rel == nil {
-					return nil, fmt.Errorf(
-						"codegen: table %s plan %s names %s, which is not a relation",
-						t.Name, pl.Name, field)
-				}
-				if !in[rel.Target] {
-					return nil, fmt.Errorf(
-						"codegen: table %s plan %s loads %s from table %s, which is not generated "+
-							"in this context — split the plan or generate both tables together",
-						t.Name, pl.Name, field, rel.Target)
-				}
-				child := s.Table(rel.Target)
-				m, err := planFor(t, child, rel)
+				m, err := planMember(s, in, t, pl.Name, field, np.Name)
 				if err != nil {
 					return nil, err
-				}
-				if m == nil {
-					return nil, fmt.Errorf(
-						"codegen: table %s plan %s cannot load %s — a composite key needs an "+
-							"explicit join", t.Name, pl.Name, field)
 				}
 				np.members = append(np.members, *m)
 			}
@@ -230,7 +212,70 @@ type namedPlan struct {
 	parent    *schema.Table
 	Name      string
 	ParentPkg string
-	members   []relPlan
+	members   []planMemberT
+}
+
+// planMemberT is one relation of a plan, plus anything loaded through it.
+//
+// A nested member needs a row type of its own — a post inside a user's feed is
+// a post WITH its comments, and that is a different type from a bare post. The
+// name is the plan's plus the path, so UserFeed's Posts become UserFeedPosts.
+type planMemberT struct {
+	relPlan
+	RowType string // "" means the child's own Row is enough
+	Nested  []planMemberT
+}
+
+// planMember resolves one plan field and everything under it.
+func planMember(s *schema.Schema, in map[string]bool, parent *schema.Table,
+	planName string, f schema.PlanField, typePrefix string) (*planMemberT, error) {
+
+	rel := relationByField(parent, f.Field)
+	if rel == nil {
+		return nil, fmt.Errorf(
+			"codegen: table %s plan %s names %s, which is not a relation",
+			parent.Name, planName, f.Field)
+	}
+	if !in[rel.Target] {
+		return nil, fmt.Errorf(
+			"codegen: table %s plan %s loads %s from table %s, which is not generated "+
+				"in this context — split the plan or generate both tables together",
+			parent.Name, planName, f.Field, rel.Target)
+	}
+	child := s.Table(rel.Target)
+	base, err := planFor(parent, child, rel)
+	if err != nil {
+		return nil, err
+	}
+	if base == nil {
+		return nil, fmt.Errorf(
+			"codegen: table %s plan %s cannot load %s — a composite key needs an explicit join",
+			parent.Name, planName, f.Field)
+	}
+
+	m := &planMemberT{relPlan: *base}
+	if len(f.Nested) == 0 {
+		return m, nil
+	}
+	// Nesting through a to-one is not generated. It is expressible — load the
+	// target, then its relations — but it makes the row type a pointer to a
+	// type that itself has relations, and every caller then has two nil checks
+	// to get one value. Declare the far relation on the plan directly instead.
+	if !rel.ToMany {
+		return nil, fmt.Errorf(
+			"codegen: table %s plan %s nests through %s, which is a to-one relation — "+
+				"load its relations from the plan directly rather than through it",
+			parent.Name, planName, f.Field)
+	}
+	m.RowType = typePrefix + exportName(f.Field)
+	for _, sub := range f.Nested {
+		nm, err := planMember(s, in, child, planName, sub, m.RowType)
+		if err != nil {
+			return nil, err
+		}
+		m.Nested = append(m.Nested, *nm)
+	}
+	return m, nil
 }
 
 func relationByField(t *schema.Table, field string) *schema.Relation {
@@ -252,6 +297,8 @@ func (g *gen) emitNamedPlans(plans []namedPlan) {
 func (g *gen) emitNamedPlan(np namedPlan) {
 	q := np.Name + "Query"
 
+	// Nested row types first: a plan's row type embeds them.
+	g.emitNestedTypes(np.members)
 	g.p("// %sRow is %s with %d relation(s) loaded.", np.Name, np.parent.Name, len(np.members))
 	g.p("//")
 	g.p("// One type per DECLARED plan. Generating a type per With(...)")
@@ -311,111 +358,229 @@ func (g *gen) emitNamedPlan(np namedPlan) {
 }
 
 // planField is the struct field one relation contributes.
-func planField(m relPlan) string {
+func planField(m planMemberT) string {
 	name := exportName(m.rel.Field)
+	elem := m.ChildPkg + ".Row"
+	if m.RowType != "" {
+		elem = m.RowType // a nested member carries its own relations
+	}
 	if m.rel.ToMany {
-		return name + " []" + m.ChildPkg + ".Row"
+		return name + " []" + elem
 	}
 	if m.KeyNullable {
-		return name + " *" + m.ChildPkg + ".Row"
+		return name + " *" + elem
 	}
-	return name + " " + m.ChildPkg + ".Row"
+	return name + " " + elem
+}
+
+// emitNestedTypes writes a row type per nested member, depth first, so a type
+// is declared before the one embedding it.
+func (g *gen) emitNestedTypes(members []planMemberT) {
+	for _, m := range members {
+		if m.RowType == "" {
+			continue
+		}
+		g.emitNestedTypes(m.Nested)
+		g.p("// %s is a %s with its own relations loaded. A %s inside this plan is",
+			m.RowType, m.child.Name, m.child.Name)
+		g.p("// not the same type as a bare one — the extra fields exist only where")
+		g.p("// the plan said to load them, which is the guarantee one level down.")
+		g.p("type %s struct {", m.RowType)
+		g.p("\t%s.Row", m.ChildPkg)
+		for _, sub := range m.Nested {
+			g.p("\t%s", planField(sub))
+		}
+		g.p("}")
+		g.p("")
+	}
 }
 
 // emitNamedMember writes the loader for one relation of a plan.
-func (g *gen) emitNamedMember(np namedPlan, m relPlan, i int, q string) {
+func (g *gen) emitNamedMember(np namedPlan, m planMemberT, i int, q string) {
+	g.emitMemberLoader(q, fmt.Sprintf("load%d", i), np.Name+"Row", np.parent.Name, m)
+}
+
+// emitMemberLoader writes one relation's fetch-and-attach over a slice of
+// rowType, then recurses for anything nested through it.
+func (g *gen) emitMemberLoader(q, fn, rowType, parentTable string, m planMemberT) {
 	field := exportName(m.rel.Field)
-	g.p("// load%d fetches %s.", i, m.rel.Field)
-	g.p("func (p %s) load%d(ctx context.Context, ex runtime.Executor, out []%sRow) error {", q, i, np.Name)
+
+	g.p("// %s fetches %s.", fn, m.rel.Field)
+	g.p("func (p %s) %s(ctx context.Context, ex runtime.Executor, out []%s) error {", q, fn, rowType)
+
 	if m.rel.ToMany {
 		keyField := exportName(m.ParentKey)
 		childKey := exportName(m.rel.Column)
-		g.p("	ids := make([]%s, len(out))", m.KeyGo)
-		g.p("	at := make(map[%s]int, len(out))", m.KeyGo)
-		g.p("	for i := range out {")
-		g.p("		ids[i] = out[i].%s", keyField)
-		g.p("		at[out[i].%s] = i", keyField)
-		g.p("	}")
-		g.p("	kids, err := %s.New().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
+		g.p("\tids := make([]%s, len(out))", m.KeyGo)
+		g.p("\tat := make(map[%s]int, len(out))", m.KeyGo)
+		g.p("\tfor i := range out {")
+		g.p("\t\tids[i] = out[i].%s", keyField)
+		g.p("\t\tat[out[i].%s] = i", keyField)
+		g.p("\t}")
+		g.p("\tkids, err := %s.New().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
 			m.ChildPkg, m.ChildPkg, childKey)
-		g.p("	if err != nil {")
-		g.p("		return err")
-		g.p("	}")
-		g.p("	if int64(len(kids)) >= p.childLimit {")
-		g.p("		return runtime.ErrChildLimit")
-		g.p("	}")
-		g.p("	for _, k := range kids {")
+		g.p("\tif err != nil {")
+		g.p("\t\treturn err")
+		g.p("\t}")
+		g.p("\tif int64(len(kids)) >= p.childLimit {")
+		g.p("\t\treturn runtime.ErrChildLimit")
+		g.p("\t}")
+		g.p("\tfor _, k := range kids {")
 		if m.KeyNullable {
-			g.p("		key, ok := k.%s.Get()", childKey)
-			g.p("		if !ok {")
-			g.p("			continue")
-			g.p("		}")
-			g.p("		if j, ok := at[key]; ok {")
+			g.p("\t\tkey, ok := k.%s.Get()", childKey)
+			g.p("\t\tif !ok {")
+			g.p("\t\t\tcontinue")
+			g.p("\t\t}")
+			g.p("\t\tif j, ok := at[key]; ok {")
 		} else {
-			g.p("		if j, ok := at[k.%s]; ok {", childKey)
+			g.p("\t\tif j, ok := at[k.%s]; ok {", childKey)
 		}
-		g.p("			out[j].%s = append(out[j].%s, k)", field, field)
-		g.p("		}")
-		g.p("	}")
-		g.p("	return nil")
+		if m.RowType != "" {
+			g.p("\t\t\tout[j].%s = append(out[j].%s, %s{Row: k})", field, field, m.RowType)
+		} else {
+			g.p("\t\t\tout[j].%s = append(out[j].%s, k)", field, field)
+		}
+		g.p("\t\t}")
+		g.p("\t}")
+		for i := range m.Nested {
+			g.p("\tif err := p.%s_%d(ctx, ex, out); err != nil {", fn, i)
+			g.p("\t\treturn err")
+			g.p("\t}")
+		}
+		g.p("\treturn nil")
 		g.p("}")
 		g.p("")
+		// Anything nested through this relation loads from the children just
+		// attached, so it walks the parents once more to gather them — cheap,
+		// and it keeps the round-trip count at one per relation.
+		for i, sub := range m.Nested {
+			g.emitNestedPass(q, fmt.Sprintf("%s_%d", fn, i), rowType, field, m.RowType, sub)
+		}
 		return
 	}
 
 	own := exportName(m.rel.Column)
 	childKey := exportName(m.ParentKey)
-	g.p("	seen := make(map[%s]bool, len(out))", m.KeyGo)
-	g.p("	ids := make([]%s, 0, len(out))", m.KeyGo)
-	g.p("	for i := range out {")
+	g.p("\tseen := make(map[%s]bool, len(out))", m.KeyGo)
+	g.p("\tids := make([]%s, 0, len(out))", m.KeyGo)
+	g.p("\tfor i := range out {")
 	if m.KeyNullable {
-		g.p("		key, ok := out[i].%s.Get()", own)
-		g.p("		if !ok {")
-		g.p("			continue")
-		g.p("		}")
+		g.p("\t\tkey, ok := out[i].%s.Get()", own)
+		g.p("\t\tif !ok {")
+		g.p("\t\t\tcontinue")
+		g.p("\t\t}")
 	} else {
-		g.p("		key := out[i].%s", own)
+		g.p("\t\tkey := out[i].%s", own)
 	}
-	g.p("		if !seen[key] {")
-	g.p("			seen[key] = true")
-	g.p("			ids = append(ids, key)")
-	g.p("		}")
-	g.p("	}")
-	g.p("	if len(ids) == 0 {")
-	g.p("		return nil")
-	g.p("	}")
-	g.p("	targets, err := %s.New().Where(%s.%s.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)",
+	g.p("\t\tif !seen[key] {")
+	g.p("\t\t\tseen[key] = true")
+	g.p("\t\t\tids = append(ids, key)")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tif len(ids) == 0 {")
+	g.p("\t\treturn nil")
+	g.p("\t}")
+	g.p("\ttargets, err := %s.New().Where(%s.%s.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)",
 		m.ChildPkg, m.ChildPkg, childKey)
-	g.p("	if err != nil {")
-	g.p("		return err")
-	g.p("	}")
-	g.p("	by := make(map[%s]int, len(targets))", m.KeyGo)
-	g.p("	for i := range targets {")
-	g.p("		by[targets[i].%s] = i", childKey)
-	g.p("	}")
-	g.p("	for i := range out {")
+	g.p("\tif err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tby := make(map[%s]int, len(targets))", m.KeyGo)
+	g.p("\tfor i := range targets {")
+	g.p("\t\tby[targets[i].%s] = i", childKey)
+	g.p("\t}")
+	g.p("\tfor i := range out {")
 	if m.KeyNullable {
-		g.p("		key, ok := out[i].%s.Get()", own)
-		g.p("		if !ok {")
-		g.p("			continue")
-		g.p("		}")
+		g.p("\t\tkey, ok := out[i].%s.Get()", own)
+		g.p("\t\tif !ok {")
+		g.p("\t\t\tcontinue")
+		g.p("\t\t}")
 	} else {
-		g.p("		key := out[i].%s", own)
+		g.p("\t\tkey := out[i].%s", own)
 	}
-	g.p("		j, ok := by[key]")
-	g.p("		if !ok {")
-	g.p("			return fmt.Errorf(\"raorm: %%s references a missing %%s row\", %q, %q)",
-		np.parent.Name, m.child.Name)
-	g.p("		}")
+	g.p("\t\tj, ok := by[key]")
+	g.p("\t\tif !ok {")
+	g.p("\t\t\treturn fmt.Errorf(\"raorm: %%s references a missing %%s row\", %q, %q)",
+		parentTable, m.child.Name)
+	g.p("\t\t}")
 	if m.KeyNullable {
-		g.p("		out[i].%s = &targets[j]", field)
+		g.p("\t\tout[i].%s = &targets[j]", field)
 	} else {
-		g.p("		out[i].%s = targets[j]", field)
+		g.p("\t\tout[i].%s = targets[j]", field)
 	}
-	g.p("	}")
-	g.p("	return nil")
+	g.p("\t}")
+	g.p("\treturn nil")
 	g.p("}")
 	g.p("")
+}
+
+// emitNestedPass loads a relation of a relation: it walks every parent's
+// already-attached children, gathers their keys, and fetches in one query.
+//
+// One query per relation, whatever the nesting depth — the walk is in memory
+// and the round trips are what the plan promised.
+func (g *gen) emitNestedPass(q, fn, outerRow, outerField, innerRow string, m planMemberT) {
+	field := exportName(m.rel.Field)
+
+	g.p("// %s fetches %s, through each %s.", fn, m.rel.Field, outerField)
+	g.p("func (p %s) %s(ctx context.Context, ex runtime.Executor, out []%s) error {", q, fn, outerRow)
+	g.p("\t// Every child of every parent, flattened once so the fetch is one query.")
+	g.p("\tn := 0")
+	g.p("\tfor i := range out {")
+	g.p("\t\tn += len(out[i].%s)", outerField)
+	g.p("\t}")
+	g.p("\tif n == 0 {")
+	g.p("\t\treturn nil")
+	g.p("\t}")
+
+	if !m.rel.ToMany {
+		g.err = fmt.Errorf("codegen: nesting a to-one relation is not generated")
+		return
+	}
+
+	keyField := exportName(m.ParentKey)
+	childKey := exportName(m.rel.Column)
+	g.p("\tids := make([]%s, 0, n)", m.KeyGo)
+	g.p("\ttype at%s struct{ i, j int }", fn)
+	g.p("\tat := make(map[%s]at%s, n)", m.KeyGo, fn)
+	g.p("\tfor i := range out {")
+	g.p("\t\tfor j := range out[i].%s {", outerField)
+	g.p("\t\t\tk := out[i].%s[j].%s", outerField, keyField)
+	g.p("\t\t\tids = append(ids, k)")
+	g.p("\t\t\tat[k] = at%s{i, j}", fn)
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tkids, err := %s.New().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
+		m.ChildPkg, m.ChildPkg, childKey)
+	g.p("\tif err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tif int64(len(kids)) >= p.childLimit {")
+	g.p("\t\treturn runtime.ErrChildLimit")
+	g.p("\t}")
+	g.p("\tfor _, k := range kids {")
+	if m.KeyNullable {
+		g.p("\t\tkey, ok := k.%s.Get()", childKey)
+		g.p("\t\tif !ok {")
+		g.p("\t\t\tcontinue")
+		g.p("\t\t}")
+		g.p("\t\tif a, ok := at[key]; ok {")
+	} else {
+		g.p("\t\tif a, ok := at[k.%s]; ok {", childKey)
+	}
+	if m.RowType != "" {
+		g.p("\t\t\tout[a.i].%s[a.j].%s = append(out[a.i].%s[a.j].%s, %s{Row: k})",
+			outerField, field, outerField, field, m.RowType)
+	} else {
+		g.p("\t\t\tout[a.i].%s[a.j].%s = append(out[a.i].%s[a.j].%s, k)",
+			outerField, field, outerField, field)
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\treturn nil")
+	g.p("}")
+	g.p("")
+	_ = innerRow
 }
 
 // emitRelPlans writes the plan layer into the context package.

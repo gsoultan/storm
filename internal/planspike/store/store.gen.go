@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gsoultan/raorm/internal/planspike/store/comment"
 	"github.com/gsoultan/raorm/internal/planspike/store/org"
 	"github.com/gsoultan/raorm/internal/planspike/store/post"
 	"github.com/gsoultan/raorm/internal/planspike/store/user"
@@ -18,9 +19,10 @@ import (
 // runtime code inspects a schema and no constraint has to be deferred for
 // a graph write to succeed.
 var FlushOrder = map[string]int{
-	"orgs":  1,
-	"users": 2,
-	"posts": 3,
+	"orgs":     1,
+	"users":    2,
+	"posts":    3,
+	"comments": 5,
 }
 
 // NewUnit stages writes across this context and flushes them in foreign-key
@@ -33,6 +35,543 @@ func NewUnit() *runtime.Unit { return runtime.NewUnit(FlushOrder) }
 // reaching it: an error, never a partial result. Override per plan with
 // ChildLimit.
 const defaultChildLimit = 1 << 20
+
+// CommentWithAuthorRow is comments with its Author loaded.
+type CommentWithAuthorRow struct {
+	comment.Row
+	Author user.Row
+}
+
+type CommentWithAuthorQuery struct {
+	q comment.Query
+}
+
+// CommentWithAuthor starts the plan.
+func CommentWithAuthor() CommentWithAuthorQuery { return CommentWithAuthorQuery{q: comment.New()} }
+
+func (p CommentWithAuthorQuery) Where(ps ...comment.Pred) CommentWithAuthorQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p CommentWithAuthorQuery) WhereIf(cond bool, pr comment.Pred) CommentWithAuthorQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p CommentWithAuthorQuery) Any(ps ...comment.Pred) CommentWithAuthorQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p CommentWithAuthorQuery) Not(pr comment.Pred) CommentWithAuthorQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p CommentWithAuthorQuery) NotAny(ps ...comment.Pred) CommentWithAuthorQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p CommentWithAuthorQuery) Order(ts ...comment.Sort) CommentWithAuthorQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p CommentWithAuthorQuery) Limit(n int64) CommentWithAuthorQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p CommentWithAuthorQuery) Offset(n int64) CommentWithAuthorQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p CommentWithAuthorQuery) After(r CommentWithAuthorRow) CommentWithAuthorQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p CommentWithAuthorQuery) Err() error { return p.q.Err() }
+
+// All runs the plan in exactly TWO round trips. Distinct parent keys are
+// de-duplicated before the second, so a thousand rows pointing at three
+// orgs fetch three orgs.
+func (p CommentWithAuthorQuery) All(ctx context.Context, ex runtime.Executor) ([]CommentWithAuthorRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]CommentWithAuthorRow, len(parents))
+	seen := make(map[[16]byte]bool, len(parents))
+	ids := make([][16]byte, 0, len(parents))
+	for i, r := range parents {
+		out[i] = CommentWithAuthorRow{Row: r}
+		key := r.AuthorID
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	targets, err := user.New().
+		Where(user.ID.In(ids...)).
+		Limit(int64(len(ids))).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key := out[i].AuthorID
+		j, ok := by[key]
+		if !ok {
+			// A foreign key pointing at a row that is not there. The database
+			// forbids it, so reaching this means the constraint was dropped.
+			return nil, fmt.Errorf("raorm: %s references a missing %s row", "comments", "users")
+		}
+		out[i].Author = targets[j]
+	}
+	return out, nil
+}
+
+// CommentWithParentRow is comments with its Parent loaded.
+type CommentWithParentRow struct {
+	comment.Row
+	// A pointer because the link is optional. nil means the row has no
+	// Parent, which is different from having one that failed to load.
+	Parent *comment.Row
+}
+
+type CommentWithParentQuery struct {
+	q comment.Query
+}
+
+// CommentWithParent starts the plan.
+func CommentWithParent() CommentWithParentQuery { return CommentWithParentQuery{q: comment.New()} }
+
+func (p CommentWithParentQuery) Where(ps ...comment.Pred) CommentWithParentQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p CommentWithParentQuery) WhereIf(cond bool, pr comment.Pred) CommentWithParentQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p CommentWithParentQuery) Any(ps ...comment.Pred) CommentWithParentQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p CommentWithParentQuery) Not(pr comment.Pred) CommentWithParentQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p CommentWithParentQuery) NotAny(ps ...comment.Pred) CommentWithParentQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p CommentWithParentQuery) Order(ts ...comment.Sort) CommentWithParentQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p CommentWithParentQuery) Limit(n int64) CommentWithParentQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p CommentWithParentQuery) Offset(n int64) CommentWithParentQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p CommentWithParentQuery) After(r CommentWithParentRow) CommentWithParentQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p CommentWithParentQuery) Err() error { return p.q.Err() }
+
+// All runs the plan in exactly TWO round trips. Distinct parent keys are
+// de-duplicated before the second, so a thousand rows pointing at three
+// orgs fetch three orgs.
+func (p CommentWithParentQuery) All(ctx context.Context, ex runtime.Executor) ([]CommentWithParentRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]CommentWithParentRow, len(parents))
+	seen := make(map[[16]byte]bool, len(parents))
+	ids := make([][16]byte, 0, len(parents))
+	for i, r := range parents {
+		out[i] = CommentWithParentRow{Row: r}
+		key, ok := r.ParentID.Get()
+		if !ok {
+			continue
+		}
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	targets, err := comment.New().
+		Where(comment.ID.In(ids...)).
+		Limit(int64(len(ids))).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key, ok := out[i].ParentID.Get()
+		if !ok {
+			continue
+		}
+		j, ok := by[key]
+		if !ok {
+			// A foreign key pointing at a row that is not there. The database
+			// forbids it, so reaching this means the constraint was dropped.
+			return nil, fmt.Errorf("raorm: %s references a missing %s row", "comments", "comments")
+		}
+		out[i].Parent = &targets[j]
+	}
+	return out, nil
+}
+
+// CommentWithPostRow is comments with its Post loaded.
+type CommentWithPostRow struct {
+	comment.Row
+	Post post.Row
+}
+
+type CommentWithPostQuery struct {
+	q comment.Query
+}
+
+// CommentWithPost starts the plan.
+func CommentWithPost() CommentWithPostQuery { return CommentWithPostQuery{q: comment.New()} }
+
+func (p CommentWithPostQuery) Where(ps ...comment.Pred) CommentWithPostQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p CommentWithPostQuery) WhereIf(cond bool, pr comment.Pred) CommentWithPostQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p CommentWithPostQuery) Any(ps ...comment.Pred) CommentWithPostQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p CommentWithPostQuery) Not(pr comment.Pred) CommentWithPostQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p CommentWithPostQuery) NotAny(ps ...comment.Pred) CommentWithPostQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p CommentWithPostQuery) Order(ts ...comment.Sort) CommentWithPostQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p CommentWithPostQuery) Limit(n int64) CommentWithPostQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p CommentWithPostQuery) Offset(n int64) CommentWithPostQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p CommentWithPostQuery) After(r CommentWithPostRow) CommentWithPostQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p CommentWithPostQuery) Err() error { return p.q.Err() }
+
+// All runs the plan in exactly TWO round trips. Distinct parent keys are
+// de-duplicated before the second, so a thousand rows pointing at three
+// orgs fetch three orgs.
+func (p CommentWithPostQuery) All(ctx context.Context, ex runtime.Executor) ([]CommentWithPostRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]CommentWithPostRow, len(parents))
+	seen := make(map[[16]byte]bool, len(parents))
+	ids := make([][16]byte, 0, len(parents))
+	for i, r := range parents {
+		out[i] = CommentWithPostRow{Row: r}
+		key := r.PostID
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	targets, err := post.New().
+		Where(post.ID.In(ids...)).
+		Limit(int64(len(ids))).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key := out[i].PostID
+		j, ok := by[key]
+		if !ok {
+			// A foreign key pointing at a row that is not there. The database
+			// forbids it, so reaching this means the constraint was dropped.
+			return nil, fmt.Errorf("raorm: %s references a missing %s row", "comments", "posts")
+		}
+		out[i].Post = targets[j]
+	}
+	return out, nil
+}
+
+// CommentWithRepliesRow is comments with its Replies loaded.
+//
+// Replies is a field HERE and nowhere else: comment.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type CommentWithRepliesRow struct {
+	comment.Row
+	Replies []comment.Row
+}
+
+// CommentWithRepliesQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type CommentWithRepliesQuery struct {
+	q          comment.Query
+	childLimit int64
+	childOrder []comment.Sort
+	childTop   int64
+}
+
+// CommentWithReplies starts the plan.
+func CommentWithReplies() CommentWithRepliesQuery {
+	return CommentWithRepliesQuery{q: comment.New(), childLimit: defaultChildLimit}
+}
+
+func (p CommentWithRepliesQuery) Where(ps ...comment.Pred) CommentWithRepliesQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p CommentWithRepliesQuery) WhereIf(cond bool, pr comment.Pred) CommentWithRepliesQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p CommentWithRepliesQuery) Any(ps ...comment.Pred) CommentWithRepliesQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p CommentWithRepliesQuery) Not(pr comment.Pred) CommentWithRepliesQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p CommentWithRepliesQuery) NotAny(ps ...comment.Pred) CommentWithRepliesQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p CommentWithRepliesQuery) Order(ts ...comment.Sort) CommentWithRepliesQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p CommentWithRepliesQuery) Limit(n int64) CommentWithRepliesQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p CommentWithRepliesQuery) Offset(n int64) CommentWithRepliesQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p CommentWithRepliesQuery) After(r CommentWithRepliesRow) CommentWithRepliesQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p CommentWithRepliesQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	comment.New().Where(comment.ParentID.Eq(id)).Order(...).After(last).Limit(20)
+func (p CommentWithRepliesQuery) ChildLimit(n int64) CommentWithRepliesQuery {
+	p.childLimit = n
+	return p
+}
+
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+func (p CommentWithRepliesQuery) ChildTop(n int64) CommentWithRepliesQuery {
+	p.childTop = n
+	return p
+}
+
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p CommentWithRepliesQuery) ChildOrder(ts ...comment.Sort) CommentWithRepliesQuery {
+	p.childOrder = ts
+	return p
+}
+
+// All runs the plan in exactly TWO round trips, whatever the parent count.
+//
+// The mechanism is `= ANY($1)`: one placeholder binds the whole id list, so
+// fifty parents and five thousand produce the same SQL and share one
+// compiled statement. No join is involved, which is why M3 was never
+// actually blocked on join support.
+func (p CommentWithRepliesQuery) All(ctx context.Context, ex runtime.Executor) ([]CommentWithRepliesRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// Round two would be `= ANY('{}')`, a guaranteed-empty query. Not
+		// issuing it is the difference between costing 2 round trips when
+		// there is work and 2 when there is none.
+		return nil, nil
+	}
+	out := make([]CommentWithRepliesRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = CommentWithRepliesRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	var kids []comment.Row
+	if p.childTop > 0 {
+		// Per-parent limit: one query with the limit expressed in SQL.
+		kids, err = comment.BatchTopByParentID(ctx, ex, ids, p.childTop, p.childOrder...)
+	} else {
+		cq := comment.New().Where(comment.ParentID.In(ids...)).Limit(p.childLimit)
+		if len(p.childOrder) > 0 {
+			cq = cq.Order(p.childOrder...)
+		}
+		kids, err = cq.All(ctx, ex, nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so. A per-parent load
+	// is bounded by construction, so the global guard does not apply.
+	if p.childTop == 0 && int64(len(kids)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		key, ok := k.ParentID.Get()
+		if !ok {
+			continue
+		}
+		if i, ok := at[key]; ok {
+			out[i].Replies = append(out[i].Replies, k)
+		}
+	}
+	return out, nil
+}
 
 // OrgWithChildrenRow is orgs with its Children loaded.
 //
@@ -636,6 +1175,186 @@ func (p PostWithAuthorQuery) All(ctx context.Context, ex runtime.Executor) ([]Po
 	return out, nil
 }
 
+// PostWithCommentsRow is posts with its Comments loaded.
+//
+// Comments is a field HERE and nowhere else: post.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type PostWithCommentsRow struct {
+	post.Row
+	Comments []comment.Row
+}
+
+// PostWithCommentsQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type PostWithCommentsQuery struct {
+	q          post.Query
+	childLimit int64
+	childOrder []comment.Sort
+	childTop   int64
+}
+
+// PostWithComments starts the plan.
+func PostWithComments() PostWithCommentsQuery {
+	return PostWithCommentsQuery{q: post.New(), childLimit: defaultChildLimit}
+}
+
+func (p PostWithCommentsQuery) Where(ps ...post.Pred) PostWithCommentsQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p PostWithCommentsQuery) WhereIf(cond bool, pr post.Pred) PostWithCommentsQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p PostWithCommentsQuery) Any(ps ...post.Pred) PostWithCommentsQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p PostWithCommentsQuery) Not(pr post.Pred) PostWithCommentsQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p PostWithCommentsQuery) NotAny(ps ...post.Pred) PostWithCommentsQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p PostWithCommentsQuery) Order(ts ...post.Sort) PostWithCommentsQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p PostWithCommentsQuery) Limit(n int64) PostWithCommentsQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p PostWithCommentsQuery) Offset(n int64) PostWithCommentsQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p PostWithCommentsQuery) After(r PostWithCommentsRow) PostWithCommentsQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p PostWithCommentsQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	comment.New().Where(comment.PostID.Eq(id)).Order(...).After(last).Limit(20)
+func (p PostWithCommentsQuery) ChildLimit(n int64) PostWithCommentsQuery {
+	p.childLimit = n
+	return p
+}
+
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+func (p PostWithCommentsQuery) ChildTop(n int64) PostWithCommentsQuery {
+	p.childTop = n
+	return p
+}
+
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p PostWithCommentsQuery) ChildOrder(ts ...comment.Sort) PostWithCommentsQuery {
+	p.childOrder = ts
+	return p
+}
+
+// All runs the plan in exactly TWO round trips, whatever the parent count.
+//
+// The mechanism is `= ANY($1)`: one placeholder binds the whole id list, so
+// fifty parents and five thousand produce the same SQL and share one
+// compiled statement. No join is involved, which is why M3 was never
+// actually blocked on join support.
+func (p PostWithCommentsQuery) All(ctx context.Context, ex runtime.Executor) ([]PostWithCommentsRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// Round two would be `= ANY('{}')`, a guaranteed-empty query. Not
+		// issuing it is the difference between costing 2 round trips when
+		// there is work and 2 when there is none.
+		return nil, nil
+	}
+	out := make([]PostWithCommentsRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = PostWithCommentsRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	var kids []comment.Row
+	if p.childTop > 0 {
+		// Per-parent limit: one query with the limit expressed in SQL.
+		kids, err = comment.BatchTopByPostID(ctx, ex, ids, p.childTop, p.childOrder...)
+	} else {
+		cq := comment.New().Where(comment.PostID.In(ids...)).Limit(p.childLimit)
+		if len(p.childOrder) > 0 {
+			cq = cq.Order(p.childOrder...)
+		}
+		kids, err = cq.All(ctx, ex, nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so. A per-parent load
+	// is bounded by construction, so the global guard does not apply.
+	if p.childTop == 0 && int64(len(kids)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		if i, ok := at[k.PostID]; ok {
+			out[i].Comments = append(out[i].Comments, k)
+		}
+	}
+	return out, nil
+}
+
 // UserWithOrgRow is users with its Org loaded.
 type UserWithOrgRow struct {
 	user.Row
@@ -1083,13 +1802,21 @@ func (p OrgTreeQuery) load1(ctx context.Context, ex runtime.Executor, out []OrgT
 	return nil
 }
 
+// UserFeedPosts is a posts with its own relations loaded. A posts inside this plan is
+// not the same type as a bare one — the extra fields exist only where
+// the plan said to load them, which is the guarantee one level down.
+type UserFeedPosts struct {
+	post.Row
+	Comments []comment.Row
+}
+
 // UserFeedRow is users with 2 relation(s) loaded.
 //
 // One type per DECLARED plan. Generating a type per With(...)
 // combination would be 2^n per entity; you get the plans you named.
 type UserFeedRow struct {
 	user.Row
-	Posts []post.Row
+	Posts []UserFeedPosts
 	Org   org.Row
 }
 
@@ -1202,7 +1929,45 @@ func (p UserFeedQuery) load0(ctx context.Context, ex runtime.Executor, out []Use
 	}
 	for _, k := range kids {
 		if j, ok := at[k.AuthorID]; ok {
-			out[j].Posts = append(out[j].Posts, k)
+			out[j].Posts = append(out[j].Posts, UserFeedPosts{Row: k})
+		}
+	}
+	if err := p.load0_0(ctx, ex, out); err != nil {
+		return err
+	}
+	return nil
+}
+
+// load0_0 fetches Comments, through each Posts.
+func (p UserFeedQuery) load0_0(ctx context.Context, ex runtime.Executor, out []UserFeedRow) error {
+	// Every child of every parent, flattened once so the fetch is one query.
+	n := 0
+	for i := range out {
+		n += len(out[i].Posts)
+	}
+	if n == 0 {
+		return nil
+	}
+	ids := make([][16]byte, 0, n)
+	type atload0_0 struct{ i, j int }
+	at := make(map[[16]byte]atload0_0, n)
+	for i := range out {
+		for j := range out[i].Posts {
+			k := out[i].Posts[j].ID
+			ids = append(ids, k)
+			at[k] = atload0_0{i, j}
+		}
+	}
+	kids, err := comment.New().Where(comment.PostID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	if err != nil {
+		return err
+	}
+	if int64(len(kids)) >= p.childLimit {
+		return runtime.ErrChildLimit
+	}
+	for _, k := range kids {
+		if a, ok := at[k.PostID]; ok {
+			out[a.i].Posts[a.j].Comments = append(out[a.i].Posts[a.j].Comments, k)
 		}
 	}
 	return nil

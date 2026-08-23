@@ -414,7 +414,7 @@ func (b *builder) callPlans(mi *modelInfo) {
 	if !ok {
 		return
 	}
-	p.Plans(&Plans{t: mi.tbl, out: &mi.tbl.out.Plans})
+	p.Plans(&Plans{t: mi.tbl, out: &mi.tbl.out.Plans, b: b})
 }
 
 // validateHasMany checks that every has-many has a matching key on the other
