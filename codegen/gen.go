@@ -57,6 +57,7 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	g.scanner()
 	g.treeBind()
 	g.terminals()
+	g.writes()
 
 	if g.err != nil {
 		return nil, g.err

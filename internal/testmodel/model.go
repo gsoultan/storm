@@ -87,6 +87,12 @@ func (u *User) Schema(t *raorm.Table) {
 	t.Col(&u.Email).Size(320)
 	t.Col(&u.Name).Size(120)
 	t.Col(&u.Status).Default("'pending'")
+	// Both are NOT NULL and neither is a type generated code can bind yet, so
+	// without a default every generated INSERT would fail. The generator says
+	// so rather than letting Postgres say it later, in terms of a constraint
+	// name instead of a model field.
+	t.Col(&u.Prefs).Default("'{}'")
+	t.Col(&u.Scopes).Default("'{}'")
 	t.Col(&u.Org).OnDelete(raorm.Restrict)
 
 	t.Unique(raorm.Lower(&u.Email))

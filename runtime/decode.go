@@ -53,6 +53,17 @@ type Null[T any] struct {
 
 func (n Null[T]) Get() (T, bool) { return n.V, n.Valid }
 
+// Arg is what a driver binds for this column: the value, or nil for NULL.
+//
+// Writes build a []any regardless, so the box here is not an allocation the
+// write path could have avoided — it is the one the driver interface requires.
+func (n Null[T]) Arg() any {
+	if !n.Valid {
+		return nil
+	}
+	return n.V
+}
+
 // Nullable wraps a decoder for a column that may be NULL.
 func Nullable[T any](b []byte, dec func([]byte) T) Null[T] {
 	if b == nil {

@@ -32,7 +32,14 @@ func TestMain(m *testing.M) {
 	}
 	ctx := context.Background()
 	var err error
-	pool, err = pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	must(err)
+	// search_path must be set on the *pool*, not on one checked-out connection.
+	// Setting it with a SET statement configures whichever connection happened
+	// to serve it, so a concurrent test lands on a different one and sees the
+	// public schema — which cost a debugging round.
+	cfg.ConnConfig.RuntimeParams["search_path"] = planspikeSchm
+	pool, err = pgxpool.NewWithConfig(ctx, cfg)
 	must(err)
 	defer pool.Close()
 
@@ -40,11 +47,10 @@ func TestMain(m *testing.M) {
 	// running shuffled alongside it.
 	must(run(ctx, "DROP SCHEMA IF EXISTS "+planspikeSchm+" CASCADE"))
 	must(run(ctx, "CREATE SCHEMA "+planspikeSchm))
-	must(run(ctx, "SET search_path TO "+planspikeSchm))
 
 	s, err := raorm.Build(testmodel.All()...)
 	must(err)
-	must(run(ctx, "SET search_path TO "+planspikeSchm+"; "+pgddl.Create(s)))
+	must(run(ctx, pgddl.Create(s)))
 	must(seed(ctx))
 
 	os.Exit(m.Run())
@@ -64,7 +70,6 @@ func must(err error) {
 
 func seed(ctx context.Context) error {
 	return run(ctx, fmt.Sprintf(`
-		SET search_path TO %s;
 		INSERT INTO orgs (id, created_at, updated_at, name)
 		SELECT gen_random_uuid(), now(), now(), 'org-'||g
 		FROM generate_series(1, %d) g;
@@ -75,7 +80,7 @@ func seed(ctx context.Context) error {
 		       'u'||n||'@'||o.name, 'user '||n, 'pending', '{}'::jsonb,
 		       ARRAY[]::text[], NULL, NULL, o.id
 		FROM orgs o, generate_series(1, %d) n;
-	`, planspikeSchm, nOrgs, usersPerOrg))
+	`, nOrgs, usersPerOrg))
 }
 
 func db(t *testing.T) (runtime.Executor, *runtime.CountingExecutor) {
@@ -170,4 +175,17 @@ func TestPlan_ChildLimitIsAnErrorNotATruncation(t *testing.T) {
 	if err == nil {
 		t.Fatal("hitting the child limit must be an error, not a silently partial result")
 	}
+}
+
+// orgRows is the ids of seeded orgs, for tests that need a valid foreign key.
+func orgRows(ctx context.Context, ex runtime.Executor) ([][16]byte, error) {
+	rows, err := org.New().Limit(1).All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([][16]byte, len(rows))
+	for i, r := range rows {
+		out[i] = r.ID
+	}
+	return out, nil
 }

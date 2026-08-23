@@ -587,3 +587,326 @@ func (q Query) Prepare(b *Binder) (string, []any) {
 	var buf [17]runtime.Tok
 	return stmtFor(q.stream(&buf)).SQL, q.bind(b)
 }
+
+// insertSQL does not vary: the column list is fixed by the table, so
+// the placeholders are known at build time and nothing is spliced.
+const insertSQL = `INSERT INTO "orgs" ("id", "created_at", "updated_at", "name", "parent_id") VALUES ($1, $2, $3, $4, $5) RETURNING "id", "created_at", "updated_at", "name", "parent_id"`
+
+const updatePrefix = `UPDATE "orgs" SET `
+const deletePrefix = `DELETE FROM "orgs"`
+
+// Dirty bits. One per updatable column; the set of them is an UPDATE's
+// identity, exactly as a token stream is a SELECT's.
+const (
+	dUpdatedAt uint64 = 1 << 0
+	dName      uint64 = 1 << 1
+	dParentID  uint64 = 1 << 2
+)
+
+const nUpdatable = 3
+
+// setFrags is every assignment this table can make, lowered at build time.
+var setFrags = [nUpdatable]runtime.Frag{
+	{A: "\"updated_at\" = $", B: ""}, // updated_at
+	{A: "\"name\" = $", B: ""},       // name
+	{A: "\"parent_id\" = $", B: ""},  // parent_id
+}
+
+// pkFrags addresses one row.
+var pkFrags = [1]runtime.Frag{
+	{A: "\"id\" = $", B: ""}, // id
+}
+
+// Insert bits. A masked INSERT names only the columns the caller
+// assigned, so every other column takes its database default — which is
+// the only way a DEFAULT gen_random_uuid() can ever fire.
+const (
+	iID        uint64 = 1 << 0
+	iCreatedAt uint64 = 1 << 1
+	iUpdatedAt uint64 = 1 << 2
+	iName      uint64 = 1 << 3
+	iParentID  uint64 = 1 << 4
+)
+
+const nInsertable = 5
+
+// insCols is the quoted column name for each insert bit.
+var insCols = [nInsertable]string{
+	"\"id\"",
+	"\"created_at\"",
+	"\"updated_at\"",
+	"\"name\"",
+	"\"parent_id\"",
+}
+
+// insParts and insPlaceholder come from the back end at build time; the
+// runtime splicer chooses none of them.
+var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Close: ")"}
+
+const insPlaceholder = "$"
+const insPrefix = "INSERT INTO \"orgs\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"name\", \"parent_id\""
+
+var insCache = runtime.NewMaskCache()
+var updCache = runtime.NewMaskCache()
+
+// Masks reports how many distinct UPDATE shapes have compiled.
+func Masks() int { return updCache.Masks() }
+
+// Mut is a row staged for update: the values, plus which of them were
+// actually assigned. An UPDATE writes the assigned ones and no others,
+// so a read-modify-write cannot clobber a column it never looked at.
+type Mut struct {
+	row   Row
+	dirty uint64
+}
+
+// Mutate stages a row read from the database.
+func Mutate(r Row) Mut { return Mut{row: r} }
+
+// Row returns the staged values.
+func (m Mut) Row() Row { return m.row }
+
+// Dirty reports the assigned-column mask, which is also the statement key.
+func (m Mut) Dirty() uint64 { return m.dirty }
+
+// Setters. There is deliberately no setter for the primary key, for an
+// Immutable column, or for the version column: the absence of a method is
+// the enforcement, so misuse does not compile rather than failing later.
+func (m *Mut) SetUpdatedAt(v time.Time) {
+	m.row.UpdatedAt = v
+	m.dirty |= dUpdatedAt
+}
+
+func (m *Mut) SetName(v string) {
+	m.row.Name = v
+	m.dirty |= dName
+}
+
+func (m *Mut) SetParentID(v [16]byte) {
+	m.row.ParentID = runtime.Null[[16]byte]{V: v, Valid: true}
+	m.dirty |= dParentID
+}
+
+// SetParentIDNull writes SQL NULL. It is a separate method because a
+// zero value and an absent value are different facts.
+func (m *Mut) SetParentIDNull() {
+	m.row.ParentID = runtime.Null[[16]byte]{}
+	m.dirty |= dParentID
+}
+
+// Ins stages a new row. Unlike Mut it has a setter for every insertable
+// column including the primary key and Immutable ones — supplying your
+// own id is legitimate, changing it later is not.
+//
+// A column left unset is absent from the statement, so the database
+// applies its default. Absence is tracked by the mask, never inferred
+// from a zero value: that inference is why other ORMs cannot insert a
+// false, a 0 or an empty string into a column that has a default.
+type Ins struct {
+	row Row
+	set uint64
+}
+
+// Create stages a new row.
+func Create() Ins { return Ins{} }
+
+// Assigned reports the mask, which is also the statement key.
+func (n Ins) Assigned() uint64 { return n.set }
+
+func (n *Ins) SetID(v [16]byte) {
+	n.row.ID = v
+	n.set |= iID
+}
+
+func (n *Ins) SetCreatedAt(v time.Time) {
+	n.row.CreatedAt = v
+	n.set |= iCreatedAt
+}
+
+func (n *Ins) SetUpdatedAt(v time.Time) {
+	n.row.UpdatedAt = v
+	n.set |= iUpdatedAt
+}
+
+func (n *Ins) SetName(v string) {
+	n.row.Name = v
+	n.set |= iName
+}
+
+func (n *Ins) SetParentID(v [16]byte) {
+	n.row.ParentID = runtime.Null[[16]byte]{V: v, Valid: true}
+	n.set |= iParentID
+}
+
+// SetParentIDNull writes SQL NULL explicitly, which is not the same as
+// leaving the column unset and taking its default.
+func (n *Ins) SetParentIDNull() {
+	n.row.ParentID = runtime.Null[[16]byte]{}
+	n.set |= iParentID
+}
+
+func stmtForInsert(mask uint64) *runtime.Stmt {
+	if st := insCache.Get(mask); st != nil {
+		return st
+	}
+	cols := make([]string, 0, nInsertable)
+	for i := 0; i < nInsertable; i++ {
+		if mask&(1<<uint(i)) != 0 {
+			cols = append(cols, insCols[i])
+		}
+	}
+	return insCache.Put(mask, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, insReturning))
+}
+
+// Insert writes the assigned columns and reads every column back, so
+// database-computed values land in the returned Row rather than needing a
+// second SELECT that would race every other writer.
+func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
+	if n.set == 0 {
+		return Row{}, runtime.ErrNothingAssigned
+	}
+	st := stmtForInsert(n.set)
+	args := make([]any, 0, st.NArg)
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.ID)
+		case 1:
+			args = append(args, n.row.CreatedAt)
+		case 2:
+			args = append(args, n.row.UpdatedAt)
+		case 3:
+			args = append(args, n.row.Name)
+		case 4:
+			args = append(args, n.row.ParentID.Arg())
+		}
+	}
+	var out Row
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return out, err
+		}
+		return out, runtime.ErrNoRow
+	}
+	var sl runtime.Slab
+	scan(rows.RawValues(), &out, &sl)
+	return out, rows.Err()
+}
+
+// Inserts reports how many distinct INSERT column sets have compiled.
+func Inserts() int { return insCache.Masks() }
+
+// Insert writes one row and reads back every column, so database-computed
+// defaults — a generated id, a now() timestamp — land in r rather than
+// needing a second SELECT that would race every other writer.
+//
+// Every insertable column is written, including zero values. raorm does
+// not treat a zero as 'unset': that guess is why other ORMs cannot insert
+// a false, a 0 or an empty string into a column with a default.
+func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
+	args := make([]any, 0, 5)
+	args = append(args, r.ID)
+	args = append(args, r.CreatedAt)
+	args = append(args, r.UpdatedAt)
+	args = append(args, r.Name)
+	args = append(args, r.ParentID.Arg())
+	rows, err := ex.Query(ctx, insertSQL, args)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return runtime.ErrNoRow
+	}
+	// The returned strings live as long as this Slab, and the Slab lives
+	// as long as r — a Row from an insert owns its own arena, unlike a Row
+	// from a scan, which shares the result set's.
+	var sl runtime.Slab
+	scan(rows.RawValues(), r, &sl)
+	return rows.Err()
+}
+
+// stmtForMask compiles the UPDATE for one dirty mask, once.
+func stmtForMask(mask uint64) *runtime.Stmt {
+	if st := updCache.Get(mask); st != nil {
+		return st
+	}
+	set := make([]runtime.Frag, 0, nUpdatable+1)
+	for i := 0; i < nUpdatable; i++ {
+		if mask&(1<<uint(i)) != 0 {
+			set = append(set, setFrags[i])
+		}
+	}
+	where := make([]runtime.Frag, 0, 2)
+	where = append(where, pkFrags[:]...)
+	return updCache.Put(mask, runtime.SpliceSections(updatePrefix, []runtime.Section{
+		{Lead: "", Sep: ", ", Frags: set},
+		{Lead: " WHERE ", Sep: " AND ", Frags: where},
+	}, ""))
+}
+
+// Update writes the assigned columns of one row.
+//
+// Assigning nothing is not an error and issues no statement — an UPDATE
+// with an empty SET list is not valid SQL, and a caller looping over
+// possibly-changed fields should not have to special-case the empty case.
+func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
+	if m.dirty == 0 {
+		return nil
+	}
+	st := stmtForMask(m.dirty)
+	args := make([]any, 0, st.NArg)
+	for i := 0; i < nUpdatable; i++ {
+		if m.dirty&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, m.row.UpdatedAt)
+		case 1:
+			args = append(args, m.row.Name)
+		case 2:
+			args = append(args, m.row.ParentID.Arg())
+		}
+	}
+	args = append(args, m.row.ID)
+	n, err := ex.Exec(ctx, st.SQL, args)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return runtime.ErrNoRow
+	}
+	m.dirty = 0
+	return nil
+}
+
+var deleteSQL = runtime.SpliceSections(deletePrefix, []runtime.Section{
+	{Lead: " WHERE ", Sep: " AND ", Frags: pkFrags[:]},
+}, "").SQL
+
+// Delete removes one row by primary key. A row that was already gone is
+// runtime.ErrNoRow, not success: a caller deleting something that is not
+// there usually has a bug, and swallowing it hides the bug.
+func Delete(ctx context.Context, ex runtime.Executor, iD [16]byte) error {
+	n, err := ex.Exec(ctx, deleteSQL, []any{iD})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return runtime.ErrNoRow
+	}
+	return nil
+}

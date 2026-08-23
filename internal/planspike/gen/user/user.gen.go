@@ -834,3 +834,476 @@ func (q Query) Prepare(b *Binder) (string, []any) {
 	var buf [17]runtime.Tok
 	return stmtFor(q.stream(&buf)).SQL, q.bind(b)
 }
+
+// insertSQL does not vary: the column list is fixed by the table, so
+// the placeholders are known at build time and nothing is spliced.
+const insertSQL = `INSERT INTO "users" ("id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "age", "last_ip", "org_id") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "age", "last_ip", "org_id"`
+
+const updatePrefix = `UPDATE "users" SET `
+const deletePrefix = `DELETE FROM "users"`
+
+// Dirty bits. One per updatable column; the set of them is an UPDATE's
+// identity, exactly as a token stream is a SELECT's.
+const (
+	dUpdatedAt uint64 = 1 << 0
+	dDeletedAt uint64 = 1 << 1
+	dEmail     uint64 = 1 << 2
+	dName      uint64 = 1 << 3
+	dStatus    uint64 = 1 << 4
+	dAge       uint64 = 1 << 5
+	dLastIP    uint64 = 1 << 6
+	dOrgID     uint64 = 1 << 7
+)
+
+const nUpdatable = 8
+
+// setFrags is every assignment this table can make, lowered at build time.
+var setFrags = [nUpdatable]runtime.Frag{
+	{A: "\"updated_at\" = $", B: ""}, // updated_at
+	{A: "\"deleted_at\" = $", B: ""}, // deleted_at
+	{A: "\"email\" = $", B: ""},      // email
+	{A: "\"name\" = $", B: ""},       // name
+	{A: "\"status\" = $", B: ""},     // status
+	{A: "\"age\" = $", B: ""},        // age
+	{A: "\"last_ip\" = $", B: ""},    // last_ip
+	{A: "\"org_id\" = $", B: ""},     // org_id
+}
+
+// pkFrags addresses one row.
+var pkFrags = [1]runtime.Frag{
+	{A: "\"id\" = $", B: ""}, // id
+}
+
+// versionFrag is the optimistic lock. An update carrying it matches
+// no row when somebody else wrote first, which is the whole mechanism.
+var versionFrag = runtime.Frag{A: "\"version\" = $", B: ""}
+
+// versionBump increments from the column's own value, never from one
+// the client read — two writers who both saw 3 must not both write 4.
+var versionBump = runtime.Frag{A: "\"version\" = \"version\" + 1", B: ""}
+
+// Insert bits. A masked INSERT names only the columns the caller
+// assigned, so every other column takes its database default — which is
+// the only way a DEFAULT gen_random_uuid() can ever fire.
+const (
+	iID        uint64 = 1 << 0
+	iCreatedAt uint64 = 1 << 1
+	iUpdatedAt uint64 = 1 << 2
+	iVersion   uint64 = 1 << 3
+	iDeletedAt uint64 = 1 << 4
+	iEmail     uint64 = 1 << 5
+	iName      uint64 = 1 << 6
+	iStatus    uint64 = 1 << 7
+	iAge       uint64 = 1 << 8
+	iLastIP    uint64 = 1 << 9
+	iOrgID     uint64 = 1 << 10
+)
+
+const nInsertable = 11
+
+// insCols is the quoted column name for each insert bit.
+var insCols = [nInsertable]string{
+	"\"id\"",
+	"\"created_at\"",
+	"\"updated_at\"",
+	"\"version\"",
+	"\"deleted_at\"",
+	"\"email\"",
+	"\"name\"",
+	"\"status\"",
+	"\"age\"",
+	"\"last_ip\"",
+	"\"org_id\"",
+}
+
+// insParts and insPlaceholder come from the back end at build time; the
+// runtime splicer chooses none of them.
+var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Close: ")"}
+
+const insPlaceholder = "$"
+const insPrefix = "INSERT INTO \"users\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"age\", \"last_ip\", \"org_id\""
+
+var insCache = runtime.NewMaskCache()
+var updCache = runtime.NewMaskCache()
+
+// Masks reports how many distinct UPDATE shapes have compiled.
+func Masks() int { return updCache.Masks() }
+
+// Mut is a row staged for update: the values, plus which of them were
+// actually assigned. An UPDATE writes the assigned ones and no others,
+// so a read-modify-write cannot clobber a column it never looked at.
+type Mut struct {
+	row   Row
+	dirty uint64
+}
+
+// Mutate stages a row read from the database.
+func Mutate(r Row) Mut { return Mut{row: r} }
+
+// Row returns the staged values.
+func (m Mut) Row() Row { return m.row }
+
+// Dirty reports the assigned-column mask, which is also the statement key.
+func (m Mut) Dirty() uint64 { return m.dirty }
+
+// Setters. There is deliberately no setter for the primary key, for an
+// Immutable column, or for the version column: the absence of a method is
+// the enforcement, so misuse does not compile rather than failing later.
+func (m *Mut) SetUpdatedAt(v time.Time) {
+	m.row.UpdatedAt = v
+	m.dirty |= dUpdatedAt
+}
+
+func (m *Mut) SetDeletedAt(v time.Time) {
+	m.row.DeletedAt = runtime.Null[time.Time]{V: v, Valid: true}
+	m.dirty |= dDeletedAt
+}
+
+// SetDeletedAtNull writes SQL NULL. It is a separate method because a
+// zero value and an absent value are different facts.
+func (m *Mut) SetDeletedAtNull() {
+	m.row.DeletedAt = runtime.Null[time.Time]{}
+	m.dirty |= dDeletedAt
+}
+
+func (m *Mut) SetEmail(v string) {
+	m.row.Email = v
+	m.dirty |= dEmail
+}
+
+func (m *Mut) SetName(v string) {
+	m.row.Name = v
+	m.dirty |= dName
+}
+
+func (m *Mut) SetStatus(v string) {
+	m.row.Status = v
+	m.dirty |= dStatus
+}
+
+func (m *Mut) SetAge(v int16) {
+	m.row.Age = runtime.Null[int16]{V: v, Valid: true}
+	m.dirty |= dAge
+}
+
+// SetAgeNull writes SQL NULL. It is a separate method because a
+// zero value and an absent value are different facts.
+func (m *Mut) SetAgeNull() {
+	m.row.Age = runtime.Null[int16]{}
+	m.dirty |= dAge
+}
+
+func (m *Mut) SetLastIP(v string) {
+	m.row.LastIP = runtime.Null[string]{V: v, Valid: true}
+	m.dirty |= dLastIP
+}
+
+// SetLastIPNull writes SQL NULL. It is a separate method because a
+// zero value and an absent value are different facts.
+func (m *Mut) SetLastIPNull() {
+	m.row.LastIP = runtime.Null[string]{}
+	m.dirty |= dLastIP
+}
+
+func (m *Mut) SetOrgID(v [16]byte) {
+	m.row.OrgID = v
+	m.dirty |= dOrgID
+}
+
+// Ins stages a new row. Unlike Mut it has a setter for every insertable
+// column including the primary key and Immutable ones — supplying your
+// own id is legitimate, changing it later is not.
+//
+// A column left unset is absent from the statement, so the database
+// applies its default. Absence is tracked by the mask, never inferred
+// from a zero value: that inference is why other ORMs cannot insert a
+// false, a 0 or an empty string into a column that has a default.
+type Ins struct {
+	row Row
+	set uint64
+}
+
+// Create stages a new row.
+func Create() Ins { return Ins{} }
+
+// Assigned reports the mask, which is also the statement key.
+func (n Ins) Assigned() uint64 { return n.set }
+
+func (n *Ins) SetID(v [16]byte) {
+	n.row.ID = v
+	n.set |= iID
+}
+
+func (n *Ins) SetCreatedAt(v time.Time) {
+	n.row.CreatedAt = v
+	n.set |= iCreatedAt
+}
+
+func (n *Ins) SetUpdatedAt(v time.Time) {
+	n.row.UpdatedAt = v
+	n.set |= iUpdatedAt
+}
+
+func (n *Ins) SetVersion(v int32) {
+	n.row.Version = v
+	n.set |= iVersion
+}
+
+func (n *Ins) SetDeletedAt(v time.Time) {
+	n.row.DeletedAt = runtime.Null[time.Time]{V: v, Valid: true}
+	n.set |= iDeletedAt
+}
+
+// SetDeletedAtNull writes SQL NULL explicitly, which is not the same as
+// leaving the column unset and taking its default.
+func (n *Ins) SetDeletedAtNull() {
+	n.row.DeletedAt = runtime.Null[time.Time]{}
+	n.set |= iDeletedAt
+}
+
+func (n *Ins) SetEmail(v string) {
+	n.row.Email = v
+	n.set |= iEmail
+}
+
+func (n *Ins) SetName(v string) {
+	n.row.Name = v
+	n.set |= iName
+}
+
+func (n *Ins) SetStatus(v string) {
+	n.row.Status = v
+	n.set |= iStatus
+}
+
+func (n *Ins) SetAge(v int16) {
+	n.row.Age = runtime.Null[int16]{V: v, Valid: true}
+	n.set |= iAge
+}
+
+// SetAgeNull writes SQL NULL explicitly, which is not the same as
+// leaving the column unset and taking its default.
+func (n *Ins) SetAgeNull() {
+	n.row.Age = runtime.Null[int16]{}
+	n.set |= iAge
+}
+
+func (n *Ins) SetLastIP(v string) {
+	n.row.LastIP = runtime.Null[string]{V: v, Valid: true}
+	n.set |= iLastIP
+}
+
+// SetLastIPNull writes SQL NULL explicitly, which is not the same as
+// leaving the column unset and taking its default.
+func (n *Ins) SetLastIPNull() {
+	n.row.LastIP = runtime.Null[string]{}
+	n.set |= iLastIP
+}
+
+func (n *Ins) SetOrgID(v [16]byte) {
+	n.row.OrgID = v
+	n.set |= iOrgID
+}
+
+func stmtForInsert(mask uint64) *runtime.Stmt {
+	if st := insCache.Get(mask); st != nil {
+		return st
+	}
+	cols := make([]string, 0, nInsertable)
+	for i := 0; i < nInsertable; i++ {
+		if mask&(1<<uint(i)) != 0 {
+			cols = append(cols, insCols[i])
+		}
+	}
+	return insCache.Put(mask, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, insReturning))
+}
+
+// Insert writes the assigned columns and reads every column back, so
+// database-computed values land in the returned Row rather than needing a
+// second SELECT that would race every other writer.
+func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
+	if n.set == 0 {
+		return Row{}, runtime.ErrNothingAssigned
+	}
+	st := stmtForInsert(n.set)
+	args := make([]any, 0, st.NArg)
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.ID)
+		case 1:
+			args = append(args, n.row.CreatedAt)
+		case 2:
+			args = append(args, n.row.UpdatedAt)
+		case 3:
+			args = append(args, n.row.Version)
+		case 4:
+			args = append(args, n.row.DeletedAt.Arg())
+		case 5:
+			args = append(args, n.row.Email)
+		case 6:
+			args = append(args, n.row.Name)
+		case 7:
+			args = append(args, n.row.Status)
+		case 8:
+			args = append(args, n.row.Age.Arg())
+		case 9:
+			args = append(args, n.row.LastIP.Arg())
+		case 10:
+			args = append(args, n.row.OrgID)
+		}
+	}
+	var out Row
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return out, err
+		}
+		return out, runtime.ErrNoRow
+	}
+	var sl runtime.Slab
+	scan(rows.RawValues(), &out, &sl)
+	return out, rows.Err()
+}
+
+// Inserts reports how many distinct INSERT column sets have compiled.
+func Inserts() int { return insCache.Masks() }
+
+// Insert writes one row and reads back every column, so database-computed
+// defaults — a generated id, a now() timestamp — land in r rather than
+// needing a second SELECT that would race every other writer.
+//
+// Every insertable column is written, including zero values. raorm does
+// not treat a zero as 'unset': that guess is why other ORMs cannot insert
+// a false, a 0 or an empty string into a column with a default.
+func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
+	args := make([]any, 0, 11)
+	args = append(args, r.ID)
+	args = append(args, r.CreatedAt)
+	args = append(args, r.UpdatedAt)
+	args = append(args, r.Version)
+	args = append(args, r.DeletedAt.Arg())
+	args = append(args, r.Email)
+	args = append(args, r.Name)
+	args = append(args, r.Status)
+	args = append(args, r.Age.Arg())
+	args = append(args, r.LastIP.Arg())
+	args = append(args, r.OrgID)
+	rows, err := ex.Query(ctx, insertSQL, args)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return runtime.ErrNoRow
+	}
+	// The returned strings live as long as this Slab, and the Slab lives
+	// as long as r — a Row from an insert owns its own arena, unlike a Row
+	// from a scan, which shares the result set's.
+	var sl runtime.Slab
+	scan(rows.RawValues(), r, &sl)
+	return rows.Err()
+}
+
+// stmtForMask compiles the UPDATE for one dirty mask, once.
+func stmtForMask(mask uint64) *runtime.Stmt {
+	if st := updCache.Get(mask); st != nil {
+		return st
+	}
+	set := make([]runtime.Frag, 0, nUpdatable+1)
+	for i := 0; i < nUpdatable; i++ {
+		if mask&(1<<uint(i)) != 0 {
+			set = append(set, setFrags[i])
+		}
+	}
+	set = append(set, versionBump)
+	where := make([]runtime.Frag, 0, 2)
+	where = append(where, pkFrags[:]...)
+	where = append(where, versionFrag)
+	return updCache.Put(mask, runtime.SpliceSections(updatePrefix, []runtime.Section{
+		{Lead: "", Sep: ", ", Frags: set},
+		{Lead: " WHERE ", Sep: " AND ", Frags: where},
+	}, ""))
+}
+
+// Update writes the assigned columns of one row.
+//
+// The version column makes this an optimistic lock: the statement matches
+// only a row still at the version that was read, and a miss is
+// runtime.ErrStaleWrite rather than a silent no-op. Re-read and retry;
+// do not force it, because the update was computed from a value that is
+// no longer true.
+// Assigning nothing is not an error and issues no statement — an UPDATE
+// with an empty SET list is not valid SQL, and a caller looping over
+// possibly-changed fields should not have to special-case the empty case.
+func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
+	if m.dirty == 0 {
+		return nil
+	}
+	st := stmtForMask(m.dirty)
+	args := make([]any, 0, st.NArg)
+	for i := 0; i < nUpdatable; i++ {
+		if m.dirty&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, m.row.UpdatedAt)
+		case 1:
+			args = append(args, m.row.DeletedAt.Arg())
+		case 2:
+			args = append(args, m.row.Email)
+		case 3:
+			args = append(args, m.row.Name)
+		case 4:
+			args = append(args, m.row.Status)
+		case 5:
+			args = append(args, m.row.Age.Arg())
+		case 6:
+			args = append(args, m.row.LastIP.Arg())
+		case 7:
+			args = append(args, m.row.OrgID)
+		}
+	}
+	args = append(args, m.row.ID)
+	args = append(args, m.row.Version)
+	n, err := ex.Exec(ctx, st.SQL, args)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return runtime.ErrStaleWrite
+	}
+	m.dirty = 0
+	m.row.Version++ // the database incremented it; keep the staged row usable
+	return nil
+}
+
+var deleteSQL = runtime.SpliceSections(deletePrefix, []runtime.Section{
+	{Lead: " WHERE ", Sep: " AND ", Frags: pkFrags[:]},
+}, "").SQL
+
+// Delete removes one row by primary key. A row that was already gone is
+// runtime.ErrNoRow, not success: a caller deleting something that is not
+// there usually has a bug, and swallowing it hides the bug.
+func Delete(ctx context.Context, ex runtime.Executor, iD [16]byte) error {
+	n, err := ex.Exec(ctx, deleteSQL, []any{iD})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return runtime.ErrNoRow
+	}
+	return nil
+}

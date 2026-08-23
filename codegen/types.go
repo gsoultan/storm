@@ -93,6 +93,11 @@ func goType(c *schema.Column) string {
 	return "runtime.Null[" + base + "]"
 }
 
+// isNullable mirrors goType's test: a column whose Row field is Null[T].
+func isNullable(c *schema.Column) bool {
+	return !c.NotNull && goKind(c) != kindBytes
+}
+
 // decodeExpr renders one column's decode line.
 func decodeExpr(c *schema.Column, i int) string {
 	f := exportName(c.Name)
