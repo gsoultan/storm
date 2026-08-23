@@ -254,10 +254,30 @@ and there is no `OFFSET` and no cursor — a hard blocker for any list endpoint
 
 ### Debts carried from M0 (bench-harness work, parallelises with P1)
 
-| Debt | Source |
-|---|---|
-| **Ent benchmark** — needs its own codegen step | M0 scope, never done |
-| **Unix-socket re-benchmark** | M0 finding #3: the container round trip is ~64 µs, so the ≤ 1.15× wall-clock gate passed *without discriminating* |
+| Debt | Source | Status |
+|---|---|---|
+| **Ent benchmark** — needs its own codegen step | M0 scope, never done | open |
+| **Unix-socket re-benchmark** | M0 finding #3 | **blocked on the machine, not the code** |
+
+**Unix socket — why it is still open.** `make db` runs Postgres in an Apple
+container reachable only over TCP, and there is no local Postgres on the dev
+machine (`brew list | grep postgres` is empty). Measuring raorm's overhead
+against a ~64 µs round trip is measuring the network, so the ≤ 1.15×
+wall-clock gate passed *without discriminating* — and it will keep doing so
+until this runs over a socket. Unblocking it is:
+
+```console
+brew install postgresql@17 && brew services start postgresql@17
+RAORM_DSN='postgres:///raorm?host=/tmp' make bench
+```
+
+Do not close this by re-running the container benchmark and reporting a better
+number. The measurement is the point, not the number.
+
+**Ent.** Every other rival is already in `bench/` (sqlc, Bun, GORM against raw
+pgx). Ent needs `entgo.io/ent` in `go.mod` plus a real `go generate` step, so it
+is the only one that cannot be added by writing a `_test.go` file — which is why
+it keeps being the one left out.
 
 ---
 
