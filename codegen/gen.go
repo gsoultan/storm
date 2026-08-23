@@ -23,6 +23,15 @@ type Options struct {
 	Import  string // module path of the runtime, e.g. "github.com/gsoultan/raorm"
 	Table   string // which table to emit
 
+	// BatchTopColumns are the columns this table is batch-loaded by — the
+	// foreign keys of has-many relations pointing at it. Each one gets a
+	// per-parent limited loader.
+	BatchTopColumns []string
+
+	// TopStrategy selects the greatest-n-per-group lowering. The zero value is
+	// DefaultTopStrategy, which is chosen by measurement.
+	TopStrategy TopStrategy
+
 	// DefaultOrder is the ordering a query with no Order() gets; empty means
 	// the primary key.
 	//
@@ -71,6 +80,7 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	g.scanner()
 	g.treeBind()
 	g.terminals()
+	g.batchTop()
 	g.writes()
 
 	if g.err != nil {

@@ -521,3 +521,46 @@ element type (`text[]`, `int8[]`) that a relation key can have.
 
 **Not yet built.** The two benchmarks above are the regression guard for when it
 is.
+
+---
+
+## Greatest-n-per-group: which lowering (2026-08-24)
+
+"Each parent with its first N children", in one query. Both lowerings are
+generated from the same model, so this compares two *lowerings*, not two
+hand-written approximations. `BenchmarkTopNPerParent`, 500 children per parent.
+
+ns/op, lower is better:
+
+| parents | n | window | lateral | lateral is |
+|---|---|---|---|---|
+| 1 | 1 | 340,038 | 95,216 | **3.6x faster** |
+| 1 | 5 | 316,481 | 91,224 | **3.5x** |
+| 1 | 50 | 307,515 | 109,239 | **2.8x** |
+| 10 | 1 | 1,418,189 | 107,018 | **13.3x** |
+| 10 | 5 | 1,432,406 | 120,100 | **11.9x** |
+| 10 | 50 | 1,567,553 | 286,205 | **5.5x** |
+| 100 | 1 | 10,593,364 | 322,665 | **32.8x** |
+| 100 | 5 | 10,860,570 | 469,177 | **23.1x** |
+| 100 | 50 | 13,187,256 | 1,989,972 | **6.6x** |
+
+Allocations are identical at every point (same rows returned), so the whole
+difference is server-side work.
+
+**`LATERAL` is the default.** It wins at every parent count and every n, and the
+gap widens with parent count.
+
+**The reasoning that picked the other one, and why it was wrong.** The first cut
+defaulted to `row_number()` on the argument that one index scan feeding a window
+beats a per-parent nested loop. The window form reads **every child of every
+matched parent** and discards those past n, so its cost tracks the *total child
+count*; LATERAL's tracks the *rows actually returned*. At 100 parents x 500
+children that is 50,000 rows scanned to return 100. The nested-loop iteration
+LATERAL pays per parent is real and is dwarfed by not doing that.
+
+Note the trend within a parent count: the gap narrows as n grows (32.8x at n=1
+down to 6.6x at n=50), which is the same fact seen from the other side — the
+larger the fraction of children kept, the less the window form wastes. The
+window lowering stays generated and exported for a caller whose data sits at
+that end, and because a default chosen by measurement needs something to have
+been measured against.

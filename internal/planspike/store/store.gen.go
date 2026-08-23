@@ -49,6 +49,7 @@ type OrgWithChildrenQuery struct {
 	q          org.Query
 	childLimit int64
 	childOrder []org.Sort
+	childTop   int64
 }
 
 // OrgWithChildren starts the plan.
@@ -130,6 +131,25 @@ func (p OrgWithChildrenQuery) ChildLimit(n int64) OrgWithChildrenQuery {
 	return p
 }
 
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+func (p OrgWithChildrenQuery) ChildTop(n int64) OrgWithChildrenQuery {
+	p.childTop = n
+	return p
+}
+
 // ChildOrder orders the children within each parent.
 //
 // Without it they arrive in the child table's default order, which is its
@@ -164,17 +184,24 @@ func (p OrgWithChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([]O
 		ids[i] = r.ID
 		at[r.ID] = i
 	}
-	cq := org.New().Where(org.ParentID.In(ids...)).Limit(p.childLimit)
-	if len(p.childOrder) > 0 {
-		cq = cq.Order(p.childOrder...)
+	var kids []org.Row
+	if p.childTop > 0 {
+		// Per-parent limit: one query with the limit expressed in SQL.
+		kids, err = org.BatchTopByParentID(ctx, ex, ids, p.childTop, p.childOrder...)
+	} else {
+		cq := org.New().Where(org.ParentID.In(ids...)).Limit(p.childLimit)
+		if len(p.childOrder) > 0 {
+			cq = cq.Order(p.childOrder...)
+		}
+		kids, err = cq.All(ctx, ex, nil)
 	}
-	kids, err := cq.All(ctx, ex, nil)
 	if err != nil {
 		return nil, err
 	}
 	// A partial relation load is worse than a failed one: every count
-	// computed from it is wrong and nothing says so.
-	if int64(len(kids)) >= p.childLimit {
+	// computed from it is wrong and nothing says so. A per-parent load
+	// is bounded by construction, so the global guard does not apply.
+	if p.childTop == 0 && int64(len(kids)) >= p.childLimit {
 		return nil, runtime.ErrChildLimit
 	}
 	for _, k := range kids {
@@ -329,6 +356,7 @@ type OrgWithUsersQuery struct {
 	q          org.Query
 	childLimit int64
 	childOrder []user.Sort
+	childTop   int64
 }
 
 // OrgWithUsers starts the plan.
@@ -410,6 +438,25 @@ func (p OrgWithUsersQuery) ChildLimit(n int64) OrgWithUsersQuery {
 	return p
 }
 
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+func (p OrgWithUsersQuery) ChildTop(n int64) OrgWithUsersQuery {
+	p.childTop = n
+	return p
+}
+
 // ChildOrder orders the children within each parent.
 //
 // Without it they arrive in the child table's default order, which is its
@@ -444,17 +491,24 @@ func (p OrgWithUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgW
 		ids[i] = r.ID
 		at[r.ID] = i
 	}
-	cq := user.New().Where(user.OrgID.In(ids...)).Limit(p.childLimit)
-	if len(p.childOrder) > 0 {
-		cq = cq.Order(p.childOrder...)
+	var kids []user.Row
+	if p.childTop > 0 {
+		// Per-parent limit: one query with the limit expressed in SQL.
+		kids, err = user.BatchTopByOrgID(ctx, ex, ids, p.childTop, p.childOrder...)
+	} else {
+		cq := user.New().Where(user.OrgID.In(ids...)).Limit(p.childLimit)
+		if len(p.childOrder) > 0 {
+			cq = cq.Order(p.childOrder...)
+		}
+		kids, err = cq.All(ctx, ex, nil)
 	}
-	kids, err := cq.All(ctx, ex, nil)
 	if err != nil {
 		return nil, err
 	}
 	// A partial relation load is worse than a failed one: every count
-	// computed from it is wrong and nothing says so.
-	if int64(len(kids)) >= p.childLimit {
+	// computed from it is wrong and nothing says so. A per-parent load
+	// is bounded by construction, so the global guard does not apply.
+	if p.childTop == 0 && int64(len(kids)) >= p.childLimit {
 		return nil, runtime.ErrChildLimit
 	}
 	for _, k := range kids {

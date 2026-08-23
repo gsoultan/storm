@@ -35,6 +35,9 @@ type PackageOptions struct {
 	// exactly what the first cut of this did.
 	PackageImport string
 
+	// TopStrategy selects the greatest-n-per-group lowering for every table.
+	TopStrategy TopStrategy
+
 	// Package is the parent package that holds the context file: the flush
 	// order and the Unit constructor. Empty skips it, which is what a
 	// single-table generation wants.
@@ -90,10 +93,12 @@ func Package(s *schema.Schema, o PackageOptions) (map[string][]byte, error) {
 		seen[pkg] = name
 
 		src, err := File(s, Options{
-			Package:      pkg,
-			Import:       o.Import,
-			Table:        name,
-			DefaultOrder: o.DefaultOrder[name],
+			Package:         pkg,
+			Import:          o.Import,
+			Table:           name,
+			DefaultOrder:    o.DefaultOrder[name],
+			BatchTopColumns: batchTopColumns(s, name, names),
+			TopStrategy:     o.TopStrategy,
 		})
 		if err != nil {
 			return nil, err
@@ -264,4 +269,32 @@ func isGoKeyword(s string) bool {
 		return true
 	}
 	return false
+}
+
+// batchTopColumns is every column of table that a has-many relation loads it
+// by — the partition columns of a per-parent limited fetch.
+//
+// Computed here rather than in File because a table cannot see the relations
+// pointing AT it: the relation is declared on the parent, and only a
+// whole-context generation has both ends.
+func batchTopColumns(s *schema.Schema, table string, in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, name := range in {
+		t := s.Table(name)
+		if t == nil {
+			continue
+		}
+		for _, rel := range t.Relations {
+			if !rel.ToMany || rel.Target != table {
+				continue
+			}
+			if !seen[rel.Column] {
+				seen[rel.Column] = true
+				out = append(out, rel.Column)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }

@@ -410,3 +410,30 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+// SpliceOrder inserts ORDER BY terms into a lowered statement at its marker.
+//
+// Greatest-n-per-group statements carry their ordering inside a window clause
+// or a lateral subquery, not at the end, so the ordering cannot simply be
+// appended. The back end emits the statement with a marker where the clause
+// goes and the terms are spliced in here — which keeps every keyword in
+// compile/ and leaves the runtime doing nothing but concatenation.
+func SpliceOrder(stmt string, terms []string, lead, sep string) string {
+	i := strings.Index(stmt, OrderMarker)
+	if i < 0 {
+		return stmt
+	}
+	var b strings.Builder
+	b.Grow(len(stmt) + len(terms)*16)
+	b.WriteString(stmt[:i])
+	if len(terms) > 0 {
+		b.WriteString(lead)
+		b.WriteString(join(terms, sep))
+	}
+	b.WriteString(stmt[i+len(OrderMarker):])
+	return b.String()
+}
+
+// OrderMarker is where SpliceOrder puts the ORDER BY clause. It is not SQL and
+// never reaches a database.
+const OrderMarker = "\x00order\x00"

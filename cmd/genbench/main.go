@@ -22,6 +22,9 @@ func main() {
 		Table:   "users",
 		// Match the spike's statement exactly, so the comparison is of the
 		// generator and not of two different query plans.
+		// The bench table is loaded by org_id, so it needs the per-parent
+		// loader that the strategy benchmark compares.
+		BatchTopColumns: []string{"org_id"},
 		DefaultOrder: []codegen.OrderTerm{
 			{Column: "created_at", Desc: true},
 			{Column: "id"},
