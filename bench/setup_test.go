@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gsoultan/raorm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -35,7 +36,10 @@ func TestMain(m *testing.M) {
 	// One pool, shared by every implementation under test: a benchmark
 	// comparison must match capacity on both sides.
 	cfg.MinConns, cfg.MaxConns = 8, 8
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	// Through raorm's constructor, so the fast parameter encoders are
+	// installed — otherwise the = ANY numbers below measure pgx's generic
+	// array codec and say nothing about raorm.
+	pool, err = pgxdrv.NewPoolConfig(ctx, cfg)
 	must(err)
 	defer pool.Close()
 

@@ -98,3 +98,29 @@ func (e Pool) Batch(ctx context.Context, ops []runtime.BatchOp, each func(int, r
 }
 
 var _ runtime.Executor = Pool{}
+
+// NewPool builds a pool with raorm's fast parameter encoders installed.
+//
+// It is a thin wrapper: everything else about the pool stays the caller's.
+// An application that configures its own pool should call RegisterFastArrays
+// from AfterConnect instead, which is all this does.
+func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return NewPoolConfig(ctx, cfg)
+}
+
+// NewPoolConfig is NewPool over a config the caller has already tuned.
+func NewPoolConfig(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, error) {
+	prev := cfg.AfterConnect
+	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
+		RegisterFastArrays(c.TypeMap())
+		if prev != nil {
+			return prev(ctx, c)
+		}
+		return nil
+	}
+	return pgxpool.NewWithConfig(ctx, cfg)
+}

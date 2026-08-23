@@ -3,6 +3,8 @@ package bench
 import (
 	"testing"
 
+	"github.com/gsoultan/raorm/runtime/pgxdrv"
+
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -35,6 +37,18 @@ func BenchmarkEncodeIDArray(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			if _, err := m.Encode(uuidArrayOID, pgtype.BinaryFormatCode, ids, buf[:0]); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("raorm_codec", func(b *testing.B) {
+		fm := pgtype.NewMap()
+		pgxdrv.RegisterFastArrays(fm)
+		buf := make([]byte, 0, 1<<16)
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := fm.Encode(uuidArrayOID, pgtype.BinaryFormatCode, ids, buf[:0]); err != nil {
 				b.Fatal(err)
 			}
 		}

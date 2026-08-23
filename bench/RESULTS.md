@@ -519,8 +519,43 @@ then 16 bytes per id. It has to live in the adapter because that is the only
 package allowed to name a pgx type, and it would have to be repeated per array
 element type (`text[]`, `int8[]`) that a relation key can have.
 
-**Not yet built.** The two benchmarks above are the regression guard for when it
-is.
+### Built, 2026-08-24 — `runtime/pgxdrv.RegisterFastArrays`
+
+One encode plan for the whole slice, writing the binary array format straight
+into the output buffer, delegating everything else to the codec pgx installed.
+
+Isolated encoder, 500 ids:
+
+| | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| pgx `[][16]byte` | 14,611 | 16,056 | 1,003 |
+| pgx `FlatArray` | 12,610 | 16,032 | 1,002 |
+| **raorm codec** | **576** | **24** | **1** |
+
+End to end through `= ANY($1)`:
+
+| ids | B/op before → after | allocs/op before → after |
+|---|---|---|
+| 1 | 517 → 453 | 10 → **6** |
+| 50 | 7,714 → 5,824 | 114 → **11** |
+| 500 | 74,075 → 35,787 | 1,021 → **11** |
+
+**Allocations are now flat in id count** — 11 at fifty ids and 11 at five
+hundred, where before they were 114 and 1,021. That is the property worth
+having: a relation load's parameter cost no longer scales with parent count.
+
+**Wall clock end to end is unchanged** (~2.6 ms at 500 ids) and the difference
+is inside noise, because the query is dominated by the server and the socket.
+Claim the allocation and byte numbers, which are measured and large. Do not
+claim the round trip got faster.
+
+Byte-for-byte identical to pgx's own output at n = 0, 1, 2, 7 and 500,
+asserted — a parameter encoder that is fast and subtly wrong corrupts a query's
+meaning rather than failing it. A nil slice still encodes as SQL NULL, not an
+empty array: `= ANY(NULL)` is unknown, `= ANY('{}')` matches nothing.
+
+**Still generic:** only `uuid[]` has a fast path. `text[]` and `int8[]` relation
+keys still go through pgx's generic codec, and each needs the same treatment.
 
 ---
 
