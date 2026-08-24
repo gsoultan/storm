@@ -18,9 +18,18 @@ that mattered — scan now returns on FIRST failure), and the fuzzer found a
 17-byte value whose count field made `make` allocate gigabytes — allocations
 are now bounded by the input, never by a field inside it.
 
-Still missing: `date`, `time`, `interval`,
-`inet`, and remaining array element types (`int8[]`, `numeric[]`). The
-generator binds bool, integer and float
+**`date`, `interval`, `inet`/`cidr`, `int8[]` shipped 2026-08-24.** The design
+calls worth remembering: dates are midnight UTC by stated convention;
+`raorm.Interval` keeps months/days/micros APART (a month has no length; a day
+is not 24h across DST — flattening at decode would bake in the error Postgres
+avoids) with `Duration()` returning ok=false when months present; inet and
+cidr are both `netip.Prefix` (the DATABASE polices host bits — two Go types
+would double the predicate machinery for a distinction it already enforces);
+interval has NO equality predicates (`'24:00' = '1 day'` normalises). Interval
+binding bridges through pgxdrv registration, the same pattern as Decimal.
+
+Still missing: time-of-day (needs a pgx binding decision), `numeric[]`. The
+generator otherwise binds bool, integer and float
 widths, text/varchar, bytea, uuid, timestamptz, enums — and stops. The fixture
 no longer has any column the generator omits.
 

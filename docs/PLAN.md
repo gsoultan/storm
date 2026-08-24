@@ -670,9 +670,16 @@ Written as a checklist because "production ready" is not one property.
    allocation is now bounded by the input, never by a field inside it. The
    fixture no longer has any column the generator omits.
 
-   **Still missing:** `date`, `time`, `interval`, `inet`, and the remaining
-   array element types (`int8[]`, `numeric[]`). All are stdlib-expressible and
-   none needs a decision.
+   **`date`, `interval`, `inet`/`cidr` and `int8[]` shipped 2026-08-24**, each
+   with its honesty rule asserted: dates decode as midnight UTC (a stated
+   convention); `raorm.Interval` keeps months/days/micros apart because a month
+   has no length; inet and cidr are one `netip.Prefix` because the *database*
+   polices the host-bits distinction; interval offers no equality because
+   `'24:00' = '1 day'` surprises in both directions.
+
+   **Still missing:** time-of-day (needs a pgx binding decision) and the
+   remaining array element types (`numeric[]`). Neither blocks a typical
+   schema.
 2. **No adopter has run it.** M6 exists because the first adopter finds what
    benchmarks miss — and testing the CLI in one sitting found three defects,
    two able to lose data. That is the rate to expect, and it does not fall
