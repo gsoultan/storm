@@ -78,6 +78,11 @@ type User struct {
 	Age    *int16
 	LastIP *string
 
+	// Money. numeric, not float: a float64 cannot represent 0.10 and an
+	// accounting system that rounds is a defect, not a tolerance.
+	Balance raorm.Decimal
+	Credit  *raorm.Decimal
+
 	Org     Org
 	Posts   []Post
 	Profile *Profile
@@ -92,6 +97,7 @@ func (u *User) Schema(t *raorm.Table) {
 	// so rather than letting Postgres say it later, in terms of a constraint
 	// name instead of a model field.
 	t.Col(&u.Prefs).Default("'{}'")
+	t.Col(&u.Balance).Numeric(18, 4).Default("0")
 	t.Col(&u.Scopes).Default("'{}'")
 	t.Col(&u.Org).OnDelete(raorm.Restrict)
 

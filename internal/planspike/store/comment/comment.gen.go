@@ -50,12 +50,13 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs                [6]string
-	nums                [6]int64
-	raws                [4][16]byte
-	tims                [4]time.Time
-	f64s                [4]float64
-	ns, nn, nr, ntm, nf uint8
+	strs                    [6]string
+	nums                    [6]int64
+	raws                    [4][16]byte
+	tims                    [4]time.Time
+	f64s                    [4]float64
+	decs                    [4]runtime.Decimal
+	ns, nn, nr, ntm, nf, nd uint8
 
 	anyRaw [][16]byte
 	anyStr []string
@@ -278,6 +279,7 @@ type Pred struct {
 	raw    [16]byte
 	tim    time.Time
 	f64    float64
+	dec    runtime.Decimal
 	anyRaw [][16]byte
 	anyStr []string
 }
@@ -787,11 +789,15 @@ func (q Query) SQL() string {
 //
 // Exported for the context package, which assembles batched results and
 // therefore has to decode rows it did not issue the query for.
-func Scan(rv [][]byte, r *Row, sl *runtime.Slab) { scan(rv, r, sl) }
+func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) }
 
 // scan decodes one row straight from the wire. No reflect, no `any`, no
 // driver.Value: the generator knows every column's type already.
-func scan(rv [][]byte, r *Row, sl *runtime.Slab) {
+//
+// It returns an error only for a value the Go type cannot carry — a
+// numeric past 18 significant digits, or a NaN. Those must not become a
+// plausible zero, and a row scanner is the last place that can tell.
+func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	copy(r.ID[:], rv[0])
 	r.CreatedAt = runtime.Timestamptz(rv[1])
 	r.UpdatedAt = runtime.Timestamptz(rv[2])
@@ -799,6 +805,7 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) {
 	copy(r.PostID[:], rv[4])
 	copy(r.AuthorID[:], rv[5])
 	r.ParentID = runtime.Nullable(rv[6], runtime.UUID)
+	return nil
 }
 
 type binder struct {
@@ -808,6 +815,7 @@ type binder struct {
 	raws   [4][16]byte
 	tims   [4]time.Time
 	f64s   [4]float64
+	decs   [4]runtime.Decimal
 	anyRaw [][16]byte
 	anyStr []string
 	limit  int64
@@ -925,7 +933,9 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	defer rows.Close()
 	for rows.Next() {
 		dst = append(dst, Row{})
-		scan(rows.RawValues(), &dst[len(dst)-1], sl)
+		if err := scan(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
 	}
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
@@ -1038,7 +1048,9 @@ func batchTopByParentIDRun(ctx context.Context, ex runtime.Executor, sql string,
 	out := make([]Row, 0, int64(len(ids))*n)
 	for rows.Next() {
 		out = append(out, Row{})
-		scan(rows.RawValues(), &out[len(out)-1], &sl)
+		if err := scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
 	}
 	return out, rows.Err()
 }
@@ -1138,7 +1150,9 @@ func batchTopByPostIDRun(ctx context.Context, ex runtime.Executor, sql string, i
 	out := make([]Row, 0, int64(len(ids))*n)
 	for rows.Next() {
 		out = append(out, Row{})
-		scan(rows.RawValues(), &out[len(out)-1], &sl)
+		if err := scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
 	}
 	return out, rows.Err()
 }
@@ -1231,7 +1245,9 @@ func Descend(ctx context.Context, ex runtime.Executor, roots [][16]byte, maxDept
 	var out []Row
 	for rows.Next() {
 		out = append(out, Row{})
-		scan(rows.RawValues(), &out[len(out)-1], &sl)
+		if err := scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
 	}
 	return out, rows.Err()
 }
@@ -1262,7 +1278,9 @@ func Ascend(ctx context.Context, ex runtime.Executor, roots [][16]byte, maxDepth
 	var out []Row
 	for rows.Next() {
 		out = append(out, Row{})
-		scan(rows.RawValues(), &out[len(out)-1], &sl)
+		if err := scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
 	}
 	return out, rows.Err()
 }
@@ -1591,7 +1609,9 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return out, runtime.ErrNoRow
 	}
 	var sl runtime.Slab
-	scan(rows.RawValues(), &out, &sl)
+	if err := scan(rows.RawValues(), &out, &sl); err != nil {
+		return out, err
+	}
 	return out, rows.Err()
 }
 
@@ -1629,7 +1649,9 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	// as long as r — a Row from an insert owns its own arena, unlike a Row
 	// from a scan, which shares the result set's.
 	var sl runtime.Slab
-	scan(rows.RawValues(), r, &sl)
+	if err := scan(rows.RawValues(), r, &sl); err != nil {
+		return err
+	}
 	return rows.Err()
 }
 

@@ -24,8 +24,11 @@ type Row struct {
 	Email     string
 	Name      string
 	Status    string
+	Prefs     runtime.JSON
 	Age       runtime.Null[int16]
 	LastIP    runtime.Null[string]
+	Balance   runtime.Decimal
+	Credit    runtime.Null[runtime.Decimal]
 	OrgID     [16]byte
 }
 
@@ -44,7 +47,7 @@ const (
 	opIsNotNull runtime.Op = 10
 )
 
-const nCols = 11
+const nCols = 14
 
 // Query is a value type: composing one allocates nothing. Predicates
 // are a postfix token stream, so disjunction and negation are
@@ -54,12 +57,13 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs                [6]string
-	nums                [6]int64
-	raws                [4][16]byte
-	tims                [4]time.Time
-	f64s                [4]float64
-	ns, nn, nr, ntm, nf uint8
+	strs                    [6]string
+	nums                    [6]int64
+	raws                    [4][16]byte
+	tims                    [4]time.Time
+	f64s                    [4]float64
+	decs                    [4]runtime.Decimal
+	ns, nn, nr, ntm, nf, nd uint8
 
 	anyRaw [][16]byte
 	anyStr []string
@@ -200,21 +204,35 @@ func (q *Query) cursor(col uint32, r Row) {
 		}
 		q.strs[q.ns] = r.Status
 		q.ns++
-	case 8:
+	case 9:
 		if int(q.nn) >= len(q.nums) {
 			q.over = true
 			return
 		}
 		q.nums[q.nn] = int64(r.Age.V)
 		q.nn++
-	case 9:
+	case 10:
 		if int(q.ns) >= len(q.strs) {
 			q.over = true
 			return
 		}
 		q.strs[q.ns] = r.LastIP.V
 		q.ns++
-	case 10:
+	case 11:
+		if int(q.nd) >= len(q.decs) {
+			q.over = true
+			return
+		}
+		q.decs[q.nd] = r.Balance
+		q.nd++
+	case 12:
+		if int(q.nd) >= len(q.decs) {
+			q.over = true
+			return
+		}
+		q.decs[q.nd] = r.Credit.V
+		q.nd++
+	case 13:
 		if int(q.nr) >= len(q.raws) {
 			q.over = true
 			return
@@ -310,6 +328,7 @@ type Pred struct {
 	raw    [16]byte
 	tim    time.Time
 	f64    float64
+	dec    runtime.Decimal
 	anyRaw [][16]byte
 	anyStr []string
 }
@@ -333,9 +352,12 @@ var (
 	Email     = TextCol{5}
 	Name      = TextCol{6}
 	Status    = TextCol{7}
-	Age       = NullInt16Col{8}
-	LastIP    = NullTextCol{9}
-	OrgID     = UUIDCol{10}
+	Prefs     = JSONCol{8}
+	Age       = NullInt16Col{9}
+	LastIP    = NullTextCol{10}
+	Balance   = DecimalCol{11}
+	Credit    = NullDecimalCol{12}
+	OrgID     = UUIDCol{13}
 )
 
 // UUIDCol addresses a uuid column.
@@ -434,6 +456,18 @@ func (h TextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v}
 func (h TextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
 func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
 
+// JSONCol addresses a jsonb column.
+type JSONCol struct{ c uint8 }
+
+func (h JSONCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h JSONCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h JSONCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h JSONCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
 // NullInt16Col addresses a int2 column.
 type NullInt16Col struct{ c uint8 }
 
@@ -477,6 +511,46 @@ func (h NullTextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, st
 func (h NullTextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
 func (h NullTextCol) IsNull() Pred        { return Pred{col: h.c, op: opIsNull} }
 func (h NullTextCol) IsNotNull() Pred     { return Pred{col: h.c, op: opIsNotNull} }
+
+// DecimalCol addresses a numeric(18,4) column.
+type DecimalCol struct{ c uint8 }
+
+func (h DecimalCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h DecimalCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h DecimalCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h DecimalCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
+func (h DecimalCol) Eq(v runtime.Decimal) Pred    { return Pred{col: h.c, op: opEq, dec: v} }
+func (h DecimalCol) NotEq(v runtime.Decimal) Pred { return Pred{col: h.c, op: opNotEq, dec: v} }
+func (h DecimalCol) Gt(v runtime.Decimal) Pred    { return Pred{col: h.c, op: opGt, dec: v} }
+func (h DecimalCol) Gte(v runtime.Decimal) Pred   { return Pred{col: h.c, op: opGte, dec: v} }
+func (h DecimalCol) Lt(v runtime.Decimal) Pred    { return Pred{col: h.c, op: opLt, dec: v} }
+func (h DecimalCol) Lte(v runtime.Decimal) Pred   { return Pred{col: h.c, op: opLte, dec: v} }
+
+// NullDecimalCol addresses a numeric column.
+type NullDecimalCol struct{ c uint8 }
+
+func (h NullDecimalCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h NullDecimalCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h NullDecimalCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h NullDecimalCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
+func (h NullDecimalCol) Eq(v runtime.Decimal) Pred    { return Pred{col: h.c, op: opEq, dec: v} }
+func (h NullDecimalCol) NotEq(v runtime.Decimal) Pred { return Pred{col: h.c, op: opNotEq, dec: v} }
+func (h NullDecimalCol) Gt(v runtime.Decimal) Pred    { return Pred{col: h.c, op: opGt, dec: v} }
+func (h NullDecimalCol) Gte(v runtime.Decimal) Pred   { return Pred{col: h.c, op: opGte, dec: v} }
+func (h NullDecimalCol) Lt(v runtime.Decimal) Pred    { return Pred{col: h.c, op: opLt, dec: v} }
+func (h NullDecimalCol) Lte(v runtime.Decimal) Pred   { return Pred{col: h.c, op: opLte, dec: v} }
+func (h NullDecimalCol) IsNull() Pred                 { return Pred{col: h.c, op: opIsNull} }
+func (h NullDecimalCol) IsNotNull() Pred              { return Pred{col: h.c, op: opIsNotNull} }
 
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
@@ -601,21 +675,35 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.strs[q.ns] = p.str
 		q.ns++
-	case 8:
+	case 9:
 		if int(q.nn) >= 6 {
 			q.over = true
 			return
 		}
 		q.nums[q.nn] = p.num
 		q.nn++
-	case 9:
+	case 10:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
 		}
 		q.strs[q.ns] = p.str
 		q.ns++
-	case 10:
+	case 11:
+		if int(q.nd) >= 4 {
+			q.over = true
+			return
+		}
+		q.decs[q.nd] = p.dec
+		q.nd++
+	case 12:
+		if int(q.nd) >= 4 {
+			q.over = true
+			return
+		}
+		q.decs[q.nd] = p.dec
+		q.nd++
+	case 13:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
@@ -627,82 +715,96 @@ func (q *Query) leaf(p Pred) {
 }
 
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
-func (q Query) IDEq(v [16]byte) Query            { return q.Where(ID.Eq(v)) }
-func (q Query) IDNotEq(v [16]byte) Query         { return q.Where(ID.NotEq(v)) }
-func (q Query) IDIn(v ...[16]byte) Query         { return q.Where(ID.In(v...)) }
-func (q Query) CreatedAtEq(v time.Time) Query    { return q.Where(CreatedAt.Eq(v)) }
-func (q Query) CreatedAtNotEq(v time.Time) Query { return q.Where(CreatedAt.NotEq(v)) }
-func (q Query) CreatedAtGt(v time.Time) Query    { return q.Where(CreatedAt.Gt(v)) }
-func (q Query) CreatedAtGte(v time.Time) Query   { return q.Where(CreatedAt.Gte(v)) }
-func (q Query) CreatedAtLt(v time.Time) Query    { return q.Where(CreatedAt.Lt(v)) }
-func (q Query) CreatedAtLte(v time.Time) Query   { return q.Where(CreatedAt.Lte(v)) }
-func (q Query) UpdatedAtEq(v time.Time) Query    { return q.Where(UpdatedAt.Eq(v)) }
-func (q Query) UpdatedAtNotEq(v time.Time) Query { return q.Where(UpdatedAt.NotEq(v)) }
-func (q Query) UpdatedAtGt(v time.Time) Query    { return q.Where(UpdatedAt.Gt(v)) }
-func (q Query) UpdatedAtGte(v time.Time) Query   { return q.Where(UpdatedAt.Gte(v)) }
-func (q Query) UpdatedAtLt(v time.Time) Query    { return q.Where(UpdatedAt.Lt(v)) }
-func (q Query) UpdatedAtLte(v time.Time) Query   { return q.Where(UpdatedAt.Lte(v)) }
-func (q Query) VersionEq(v int32) Query          { return q.Where(Version.Eq(v)) }
-func (q Query) VersionNotEq(v int32) Query       { return q.Where(Version.NotEq(v)) }
-func (q Query) VersionGt(v int32) Query          { return q.Where(Version.Gt(v)) }
-func (q Query) VersionGte(v int32) Query         { return q.Where(Version.Gte(v)) }
-func (q Query) VersionLt(v int32) Query          { return q.Where(Version.Lt(v)) }
-func (q Query) VersionLte(v int32) Query         { return q.Where(Version.Lte(v)) }
-func (q Query) DeletedAtEq(v time.Time) Query    { return q.Where(DeletedAt.Eq(v)) }
-func (q Query) DeletedAtNotEq(v time.Time) Query { return q.Where(DeletedAt.NotEq(v)) }
-func (q Query) DeletedAtGt(v time.Time) Query    { return q.Where(DeletedAt.Gt(v)) }
-func (q Query) DeletedAtGte(v time.Time) Query   { return q.Where(DeletedAt.Gte(v)) }
-func (q Query) DeletedAtLt(v time.Time) Query    { return q.Where(DeletedAt.Lt(v)) }
-func (q Query) DeletedAtLte(v time.Time) Query   { return q.Where(DeletedAt.Lte(v)) }
-func (q Query) DeletedAtIsNull() Query           { return q.Where(DeletedAt.IsNull()) }
-func (q Query) DeletedAtIsNotNull() Query        { return q.Where(DeletedAt.IsNotNull()) }
-func (q Query) EmailEq(v string) Query           { return q.Where(Email.Eq(v)) }
-func (q Query) EmailNotEq(v string) Query        { return q.Where(Email.NotEq(v)) }
-func (q Query) EmailGt(v string) Query           { return q.Where(Email.Gt(v)) }
-func (q Query) EmailGte(v string) Query          { return q.Where(Email.Gte(v)) }
-func (q Query) EmailLt(v string) Query           { return q.Where(Email.Lt(v)) }
-func (q Query) EmailLte(v string) Query          { return q.Where(Email.Lte(v)) }
-func (q Query) EmailLike(v string) Query         { return q.Where(Email.Like(v)) }
-func (q Query) EmailIn(v ...string) Query        { return q.Where(Email.In(v...)) }
-func (q Query) NameEq(v string) Query            { return q.Where(Name.Eq(v)) }
-func (q Query) NameNotEq(v string) Query         { return q.Where(Name.NotEq(v)) }
-func (q Query) NameGt(v string) Query            { return q.Where(Name.Gt(v)) }
-func (q Query) NameGte(v string) Query           { return q.Where(Name.Gte(v)) }
-func (q Query) NameLt(v string) Query            { return q.Where(Name.Lt(v)) }
-func (q Query) NameLte(v string) Query           { return q.Where(Name.Lte(v)) }
-func (q Query) NameLike(v string) Query          { return q.Where(Name.Like(v)) }
-func (q Query) NameIn(v ...string) Query         { return q.Where(Name.In(v...)) }
-func (q Query) StatusEq(v string) Query          { return q.Where(Status.Eq(v)) }
-func (q Query) StatusNotEq(v string) Query       { return q.Where(Status.NotEq(v)) }
-func (q Query) StatusGt(v string) Query          { return q.Where(Status.Gt(v)) }
-func (q Query) StatusGte(v string) Query         { return q.Where(Status.Gte(v)) }
-func (q Query) StatusLt(v string) Query          { return q.Where(Status.Lt(v)) }
-func (q Query) StatusLte(v string) Query         { return q.Where(Status.Lte(v)) }
-func (q Query) StatusLike(v string) Query        { return q.Where(Status.Like(v)) }
-func (q Query) StatusIn(v ...string) Query       { return q.Where(Status.In(v...)) }
-func (q Query) AgeEq(v int16) Query              { return q.Where(Age.Eq(v)) }
-func (q Query) AgeNotEq(v int16) Query           { return q.Where(Age.NotEq(v)) }
-func (q Query) AgeGt(v int16) Query              { return q.Where(Age.Gt(v)) }
-func (q Query) AgeGte(v int16) Query             { return q.Where(Age.Gte(v)) }
-func (q Query) AgeLt(v int16) Query              { return q.Where(Age.Lt(v)) }
-func (q Query) AgeLte(v int16) Query             { return q.Where(Age.Lte(v)) }
-func (q Query) AgeIsNull() Query                 { return q.Where(Age.IsNull()) }
-func (q Query) AgeIsNotNull() Query              { return q.Where(Age.IsNotNull()) }
-func (q Query) LastIPEq(v string) Query          { return q.Where(LastIP.Eq(v)) }
-func (q Query) LastIPNotEq(v string) Query       { return q.Where(LastIP.NotEq(v)) }
-func (q Query) LastIPGt(v string) Query          { return q.Where(LastIP.Gt(v)) }
-func (q Query) LastIPGte(v string) Query         { return q.Where(LastIP.Gte(v)) }
-func (q Query) LastIPLt(v string) Query          { return q.Where(LastIP.Lt(v)) }
-func (q Query) LastIPLte(v string) Query         { return q.Where(LastIP.Lte(v)) }
-func (q Query) LastIPLike(v string) Query        { return q.Where(LastIP.Like(v)) }
-func (q Query) LastIPIn(v ...string) Query       { return q.Where(LastIP.In(v...)) }
-func (q Query) LastIPIsNull() Query              { return q.Where(LastIP.IsNull()) }
-func (q Query) LastIPIsNotNull() Query           { return q.Where(LastIP.IsNotNull()) }
-func (q Query) OrgIDEq(v [16]byte) Query         { return q.Where(OrgID.Eq(v)) }
-func (q Query) OrgIDNotEq(v [16]byte) Query      { return q.Where(OrgID.NotEq(v)) }
-func (q Query) OrgIDIn(v ...[16]byte) Query      { return q.Where(OrgID.In(v...)) }
+func (q Query) IDEq(v [16]byte) Query                { return q.Where(ID.Eq(v)) }
+func (q Query) IDNotEq(v [16]byte) Query             { return q.Where(ID.NotEq(v)) }
+func (q Query) IDIn(v ...[16]byte) Query             { return q.Where(ID.In(v...)) }
+func (q Query) CreatedAtEq(v time.Time) Query        { return q.Where(CreatedAt.Eq(v)) }
+func (q Query) CreatedAtNotEq(v time.Time) Query     { return q.Where(CreatedAt.NotEq(v)) }
+func (q Query) CreatedAtGt(v time.Time) Query        { return q.Where(CreatedAt.Gt(v)) }
+func (q Query) CreatedAtGte(v time.Time) Query       { return q.Where(CreatedAt.Gte(v)) }
+func (q Query) CreatedAtLt(v time.Time) Query        { return q.Where(CreatedAt.Lt(v)) }
+func (q Query) CreatedAtLte(v time.Time) Query       { return q.Where(CreatedAt.Lte(v)) }
+func (q Query) UpdatedAtEq(v time.Time) Query        { return q.Where(UpdatedAt.Eq(v)) }
+func (q Query) UpdatedAtNotEq(v time.Time) Query     { return q.Where(UpdatedAt.NotEq(v)) }
+func (q Query) UpdatedAtGt(v time.Time) Query        { return q.Where(UpdatedAt.Gt(v)) }
+func (q Query) UpdatedAtGte(v time.Time) Query       { return q.Where(UpdatedAt.Gte(v)) }
+func (q Query) UpdatedAtLt(v time.Time) Query        { return q.Where(UpdatedAt.Lt(v)) }
+func (q Query) UpdatedAtLte(v time.Time) Query       { return q.Where(UpdatedAt.Lte(v)) }
+func (q Query) VersionEq(v int32) Query              { return q.Where(Version.Eq(v)) }
+func (q Query) VersionNotEq(v int32) Query           { return q.Where(Version.NotEq(v)) }
+func (q Query) VersionGt(v int32) Query              { return q.Where(Version.Gt(v)) }
+func (q Query) VersionGte(v int32) Query             { return q.Where(Version.Gte(v)) }
+func (q Query) VersionLt(v int32) Query              { return q.Where(Version.Lt(v)) }
+func (q Query) VersionLte(v int32) Query             { return q.Where(Version.Lte(v)) }
+func (q Query) DeletedAtEq(v time.Time) Query        { return q.Where(DeletedAt.Eq(v)) }
+func (q Query) DeletedAtNotEq(v time.Time) Query     { return q.Where(DeletedAt.NotEq(v)) }
+func (q Query) DeletedAtGt(v time.Time) Query        { return q.Where(DeletedAt.Gt(v)) }
+func (q Query) DeletedAtGte(v time.Time) Query       { return q.Where(DeletedAt.Gte(v)) }
+func (q Query) DeletedAtLt(v time.Time) Query        { return q.Where(DeletedAt.Lt(v)) }
+func (q Query) DeletedAtLte(v time.Time) Query       { return q.Where(DeletedAt.Lte(v)) }
+func (q Query) DeletedAtIsNull() Query               { return q.Where(DeletedAt.IsNull()) }
+func (q Query) DeletedAtIsNotNull() Query            { return q.Where(DeletedAt.IsNotNull()) }
+func (q Query) EmailEq(v string) Query               { return q.Where(Email.Eq(v)) }
+func (q Query) EmailNotEq(v string) Query            { return q.Where(Email.NotEq(v)) }
+func (q Query) EmailGt(v string) Query               { return q.Where(Email.Gt(v)) }
+func (q Query) EmailGte(v string) Query              { return q.Where(Email.Gte(v)) }
+func (q Query) EmailLt(v string) Query               { return q.Where(Email.Lt(v)) }
+func (q Query) EmailLte(v string) Query              { return q.Where(Email.Lte(v)) }
+func (q Query) EmailLike(v string) Query             { return q.Where(Email.Like(v)) }
+func (q Query) EmailIn(v ...string) Query            { return q.Where(Email.In(v...)) }
+func (q Query) NameEq(v string) Query                { return q.Where(Name.Eq(v)) }
+func (q Query) NameNotEq(v string) Query             { return q.Where(Name.NotEq(v)) }
+func (q Query) NameGt(v string) Query                { return q.Where(Name.Gt(v)) }
+func (q Query) NameGte(v string) Query               { return q.Where(Name.Gte(v)) }
+func (q Query) NameLt(v string) Query                { return q.Where(Name.Lt(v)) }
+func (q Query) NameLte(v string) Query               { return q.Where(Name.Lte(v)) }
+func (q Query) NameLike(v string) Query              { return q.Where(Name.Like(v)) }
+func (q Query) NameIn(v ...string) Query             { return q.Where(Name.In(v...)) }
+func (q Query) StatusEq(v string) Query              { return q.Where(Status.Eq(v)) }
+func (q Query) StatusNotEq(v string) Query           { return q.Where(Status.NotEq(v)) }
+func (q Query) StatusGt(v string) Query              { return q.Where(Status.Gt(v)) }
+func (q Query) StatusGte(v string) Query             { return q.Where(Status.Gte(v)) }
+func (q Query) StatusLt(v string) Query              { return q.Where(Status.Lt(v)) }
+func (q Query) StatusLte(v string) Query             { return q.Where(Status.Lte(v)) }
+func (q Query) StatusLike(v string) Query            { return q.Where(Status.Like(v)) }
+func (q Query) StatusIn(v ...string) Query           { return q.Where(Status.In(v...)) }
+func (q Query) AgeEq(v int16) Query                  { return q.Where(Age.Eq(v)) }
+func (q Query) AgeNotEq(v int16) Query               { return q.Where(Age.NotEq(v)) }
+func (q Query) AgeGt(v int16) Query                  { return q.Where(Age.Gt(v)) }
+func (q Query) AgeGte(v int16) Query                 { return q.Where(Age.Gte(v)) }
+func (q Query) AgeLt(v int16) Query                  { return q.Where(Age.Lt(v)) }
+func (q Query) AgeLte(v int16) Query                 { return q.Where(Age.Lte(v)) }
+func (q Query) AgeIsNull() Query                     { return q.Where(Age.IsNull()) }
+func (q Query) AgeIsNotNull() Query                  { return q.Where(Age.IsNotNull()) }
+func (q Query) LastIPEq(v string) Query              { return q.Where(LastIP.Eq(v)) }
+func (q Query) LastIPNotEq(v string) Query           { return q.Where(LastIP.NotEq(v)) }
+func (q Query) LastIPGt(v string) Query              { return q.Where(LastIP.Gt(v)) }
+func (q Query) LastIPGte(v string) Query             { return q.Where(LastIP.Gte(v)) }
+func (q Query) LastIPLt(v string) Query              { return q.Where(LastIP.Lt(v)) }
+func (q Query) LastIPLte(v string) Query             { return q.Where(LastIP.Lte(v)) }
+func (q Query) LastIPLike(v string) Query            { return q.Where(LastIP.Like(v)) }
+func (q Query) LastIPIn(v ...string) Query           { return q.Where(LastIP.In(v...)) }
+func (q Query) LastIPIsNull() Query                  { return q.Where(LastIP.IsNull()) }
+func (q Query) LastIPIsNotNull() Query               { return q.Where(LastIP.IsNotNull()) }
+func (q Query) BalanceEq(v runtime.Decimal) Query    { return q.Where(Balance.Eq(v)) }
+func (q Query) BalanceNotEq(v runtime.Decimal) Query { return q.Where(Balance.NotEq(v)) }
+func (q Query) BalanceGt(v runtime.Decimal) Query    { return q.Where(Balance.Gt(v)) }
+func (q Query) BalanceGte(v runtime.Decimal) Query   { return q.Where(Balance.Gte(v)) }
+func (q Query) BalanceLt(v runtime.Decimal) Query    { return q.Where(Balance.Lt(v)) }
+func (q Query) BalanceLte(v runtime.Decimal) Query   { return q.Where(Balance.Lte(v)) }
+func (q Query) CreditEq(v runtime.Decimal) Query     { return q.Where(Credit.Eq(v)) }
+func (q Query) CreditNotEq(v runtime.Decimal) Query  { return q.Where(Credit.NotEq(v)) }
+func (q Query) CreditGt(v runtime.Decimal) Query     { return q.Where(Credit.Gt(v)) }
+func (q Query) CreditGte(v runtime.Decimal) Query    { return q.Where(Credit.Gte(v)) }
+func (q Query) CreditLt(v runtime.Decimal) Query     { return q.Where(Credit.Lt(v)) }
+func (q Query) CreditLte(v runtime.Decimal) Query    { return q.Where(Credit.Lte(v)) }
+func (q Query) CreditIsNull() Query                  { return q.Where(Credit.IsNull()) }
+func (q Query) CreditIsNotNull() Query               { return q.Where(Credit.IsNotNull()) }
+func (q Query) OrgIDEq(v [16]byte) Query             { return q.Where(OrgID.Eq(v)) }
+func (q Query) OrgIDNotEq(v [16]byte) Query          { return q.Where(OrgID.NotEq(v)) }
+func (q Query) OrgIDIn(v ...[16]byte) Query          { return q.Where(OrgID.In(v...)) }
 
-const selectPrefix = `SELECT "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "age", "last_ip", "org_id" FROM "users"`
+const selectPrefix = `SELECT "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "age", "last_ip", "balance", "credit", "org_id" FROM "users"`
 const countPrefix = `SELECT count(*) FROM "users"`
 const limitSuffix = ` LIMIT $`
 const limitOffsetSuffix = ` LIMIT $ OFFSET $`
@@ -759,6 +861,12 @@ var orderTable = [nCols][4]string{
 		"\"status\" ASC NULLS FIRST",
 		"\"status\" DESC NULLS LAST",
 	},
+	{ // prefs
+		"\"prefs\"",
+		"\"prefs\" DESC",
+		"\"prefs\" ASC NULLS FIRST",
+		"\"prefs\" DESC NULLS LAST",
+	},
 	{ // age
 		"\"age\"",
 		"\"age\" DESC",
@@ -770,6 +878,18 @@ var orderTable = [nCols][4]string{
 		"\"last_ip\" DESC",
 		"\"last_ip\" ASC NULLS FIRST",
 		"\"last_ip\" DESC NULLS LAST",
+	},
+	{ // balance
+		"\"balance\"",
+		"\"balance\" DESC",
+		"\"balance\" ASC NULLS FIRST",
+		"\"balance\" DESC NULLS LAST",
+	},
+	{ // credit
+		"\"credit\"",
+		"\"credit\" DESC",
+		"\"credit\" ASC NULLS FIRST",
+		"\"credit\" DESC NULLS LAST",
 	},
 	{ // org_id
 		"\"org_id\"",
@@ -790,8 +910,11 @@ var identTable = [nCols]string{
 	"\"email\"",
 	"\"name\"",
 	"\"status\"",
+	"\"prefs\"",
 	"\"age\"",
 	"\"last_ip\"",
+	"\"balance\"",
+	"\"credit\"",
 	"\"org_id\"",
 }
 
@@ -930,6 +1053,19 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{},
 	},
+	{ // prefs
+		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
 	{ // age
 		{}, // opNone
 		{A: "\"age\" = $", B: ""},
@@ -955,6 +1091,32 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"last_ip\" = ANY($", B: ")"},
 		{A: "\"last_ip\" IS NULL", B: ""},
 		{A: "\"last_ip\" IS NOT NULL", B: ""},
+	},
+	{ // balance
+		{}, // opNone
+		{A: "\"balance\" = $", B: ""},
+		{A: "\"balance\" <> $", B: ""},
+		{A: "\"balance\" > $", B: ""},
+		{A: "\"balance\" >= $", B: ""},
+		{A: "\"balance\" < $", B: ""},
+		{A: "\"balance\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // credit
+		{}, // opNone
+		{A: "\"credit\" = $", B: ""},
+		{A: "\"credit\" <> $", B: ""},
+		{A: "\"credit\" > $", B: ""},
+		{A: "\"credit\" >= $", B: ""},
+		{A: "\"credit\" < $", B: ""},
+		{A: "\"credit\" <= $", B: ""},
+		{},
+		{},
+		{A: "\"credit\" IS NULL", B: ""},
+		{A: "\"credit\" IS NOT NULL", B: ""},
 	},
 	{ // org_id
 		{}, // opNone
@@ -1037,11 +1199,16 @@ func (q Query) SQL() string {
 //
 // Exported for the context package, which assembles batched results and
 // therefore has to decode rows it did not issue the query for.
-func Scan(rv [][]byte, r *Row, sl *runtime.Slab) { scan(rv, r, sl) }
+func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) }
 
 // scan decodes one row straight from the wire. No reflect, no `any`, no
 // driver.Value: the generator knows every column's type already.
-func scan(rv [][]byte, r *Row, sl *runtime.Slab) {
+//
+// It returns an error only for a value the Go type cannot carry — a
+// numeric past 18 significant digits, or a NaN. Those must not become a
+// plausible zero, and a row scanner is the last place that can tell.
+func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
+	var decErr error
 	copy(r.ID[:], rv[0])
 	r.CreatedAt = runtime.Timestamptz(rv[1])
 	r.UpdatedAt = runtime.Timestamptz(rv[2])
@@ -1050,9 +1217,13 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) {
 	r.Email = sl.Str(rv[5])
 	r.Name = sl.Str(rv[6])
 	r.Status = sl.Str(rv[7])
-	r.Age = runtime.Nullable(rv[8], runtime.Int2)
-	r.LastIP = runtime.NullText(rv[9], sl)
-	copy(r.OrgID[:], rv[10])
+	r.Prefs = runtime.JSON(runtime.JSONB(rv[8], sl))
+	r.Age = runtime.Nullable(rv[9], runtime.Int2)
+	r.LastIP = runtime.NullText(rv[10], sl)
+	r.Balance, decErr = runtime.NumericErr(rv[11])
+	r.Credit, decErr = runtime.NullNumeric(rv[12])
+	copy(r.OrgID[:], rv[13])
+	return decErr
 }
 
 type binder struct {
@@ -1062,6 +1233,7 @@ type binder struct {
 	raws   [4][16]byte
 	tims   [4]time.Time
 	f64s   [4]float64
+	decs   [4]runtime.Decimal
 	anyRaw [][16]byte
 	anyStr []string
 	limit  int64
@@ -1082,7 +1254,7 @@ func PutBinder(b *Binder) { binders.Put(b) }
 // at the buffer's own fields — boxing a pointer does not allocate.
 func (q Query) bind(b *binder) []any {
 	v := b.vals[:0]
-	var ns, nn, nr, ntm uint8
+	var ns, nn, nr, ntm, nd uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1139,15 +1311,23 @@ func (q Query) bind(b *binder) []any {
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
-		case 8:
+		case 9:
 			b.nums[nn] = q.nums[nn]
 			v = append(v, &b.nums[nn])
 			nn++
-		case 9:
+		case 10:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
-		case 10:
+		case 11:
+			b.decs[nd] = q.decs[nd]
+			v = append(v, &b.decs[nd])
+			nd++
+		case 12:
+			b.decs[nd] = q.decs[nd]
+			v = append(v, &b.decs[nd])
+			nd++
+		case 13:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
@@ -1195,7 +1375,9 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	defer rows.Close()
 	for rows.Next() {
 		dst = append(dst, Row{})
-		scan(rows.RawValues(), &dst[len(dst)-1], sl)
+		if err := scan(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
 	}
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
@@ -1308,7 +1490,9 @@ func batchTopByOrgIDRun(ctx context.Context, ex runtime.Executor, sql string, id
 	out := make([]Row, 0, int64(len(ids))*n)
 	for rows.Next() {
 		out = append(out, Row{})
-		scan(rows.RawValues(), &out[len(out)-1], &sl)
+		if err := scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
 	}
 	return out, rows.Err()
 }
@@ -1333,7 +1517,7 @@ func batchTopByOrgIDWindowSQL(order []Sort) string {
 	for i, t := range toks {
 		terms[i] = orderOf(t.Op(), t.Col())
 	}
-	sql := runtime.SpliceOrder("SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"age\", \"last_ip\", \"org_id\" FROM (SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"age\", \"last_ip\", \"org_id\", row_number() OVER (PARTITION BY \"org_id\"\x00order\x00) AS \"_raorm_rn\" FROM \"users\" WHERE \"org_id\" = ANY($1)) \"_raorm_t\" WHERE \"_raorm_rn\" <= $2", terms, " ORDER BY ", ", ")
+	sql := runtime.SpliceOrder("SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\" FROM (SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\", row_number() OVER (PARTITION BY \"org_id\"\x00order\x00) AS \"_raorm_rn\" FROM \"users\" WHERE \"org_id\" = ANY($1)) \"_raorm_t\" WHERE \"_raorm_rn\" <= $2", terms, " ORDER BY ", ", ")
 	return batchTopByOrgIDWindowCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL
 }
 
@@ -1357,13 +1541,13 @@ func batchTopByOrgIDLateralSQL(order []Sort) string {
 	for i, t := range toks {
 		terms[i] = orderOf(t.Op(), t.Col())
 	}
-	sql := runtime.SpliceOrder("SELECT \"_raorm_c\".\"id\", \"_raorm_c\".\"created_at\", \"_raorm_c\".\"updated_at\", \"_raorm_c\".\"version\", \"_raorm_c\".\"deleted_at\", \"_raorm_c\".\"email\", \"_raorm_c\".\"name\", \"_raorm_c\".\"status\", \"_raorm_c\".\"age\", \"_raorm_c\".\"last_ip\", \"_raorm_c\".\"org_id\" FROM unnest($1::uuid[]) AS \"_raorm_p\"(\"_raorm_k\") CROSS JOIN LATERAL (SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"age\", \"last_ip\", \"org_id\" FROM \"users\" WHERE \"org_id\" = \"_raorm_p\".\"_raorm_k\"\x00order\x00 LIMIT $2) \"_raorm_c\"", terms, " ORDER BY ", ", ")
+	sql := runtime.SpliceOrder("SELECT \"_raorm_c\".\"id\", \"_raorm_c\".\"created_at\", \"_raorm_c\".\"updated_at\", \"_raorm_c\".\"version\", \"_raorm_c\".\"deleted_at\", \"_raorm_c\".\"email\", \"_raorm_c\".\"name\", \"_raorm_c\".\"status\", \"_raorm_c\".\"prefs\", \"_raorm_c\".\"age\", \"_raorm_c\".\"last_ip\", \"_raorm_c\".\"balance\", \"_raorm_c\".\"credit\", \"_raorm_c\".\"org_id\" FROM unnest($1::uuid[]) AS \"_raorm_p\"(\"_raorm_k\") CROSS JOIN LATERAL (SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\" FROM \"users\" WHERE \"org_id\" = \"_raorm_p\".\"_raorm_k\"\x00order\x00 LIMIT $2) \"_raorm_c\"", terms, " ORDER BY ", ", ")
 	return batchTopByOrgIDLateralCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL
 }
 
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
-const insertSQL = `INSERT INTO "users" ("id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "age", "last_ip", "org_id") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "age", "last_ip", "org_id"`
+const insertSQL = `INSERT INTO "users" ("id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "age", "last_ip", "balance", "credit", "org_id") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "age", "last_ip", "balance", "credit", "org_id"`
 
 const updatePrefix = `UPDATE "users" SET `
 const deletePrefix = `DELETE FROM "users"`
@@ -1376,12 +1560,15 @@ const (
 	dEmail     uint64 = 1 << 2
 	dName      uint64 = 1 << 3
 	dStatus    uint64 = 1 << 4
-	dAge       uint64 = 1 << 5
-	dLastIP    uint64 = 1 << 6
-	dOrgID     uint64 = 1 << 7
+	dPrefs     uint64 = 1 << 5
+	dAge       uint64 = 1 << 6
+	dLastIP    uint64 = 1 << 7
+	dBalance   uint64 = 1 << 8
+	dCredit    uint64 = 1 << 9
+	dOrgID     uint64 = 1 << 10
 )
 
-const nUpdatable = 8
+const nUpdatable = 11
 
 // setFrags is every assignment this table can make, lowered at build time.
 var setFrags = [nUpdatable]runtime.Frag{
@@ -1390,8 +1577,11 @@ var setFrags = [nUpdatable]runtime.Frag{
 	{A: "\"email\" = $", B: ""},      // email
 	{A: "\"name\" = $", B: ""},       // name
 	{A: "\"status\" = $", B: ""},     // status
+	{A: "\"prefs\" = $", B: ""},      // prefs
 	{A: "\"age\" = $", B: ""},        // age
 	{A: "\"last_ip\" = $", B: ""},    // last_ip
+	{A: "\"balance\" = $", B: ""},    // balance
+	{A: "\"credit\" = $", B: ""},     // credit
 	{A: "\"org_id\" = $", B: ""},     // org_id
 }
 
@@ -1420,12 +1610,15 @@ const (
 	iEmail     uint64 = 1 << 5
 	iName      uint64 = 1 << 6
 	iStatus    uint64 = 1 << 7
-	iAge       uint64 = 1 << 8
-	iLastIP    uint64 = 1 << 9
-	iOrgID     uint64 = 1 << 10
+	iPrefs     uint64 = 1 << 8
+	iAge       uint64 = 1 << 9
+	iLastIP    uint64 = 1 << 10
+	iBalance   uint64 = 1 << 11
+	iCredit    uint64 = 1 << 12
+	iOrgID     uint64 = 1 << 13
 )
 
-const nInsertable = 11
+const nInsertable = 14
 
 // insCols is the quoted column name for each insert bit.
 var insCols = [nInsertable]string{
@@ -1437,8 +1630,11 @@ var insCols = [nInsertable]string{
 	"\"email\"",
 	"\"name\"",
 	"\"status\"",
+	"\"prefs\"",
 	"\"age\"",
 	"\"last_ip\"",
+	"\"balance\"",
+	"\"credit\"",
 	"\"org_id\"",
 }
 
@@ -1448,7 +1644,7 @@ var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Clo
 
 const insPlaceholder = "$"
 const insPrefix = "INSERT INTO \"users\""
-const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"age\", \"last_ip\", \"org_id\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\""
 
 var insCache = runtime.NewMaskCache()
 var updCache = runtime.NewMaskCache()
@@ -1508,6 +1704,11 @@ func (m *Mut) SetStatus(v string) {
 	m.dirty |= dStatus
 }
 
+func (m *Mut) SetPrefs(v runtime.JSON) {
+	m.row.Prefs = v
+	m.dirty |= dPrefs
+}
+
 func (m *Mut) SetAge(v int16) {
 	m.row.Age = runtime.Null[int16]{V: v, Valid: true}
 	m.dirty |= dAge
@@ -1530,6 +1731,23 @@ func (m *Mut) SetLastIP(v string) {
 func (m *Mut) SetLastIPNull() {
 	m.row.LastIP = runtime.Null[string]{}
 	m.dirty |= dLastIP
+}
+
+func (m *Mut) SetBalance(v runtime.Decimal) {
+	m.row.Balance = v
+	m.dirty |= dBalance
+}
+
+func (m *Mut) SetCredit(v runtime.Decimal) {
+	m.row.Credit = runtime.Null[runtime.Decimal]{V: v, Valid: true}
+	m.dirty |= dCredit
+}
+
+// SetCreditNull writes SQL NULL. It is a separate method because a
+// zero value and an absent value are different facts.
+func (m *Mut) SetCreditNull() {
+	m.row.Credit = runtime.Null[runtime.Decimal]{}
+	m.dirty |= dCredit
 }
 
 func (m *Mut) SetOrgID(v [16]byte) {
@@ -1609,6 +1827,11 @@ func (n *Ins) SetStatus(v string) {
 	n.set |= iStatus
 }
 
+func (n *Ins) SetPrefs(v runtime.JSON) {
+	n.row.Prefs = v
+	n.set |= iPrefs
+}
+
 func (n *Ins) SetAge(v int16) {
 	n.row.Age = runtime.Null[int16]{V: v, Valid: true}
 	n.set |= iAge
@@ -1633,6 +1856,23 @@ func (n *Ins) SetLastIPNull() {
 	n.set |= iLastIP
 }
 
+func (n *Ins) SetBalance(v runtime.Decimal) {
+	n.row.Balance = v
+	n.set |= iBalance
+}
+
+func (n *Ins) SetCredit(v runtime.Decimal) {
+	n.row.Credit = runtime.Null[runtime.Decimal]{V: v, Valid: true}
+	n.set |= iCredit
+}
+
+// SetCreditNull writes SQL NULL explicitly, which is not the same as
+// leaving the column unset and taking its default.
+func (n *Ins) SetCreditNull() {
+	n.row.Credit = runtime.Null[runtime.Decimal]{}
+	n.set |= iCredit
+}
+
 func (n *Ins) SetOrgID(v [16]byte) {
 	n.row.OrgID = v
 	n.set |= iOrgID
@@ -1643,7 +1883,7 @@ func (n *Ins) SetOrgID(v [16]byte) {
 // assigned, or it silently reverts every column it did not.
 var upsertTails = []func(uint64) string{
 	func(mask uint64) string {
-		set := make([]string, 0, 8)
+		set := make([]string, 0, 11)
 		if mask&(1<<2) != 0 {
 			set = append(set, "updated_at")
 		}
@@ -1660,12 +1900,21 @@ var upsertTails = []func(uint64) string{
 			set = append(set, "status")
 		}
 		if mask&(1<<8) != 0 {
-			set = append(set, "age")
+			set = append(set, "prefs")
 		}
 		if mask&(1<<9) != 0 {
-			set = append(set, "last_ip")
+			set = append(set, "age")
 		}
 		if mask&(1<<10) != 0 {
+			set = append(set, "last_ip")
+		}
+		if mask&(1<<11) != 0 {
+			set = append(set, "balance")
+		}
+		if mask&(1<<12) != 0 {
+			set = append(set, "credit")
+		}
+		if mask&(1<<13) != 0 {
 			set = append(set, "org_id")
 		}
 		return onConflictID(set)
@@ -1705,8 +1954,11 @@ var assignFor = map[string]string{
 	"email":      "\"email\" = EXCLUDED.\"email\"",
 	"name":       "\"name\" = EXCLUDED.\"name\"",
 	"status":     "\"status\" = EXCLUDED.\"status\"",
+	"prefs":      "\"prefs\" = EXCLUDED.\"prefs\"",
 	"age":        "\"age\" = EXCLUDED.\"age\"",
 	"last_ip":    "\"last_ip\" = EXCLUDED.\"last_ip\"",
+	"balance":    "\"balance\" = EXCLUDED.\"balance\"",
+	"credit":     "\"credit\" = EXCLUDED.\"credit\"",
 	"org_id":     "\"org_id\" = EXCLUDED.\"org_id\"",
 }
 
@@ -1768,10 +2020,16 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		case 7:
 			args = append(args, n.row.Status)
 		case 8:
-			args = append(args, n.row.Age.Arg())
+			args = append(args, n.row.Prefs)
 		case 9:
-			args = append(args, n.row.LastIP.Arg())
+			args = append(args, n.row.Age.Arg())
 		case 10:
+			args = append(args, n.row.LastIP.Arg())
+		case 11:
+			args = append(args, n.row.Balance)
+		case 12:
+			args = append(args, n.row.Credit.Arg())
+		case 13:
 			args = append(args, n.row.OrgID)
 		}
 	}
@@ -1788,7 +2046,9 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return out, runtime.ErrNoRow
 	}
 	var sl runtime.Slab
-	scan(rows.RawValues(), &out, &sl)
+	if err := scan(rows.RawValues(), &out, &sl); err != nil {
+		return out, err
+	}
 	return out, rows.Err()
 }
 
@@ -1803,7 +2063,7 @@ func Inserts() int { return insCache.Masks() }
 // not treat a zero as 'unset': that guess is why other ORMs cannot insert
 // a false, a 0 or an empty string into a column with a default.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
-	args := make([]any, 0, 11)
+	args := make([]any, 0, 14)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
@@ -1812,8 +2072,11 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args = append(args, r.Email)
 	args = append(args, r.Name)
 	args = append(args, r.Status)
+	args = append(args, r.Prefs)
 	args = append(args, r.Age.Arg())
 	args = append(args, r.LastIP.Arg())
+	args = append(args, r.Balance)
+	args = append(args, r.Credit.Arg())
 	args = append(args, r.OrgID)
 	rows, err := ex.Query(ctx, insertSQL, args)
 	if err != nil {
@@ -1830,7 +2093,9 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	// as long as r — a Row from an insert owns its own arena, unlike a Row
 	// from a scan, which shares the result set's.
 	var sl runtime.Slab
-	scan(rows.RawValues(), r, &sl)
+	if err := scan(rows.RawValues(), r, &sl); err != nil {
+		return err
+	}
 	return rows.Err()
 }
 
@@ -1847,8 +2112,11 @@ var copyCols = []string{
 	"email",
 	"name",
 	"status",
+	"prefs",
 	"age",
 	"last_ip",
+	"balance",
+	"credit",
 	"org_id",
 }
 
@@ -1856,7 +2124,7 @@ var copyCols = []string{
 type rowSource struct {
 	rows []Row
 	i    int
-	buf  [11]any
+	buf  [14]any
 }
 
 func (s *rowSource) Next() bool {
@@ -1882,9 +2150,12 @@ func (s *rowSource) Values() []any {
 	s.buf[5] = &r.Email
 	s.buf[6] = &r.Name
 	s.buf[7] = &r.Status
-	s.buf[8] = r.Age.Ptr()
-	s.buf[9] = r.LastIP.Ptr()
-	s.buf[10] = &r.OrgID
+	s.buf[8] = &r.Prefs
+	s.buf[9] = r.Age.Ptr()
+	s.buf[10] = r.LastIP.Ptr()
+	s.buf[11] = &r.Balance
+	s.buf[12] = r.Credit.Ptr()
+	s.buf[13] = &r.OrgID
 	return s.buf[:]
 }
 
@@ -1926,8 +2197,11 @@ func InsertOp(r Row) runtime.BatchOp {
 	mask |= 1 << 8
 	mask |= 1 << 9
 	mask |= 1 << 10
+	mask |= 1 << 11
+	mask |= 1 << 12
+	mask |= 1 << 13
 	st := stmtForInsert(mask, 0)
-	args := make([]any, 0, 11)
+	args := make([]any, 0, 14)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
@@ -1936,8 +2210,11 @@ func InsertOp(r Row) runtime.BatchOp {
 	args = append(args, r.Email)
 	args = append(args, r.Name)
 	args = append(args, r.Status)
+	args = append(args, r.Prefs)
 	args = append(args, r.Age.Arg())
 	args = append(args, r.LastIP.Arg())
+	args = append(args, r.Balance)
+	args = append(args, r.Credit.Arg())
 	args = append(args, r.OrgID)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}
 }
@@ -1969,10 +2246,16 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 		case 4:
 			args = append(args, m.row.Status)
 		case 5:
-			args = append(args, m.row.Age.Arg())
+			args = append(args, m.row.Prefs)
 		case 6:
-			args = append(args, m.row.LastIP.Arg())
+			args = append(args, m.row.Age.Arg())
 		case 7:
+			args = append(args, m.row.LastIP.Arg())
+		case 8:
+			args = append(args, m.row.Balance)
+		case 9:
+			args = append(args, m.row.Credit.Arg())
+		case 10:
 			args = append(args, m.row.OrgID)
 		}
 	}
@@ -2048,10 +2331,16 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		case 4:
 			args = append(args, m.row.Status)
 		case 5:
-			args = append(args, m.row.Age.Arg())
+			args = append(args, m.row.Prefs)
 		case 6:
-			args = append(args, m.row.LastIP.Arg())
+			args = append(args, m.row.Age.Arg())
 		case 7:
+			args = append(args, m.row.LastIP.Arg())
+		case 8:
+			args = append(args, m.row.Balance)
+		case 9:
+			args = append(args, m.row.Credit.Arg())
+		case 10:
 			args = append(args, m.row.OrgID)
 		}
 	}

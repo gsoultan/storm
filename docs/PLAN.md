@@ -645,16 +645,26 @@ Written as a checklist because "production ready" is not one property.
 
 ### Blocking, in the order it would bite
 
-1. **Type coverage is narrower than most real schemas.** The generator binds
-   bool, the integer and float widths, text/varchar, bytea, uuid, timestamptz
-   and enums — and nothing else. **`numeric` is unsupported**, so no
-   application that handles money can model its own tables. Also missing:
-   `date`, `time`, `interval`, `jsonb`, `inet`, and **arrays of anything**.
-   The fixture itself has two columns the generator silently omits.
+1. **Type coverage.** ~~`numeric` and `jsonb` are unsupported~~ — **both
+   shipped 2026-08-24.**
 
-   `numeric` needs a decision before it needs code: Go has no stdlib decimal
-   and `runtime/` is stdlib-only, so the representation is a real choice
-   (lossless `string`, a raorm fixed-point type, or relaxing the rule).
+   `numeric` is `raorm.Decimal`: an exact fixed-point value, two machine words,
+   no allocation, stdlib-only. float64 is deliberately not offered — it cannot
+   represent 0.10, and an accounting system that rounds is a defect rather than
+   a tolerance. The limit is stated rather than hidden: an int64 unscaled value
+   carries 18 significant digits, a column declared past that is a **generation
+   error**, and a value past it from the database is an **error rather than a
+   wrong number**.
+
+   `jsonb` decodes to `runtime.JSON` — raw bytes the caller unmarshals into a
+   type it declared, because the generator cannot know a jsonb column's shape
+   and decoding into `map[string]any` would allocate a map per row for callers
+   who wanted a struct. It offers no value predicates: whole-document equality
+   is almost never what a caller means, and content filtering needs `->>` and
+   `@>`, which the operator set does not have.
+
+   **Still missing:** `date`, `time`, `interval`, `inet`, and **arrays of
+   anything**. All are stdlib-expressible and none needs a decision.
 2. **No adopter has run it.** M6 exists because the first adopter finds what
    benchmarks miss — and testing the CLI in one sitting found three defects,
    two able to lose data. That is the rate to expect, and it does not fall

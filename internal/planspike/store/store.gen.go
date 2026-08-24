@@ -2293,19 +2293,25 @@ func (p AttachmentWithSubjectQuery) All(ctx context.Context, ex runtime.Executor
 			var sl runtime.Slab
 			for rs.Next() {
 				got0 = append(got0, post.Row{})
-				post.Scan(rs.RawValues(), &got0[len(got0)-1], &sl)
+				if err := post.Scan(rs.RawValues(), &got0[len(got0)-1], &sl); err != nil {
+					return err
+				}
 			}
 		case 1:
 			var sl runtime.Slab
 			for rs.Next() {
 				got1 = append(got1, comment.Row{})
-				comment.Scan(rs.RawValues(), &got1[len(got1)-1], &sl)
+				if err := comment.Scan(rs.RawValues(), &got1[len(got1)-1], &sl); err != nil {
+					return err
+				}
 			}
 		case 2:
 			var sl runtime.Slab
 			for rs.Next() {
 				got2 = append(got2, user.Row{})
-				user.Scan(rs.RawValues(), &got2[len(got2)-1], &sl)
+				if err := user.Scan(rs.RawValues(), &got2[len(got2)-1], &sl); err != nil {
+					return err
+				}
 			}
 		}
 		return nil

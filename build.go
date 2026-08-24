@@ -11,11 +11,12 @@ import (
 )
 
 var (
-	timeType   = reflect.TypeOf(time.Time{})
-	uuidType   = reflect.TypeOf(UUID{})
-	bytesType  = reflect.TypeOf([]byte(nil))
-	enumerType = reflect.TypeOf((*Enumer)(nil)).Elem()
-	schemerTyp = reflect.TypeOf((*Schemer)(nil)).Elem()
+	timeType    = reflect.TypeOf(time.Time{})
+	uuidType    = reflect.TypeOf(UUID{})
+	bytesType   = reflect.TypeOf([]byte(nil))
+	decimalType = reflect.TypeOf(Decimal{})
+	enumerType  = reflect.TypeOf((*Enumer)(nil)).Elem()
+	schemerTyp  = reflect.TypeOf((*Schemer)(nil)).Elem()
 )
 
 // Build turns a set of model structs into a schema. Pass pointers to zero
@@ -591,6 +592,12 @@ func (b *builder) inferType(t reflect.Type) (schema.Type, bool) {
 		return schema.Type{Name: schema.TypeUUID}, true
 	case bytesType:
 		return schema.Type{Name: schema.TypeBytea}, true
+	case decimalType:
+		// Precision and scale are unset here on purpose: numeric with no
+		// bounds is legal and means "as much as you need". A model that wants
+		// money says so with .Numeric(19, 4), and the generator refuses a
+		// precision a Decimal cannot carry.
+		return schema.Type{Name: schema.TypeNumeric}, true
 	}
 	switch t.Kind() {
 	case reflect.Bool:

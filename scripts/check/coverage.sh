@@ -10,7 +10,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 declare -a FLOORS=(
-  "github.com/gsoultan/raorm/runtime 85"
+  "github.com/gsoultan/raorm/runtime 95"
   "github.com/gsoultan/raorm/compile/pgsql 80"
   "github.com/gsoultan/raorm/compile/pgddl 90"
   "github.com/gsoultan/raorm/codegen 85"

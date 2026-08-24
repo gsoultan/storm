@@ -20,6 +20,15 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		return "tims", "ntm"
 	case kindFloat4, kindFloat8:
 		return "f64s", "nf"
+	case kindNumeric:
+		// Its own arena: a Decimal is two words and does not fit the int64
+		// slot every other scalar shares.
+		return "decs", "nd"
+	case kindJSONB, kindBytes:
+		// No arena. Neither is a value a predicate binds or an ordering
+		// compares — jsonb offers only IS [NOT] NULL, and bytea offers
+		// nothing — so there is nothing to store.
+		return "", ""
 	default:
 		return "nums", "nn"
 	}
@@ -27,7 +36,7 @@ func arenaFor(c colInfo) (arena, cursor string) {
 
 func arenaCast(c colInfo, expr string) string {
 	switch c.kind {
-	case kindText, kindUUID, kindTimestamptz:
+	case kindText, kindUUID, kindTimestamptz, kindNumeric:
 		return expr
 	case kindFloat4:
 		return "float32(" + expr + ")"
@@ -42,7 +51,7 @@ func arenaCast(c colInfo, expr string) string {
 
 func arenaStore(c colInfo, v string) string {
 	switch c.kind {
-	case kindText, kindUUID, kindTimestamptz:
+	case kindText, kindUUID, kindTimestamptz, kindNumeric:
 		return v
 	case kindFloat4, kindFloat8:
 		return "float64(" + v + ")"
@@ -61,6 +70,7 @@ const (
 	maxRaw   = 4
 	maxTime  = 4
 	maxFloat = 4
+	maxDec   = 4
 )
 
 func (g *gen) treeQuery() {
@@ -77,7 +87,8 @@ func (g *gen) treeQuery() {
 	g.p("\traws [%d][16]byte", maxRaw)
 	g.p("\ttims [%d]time.Time", maxTime)
 	g.p("\tf64s [%d]float64", maxFloat)
-	g.p("\tns, nn, nr, ntm, nf uint8")
+	g.p("\tdecs [%d]runtime.Decimal", maxDec)
+	g.p("\tns, nn, nr, ntm, nf, nd uint8")
 	g.p("")
 	g.p("\tanyRaw [][16]byte")
 	g.p("\tanyStr []string")
@@ -164,6 +175,11 @@ func (g *gen) treeQuery() {
 	g.p("\tswitch col {")
 	for i, c := range g.cols {
 		arena, cur := arenaFor(c)
+		if arena == "" {
+			// Not orderable, so it can never be a cursor column. Emitting a
+			// case would try to store it in an arena that does not exist.
+			continue
+		}
 		field := exportName(c.Name())
 		val := "r." + field
 		if isNullable(c.col) {
@@ -333,7 +349,11 @@ func (g *gen) treePreds() {
 	g.p("\tswitch p.col {")
 	for i, c := range g.cols {
 		arena, cur := arenaFor(c)
-		max := map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw, "tims": maxTime, "f64s": maxFloat}[arena]
+		if arena == "" {
+			continue // no value arena: this column has no value-taking operator
+		}
+		max := map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
+			"tims": maxTime, "f64s": maxFloat, "decs": maxDec}[arena]
 		g.p("\tcase %d:", i)
 		g.p("\t\tif int(q.%s) >= %d {", cur, max)
 		g.p("\t\t\tq.over = true")
@@ -359,6 +379,8 @@ func predSlotFor(c colInfo) string {
 		return "p.tim"
 	case kindFloat4, kindFloat8:
 		return "p.f64"
+	case kindNumeric:
+		return "p.dec"
 	default:
 		return "p.num"
 	}
@@ -373,6 +395,7 @@ func (g *gen) treeBind() {
 	g.p("\traws   [%d][16]byte", maxRaw)
 	g.p("\ttims   [%d]time.Time", maxTime)
 	g.p("\tf64s   [%d]float64", maxFloat)
+	g.p("\tdecs   [%d]runtime.Decimal", maxDec)
 	g.p("\tanyRaw [][16]byte")
 	g.p("\tanyStr []string")
 	g.p("\tlimit  int64")
@@ -396,10 +419,13 @@ func (g *gen) treeBind() {
 	used := map[string]bool{}
 	for _, c := range g.cols {
 		a, _ := arenaFor(c)
-		used[map[string]string{"strs": "ns", "nums": "nn", "raws": "nr", "tims": "ntm", "f64s": "nf"}[a]] = true
+		if a == "" {
+			continue
+		}
+		used[map[string]string{"strs": "ns", "nums": "nn", "raws": "nr", "tims": "ntm", "f64s": "nf", "decs": "nd"}[a]] = true
 	}
 	var cursors []string
-	for _, n := range []string{"ns", "nn", "nr", "ntm", "nf"} {
+	for _, n := range []string{"ns", "nn", "nr", "ntm", "nf", "nd"} {
 		if used[n] {
 			cursors = append(cursors, n)
 		}
@@ -433,7 +459,11 @@ func (g *gen) treeBind() {
 	g.p("\t\tswitch t.Col() {")
 	for i, c := range g.cols {
 		arena, _ := arenaFor(c)
-		short := map[string]string{"strs": "ns", "nums": "nn", "raws": "nr", "tims": "ntm", "f64s": "nf"}[arena]
+		if arena == "" {
+			continue // no value arena: nothing to copy into the binder
+		}
+		short := map[string]string{"strs": "ns", "nums": "nn", "raws": "nr",
+			"tims": "ntm", "f64s": "nf", "decs": "nd"}[arena]
 		g.p("\t\tcase %d:", i)
 		g.p("\t\t\tb.%s[%s] = q.%s[%s]", arena, short, arena, short)
 		g.p("\t\t\tv = append(v, &b.%s[%s])", arena, short)

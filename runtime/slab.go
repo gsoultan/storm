@@ -24,6 +24,28 @@ const (
 	slabMax = 1 << 16 // 64 KiB
 )
 
+// Bytes copies b into the arena and returns the copy.
+//
+// Same contract as Str: the result lives as long as the Slab and must not be
+// retained past the result set. Used for jsonb, where the caller unmarshals
+// immediately and keeps the decoded value rather than the bytes.
+//
+// The slice is capped to its length so appending to it cannot reach into the
+// next value's storage — a shared arena makes that a real hazard, not a
+// theoretical one.
+func (s *Slab) Bytes(b []byte) []byte {
+	n := len(b)
+	if n == 0 {
+		return nil
+	}
+	if cap(s.cur)-len(s.cur) < n {
+		s.grow(n)
+	}
+	off := len(s.cur)
+	s.cur = append(s.cur, b...)
+	return s.cur[off : off+n : off+n]
+}
+
 // str copies b into the arena and returns it as a string.
 func (s *Slab) Str(b []byte) string {
 	n := len(b)

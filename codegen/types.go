@@ -22,6 +22,8 @@ const (
 	kindBytes
 	kindUUID
 	kindTimestamptz
+	kindNumeric
+	kindJSONB
 )
 
 func goKind(c *schema.Column) kind {
@@ -49,6 +51,10 @@ func goKind(c *schema.Column) kind {
 		return kindUUID
 	case schema.TypeTimestamptz:
 		return kindTimestamptz
+	case schema.TypeNumeric:
+		return kindNumeric
+	case schema.TypeJSONB:
+		return kindJSONB
 	}
 	if c.Type.Enum {
 		return kindText // an enum arrives on the wire as its label
@@ -58,6 +64,17 @@ func goKind(c *schema.Column) kind {
 
 // baseGoType is the non-nullable Go type: what a predicate takes.
 func baseGoType(c *schema.Column) string {
+	switch goKind(c) {
+	case kindNumeric:
+		return "runtime.Decimal"
+	case kindJSONB:
+		// Raw bytes, not a decoded value. The generator cannot know the shape
+		// of a jsonb column — that is the point of the column — so it hands
+		// back what the database sent and the caller unmarshals into a type it
+		// declared. Decoding into map[string]any here would allocate a map per
+		// row for callers who wanted a struct.
+		return "runtime.JSON"
+	}
 	switch goKind(c) {
 	case kindBool:
 		return "bool"
@@ -93,6 +110,31 @@ func goType(c *schema.Column) string {
 	return "runtime.Null[" + base + "]"
 }
 
+// MaxNumericPrecision is how many significant digits a runtime.Decimal holds:
+// its unscaled value is an int64.
+//
+// A column declared past this is a GENERATION error rather than a runtime one.
+// The database would accept the value and the scan would refuse it, which is a
+// production incident triggered by data rather than by deployment — the worst
+// kind to debug. Declaring numeric(19,4) is a decision, so it gets an answer at
+// the moment it is made.
+const MaxNumericPrecision = 18
+
+// checkNumeric rejects a numeric column a Decimal cannot carry.
+func checkNumeric(table string, c *schema.Column) error {
+	if goKind(c) != kindNumeric || c.Type.Precision == 0 {
+		return nil
+	}
+	if c.Type.Precision > MaxNumericPrecision {
+		return fmt.Errorf(
+			"codegen: table %s column %s is numeric(%d,%d), but raorm.Decimal holds %d "+
+				"significant digits — narrow the precision, or declare the column as text "+
+				"if it genuinely needs more",
+			table, c.Name, c.Type.Precision, c.Type.Scale, MaxNumericPrecision)
+	}
+	return nil
+}
+
 // isNullable mirrors goType's test: a column whose Row field is Null[T].
 func isNullable(c *schema.Column) bool {
 	return !c.NotNull && goKind(c) != kindBytes
@@ -105,6 +147,22 @@ func decodeExpr(c *schema.Column, i int) string {
 
 	if k == kindBytes {
 		return fmt.Sprintf("r.%s = runtime.Bytes(rv[%d])", f, i)
+	}
+	if k == kindJSONB {
+		if c.NotNull {
+			return fmt.Sprintf("r.%s = runtime.JSON(runtime.JSONB(rv[%d], sl))", f, i)
+		}
+		return fmt.Sprintf("r.%s = runtime.NullJSON(rv[%d], sl)", f, i)
+	}
+	if k == kindNumeric {
+		// The error is recorded on the row rather than returned, because a
+		// scanner runs per column inside a loop that has no error path. Every
+		// terminal checks it before handing the rows back, so a value a
+		// Decimal cannot carry never escapes as a plausible zero.
+		if c.NotNull {
+			return fmt.Sprintf("r.%s, decErr = runtime.NumericErr(rv[%d])", f, i)
+		}
+		return fmt.Sprintf("r.%s, decErr = runtime.NullNumeric(rv[%d])", f, i)
 	}
 	if k == kindText {
 		if c.NotNull {
@@ -152,12 +210,19 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		return k == kindText
 	case "Gt", "Gte", "Lt", "Lte":
 		switch k {
-		case kindInt2, kindInt4, kindInt8, kindFloat4, kindFloat8, kindText, kindTimestamptz:
+		case kindInt2, kindInt4, kindInt8, kindFloat4, kindFloat8, kindText,
+			kindTimestamptz, kindNumeric:
 			return true
 		}
 		return false
 	case "Eq", "NotEq":
-		return k != kindBytes
+		// jsonb equality is whole-document equality, which is almost never
+		// what a caller means and is a trap dressed as a feature. Filtering
+		// jsonb needs ->> and @>, which the operator set does not have yet;
+		// until it does, the only predicates offered are IS [NOT] NULL, so a
+		// caller reaches for raw SQL knowingly rather than getting a
+		// surprising answer.
+		return k != kindBytes && k != kindJSONB
 	}
 	return false
 }

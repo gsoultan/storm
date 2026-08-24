@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/gsoultan/raorm/runtime"
 	"github.com/gsoultan/raorm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -91,5 +92,40 @@ func TestFastUUIDArray_DelegatesEverythingElse(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("delegated encoding differs\n got  %x\n want %x", got, want)
+	}
+}
+
+// A Decimal must reach the database as a numeric, not as text that Postgres
+// coerces by context — a prepared statement resolves that context before the
+// value exists.
+func TestFastDecimal_EncodesAsNumeric(t *testing.T) {
+	m := pgtype.NewMap()
+	pgxdrv.RegisterFastArrays(m)
+
+	for _, s := range []string{"0", "1", "-1", "0.01", "1234.5678", "-1234.5678"} {
+		d, err := runtime.ParseDecimal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := m.Encode(pgtype.NumericOID, pgtype.BinaryFormatCode, d, nil)
+		if err != nil {
+			t.Fatalf("%q: %v", s, err)
+		}
+		back, err := runtime.DecodeNumeric(got)
+		if err != nil {
+			t.Fatalf("%q: decoding what we encoded: %v", s, err)
+		}
+		if back.String() != s {
+			t.Errorf("%q encoded and decoded back to %q", s, back.String())
+		}
+	}
+
+	// A nil pointer is SQL NULL, not zero.
+	got, err := m.Encode(pgtype.NumericOID, pgtype.BinaryFormatCode, (*runtime.Decimal)(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Errorf("a nil *Decimal encoded to %x, want nil (SQL NULL)", got)
 	}
 }

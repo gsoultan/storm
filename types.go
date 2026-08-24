@@ -4,6 +4,7 @@ package raorm
 
 import (
 	"encoding/hex"
+	"github.com/gsoultan/raorm/runtime"
 	"time"
 )
 
@@ -55,6 +56,20 @@ func (m *Model) Schema(t *Table) {
 	t.Col(&m.CreatedAt).Default(Now()).Immutable()
 	t.Col(&m.UpdatedAt).Default(Now())
 }
+
+// Decimal is an exact fixed-point number for a numeric column.
+//
+// An alias, not a wrapper: the model declares raorm.Decimal and generated code
+// reads runtime.Decimal, and those must be the same type or every value would
+// need converting at the boundary raorm exists to remove.
+//
+// float64 is not offered for numeric. It cannot represent 0.10, and an
+// accounting system that rounds is a defect rather than a tolerance — so the
+// choice is made once, here, instead of by whoever writes the model.
+type Decimal = runtime.Decimal
+
+// ParseDecimal reads a decimal from its text form.
+func ParseDecimal(s string) (Decimal, error) { return runtime.ParseDecimal(s) }
 
 // Enumer marks a named type as a Postgres enum. Constants are not discoverable
 // through reflection, so the type has to list them.

@@ -4,8 +4,13 @@
 the absence of any adopter are what block it. Full checklist in `docs/PLAN.md`
 §"Production readiness".
 
-## The blocker nobody would guess
-**`numeric` is unsupported.** So are `date`, `time`, `interval`, `jsonb`,
+## The blocker nobody would guess — NOW CLOSED for numeric and jsonb
+**`numeric` shipped 2026-08-24 as `raorm.Decimal`** (exact, two words, no
+allocation, stdlib-only; 18 significant digits, with a GENERATION error past
+that and a decode ERROR rather than a wrong number). **`jsonb` shipped** as
+`runtime.JSON` — raw bytes the caller unmarshals, no value predicates.
+
+Still missing: `date`, `time`, `interval`, `jsonb`,
 `inet`, and **arrays of anything**. The generator binds bool, integer and float
 widths, text/varchar, bytea, uuid, timestamptz, enums — and stops. The fixture
 itself has two columns (`prefs jsonb`, `scopes text[]`) the generator silently
@@ -15,10 +20,12 @@ No application handling money can model its own tables. This is the first thing
 a real adopter hits, and it is invisible from the benchmarks because the bench
 table has none of those types.
 
-**`numeric` needs a DECISION before code:** Go has no stdlib decimal and
-`runtime/` is stdlib-only, so the representation is a genuine choice — lossless
-`string`, a raorm fixed-point type, or relaxing the stdlib rule for one type.
-Do not pick silently.
+**The decision that was taken:** a raorm-defined fixed-point type, keeping the
+stdlib-only rule. Pulling in a decimal package would put a third party's type on
+every row of every financial table; a caller who wants shopspring/decimal
+converts at the edge, which is one line and their choice.
+
+**Do not offer float64 for numeric.** It cannot represent 0.10.
 
 ## What IS solid, and why to trust it
 - **Injection is structural.** The property asserted is *the SQL is identical

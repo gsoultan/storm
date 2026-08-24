@@ -212,7 +212,9 @@ func (g *gen) arcLoader(arcOwnerPkg string, t *schema.Table, arc *schema.Arc, va
 		g.p("\t\t\tvar sl runtime.Slab")
 		g.p("\t\t\tfor rs.Next() {")
 		g.p("\t\t\t\tgot%d = append(got%d, %s.Row{})", i, i, pkg)
-		g.p("\t\t\t\t%s.Scan(rs.RawValues(), &got%d[len(got%d)-1], &sl)", pkg, i, i)
+		g.p("\t\t\t\tif err := %s.Scan(rs.RawValues(), &got%d[len(got%d)-1], &sl); err != nil {", pkg, i, i)
+		g.p("\t\t\t\t\treturn err")
+		g.p("\t\t\t\t}")
 		g.p("\t\t\t}")
 	}
 	g.p("\t\t}")

@@ -67,6 +67,12 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 			t.Name, len(cols), runtime.MaxCols)
 	}
 
+	for _, c := range t.Columns {
+		if err := checkNumeric(t.Name, c); err != nil {
+			return nil, err
+		}
+	}
+
 	g := &gen{s: s, t: t, o: o, cols: cols}
 	g.header()
 	g.rowType()
@@ -383,11 +389,18 @@ func (g *gen) scanner() {
 	g.p("//")
 	g.p("// Exported for the context package, which assembles batched results and")
 	g.p("// therefore has to decode rows it did not issue the query for.")
-	g.p("func Scan(rv [][]byte, r *Row, sl *runtime.Slab) { scan(rv, r, sl) }")
+	g.p("func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) }")
 	g.p("")
 	g.p("// scan decodes one row straight from the wire. No reflect, no `any`, no")
 	g.p("// driver.Value: the generator knows every column's type already.")
-	g.p("func scan(rv [][]byte, r *Row, sl *runtime.Slab) {")
+	g.p("//")
+	g.p("// It returns an error only for a value the Go type cannot carry — a")
+	g.p("// numeric past 18 significant digits, or a NaN. Those must not become a")
+	g.p("// plausible zero, and a row scanner is the last place that can tell.")
+	g.p("func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {")
+	if g.hasFallibleDecode() {
+		g.p("\tvar decErr error")
+	}
 	i := 0
 	for _, c := range g.t.Columns {
 		if goKind(c) == kindUnsupported {
@@ -395,6 +408,11 @@ func (g *gen) scanner() {
 		}
 		g.p("\t%s", decodeExpr(c, i))
 		i++
+	}
+	if g.hasFallibleDecode() {
+		g.p("\treturn decErr")
+	} else {
+		g.p("\treturn nil")
 	}
 	g.p("}")
 	g.p("")
@@ -443,7 +461,9 @@ func (g *gen) terminals() {
 	g.p("\tdefer rows.Close()")
 	g.p("\tfor rows.Next() {")
 	g.p("\t\tdst = append(dst, Row{})")
-	g.p("\t\tscan(rows.RawValues(), &dst[len(dst)-1], sl)")
+	g.p("\t\tif err := scan(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {")
+	g.p("\t\t\treturn dst, err")
+	g.p("\t\t}")
 	g.p("\t}")
 	g.p("\tst.ObserveSlab(sl.Size())")
 	g.p("\treturn dst, rows.Err()")
@@ -588,4 +608,15 @@ func (g *gen) colIndex(name string) int {
 		}
 	}
 	return -1
+}
+
+// hasFallibleDecode reports whether any column can fail to decode. Only
+// numeric can: everything else has a Go type that carries every wire value.
+func (g *gen) hasFallibleDecode() bool {
+	for _, c := range g.t.Columns {
+		if goKind(c) == kindNumeric {
+			return true
+		}
+	}
+	return false
 }

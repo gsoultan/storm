@@ -85,6 +85,7 @@ func (uuidArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
 // appeared when you used raorm's constructor would make a benchmark depend on
 // which constructor was called.
 func RegisterFastArrays(m *pgtype.Map) {
+	registerDecimal(m)
 	t, ok := m.TypeForOID(pgtype.UUIDArrayOID)
 	if !ok {
 		return // a server without uuid[] has nothing to speed up

@@ -78,3 +78,36 @@ func TestGenerate_UnknownTable(t *testing.T) {
 }
 
 var _ = fixture
+
+// A numeric a Decimal cannot carry is a GENERATION error, not a runtime one.
+// The database would accept the value and the scan would refuse it, which is a
+// production incident triggered by data rather than by deployment.
+func TestGenerate_NumericPrecisionBeyondDecimal(t *testing.T) {
+	s, err := raorm.Build(testmodel.All()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := s.Table("users")
+	if users == nil {
+		t.Fatal("no users table")
+	}
+	bal := users.Column("balance")
+	if bal == nil {
+		t.Fatal("no balance column")
+	}
+	prev := bal.Type.Precision
+	bal.Type.Precision = 30
+	defer func() { bal.Type.Precision = prev }()
+
+	_, err = codegen.File(s, codegen.Options{
+		Package: "x", Import: "github.com/gsoultan/raorm", Table: "users",
+	})
+	if err == nil {
+		t.Fatal("numeric(30,4) must be a generation error")
+	}
+	for _, want := range []string{"balance", "numeric(30", "significant digits"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should mention %q, got: %v", want, err)
+		}
+	}
+}

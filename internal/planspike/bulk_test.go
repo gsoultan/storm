@@ -25,6 +25,7 @@ func TestInsertAll_ThousandRowsIsOneRoundTrip(t *testing.T) {
 	for i := range rows {
 		rows[i] = user.Row{
 			ID:     newID(),
+			Prefs:  emptyJSON,
 			Email:  fmt.Sprintf("bulk%d@example.com", i),
 			Name:   fmt.Sprintf("bulk %d", i),
 			Status: "pending",
@@ -79,7 +80,8 @@ func TestInsertAll_RowSourceIsAllocationFlat(t *testing.T) {
 	mk := func(n int) []user.Row {
 		rows := make([]user.Row, n)
 		for i := range rows {
-			rows[i] = user.Row{ID: newID(), Email: "x", Name: "y", Status: "pending", OrgID: org}
+			rows[i] = user.Row{ID: newID(),
+				Prefs: emptyJSON, Email: "x", Name: "y", Status: "pending", OrgID: org}
 		}
 		return rows
 	}
@@ -131,6 +133,7 @@ func TestBatch_MixedStatementsIsOneRoundTrip(t *testing.T) {
 		ids = append(ids, id)
 		st := user.InsertOp(user.Row{
 			ID:     id,
+			Prefs:  emptyJSON,
 			Email:  fmt.Sprintf("batch%d@example.com", i),
 			Name:   fmt.Sprintf("batch %d", i),
 			Status: "pending",
@@ -220,3 +223,13 @@ func TestUpsert_WithoutTargetADuplicateIsAnError(t *testing.T) {
 		t.Fatal("inserting a duplicate primary key must fail without an explicit conflict target")
 	}
 }
+
+// emptyJSON is what a NOT NULL jsonb column needs from a full-row write.
+//
+// COPY and the batch statement constructors write EVERY insertable column,
+// including zero values — that is the documented rule, and it is what lets a
+// caller insert a false, a 0 or an empty string into a column with a default.
+// A zero runtime.JSON is nil, which is SQL NULL, so a NOT NULL jsonb column
+// has to be given a document. Create() is the builder that omits what you did
+// not set; these paths deliberately are not.
+var emptyJSON = runtime.JSON(`{}`)
