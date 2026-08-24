@@ -81,6 +81,7 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	g.treeBind()
 	g.terminals()
 	g.batchTop()
+	g.arcs()
 	g.recursive()
 	g.writes()
 
@@ -378,6 +379,12 @@ func (g *gen) compile() {
 }
 
 func (g *gen) scanner() {
+	g.p("// Scan decodes one row from raw wire bytes into r, copying text into sl.")
+	g.p("//")
+	g.p("// Exported for the context package, which assembles batched results and")
+	g.p("// therefore has to decode rows it did not issue the query for.")
+	g.p("func Scan(rv [][]byte, r *Row, sl *runtime.Slab) { scan(rv, r, sl) }")
+	g.p("")
 	g.p("// scan decodes one row straight from the wire. No reflect, no `any`, no")
 	g.p("// driver.Value: the generator knows every column's type already.")
 	g.p("func scan(rv [][]byte, r *Row, sl *runtime.Slab) {")

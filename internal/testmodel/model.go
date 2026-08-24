@@ -165,6 +165,21 @@ func (c *Comment) Schema(t *raorm.Table) {
 }
 
 // Booking exercises the exclusion constraint no other Go ORM can express.
+// Attachment is the exclusive-arc fixture: a file belonging to exactly one of
+// a post, a comment or a user. Three nullable foreign keys and a CHECK, so
+// referential integrity survives — the Rails (subject_type, subject_id) pair
+// cannot be constrained by any database.
+type Attachment struct {
+	raorm.Model
+
+	Filename string
+	Subject  raorm.OneOf3[Post, Comment, User]
+}
+
+func (a *Attachment) Schema(t *raorm.Table) {
+	t.Col(&a.Filename).Size(255)
+}
+
 type Booking struct {
 	raorm.Model
 
@@ -188,6 +203,6 @@ func (b *Booking) Schema(t *raorm.Table) {
 // All returns every model in the fixture, in registration order.
 func All() []any {
 	return []any{
-		&Org{}, &User{}, &Profile{}, &Post{}, &Comment{}, &Booking{},
+		&Org{}, &User{}, &Profile{}, &Post{}, &Comment{}, &Booking{}, &Attachment{},
 	}
 }

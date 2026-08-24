@@ -1033,6 +1033,12 @@ func (q Query) SQL() string {
 	return stmtFor(q.stream(&buf), q.offset > 0).SQL
 }
 
+// Scan decodes one row from raw wire bytes into r, copying text into sl.
+//
+// Exported for the context package, which assembles batched results and
+// therefore has to decode rows it did not issue the query for.
+func Scan(rv [][]byte, r *Row, sl *runtime.Slab) { scan(rv, r, sl) }
+
 // scan decodes one row straight from the wire. No reflect, no `any`, no
 // driver.Value: the generator knows every column's type already.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) {

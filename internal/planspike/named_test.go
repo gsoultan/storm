@@ -222,13 +222,20 @@ func TestNamedPlan_NestedDoesNotScaleWithRowCount(t *testing.T) {
 		if n > 4 {
 			t.Fatalf("%d users cost %d round trips; a three-relation plan can never exceed 4", users, n)
 		}
+		// The count may only RISE as the row count grows, and only by skipping
+		// fewer empty levels — never once per row.
+		//
+		// The first version of this asserted a constant, and it was flaky:
+		// another test in the package seeds a user with posts, so whether the
+		// comment level has anything to fetch depends on which rows this query
+		// happened to include. That is legitimate behaviour — an empty level
+		// issues no query — and the bound is the property actually worth
+		// pinning. A constant assertion pinned the fixture, not the design.
+		if n < first {
+			t.Errorf("round trips fell from %d to %d as rows grew, which should be impossible", first, n)
+		}
 		if i == 0 {
 			first = n
-			continue
-		}
-		if n != first {
-			t.Errorf("round trips changed with row count: %d at 1 user, %d at %d — that is an N+1",
-				first, n, users)
 		}
 	}
 }

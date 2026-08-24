@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gsoultan/raorm/internal/planspike/store/attachment"
 	"github.com/gsoultan/raorm/internal/planspike/store/comment"
 	"github.com/gsoultan/raorm/internal/planspike/store/org"
 	"github.com/gsoultan/raorm/internal/planspike/store/post"
@@ -19,10 +20,11 @@ import (
 // runtime code inspects a schema and no constraint has to be deferred for
 // a graph write to succeed.
 var FlushOrder = map[string]int{
-	"orgs":     1,
-	"users":    2,
-	"posts":    3,
-	"comments": 5,
+	"orgs":        1,
+	"users":       2,
+	"posts":       3,
+	"comments":    5,
+	"attachments": 6,
 }
 
 // NewUnit stages writes across this context and flushes them in foreign-key
@@ -2135,4 +2137,208 @@ func (p UserSummaryQuery) load0(ctx context.Context, ex runtime.Executor, out []
 		out[i].Org = targets[j]
 	}
 	return nil
+}
+
+// AttachmentWithSubjectRow is attachments with its Subject resolved.
+//
+// One field per variant, at most one of them non-nil — the same shape the
+// database enforces. A single interface field would be smaller to write
+// and would give every caller a type assertion to get wrong.
+type AttachmentWithSubjectRow struct {
+	attachment.Row
+	Post    *post.Row
+	Comment *comment.Row
+	User    *user.Row
+}
+
+type AttachmentWithSubjectQuery struct {
+	q attachment.Query
+}
+
+// AttachmentWithSubject starts the plan. TWO round trips: one for the rows, one BATCHED
+// query carrying every variant lookup.
+func AttachmentWithSubject() AttachmentWithSubjectQuery {
+	return AttachmentWithSubjectQuery{q: attachment.New()}
+}
+
+func (p AttachmentWithSubjectQuery) Where(ps ...attachment.Pred) AttachmentWithSubjectQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p AttachmentWithSubjectQuery) WhereIf(cond bool, pr attachment.Pred) AttachmentWithSubjectQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p AttachmentWithSubjectQuery) Any(ps ...attachment.Pred) AttachmentWithSubjectQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p AttachmentWithSubjectQuery) Not(pr attachment.Pred) AttachmentWithSubjectQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p AttachmentWithSubjectQuery) NotAny(ps ...attachment.Pred) AttachmentWithSubjectQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p AttachmentWithSubjectQuery) Order(ts ...attachment.Sort) AttachmentWithSubjectQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p AttachmentWithSubjectQuery) Limit(n int64) AttachmentWithSubjectQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p AttachmentWithSubjectQuery) Offset(n int64) AttachmentWithSubjectQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p AttachmentWithSubjectQuery) After(r AttachmentWithSubjectRow) AttachmentWithSubjectQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p AttachmentWithSubjectQuery) Err() error { return p.q.Err() }
+
+func (p AttachmentWithSubjectQuery) All(ctx context.Context, ex runtime.Executor) ([]AttachmentWithSubjectRow, error) {
+	rows, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]AttachmentWithSubjectRow, len(rows))
+	ids0 := make([][16]byte, 0, len(rows))
+	ids1 := make([][16]byte, 0, len(rows))
+	ids2 := make([][16]byte, 0, len(rows))
+	for i, r := range rows {
+		out[i] = AttachmentWithSubjectRow{Row: r}
+		if id, ok := r.PostID.Get(); ok {
+			ids0 = append(ids0, id)
+		}
+		if id, ok := r.CommentID.Get(); ok {
+			ids1 = append(ids1, id)
+		}
+		if id, ok := r.UserID.Get(); ok {
+			ids2 = append(ids2, id)
+		}
+	}
+
+	// One BatchOp per variant that has any ids at all: a variant nothing
+	// referenced costs no statement, so an arc used one way at a time is
+	// as cheap as a plain relation.
+	var ops []runtime.BatchOp
+	var which []int
+	if len(ids0) > 0 {
+		bnd0 := post.GetBinder()
+		defer post.PutBinder(bnd0)
+		// The binder owns the argument slice, so it must outlive the
+		// batch — releasing it before Batch runs would hand the driver
+		// arguments another goroutine may already be overwriting.
+		sql0, args0 := post.New().Where(post.ID.In(ids0...)).Limit(int64(len(ids0))).Prepare(bnd0)
+		ops = append(ops, runtime.BatchOp{SQL: sql0, Args: args0, WantRows: true})
+		which = append(which, 0)
+	}
+	if len(ids1) > 0 {
+		bnd1 := comment.GetBinder()
+		defer comment.PutBinder(bnd1)
+		// The binder owns the argument slice, so it must outlive the
+		// batch — releasing it before Batch runs would hand the driver
+		// arguments another goroutine may already be overwriting.
+		sql1, args1 := comment.New().Where(comment.ID.In(ids1...)).Limit(int64(len(ids1))).Prepare(bnd1)
+		ops = append(ops, runtime.BatchOp{SQL: sql1, Args: args1, WantRows: true})
+		which = append(which, 1)
+	}
+	if len(ids2) > 0 {
+		bnd2 := user.GetBinder()
+		defer user.PutBinder(bnd2)
+		// The binder owns the argument slice, so it must outlive the
+		// batch — releasing it before Batch runs would hand the driver
+		// arguments another goroutine may already be overwriting.
+		sql2, args2 := user.New().Where(user.ID.In(ids2...)).Limit(int64(len(ids2))).Prepare(bnd2)
+		ops = append(ops, runtime.BatchOp{SQL: sql2, Args: args2, WantRows: true})
+		which = append(which, 2)
+	}
+	if len(ops) == 0 {
+		return out, nil
+	}
+
+	by0 := make(map[[16]byte]int, len(ids0))
+	var got0 []post.Row
+	by1 := make(map[[16]byte]int, len(ids1))
+	var got1 []comment.Row
+	by2 := make(map[[16]byte]int, len(ids2))
+	var got2 []user.Row
+	err = ex.Batch(ctx, ops, func(n int, rs runtime.Rows, _ int64, err error) error {
+		if err != nil {
+			return err
+		}
+		switch which[n] {
+		case 0:
+			var sl runtime.Slab
+			for rs.Next() {
+				got0 = append(got0, post.Row{})
+				post.Scan(rs.RawValues(), &got0[len(got0)-1], &sl)
+			}
+		case 1:
+			var sl runtime.Slab
+			for rs.Next() {
+				got1 = append(got1, comment.Row{})
+				comment.Scan(rs.RawValues(), &got1[len(got1)-1], &sl)
+			}
+		case 2:
+			var sl runtime.Slab
+			for rs.Next() {
+				got2 = append(got2, user.Row{})
+				user.Scan(rs.RawValues(), &got2[len(got2)-1], &sl)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	for j := range got0 {
+		by0[got0[j].ID] = j
+	}
+	for j := range got1 {
+		by1[got1[j].ID] = j
+	}
+	for j := range got2 {
+		by2[got2[j].ID] = j
+	}
+	for i := range out {
+		if id, ok := out[i].PostID.Get(); ok {
+			if j, ok := by0[id]; ok {
+				out[i].Post = &got0[j]
+			}
+		}
+		if id, ok := out[i].CommentID.Get(); ok {
+			if j, ok := by1[id]; ok {
+				out[i].Comment = &got1[j]
+			}
+		}
+		if id, ok := out[i].UserID.Get(); ok {
+			if j, ok := by2[id]; ok {
+				out[i].User = &got2[j]
+			}
+		}
+	}
+	return out, nil
 }

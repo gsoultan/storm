@@ -94,6 +94,7 @@ type modelInfo struct {
 	tbl     *Table
 	pending []*relation
 	fkCols  []string
+	arcCols []arcCol
 }
 
 // relation is a to-one or to-many link discovered during the column walk and
@@ -203,6 +204,12 @@ func (b *builder) walk(mi *modelInfo, t reflect.Type, base uintptr, tbl *Table) 
 				b.walk(mi, f.Type, off, tbl)
 				continue
 			}
+		}
+
+		// Exclusive arc? One nullable foreign key per variant.
+		if vs, opt, ok := arcVariants(f.Type); ok {
+			b.buildArc(mi, tbl, f, off, vs, opt)
+			continue
 		}
 
 		// Relation?
@@ -402,7 +409,90 @@ func (b *builder) resolveRelations(mi *modelInfo) {
 		})
 		mi.fkCols = append(mi.fkCols, rel.colName)
 	}
+	b.resolveArcs(mi)
 }
+
+// resolveArcs finishes the exclusive arcs: a foreign key per variant, the
+// exactly-one CHECK, and a partial index per variant.
+//
+// Deferred to pass 3 for the same reason relations are — the referenced primary
+// key does not exist until every table's columns are built.
+func (b *builder) resolveArcs(mi *modelInfo) {
+	for _, ac := range mi.arcCols {
+		tgt := b.tableByName(ac.variant.Table)
+		if tgt == nil {
+			continue // already reported
+		}
+		pk := tgt.PrimaryKey
+		if len(pk) != 1 {
+			b.errs.add(fmt.Errorf(
+				"%s: arc variant %s has a %d-column primary key; an arc needs a single-column key",
+				mi.tbl.out.Name, ac.variant.Table, len(pk)))
+			continue
+		}
+		if refCol := tgt.Column(pk[0]); refCol != nil {
+			ac.col.sc.Type = refCol.Type
+		}
+		mi.tbl.out.ForeignKeys = append(mi.tbl.out.ForeignKeys, &schema.ForeignKey{
+			Columns:    []string{ac.variant.Column},
+			RefTable:   ac.variant.Table,
+			RefColumns: []string{pk[0]},
+			OnDelete:   schema.Cascade,
+		})
+		mi.fkCols = append(mi.fkCols, ac.variant.Column)
+	}
+
+	for _, arc := range mi.tbl.out.Arcs {
+		mi.tbl.out.Checks = append(mi.tbl.out.Checks, &schema.Check{
+			Name: "ck_" + mi.tbl.out.Name + "_" + snake(arc.Field),
+			Expr: arcCheckExpr(arc),
+		})
+		// A partial index per variant. Without them, "the attachments of this
+		// post" scans every attachment of every kind — and the whole reason to
+		// keep separate columns is that each one can be indexed.
+		for _, v := range arc.Variants {
+			mi.tbl.out.Indexes = append(mi.tbl.out.Indexes, &schema.Index{
+				Name:    "ix_" + mi.tbl.out.Name + "_" + v.Column,
+				Columns: []schema.IndexColumn{{Name: v.Column}},
+				Where:   quoteIdent(v.Column) + " IS NOT NULL",
+			})
+		}
+	}
+}
+
+// arcCheckExpr is the exactly-one (or at-most-one) constraint.
+//
+// Summing booleans as ints rather than a chain of ORs and ANDs: it stays one
+// readable expression as variants are added, and it says what it means —
+// exactly one of these is present.
+func arcCheckExpr(arc *schema.Arc) string {
+	var b strings.Builder
+	for i, v := range arc.Variants {
+		if i > 0 {
+			b.WriteString(" + ")
+		}
+		b.WriteString("(")
+		b.WriteString(quoteIdent(v.Column))
+		b.WriteString(" IS NOT NULL)::int")
+	}
+	if arc.Optional {
+		b.WriteString(" <= 1")
+	} else {
+		b.WriteString(" = 1")
+	}
+	return b.String()
+}
+
+func (b *builder) tableByName(name string) *schema.Table {
+	for _, mi := range b.ordered {
+		if mi.tbl != nil && mi.tbl.out.Name == name {
+			return mi.tbl.out
+		}
+	}
+	return nil
+}
+
+func quoteIdent(s string) string { return `"` + s + `"` }
 
 // callPlans runs a model's Plans method, if it has one.
 //
@@ -603,4 +693,90 @@ func snake(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// arcVariants reports whether t is a raorm.OneOfN and returns its variants.
+//
+// Recognised structurally rather than by name: every OneOfN is a zero-sized
+// struct whose fields are all [0]T, so the variants are the element types. That
+// means a new arity needs no change here, and a struct that merely happens to
+// be called OneOf9 is not silently treated as one.
+func arcVariants(t reflect.Type) (vs []reflect.Type, optional bool, ok bool) {
+	optional = t.Kind() == reflect.Pointer
+	if optional {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || t.NumField() == 0 || t.Size() != 0 {
+		return nil, false, false
+	}
+	for i := 0; i < t.NumField(); i++ {
+		ft := t.Field(i).Type
+		if ft.Kind() != reflect.Array || ft.Len() != 0 {
+			return nil, false, false
+		}
+		vs = append(vs, ft.Elem())
+	}
+	return vs, optional, true
+}
+
+// buildArc emits a nullable foreign key per variant, a CHECK that the right
+// number are set, and a partial index per variant.
+func (b *builder) buildArc(mi *modelInfo, tbl *Table, f reflect.StructField,
+	off uintptr, variants []reflect.Type, optional bool) {
+
+	arc := &schema.Arc{Field: f.Name, Optional: optional}
+	seen := map[string]bool{}
+	for _, vt := range variants {
+		tgt := b.byType[vt]
+		if tgt == nil || tgt.tbl == nil {
+			b.errs.add(fmt.Errorf(
+				"%s.%s: variant %s is not registered — pass it to Build",
+				mi.tbl.out.Name, f.Name, vt.Name()))
+			return
+		}
+		if seen[vt.Name()] {
+			b.errs.add(fmt.Errorf(
+				"%s.%s: variant %s appears twice — the CHECK could never distinguish them",
+				mi.tbl.out.Name, f.Name, vt.Name()))
+			return
+		}
+		seen[vt.Name()] = true
+		arc.Variants = append(arc.Variants, schema.ArcVariant{
+			Table:  tgt.tbl.out.Name,
+			GoName: vt.Name(),
+			Column: snake(vt.Name()) + "_id",
+		})
+	}
+	if len(arc.Variants) < 2 {
+		b.errs.add(fmt.Errorf(
+			"%s.%s: an arc over one variant is an ordinary relation — declare it as one",
+			mi.tbl.out.Name, f.Name))
+		return
+	}
+
+	// Columns first, so the CHECK and the indexes have something to name.
+	for _, v := range arc.Variants {
+		c := &col{
+			sc: &schema.Column{
+				Name: v.Column,
+				Type: schema.Type{Name: schema.TypeUUID},
+				// Every variant column is nullable: exactly one is set, so
+				// the others must be able to be absent. The CHECK is what
+				// makes "exactly one" true, not the column definitions.
+			},
+			field: f,
+			isRel: true,
+		}
+		tbl.out.Columns = append(tbl.out.Columns, c.sc)
+		mi.arcCols = append(mi.arcCols, arcCol{col: c, variant: v})
+	}
+	tbl.relOff[off] = f.Name
+	tbl.out.Arcs = append(tbl.out.Arcs, arc)
+}
+
+// arcCol pairs a built column with the variant it came from, so pass 3 can add
+// the foreign key once the target's primary key exists.
+type arcCol struct {
+	col     *col
+	variant schema.ArcVariant
 }

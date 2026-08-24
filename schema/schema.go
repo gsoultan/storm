@@ -50,6 +50,12 @@ type Table struct {
 	// the database sees.
 	Relations []*Relation
 
+	// Arcs are the exclusive-arc polymorphic fields: one column per variant
+	// with a CHECK that exactly one is set. Kept in the IR because code
+	// generation needs the variant list, which the columns alone cannot give
+	// back — three nullable foreign keys look like three ordinary relations.
+	Arcs []*Arc
+
 	// Plans are the named fetch plans the model declared. The generator emits
 	// exactly these and no others — which is the whole answer to the
 	// projection-type explosion: you get the plans you name, not every subset
@@ -62,6 +68,28 @@ type Table struct {
 	ForeignKeys []*ForeignKey
 	Checks      []*Check
 	Excludes    []*Exclude
+}
+
+// Arc is one polymorphic field: a reference to a row in exactly one of several
+// tables, expressed as one nullable foreign key per variant.
+type Arc struct {
+	// Field is the Go field name: "Subject".
+	Field string
+
+	// Optional makes the CHECK "at most one" rather than "exactly one".
+	Optional bool
+
+	// Variants are the possible targets, in declaration order. Order is the
+	// generated match arity, so changing it changes every call site — which is
+	// the point.
+	Variants []ArcVariant
+}
+
+// ArcVariant is one target of an arc.
+type ArcVariant struct {
+	Table  string // referenced table
+	GoName string // referenced model type
+	Column string // this table's nullable foreign key for that variant
 }
 
 // Plan is a named fetch plan: a set of relations loaded together.
