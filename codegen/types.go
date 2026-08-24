@@ -24,11 +24,22 @@ const (
 	kindTimestamptz
 	kindNumeric
 	kindJSONB
+	kindTextArray
+	kindUUIDArray
 )
 
 func goKind(c *schema.Column) kind {
 	if c.Type.Array {
-		return kindUnsupported // arrays land in M2's follow-up
+		// Only the element types whose decoder is allocation-shaped like the
+		// scalar one. An int8[] or a numeric[] is the same shape of work and
+		// is simply not written yet; a jsonb[] is a different question.
+		switch c.Type.Name {
+		case schema.TypeText, schema.TypeVarchar:
+			return kindTextArray
+		case schema.TypeUUID:
+			return kindUUIDArray
+		}
+		return kindUnsupported
 	}
 	switch c.Type.Name {
 	case schema.TypeBool:
@@ -65,6 +76,10 @@ func goKind(c *schema.Column) kind {
 // baseGoType is the non-nullable Go type: what a predicate takes.
 func baseGoType(c *schema.Column) string {
 	switch goKind(c) {
+	case kindTextArray:
+		return "[]string"
+	case kindUUIDArray:
+		return "[][16]byte"
 	case kindNumeric:
 		return "runtime.Decimal"
 	case kindJSONB:
@@ -104,7 +119,7 @@ func baseGoType(c *schema.Column) string {
 // because a pointer would cost an allocation per non-nil field per row.
 func goType(c *schema.Column) string {
 	base := baseGoType(c)
-	if c.NotNull || goKind(c) == kindBytes {
+	if !isNullable(c) {
 		return base
 	}
 	return "runtime.Null[" + base + "]"
@@ -136,8 +151,16 @@ func checkNumeric(table string, c *schema.Column) error {
 }
 
 // isNullable mirrors goType's test: a column whose Row field is Null[T].
+//
+// A slice is not wrapped: nil already means SQL NULL and an empty non-nil slice
+// means '{}'. Wrapping would give two ways to say absent and a caller checking
+// the wrong one.
 func isNullable(c *schema.Column) bool {
-	return !c.NotNull && goKind(c) != kindBytes
+	switch goKind(c) {
+	case kindBytes, kindTextArray, kindUUIDArray:
+		return false
+	}
+	return !c.NotNull
 }
 
 // decodeExpr renders one column's decode line.
@@ -147,6 +170,12 @@ func decodeExpr(c *schema.Column, i int) string {
 
 	if k == kindBytes {
 		return fmt.Sprintf("r.%s = runtime.Bytes(rv[%d])", f, i)
+	}
+	if k == kindTextArray {
+		return fmt.Sprintf("r.%s, decErr = runtime.TextArray(rv[%d], sl)", f, i)
+	}
+	if k == kindUUIDArray {
+		return fmt.Sprintf("r.%s, decErr = runtime.UUIDArray(rv[%d])", f, i)
 	}
 	if k == kindJSONB {
 		if c.NotNull {
@@ -222,7 +251,14 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		// until it does, the only predicates offered are IS [NOT] NULL, so a
 		// caller reaches for raw SQL knowingly rather than getting a
 		// surprising answer.
-		return k != kindBytes && k != kindJSONB
+		// An array offers no value predicates either: containment and overlap
+		// need @> and &&, which the operator set does not have, and equality
+		// on an array is order-sensitive in a way almost nobody means.
+		switch k {
+		case kindBytes, kindJSONB, kindTextArray, kindUUIDArray:
+			return false
+		}
+		return true
 	}
 	return false
 }

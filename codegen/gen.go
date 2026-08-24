@@ -407,6 +407,16 @@ func (g *gen) scanner() {
 			continue
 		}
 		g.p("\t%s", decodeExpr(c, i))
+		if fallibleColumn(c) {
+			// Return on the FIRST failure rather than letting the next
+			// column's assignment overwrite decErr. The row is partly decoded
+			// at that point and the caller discards it, which is the right
+			// trade — carrying on would report the last error instead of the
+			// one that mattered, and a test caught exactly that.
+			g.p("\tif decErr != nil {")
+			g.p("\t\treturn decErr")
+			g.p("\t}")
+		}
 		i++
 	}
 	if g.hasFallibleDecode() {
@@ -610,11 +620,20 @@ func (g *gen) colIndex(name string) int {
 	return -1
 }
 
+// fallibleColumn reports whether one column's decoder can fail.
+func fallibleColumn(c *schema.Column) bool {
+	switch goKind(c) {
+	case kindNumeric, kindTextArray, kindUUIDArray:
+		return true
+	}
+	return false
+}
+
 // hasFallibleDecode reports whether any column can fail to decode. Only
 // numeric can: everything else has a Go type that carries every wire value.
 func (g *gen) hasFallibleDecode() bool {
 	for _, c := range g.t.Columns {
-		if goKind(c) == kindNumeric {
+		if fallibleColumn(c) {
 			return true
 		}
 	}

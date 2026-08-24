@@ -24,7 +24,7 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		// Its own arena: a Decimal is two words and does not fit the int64
 		// slot every other scalar shares.
 		return "decs", "nd"
-	case kindJSONB, kindBytes:
+	case kindJSONB, kindBytes, kindTextArray, kindUUIDArray:
 		// No arena. Neither is a value a predicate binds or an ordering
 		// compares — jsonb offers only IS [NOT] NULL, and bytea offers
 		// nothing — so there is nothing to store.

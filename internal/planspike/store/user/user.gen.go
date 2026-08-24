@@ -25,6 +25,7 @@ type Row struct {
 	Name      string
 	Status    string
 	Prefs     runtime.JSON
+	Scopes    []string
 	Age       runtime.Null[int16]
 	LastIP    runtime.Null[string]
 	Balance   runtime.Decimal
@@ -47,7 +48,7 @@ const (
 	opIsNotNull runtime.Op = 10
 )
 
-const nCols = 14
+const nCols = 15
 
 // Query is a value type: composing one allocates nothing. Predicates
 // are a postfix token stream, so disjunction and negation are
@@ -204,35 +205,35 @@ func (q *Query) cursor(col uint32, r Row) {
 		}
 		q.strs[q.ns] = r.Status
 		q.ns++
-	case 9:
+	case 10:
 		if int(q.nn) >= len(q.nums) {
 			q.over = true
 			return
 		}
 		q.nums[q.nn] = int64(r.Age.V)
 		q.nn++
-	case 10:
+	case 11:
 		if int(q.ns) >= len(q.strs) {
 			q.over = true
 			return
 		}
 		q.strs[q.ns] = r.LastIP.V
 		q.ns++
-	case 11:
+	case 12:
 		if int(q.nd) >= len(q.decs) {
 			q.over = true
 			return
 		}
 		q.decs[q.nd] = r.Balance
 		q.nd++
-	case 12:
+	case 13:
 		if int(q.nd) >= len(q.decs) {
 			q.over = true
 			return
 		}
 		q.decs[q.nd] = r.Credit.V
 		q.nd++
-	case 13:
+	case 14:
 		if int(q.nr) >= len(q.raws) {
 			q.over = true
 			return
@@ -353,11 +354,12 @@ var (
 	Name      = TextCol{6}
 	Status    = TextCol{7}
 	Prefs     = JSONCol{8}
-	Age       = NullInt16Col{9}
-	LastIP    = NullTextCol{10}
-	Balance   = DecimalCol{11}
-	Credit    = NullDecimalCol{12}
-	OrgID     = UUIDCol{13}
+	Scopes    = TextArrayCol{9}
+	Age       = NullInt16Col{10}
+	LastIP    = NullTextCol{11}
+	Balance   = DecimalCol{12}
+	Credit    = NullDecimalCol{13}
+	OrgID     = UUIDCol{14}
 )
 
 // UUIDCol addresses a uuid column.
@@ -465,6 +467,18 @@ func (h JSONCol) AscNullsFirst() Sort {
 	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
 }
 func (h JSONCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
+// TextArrayCol addresses a text[] column.
+type TextArrayCol struct{ c uint8 }
+
+func (h TextArrayCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h TextArrayCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h TextArrayCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h TextArrayCol) DescNullsLast() Sort {
 	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
 }
 
@@ -675,27 +689,20 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.strs[q.ns] = p.str
 		q.ns++
-	case 9:
+	case 10:
 		if int(q.nn) >= 6 {
 			q.over = true
 			return
 		}
 		q.nums[q.nn] = p.num
 		q.nn++
-	case 10:
+	case 11:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
 		}
 		q.strs[q.ns] = p.str
 		q.ns++
-	case 11:
-		if int(q.nd) >= 4 {
-			q.over = true
-			return
-		}
-		q.decs[q.nd] = p.dec
-		q.nd++
 	case 12:
 		if int(q.nd) >= 4 {
 			q.over = true
@@ -704,6 +711,13 @@ func (q *Query) leaf(p Pred) {
 		q.decs[q.nd] = p.dec
 		q.nd++
 	case 13:
+		if int(q.nd) >= 4 {
+			q.over = true
+			return
+		}
+		q.decs[q.nd] = p.dec
+		q.nd++
+	case 14:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
@@ -804,7 +818,7 @@ func (q Query) OrgIDEq(v [16]byte) Query             { return q.Where(OrgID.Eq(v
 func (q Query) OrgIDNotEq(v [16]byte) Query          { return q.Where(OrgID.NotEq(v)) }
 func (q Query) OrgIDIn(v ...[16]byte) Query          { return q.Where(OrgID.In(v...)) }
 
-const selectPrefix = `SELECT "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "age", "last_ip", "balance", "credit", "org_id" FROM "users"`
+const selectPrefix = `SELECT "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "scopes", "age", "last_ip", "balance", "credit", "org_id" FROM "users"`
 const countPrefix = `SELECT count(*) FROM "users"`
 const limitSuffix = ` LIMIT $`
 const limitOffsetSuffix = ` LIMIT $ OFFSET $`
@@ -867,6 +881,12 @@ var orderTable = [nCols][4]string{
 		"\"prefs\" ASC NULLS FIRST",
 		"\"prefs\" DESC NULLS LAST",
 	},
+	{ // scopes
+		"\"scopes\"",
+		"\"scopes\" DESC",
+		"\"scopes\" ASC NULLS FIRST",
+		"\"scopes\" DESC NULLS LAST",
+	},
 	{ // age
 		"\"age\"",
 		"\"age\" DESC",
@@ -911,6 +931,7 @@ var identTable = [nCols]string{
 	"\"name\"",
 	"\"status\"",
 	"\"prefs\"",
+	"\"scopes\"",
 	"\"age\"",
 	"\"last_ip\"",
 	"\"balance\"",
@@ -1054,6 +1075,19 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 	},
 	{ // prefs
+		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // scopes
 		{}, // opNone
 		{},
 		{},
@@ -1218,11 +1252,21 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	r.Name = sl.Str(rv[6])
 	r.Status = sl.Str(rv[7])
 	r.Prefs = runtime.JSON(runtime.JSONB(rv[8], sl))
-	r.Age = runtime.Nullable(rv[9], runtime.Int2)
-	r.LastIP = runtime.NullText(rv[10], sl)
-	r.Balance, decErr = runtime.NumericErr(rv[11])
-	r.Credit, decErr = runtime.NullNumeric(rv[12])
-	copy(r.OrgID[:], rv[13])
+	r.Scopes, decErr = runtime.TextArray(rv[9], sl)
+	if decErr != nil {
+		return decErr
+	}
+	r.Age = runtime.Nullable(rv[10], runtime.Int2)
+	r.LastIP = runtime.NullText(rv[11], sl)
+	r.Balance, decErr = runtime.NumericErr(rv[12])
+	if decErr != nil {
+		return decErr
+	}
+	r.Credit, decErr = runtime.NullNumeric(rv[13])
+	if decErr != nil {
+		return decErr
+	}
+	copy(r.OrgID[:], rv[14])
 	return decErr
 }
 
@@ -1311,23 +1355,23 @@ func (q Query) bind(b *binder) []any {
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
-		case 9:
+		case 10:
 			b.nums[nn] = q.nums[nn]
 			v = append(v, &b.nums[nn])
 			nn++
-		case 10:
+		case 11:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
-		case 11:
-			b.decs[nd] = q.decs[nd]
-			v = append(v, &b.decs[nd])
-			nd++
 		case 12:
 			b.decs[nd] = q.decs[nd]
 			v = append(v, &b.decs[nd])
 			nd++
 		case 13:
+			b.decs[nd] = q.decs[nd]
+			v = append(v, &b.decs[nd])
+			nd++
+		case 14:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
@@ -1517,7 +1561,7 @@ func batchTopByOrgIDWindowSQL(order []Sort) string {
 	for i, t := range toks {
 		terms[i] = orderOf(t.Op(), t.Col())
 	}
-	sql := runtime.SpliceOrder("SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\" FROM (SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\", row_number() OVER (PARTITION BY \"org_id\"\x00order\x00) AS \"_raorm_rn\" FROM \"users\" WHERE \"org_id\" = ANY($1)) \"_raorm_t\" WHERE \"_raorm_rn\" <= $2", terms, " ORDER BY ", ", ")
+	sql := runtime.SpliceOrder("SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"scopes\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\" FROM (SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"scopes\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\", row_number() OVER (PARTITION BY \"org_id\"\x00order\x00) AS \"_raorm_rn\" FROM \"users\" WHERE \"org_id\" = ANY($1)) \"_raorm_t\" WHERE \"_raorm_rn\" <= $2", terms, " ORDER BY ", ", ")
 	return batchTopByOrgIDWindowCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL
 }
 
@@ -1541,13 +1585,13 @@ func batchTopByOrgIDLateralSQL(order []Sort) string {
 	for i, t := range toks {
 		terms[i] = orderOf(t.Op(), t.Col())
 	}
-	sql := runtime.SpliceOrder("SELECT \"_raorm_c\".\"id\", \"_raorm_c\".\"created_at\", \"_raorm_c\".\"updated_at\", \"_raorm_c\".\"version\", \"_raorm_c\".\"deleted_at\", \"_raorm_c\".\"email\", \"_raorm_c\".\"name\", \"_raorm_c\".\"status\", \"_raorm_c\".\"prefs\", \"_raorm_c\".\"age\", \"_raorm_c\".\"last_ip\", \"_raorm_c\".\"balance\", \"_raorm_c\".\"credit\", \"_raorm_c\".\"org_id\" FROM unnest($1::uuid[]) AS \"_raorm_p\"(\"_raorm_k\") CROSS JOIN LATERAL (SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\" FROM \"users\" WHERE \"org_id\" = \"_raorm_p\".\"_raorm_k\"\x00order\x00 LIMIT $2) \"_raorm_c\"", terms, " ORDER BY ", ", ")
+	sql := runtime.SpliceOrder("SELECT \"_raorm_c\".\"id\", \"_raorm_c\".\"created_at\", \"_raorm_c\".\"updated_at\", \"_raorm_c\".\"version\", \"_raorm_c\".\"deleted_at\", \"_raorm_c\".\"email\", \"_raorm_c\".\"name\", \"_raorm_c\".\"status\", \"_raorm_c\".\"prefs\", \"_raorm_c\".\"scopes\", \"_raorm_c\".\"age\", \"_raorm_c\".\"last_ip\", \"_raorm_c\".\"balance\", \"_raorm_c\".\"credit\", \"_raorm_c\".\"org_id\" FROM unnest($1::uuid[]) AS \"_raorm_p\"(\"_raorm_k\") CROSS JOIN LATERAL (SELECT \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"scopes\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\" FROM \"users\" WHERE \"org_id\" = \"_raorm_p\".\"_raorm_k\"\x00order\x00 LIMIT $2) \"_raorm_c\"", terms, " ORDER BY ", ", ")
 	return batchTopByOrgIDLateralCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL
 }
 
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
-const insertSQL = `INSERT INTO "users" ("id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "age", "last_ip", "balance", "credit", "org_id") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "age", "last_ip", "balance", "credit", "org_id"`
+const insertSQL = `INSERT INTO "users" ("id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "scopes", "age", "last_ip", "balance", "credit", "org_id") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "scopes", "age", "last_ip", "balance", "credit", "org_id"`
 
 const updatePrefix = `UPDATE "users" SET `
 const deletePrefix = `DELETE FROM "users"`
@@ -1561,14 +1605,15 @@ const (
 	dName      uint64 = 1 << 3
 	dStatus    uint64 = 1 << 4
 	dPrefs     uint64 = 1 << 5
-	dAge       uint64 = 1 << 6
-	dLastIP    uint64 = 1 << 7
-	dBalance   uint64 = 1 << 8
-	dCredit    uint64 = 1 << 9
-	dOrgID     uint64 = 1 << 10
+	dScopes    uint64 = 1 << 6
+	dAge       uint64 = 1 << 7
+	dLastIP    uint64 = 1 << 8
+	dBalance   uint64 = 1 << 9
+	dCredit    uint64 = 1 << 10
+	dOrgID     uint64 = 1 << 11
 )
 
-const nUpdatable = 11
+const nUpdatable = 12
 
 // setFrags is every assignment this table can make, lowered at build time.
 var setFrags = [nUpdatable]runtime.Frag{
@@ -1578,6 +1623,7 @@ var setFrags = [nUpdatable]runtime.Frag{
 	{A: "\"name\" = $", B: ""},       // name
 	{A: "\"status\" = $", B: ""},     // status
 	{A: "\"prefs\" = $", B: ""},      // prefs
+	{A: "\"scopes\" = $", B: ""},     // scopes
 	{A: "\"age\" = $", B: ""},        // age
 	{A: "\"last_ip\" = $", B: ""},    // last_ip
 	{A: "\"balance\" = $", B: ""},    // balance
@@ -1611,14 +1657,15 @@ const (
 	iName      uint64 = 1 << 6
 	iStatus    uint64 = 1 << 7
 	iPrefs     uint64 = 1 << 8
-	iAge       uint64 = 1 << 9
-	iLastIP    uint64 = 1 << 10
-	iBalance   uint64 = 1 << 11
-	iCredit    uint64 = 1 << 12
-	iOrgID     uint64 = 1 << 13
+	iScopes    uint64 = 1 << 9
+	iAge       uint64 = 1 << 10
+	iLastIP    uint64 = 1 << 11
+	iBalance   uint64 = 1 << 12
+	iCredit    uint64 = 1 << 13
+	iOrgID     uint64 = 1 << 14
 )
 
-const nInsertable = 14
+const nInsertable = 15
 
 // insCols is the quoted column name for each insert bit.
 var insCols = [nInsertable]string{
@@ -1631,6 +1678,7 @@ var insCols = [nInsertable]string{
 	"\"name\"",
 	"\"status\"",
 	"\"prefs\"",
+	"\"scopes\"",
 	"\"age\"",
 	"\"last_ip\"",
 	"\"balance\"",
@@ -1644,7 +1692,7 @@ var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Clo
 
 const insPlaceholder = "$"
 const insPrefix = "INSERT INTO \"users\""
-const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"version\", \"deleted_at\", \"email\", \"name\", \"status\", \"prefs\", \"scopes\", \"age\", \"last_ip\", \"balance\", \"credit\", \"org_id\""
 
 var insCache = runtime.NewMaskCache()
 var updCache = runtime.NewMaskCache()
@@ -1707,6 +1755,11 @@ func (m *Mut) SetStatus(v string) {
 func (m *Mut) SetPrefs(v runtime.JSON) {
 	m.row.Prefs = v
 	m.dirty |= dPrefs
+}
+
+func (m *Mut) SetScopes(v []string) {
+	m.row.Scopes = v
+	m.dirty |= dScopes
 }
 
 func (m *Mut) SetAge(v int16) {
@@ -1832,6 +1885,11 @@ func (n *Ins) SetPrefs(v runtime.JSON) {
 	n.set |= iPrefs
 }
 
+func (n *Ins) SetScopes(v []string) {
+	n.row.Scopes = v
+	n.set |= iScopes
+}
+
 func (n *Ins) SetAge(v int16) {
 	n.row.Age = runtime.Null[int16]{V: v, Valid: true}
 	n.set |= iAge
@@ -1883,7 +1941,7 @@ func (n *Ins) SetOrgID(v [16]byte) {
 // assigned, or it silently reverts every column it did not.
 var upsertTails = []func(uint64) string{
 	func(mask uint64) string {
-		set := make([]string, 0, 11)
+		set := make([]string, 0, 12)
 		if mask&(1<<2) != 0 {
 			set = append(set, "updated_at")
 		}
@@ -1903,18 +1961,21 @@ var upsertTails = []func(uint64) string{
 			set = append(set, "prefs")
 		}
 		if mask&(1<<9) != 0 {
-			set = append(set, "age")
+			set = append(set, "scopes")
 		}
 		if mask&(1<<10) != 0 {
-			set = append(set, "last_ip")
+			set = append(set, "age")
 		}
 		if mask&(1<<11) != 0 {
-			set = append(set, "balance")
+			set = append(set, "last_ip")
 		}
 		if mask&(1<<12) != 0 {
-			set = append(set, "credit")
+			set = append(set, "balance")
 		}
 		if mask&(1<<13) != 0 {
+			set = append(set, "credit")
+		}
+		if mask&(1<<14) != 0 {
 			set = append(set, "org_id")
 		}
 		return onConflictID(set)
@@ -1955,6 +2016,7 @@ var assignFor = map[string]string{
 	"name":       "\"name\" = EXCLUDED.\"name\"",
 	"status":     "\"status\" = EXCLUDED.\"status\"",
 	"prefs":      "\"prefs\" = EXCLUDED.\"prefs\"",
+	"scopes":     "\"scopes\" = EXCLUDED.\"scopes\"",
 	"age":        "\"age\" = EXCLUDED.\"age\"",
 	"last_ip":    "\"last_ip\" = EXCLUDED.\"last_ip\"",
 	"balance":    "\"balance\" = EXCLUDED.\"balance\"",
@@ -2022,14 +2084,16 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		case 8:
 			args = append(args, n.row.Prefs)
 		case 9:
-			args = append(args, n.row.Age.Arg())
+			args = append(args, n.row.Scopes)
 		case 10:
-			args = append(args, n.row.LastIP.Arg())
+			args = append(args, n.row.Age.Arg())
 		case 11:
-			args = append(args, n.row.Balance)
+			args = append(args, n.row.LastIP.Arg())
 		case 12:
-			args = append(args, n.row.Credit.Arg())
+			args = append(args, n.row.Balance)
 		case 13:
+			args = append(args, n.row.Credit.Arg())
+		case 14:
 			args = append(args, n.row.OrgID)
 		}
 	}
@@ -2063,7 +2127,7 @@ func Inserts() int { return insCache.Masks() }
 // not treat a zero as 'unset': that guess is why other ORMs cannot insert
 // a false, a 0 or an empty string into a column with a default.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
-	args := make([]any, 0, 14)
+	args := make([]any, 0, 15)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
@@ -2073,6 +2137,7 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args = append(args, r.Name)
 	args = append(args, r.Status)
 	args = append(args, r.Prefs)
+	args = append(args, r.Scopes)
 	args = append(args, r.Age.Arg())
 	args = append(args, r.LastIP.Arg())
 	args = append(args, r.Balance)
@@ -2113,6 +2178,7 @@ var copyCols = []string{
 	"name",
 	"status",
 	"prefs",
+	"scopes",
 	"age",
 	"last_ip",
 	"balance",
@@ -2124,7 +2190,7 @@ var copyCols = []string{
 type rowSource struct {
 	rows []Row
 	i    int
-	buf  [14]any
+	buf  [15]any
 }
 
 func (s *rowSource) Next() bool {
@@ -2151,11 +2217,12 @@ func (s *rowSource) Values() []any {
 	s.buf[6] = &r.Name
 	s.buf[7] = &r.Status
 	s.buf[8] = &r.Prefs
-	s.buf[9] = r.Age.Ptr()
-	s.buf[10] = r.LastIP.Ptr()
-	s.buf[11] = &r.Balance
-	s.buf[12] = r.Credit.Ptr()
-	s.buf[13] = &r.OrgID
+	s.buf[9] = &r.Scopes
+	s.buf[10] = r.Age.Ptr()
+	s.buf[11] = r.LastIP.Ptr()
+	s.buf[12] = &r.Balance
+	s.buf[13] = r.Credit.Ptr()
+	s.buf[14] = &r.OrgID
 	return s.buf[:]
 }
 
@@ -2200,8 +2267,9 @@ func InsertOp(r Row) runtime.BatchOp {
 	mask |= 1 << 11
 	mask |= 1 << 12
 	mask |= 1 << 13
+	mask |= 1 << 14
 	st := stmtForInsert(mask, 0)
-	args := make([]any, 0, 14)
+	args := make([]any, 0, 15)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
@@ -2211,6 +2279,7 @@ func InsertOp(r Row) runtime.BatchOp {
 	args = append(args, r.Name)
 	args = append(args, r.Status)
 	args = append(args, r.Prefs)
+	args = append(args, r.Scopes)
 	args = append(args, r.Age.Arg())
 	args = append(args, r.LastIP.Arg())
 	args = append(args, r.Balance)
@@ -2248,14 +2317,16 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 		case 5:
 			args = append(args, m.row.Prefs)
 		case 6:
-			args = append(args, m.row.Age.Arg())
+			args = append(args, m.row.Scopes)
 		case 7:
-			args = append(args, m.row.LastIP.Arg())
+			args = append(args, m.row.Age.Arg())
 		case 8:
-			args = append(args, m.row.Balance)
+			args = append(args, m.row.LastIP.Arg())
 		case 9:
-			args = append(args, m.row.Credit.Arg())
+			args = append(args, m.row.Balance)
 		case 10:
+			args = append(args, m.row.Credit.Arg())
+		case 11:
 			args = append(args, m.row.OrgID)
 		}
 	}
@@ -2333,14 +2404,16 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		case 5:
 			args = append(args, m.row.Prefs)
 		case 6:
-			args = append(args, m.row.Age.Arg())
+			args = append(args, m.row.Scopes)
 		case 7:
-			args = append(args, m.row.LastIP.Arg())
+			args = append(args, m.row.Age.Arg())
 		case 8:
-			args = append(args, m.row.Balance)
+			args = append(args, m.row.LastIP.Arg())
 		case 9:
-			args = append(args, m.row.Credit.Arg())
+			args = append(args, m.row.Balance)
 		case 10:
+			args = append(args, m.row.Credit.Arg())
+		case 11:
 			args = append(args, m.row.OrgID)
 		}
 	}

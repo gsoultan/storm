@@ -207,3 +207,78 @@ func mustCreateWith(t *testing.T, ctx context.Context, ex runtime.Executor, emai
 	}
 	return r
 }
+
+// An array column reads back as a slice, with SQL NULL and '{}' kept distinct —
+// those are different facts and a caller checking len(x)==0 conflates them.
+func TestArray_RoundTripsAndDistinguishesNullFromEmpty(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	r := mustCreateWith(t, ctx, ex, "arr@example.com", dec(t, "0.0000"))
+	t.Cleanup(func() { _ = user.Delete(ctx, ex, r.ID) })
+
+	// The column defaults to '{}': empty, and not nil.
+	if r.Scopes == nil {
+		t.Error("the default '{}' came back as nil, which is how SQL NULL reads")
+	}
+	if len(r.Scopes) != 0 {
+		t.Errorf("default scopes = %v, want empty", r.Scopes)
+	}
+
+	if _, err := ex.Exec(ctx, `UPDATE users SET scopes = $2 WHERE id = $1`,
+		[]any{r.ID, []string{"read", "write", "admin"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := user.New().Where(user.ID.Eq(r.ID)).One(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Scopes) != 3 || got.Scopes[0] != "read" || got.Scopes[2] != "admin" {
+		t.Errorf("scopes = %v, want [read write admin]", got.Scopes)
+	}
+
+	// Values with the characters that break a naive text-format parser.
+	tricky := []string{`a,b`, `{"x"}`, ``, `back\slash`, `"quoted"`, `NULL`}
+	if _, err := ex.Exec(ctx, `UPDATE users SET scopes = $2 WHERE id = $1`,
+		[]any{r.ID, tricky}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err = user.New().Where(user.ID.Eq(r.ID)).One(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Scopes) != len(tricky) {
+		t.Fatalf("got %d elements, want %d", len(got.Scopes), len(tricky))
+	}
+	for i := range tricky {
+		if got.Scopes[i] != tricky[i] {
+			t.Errorf("element %d = %q, want %q", i, got.Scopes[i], tricky[i])
+		}
+	}
+}
+
+// A NULL element cannot be represented by a []T. Decoding it as "" would make
+// an absent value and an empty one the same thing — the conflation Null[T]
+// exists to prevent everywhere else — so it is an error that says what to do.
+func TestArray_NullElementIsAnError(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	r := mustCreateWith(t, ctx, ex, "arrnull@example.com", dec(t, "0.0000"))
+	t.Cleanup(func() { _ = user.Delete(ctx, ex, r.ID) })
+
+	if _, err := ex.Exec(ctx,
+		`UPDATE users SET scopes = ARRAY['a', NULL, 'c']::text[] WHERE id = $1`,
+		[]any{r.ID}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := user.New().Where(user.ID.Eq(r.ID)).One(ctx, ex)
+	if !errors.Is(err, runtime.ErrArrayNull) {
+		t.Errorf("reading an array with a NULL element returned %v, want ErrArrayNull", err)
+	}
+}
+
+// An array offers no value predicates: containment and overlap need @> and &&,
+// which the operator set does not have, and equality on an array is
+// order-sensitive in a way almost nobody means.
+// testdata/compilefail/array_equality.go pins it.

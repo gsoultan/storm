@@ -32,7 +32,7 @@ func TestUnit_OrdersAGraphWithConstraintsNotDeferred(t *testing.T) {
 	// Child first. A naive flush in declaration order violates users.org_id.
 	u.Add(user.Table, user.InsertOp(user.Row{
 		ID:    userID,
-		Prefs: emptyJSON, Email: "graph@example.com", Name: "Graph",
+		Prefs: emptyJSON, Scopes: []string{}, Email: "graph@example.com", Name: "Graph",
 		Status: "pending", OrgID: orgID,
 	}))
 	u.Add(org.Table, org.InsertOp(org.Row{ID: orgID, Name: "graph-org"}))
@@ -99,7 +99,7 @@ func TestUnit_PreservesOrderWithinATable(t *testing.T) {
 	u.Add(user.Table, user.DeleteOp(r.ID))
 	u.Add(user.Table, user.InsertOp(user.Row{
 		ID:    r.ID,
-		Prefs: emptyJSON, Email: "reinsert@example.com", Name: "After",
+		Prefs: emptyJSON, Scopes: []string{}, Email: "reinsert@example.com", Name: "After",
 		Status: "pending", OrgID: r.OrgID,
 	}))
 	t.Cleanup(func() { _ = user.Delete(ctx, ex, r.ID) })

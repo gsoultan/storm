@@ -202,6 +202,8 @@ func handleType(c colInfo) string {
 		kindTimestamptz: "TimeCol",
 		kindNumeric:     "DecimalCol",
 		kindJSONB:       "JSONCol",
+		kindTextArray:   "TextArrayCol",
+		kindUUIDArray:   "UUIDArrayCol",
 	}[c.kind]
 	if !c.col.NotNull {
 		return "Null" + base

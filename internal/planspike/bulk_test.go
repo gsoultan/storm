@@ -26,6 +26,7 @@ func TestInsertAll_ThousandRowsIsOneRoundTrip(t *testing.T) {
 		rows[i] = user.Row{
 			ID:     newID(),
 			Prefs:  emptyJSON,
+			Scopes: []string{},
 			Email:  fmt.Sprintf("bulk%d@example.com", i),
 			Name:   fmt.Sprintf("bulk %d", i),
 			Status: "pending",
@@ -81,7 +82,7 @@ func TestInsertAll_RowSourceIsAllocationFlat(t *testing.T) {
 		rows := make([]user.Row, n)
 		for i := range rows {
 			rows[i] = user.Row{ID: newID(),
-				Prefs: emptyJSON, Email: "x", Name: "y", Status: "pending", OrgID: org}
+				Prefs: emptyJSON, Scopes: []string{}, Email: "x", Name: "y", Status: "pending", OrgID: org}
 		}
 		return rows
 	}
@@ -134,6 +135,7 @@ func TestBatch_MixedStatementsIsOneRoundTrip(t *testing.T) {
 		st := user.InsertOp(user.Row{
 			ID:     id,
 			Prefs:  emptyJSON,
+			Scopes: []string{},
 			Email:  fmt.Sprintf("batch%d@example.com", i),
 			Name:   fmt.Sprintf("batch %d", i),
 			Status: "pending",
