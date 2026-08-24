@@ -49,8 +49,9 @@ reasoning.
   15-column truncation that outlived its design
 - [[plan_types]] — M3's ergonomics answered in 3 days, and why `Load(plan)`
   cannot be written in Go
-- [[write_path]] — the dirty mask, optimistic locking, and the one decision
-  blocking the rest of M4
+- [[write_path]] — the dirty mask, optimistic locking, and ADR-0005
+- [[production_readiness]] — what is solid, and the type-coverage gap that
+  blocks adoption
 
 ## Standing rule
 Never quote a performance number from memory. `bench/RESULTS.md` or nothing.

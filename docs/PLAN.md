@@ -622,6 +622,63 @@ Docs, runnable examples, API stability policy, semver commitments, and a
 
 ---
 
+## Production readiness — an honest assessment (2026-08-24)
+
+What is genuinely solid, and what would stop a team adopting this tomorrow.
+Written as a checklist because "production ready" is not one property.
+
+### Solid
+
+- **Injection is structural, not a filter.** The SQL is identical whatever the
+  value, asserted directly — stronger than any payload corpus because it holds
+  for payloads nobody thought of. Payloads round-trip as data; a rejection must
+  be a *data* error (length, encoding), never a syntax error.
+- **Fuzzed.** Three fuzzers, ~80M executions. One found a real defect in 20
+  seconds: a malformed token stream silently dropped its `WHERE` clause — a
+  filter failing *open*. Fixed to fail closed and loud, and CI fuzzes every PR.
+- **Migrations converge**, asserted end to end against a live database:
+  diff → apply → verify clean → diff again empty.
+- **Round-trip counts are asserted**, not assumed: 2 for a relation, 1 per
+  relation in a named plan, 1 for a bulk `COPY`, 1 for a batch, 1 for a
+  recursive traversal, 1 batched for every arc variant.
+- **`go test -race -shuffle=on` green**, with coverage floors enforced in CI.
+
+### Blocking, in the order it would bite
+
+1. **Type coverage is narrower than most real schemas.** The generator binds
+   bool, the integer and float widths, text/varchar, bytea, uuid, timestamptz
+   and enums — and nothing else. **`numeric` is unsupported**, so no
+   application that handles money can model its own tables. Also missing:
+   `date`, `time`, `interval`, `jsonb`, `inet`, and **arrays of anything**.
+   The fixture itself has two columns the generator silently omits.
+
+   `numeric` needs a decision before it needs code: Go has no stdlib decimal
+   and `runtime/` is stdlib-only, so the representation is a real choice
+   (lossless `string`, a raorm fixed-point type, or relaxing the rule).
+2. **No adopter has run it.** M6 exists because the first adopter finds what
+   benchmarks miss — and testing the CLI in one sitting found three defects,
+   two able to lose data. That is the rate to expect, and it does not fall
+   until someone runs it against a real workload.
+3. **No release, no API stability policy** (M8). Nothing is tagged and nothing
+   is promised.
+4. **No `raorm lint`, no `raorm explain`.** Two of M7's gates. There is no
+   EXPLAIN gate in CI and nothing catches a seq scan or a shape explosion.
+5. **Postgres only, and the dialect seam is unproven.** It exists and is
+   CI-enforced, but a seam with one implementation is a hypothesis. M9 tests it.
+6. **No transaction helper.** A transaction is "an `Executor` you were given",
+   which is the right model and is currently undocumented and unexercised.
+7. **The wall-clock story is still unmeasured** over a unix socket — see the
+   debts table above.
+
+### Not blocking, worth knowing
+
+- `runtime.SpliceTree` assumes a `$N` placeholder (documented at `takesArg`).
+- Only `uuid[]` has a fast array encoder; `text[]` and `int8[]` keys still go
+  through pgx's generic codec.
+- Nesting a plan through a to-one relation is a generation error by choice.
+- The discriminator form of polymorphism (`AnyRef`) is unbuilt; exclusive arcs
+  are.
+
 ## Risk register
 
 | # | Risk | Severity | Mitigation | Owner |
