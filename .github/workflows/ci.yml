@@ -46,3 +46,22 @@ jobs:
       # errors, which is how benchmark rot usually starts.
       - name: benchmarks compile and run
         run: go test -run XXX -bench . -benchtime=1x ./bench/
+
+      # The seed corpus runs as an ordinary test above; this is the part that
+      # searches. Short on every PR because a fuzzer that only runs nightly
+      # finds its bugs a day after the commit that caused them.
+      #
+      # It has already earned this: 20 seconds found a stream whose WHERE
+      # clause was silently dropped while NArg still counted the dropped
+      # predicates — a filter that failed OPEN.
+      - name: fuzz the compiler
+        run: |
+          go test ./runtime/ -run XXX -fuzz FuzzSpliceTree -fuzztime 60s
+          go test ./runtime/ -run XXX -fuzz FuzzSpliceSections -fuzztime 30s
+          go test ./compile/pgsql/ -run XXX -fuzz FuzzIdent -fuzztime 30s
+
+      # Coverage floors, per profile, from AGENTS.md. A floor rather than a
+      # target: it stops coverage falling silently, and says nothing about
+      # whether the tests are good.
+      - name: coverage floors
+        run: ./scripts/check/coverage.sh

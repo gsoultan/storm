@@ -309,8 +309,22 @@ func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
 	}
 
 	sql := prefix
-	if len(stack) == 1 && stack[0] != "" {
-		sql += " WHERE " + unwrapOuter(stack[0])
+	var streamErr error
+	switch {
+	case len(stack) == 0:
+		// No predicates at all. Ordinary: an unfiltered read.
+	case len(stack) == 1:
+		if stack[0] != "" {
+			sql += " WHERE " + unwrapOuter(stack[0])
+		}
+	default:
+		// The stream did not reduce. Every entry is kept, ANDed, so the
+		// placeholders already numbered still appear and NArg stays honest —
+		// but the statement is marked, because the old behaviour was to drop
+		// the WHERE clause entirely and return every row. A filter must never
+		// fail open.
+		sql += " WHERE " + join(stack, " AND ")
+		streamErr = ErrMalformedStream
 	}
 	for i, t := range orderToks {
 		if i == 0 {
@@ -337,7 +351,7 @@ func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
 			b.WriteString(itoa(ord))
 		}
 	}
-	return &Stmt{SQL: b.String(), NArg: ord}
+	return &Stmt{SQL: b.String(), NArg: ord, Err: streamErr}
 }
 
 // takesArg reports whether a fragment ends in a placeholder needing an ordinal.

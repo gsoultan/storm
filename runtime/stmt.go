@@ -5,7 +5,10 @@
 // no allocation on a warm path.
 package runtime
 
-import "sync/atomic"
+import (
+	"errors"
+	"sync/atomic"
+)
 
 // Op is a comparison operator's compiler-assigned id. Generated code numbers
 // the argument-taking operators first, so `op-1 < opsWithArg` is one unsigned
@@ -20,6 +23,19 @@ type Op uint32
 type Stmt struct {
 	SQL  string
 	NArg int
+
+	// Err is set when the token stream that produced this statement was
+	// malformed — a generator bug, not a caller one.
+	//
+	// It exists because the alternative is worse than an error. A stream whose
+	// predicates do not reduce to a single expression used to have its WHERE
+	// clause silently dropped, which turns "find the rows matching this" into
+	// "find every row" — a filter that fails OPEN. Found by fuzzing, not by
+	// review, because no generator emits such a stream today and none of the
+	// hand-written tests could.
+	//
+	// Every terminal returns it before executing anything.
+	Err error
 
 	// slabHint is the byte size the last result of this shape needed from a
 	// Slab. Shapes are stable, so one observation sizes the next arena exactly
@@ -37,3 +53,10 @@ func (s *Stmt) ObserveSlab(n int) { s.slabHint.Store(int64(n)) }
 // placeholder, then B. The text is chosen by the back end in compile/ at
 // generate time; runtime only splices.
 type Frag struct{ A, B string }
+
+// ErrMalformedStream is what Stmt.Err carries. Reaching it means generated code
+// emitted a token stream whose predicates do not reduce to one expression:
+// unbalanced arity on a group, or a column token no comparison consumed.
+var ErrMalformedStream = errors.New(
+	"raorm: generated token stream is malformed — its predicates do not reduce to a " +
+		"single expression; this is a code-generation bug, please report it")

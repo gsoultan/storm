@@ -909,6 +909,11 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	}
 	var buf [21]runtime.Tok
 	st := stmtFor(q.stream(&buf), q.offset > 0)
+	if st.Err != nil {
+		// A malformed token stream is a code-generation bug. Executing it
+		// would run a query whose filter is not the one that was asked for.
+		return dst, st.Err
+	}
 	sl.Reserve(st.SlabHint())
 	b := binders.Get()
 	defer binders.Put(b)
@@ -944,6 +949,11 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 	}
 	var buf [21]runtime.Tok
 	st := countStmtFor(q.preds(&buf))
+	if st.Err != nil {
+		// A malformed token stream is a code-generation bug. Executing it
+		// would run a query whose filter is not the one that was asked for.
+		return 0, st.Err
+	}
 	b := binders.Get()
 	defer binders.Put(b)
 	args := q.bind(b)
@@ -1541,6 +1551,11 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return Row{}, runtime.ErrNothingAssigned
 	}
 	st := stmtForInsert(n.set, n.conflict)
+	if st.Err != nil {
+		// A malformed token stream is a code-generation bug. Executing it
+		// would run a query whose filter is not the one that was asked for.
+		return Row{}, st.Err
+	}
 	args := make([]any, 0, st.NArg)
 	for i := 0; i < nInsertable; i++ {
 		if n.set&(1<<uint(i)) == 0 {
@@ -1780,6 +1795,11 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return nil
 	}
 	st := stmtForMask(m.dirty)
+	if st.Err != nil {
+		// A malformed token stream is a code-generation bug. Executing it
+		// would run a query whose filter is not the one that was asked for.
+		return st.Err
+	}
 	args := make([]any, 0, st.NArg)
 	for i := 0; i < nUpdatable; i++ {
 		if m.dirty&(1<<uint(i)) == 0 {
