@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -40,6 +41,7 @@ usage:
   raorm ddl                       print CREATE statements for the model
   raorm diff   <name>             write a migration from the live schema to the model
   raorm verify                    fail if the database has drifted from the model
+  raorm verify -stale [dir]       fail if generated code is stale (no database needed)
   raorm import                    print the model implied by an existing database
   raorm generate [dir]            emit one Go package per table (default internal/store)
 
@@ -59,44 +61,82 @@ func main() {
 }
 
 func run(args []string) error {
-	fs := flag.NewFlagSet("raorm", flag.ContinueOnError)
+	// The command comes first and the flags follow it, which is what everyone
+	// expects and what `flag` does not do on its own: Parse stops at the first
+	// non-flag argument, so parsing the whole slice leaves every flag after the
+	// subcommand unread. `raorm verify -stale` silently became `raorm verify`
+	// and asked for a database.
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return errors.New("no command given")
+	}
+	cmd, args := args[0], args[1:]
+
+	fs := flag.NewFlagSet("raorm "+cmd, flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	dsn := fs.String("dsn", os.Getenv("RAORM_DSN"), "PostgreSQL connection string")
 	ns := fs.String("schema", "public", "namespace")
 	out := fs.String("out", "db/migrations", "migrations directory")
 	allowDestructive := fs.Bool("allow-destructive", false, "permit data-losing steps")
-	if err := fs.Parse(args); err != nil {
-		return err
+	stale := fs.Bool("stale", false, "verify generated code against the model instead of the database")
+	// Flags may appear ANYWHERE, including after a positional argument.
+	//
+	// Go's flag package stops at the first non-flag, so `raorm diff init
+	// -schema mine` parses no flags at all and -schema silently keeps its
+	// default of "public". For -allow-destructive that fails safe; for -schema
+	// it means diffing the wrong namespace and proposing to drop objects that
+	// belong to it. That is a data-availability incident caused by argument
+	// order, which is not a trade worth making to save this loop.
+	var positional []string
+	for rest := args; ; {
+		if err := fs.Parse(rest); err != nil {
+			return err
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positional = append(positional, rest[0])
+		rest = rest[1:]
 	}
-	if fs.NArg() == 0 {
-		fs.Usage()
-		return errors.New("no command given")
+	arg := func(i int) string {
+		if i < len(positional) {
+			return positional[i]
+		}
+		return ""
 	}
-
+	nargs := len(positional)
 	model, err := buildModel()
 	if err != nil {
 		return err
 	}
 
-	switch cmd := fs.Arg(0); cmd {
+	switch cmd {
 	case "ddl":
 		fmt.Print(pgddl.Create(model))
 		return nil
 
 	case "diff":
-		if fs.NArg() < 2 {
+		if nargs < 1 {
 			return errors.New("diff needs a name: raorm diff add_user_status")
 		}
-		return diff(*dsn, *ns, *out, fs.Arg(1), model, *allowDestructive)
+		return diff(*dsn, *ns, *out, arg(0), model, *allowDestructive)
 
 	case "generate":
 		dir := "internal/store"
-		if fs.NArg() > 1 {
-			dir = fs.Arg(1)
+		if nargs > 0 {
+			dir = arg(0)
 		}
 		return generate(dir, model)
 
 	case "verify":
+		if *stale {
+			dir := "internal/store"
+			if nargs > 0 {
+				dir = arg(0)
+			}
+			return verifyStale(dir, model)
+		}
 		return verify(*dsn, *ns, model)
 
 	case "import":
@@ -205,6 +245,62 @@ func diff(dsn, ns, out, name string, model *schema.Schema, allowDestructive bool
 	return nil
 }
 
+// verifyStale reports whether the generated code on disk is what the model
+// would produce now.
+//
+// This is the check that belongs in CI, and it is the one that needs no
+// database: a model change without a regenerate leaves code that compiles, runs
+// and queries the wrong columns. Drift against the database is a different
+// question, answered by verify without -stale.
+//
+// It compares bytes rather than regenerating in place, so a CI run cannot
+// "fix" the problem by rewriting the tree it was asked to check.
+func verifyStale(dir string, model *schema.Schema) error {
+	want, err := codegen.Package(model, codegen.PackageOptions{
+		Dir:           dir,
+		Import:        modulePath,
+		Package:       filepath.Base(dir),
+		PackageImport: modulePath + "/" + filepath.ToSlash(dir),
+	})
+	if err != nil {
+		return err
+	}
+
+	paths := make([]string, 0, len(want))
+	for p := range want {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	var stale, missing []string
+	for _, rel := range paths {
+		full := filepath.Join(dir, rel)
+		got, err := os.ReadFile(full)
+		if errors.Is(err, os.ErrNotExist) {
+			missing = append(missing, full)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(got, want[rel]) {
+			stale = append(stale, full)
+		}
+	}
+
+	if len(stale) == 0 && len(missing) == 0 {
+		fmt.Printf("✓ generated code matches the model (%d file(s))\n", len(want))
+		return nil
+	}
+	for _, f := range missing {
+		fmt.Fprintf(os.Stderr, "missing: %s\n", f)
+	}
+	for _, f := range stale {
+		fmt.Fprintf(os.Stderr, "stale:   %s\n", f)
+	}
+	return fmt.Errorf("generated code is out of date — run 'raorm generate %s'", dir)
+}
+
 func verify(dsn, ns string, model *schema.Schema) error {
 	c, ctx, done, err := connect(dsn)
 	if err != nil {
@@ -235,7 +331,15 @@ func importSchema(dsn, ns string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Print(pgddl.Create(s))
+	// A Go MODEL, not the DDL. raorm is model-first, so adopting an existing
+	// database means having a model to start from — and hand-writing one for
+	// forty tables is where adoption stops. The DDL is already in the database;
+	// printing it back would help nobody.
+	src, err := codegen.Model(s, codegen.ModelOptions{Package: "model", Import: modulePath})
+	if err != nil {
+		return err
+	}
+	os.Stdout.Write(src)
 	return nil
 }
 

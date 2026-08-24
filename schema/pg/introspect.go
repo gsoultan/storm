@@ -11,6 +11,7 @@ import (
 
 	"github.com/gsoultan/raorm/schema"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Conn is the slice of pgx this package needs.
@@ -19,10 +20,35 @@ type Conn interface {
 }
 
 // Introspect reads one namespace (usually "public") into the IR.
-func Introspect(ctx context.Context, c Conn, namespace string) (*schema.Schema, error) {
+func Introspect(ctx context.Context, c Conn, namespace string) (_ *schema.Schema, err error) {
 	if namespace == "" {
 		namespace = "public"
 	}
+
+	// Read with search_path set to the namespace being read.
+	//
+	// Postgres renders a stored expression relative to search_path:
+	// `DEFAULT 'pending'::status` comes back as `'pending'::status` when the
+	// enum's schema is on the path and `'pending'::app.status` when it is not.
+	// Both describe the same default, and catalog-form-versus-catalog-form
+	// comparison — which is the whole reason migrate normalises through a
+	// scratch schema — only works if BOTH sides were rendered the same way.
+	//
+	// Without this, any enum outside `public` makes `raorm verify` report drift
+	// forever and `raorm diff` emit a migration that changes nothing. Found by
+	// diffing a namespace that was not public.
+	if sp, ok := c.(searchPather); ok {
+		restore, err := setSearchPath(ctx, sp, namespace)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if e := restore(); e != nil && err == nil {
+				err = e
+			}
+		}()
+	}
+
 	s := &schema.Schema{}
 	if err := loadEnums(ctx, c, namespace, s); err != nil {
 		return nil, fmt.Errorf("enums: %w", err)
@@ -288,4 +314,50 @@ func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		})
 	}
 	return rows.Err()
+}
+
+// searchPather is the slice of a connection needed to scope a read. It is an
+// interface so Introspect keeps working for a Conn that cannot set it — an
+// offline snapshot reader, say — rather than requiring one.
+type searchPather interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// setSearchPath scopes the connection to ns and returns a restore function.
+//
+// The namespace is validated rather than quoted because SET does not take a
+// parameter, so it is the one place a name reaches SQL text. Names come from
+// configuration, never from a request, and the check costs nothing.
+func setSearchPath(ctx context.Context, c searchPather, ns string) (func() error, error) {
+	if err := validNamespace(ns); err != nil {
+		return nil, err
+	}
+	var prev string
+	if err := c.QueryRow(ctx, "SHOW search_path").Scan(&prev); err != nil {
+		return nil, fmt.Errorf("read search_path: %w", err)
+	}
+	if _, err := c.Exec(ctx, "SET search_path TO "+ns); err != nil {
+		return nil, fmt.Errorf("set search_path to %s: %w", ns, err)
+	}
+	return func() error {
+		if _, err := c.Exec(ctx, "SET search_path TO "+prev); err != nil {
+			return fmt.Errorf("restore search_path: %w", err)
+		}
+		return nil
+	}, nil
+}
+
+func validNamespace(s string) error {
+	if s == "" || len(s) > 63 {
+		return fmt.Errorf("invalid schema name %q", s)
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := c >= 'a' && c <= 'z' || c == '_' || (i > 0 && (c >= '0' && c <= '9'))
+		if !ok {
+			return fmt.Errorf("invalid schema name %q: only lowercase letters, digits and underscore", s)
+		}
+	}
+	return nil
 }
