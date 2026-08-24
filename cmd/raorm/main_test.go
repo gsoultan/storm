@@ -211,3 +211,32 @@ func treeHash(t *testing.T, dir string) string {
 	}
 	return b.String()
 }
+
+// lint costs every named plan and fails over the budget — plans.go can be
+// BUDGETED, and a plan that quietly grew fails CI naming itself instead of
+// failing a latency SLO naming nothing.
+func TestCLI_LintPlans(t *testing.T) {
+	withModels(t, testmodel.All())
+
+	out := captureStdout(t, func() {
+		if err := run([]string{"lint"}); err != nil {
+			t.Fatalf("the fixture's plans all fit the default budget of 4: %v", err)
+		}
+	})
+	for _, want := range []string{"UserFeed", "4 round trip", "UserSummary", "OrgTree", "= ANY"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lint output is missing %q:\n%s", want, out)
+		}
+	}
+
+	// Tighten the budget below UserFeed's cost, and it must fail naming a fix.
+	err := run([]string{"lint", "-max-round-trips", "3"})
+	if err == nil {
+		t.Fatal("UserFeed costs 4; a budget of 3 must fail")
+	}
+	for _, want := range []string{"exceed", "split the plan"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should mention %q, got: %v", want, err)
+		}
+	}
+}

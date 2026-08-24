@@ -679,8 +679,13 @@ Written as a checklist because "production ready" is not one property.
    until someone runs it against a real workload.
 3. **No release, no API stability policy** (M8). Nothing is tagged and nothing
    is promised.
-4. **No `raorm lint`, no `raorm explain`.** Two of M7's gates. There is no
-   EXPLAIN gate in CI and nothing catches a seq scan or a shape explosion.
+4. **`raorm lint` shipped 2026-08-24; `raorm explain` still missing.** lint
+   costs every named plan in round trips from the IR alone — no database — and
+   fails over `-max-round-trips` (default 4), so a plan that quietly grew
+   fails CI naming itself instead of failing a latency SLO naming nothing.
+   The counts are worst-case; empty levels skip their query at run time.
+   `explain` (EXPLAIN ANALYZE per named query, seq-scan detection) still needs
+   building and needs a live database.
 5. **Postgres only, and the dialect seam is unproven.** It exists and is
    CI-enforced, but a seam with one implementation is a hypothesis. M9 tests it.
 6. ~~No transaction helper.~~ **`pgxdrv.Tx` shipped 2026-08-24.** The doctrine

@@ -44,6 +44,7 @@ usage:
   raorm verify -stale [dir]       fail if generated code is stale (no database needed)
   raorm import                    print the model implied by an existing database
   raorm generate [dir]            emit one Go package per table (default internal/store)
+  raorm lint                      cost every named plan in round trips; fail over the budget
 
 flags:
   -dsn        PostgreSQL connection string (or $RAORM_DSN)
@@ -79,6 +80,7 @@ func run(args []string) error {
 	out := fs.String("out", "db/migrations", "migrations directory")
 	allowDestructive := fs.Bool("allow-destructive", false, "permit data-losing steps")
 	stale := fs.Bool("stale", false, "verify generated code against the model instead of the database")
+	maxTrips := fs.Int("max-round-trips", 4, "lint: the most round trips a named plan may cost")
 	// Flags may appear ANYWHERE, including after a positional argument.
 	//
 	// Go's flag package stops at the first non-flag, so `raorm diff init
@@ -121,6 +123,9 @@ func run(args []string) error {
 			return errors.New("diff needs a name: raorm diff add_user_status")
 		}
 		return diff(*dsn, *ns, *out, arg(0), model, *allowDestructive)
+
+	case "lint":
+		return lint(model, *maxTrips)
 
 	case "generate":
 		dir := "internal/store"
@@ -168,6 +173,45 @@ func connect(dsn string) (*pgx.Conn, context.Context, func(), error) {
 		return nil, nil, nil, err
 	}
 	return c, ctx, func() { c.Close(ctx); cancel() }, nil
+}
+
+// lint costs every named plan and fails when one exceeds the budget.
+//
+// The cost is knowable at generate time — one round trip for the parents, one
+// per relation, one per nested relation — which is the point of plans being a
+// declared, reviewable artifact rather than call sites: the one file listing
+// every load pattern in the system can be BUDGETED, and a plan that quietly
+// grew past the budget fails CI naming itself, instead of failing a latency
+// SLO in production naming nothing.
+func lint(model *schema.Schema, maxTrips int) error {
+	var names []string
+	for _, t := range model.Tables {
+		names = append(names, t.Name)
+	}
+	costs, err := codegen.PlanCosts(model, names)
+	if err != nil {
+		return err
+	}
+	if len(costs) == 0 {
+		fmt.Println("no named plans declared — nothing to lint")
+		return nil
+	}
+
+	over := 0
+	for _, c := range costs {
+		mark := "✓"
+		if c.RoundTrips > maxTrips {
+			mark = "✗"
+			over++
+		}
+		fmt.Printf("  %s %-16s %d round trip(s)   %s\n", mark, c.Name, c.RoundTrips, c.Chain)
+	}
+	if over > 0 {
+		return fmt.Errorf("%d plan(s) exceed the budget of %d round trips — split the plan, "+
+			"or raise -max-round-trips if the cost is intended", over, maxTrips)
+	}
+	fmt.Printf("✓ no plan exceeds %d round trips\n", maxTrips)
+	return nil
 }
 
 // generate emits one package per table under dir.

@@ -188,3 +188,35 @@ func TestFlushOrder_SelfReferenceIsNotACycle(t *testing.T) {
 		t.Error("orgs is missing from the flush order")
 	}
 }
+
+// A plan's cost is knowable at generate time, and lint is what turns "a
+// reviewer can read it off plans.go" into "CI checks it". The numbers are the
+// worst case: empty levels skip their query at run time.
+func TestPlanCosts(t *testing.T) {
+	s := fixtureSchema(t)
+	var names []string
+	for _, tb := range s.Tables {
+		names = append(names, tb.Name)
+	}
+	costs, err := codegen.PlanCosts(s, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{
+		"UserFeed":    4, // users + posts + nested comments + org
+		"UserSummary": 2, // users + org
+		"OrgTree":     3, // orgs + children + users
+	}
+	got := map[string]int{}
+	for _, c := range costs {
+		got[c.Name] = c.RoundTrips
+		if c.Chain == "" {
+			t.Errorf("%s has no rendered chain", c.Name)
+		}
+	}
+	for name, n := range want {
+		if got[name] != n {
+			t.Errorf("%s costs %d round trips, want %d", name, got[name], n)
+		}
+	}
+}
