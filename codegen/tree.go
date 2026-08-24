@@ -36,21 +36,6 @@ func arenaFor(c colInfo) (arena, cursor string) {
 	}
 }
 
-func arenaCast(c colInfo, expr string) string {
-	switch c.kind {
-	case kindText, kindUUID, kindTimestamptz, kindDate, kindNumeric, kindInet:
-		return expr
-	case kindFloat4:
-		return "float32(" + expr + ")"
-	case kindFloat8:
-		return expr
-	case kindBool:
-		return expr + " != 0"
-	default:
-		return c.goBase + "(" + expr + ")"
-	}
-}
-
 func arenaStore(c colInfo, v string) string {
 	switch c.kind {
 	case kindText, kindUUID, kindTimestamptz, kindDate, kindNumeric, kindInet:

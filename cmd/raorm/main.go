@@ -42,9 +42,11 @@ usage:
   raorm diff   <name>             write a migration from the live schema to the model
   raorm verify                    fail if the database has drifted from the model
   raorm verify -stale [dir]       fail if generated code is stale (no database needed)
+  raorm verify -pending           fail if the model has changes no migration carries
   raorm import                    print the model implied by an existing database
   raorm generate [dir]            emit one Go package per table (default internal/store)
   raorm lint                      cost every named plan in round trips; fail over the budget
+  raorm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
 flags:
   -dsn        PostgreSQL connection string (or $RAORM_DSN)
@@ -81,6 +83,8 @@ func run(args []string) error {
 	allowDestructive := fs.Bool("allow-destructive", false, "permit data-losing steps")
 	stale := fs.Bool("stale", false, "verify generated code against the model instead of the database")
 	maxTrips := fs.Int("max-round-trips", 4, "lint: the most round trips a named plan may cost")
+	maxSeqRows := fs.Int("max-seq-rows", 10000, "explain: flag a seq scan the planner sizes at or above this")
+	pending := fs.Bool("pending", false, "verify the model against the migrations directory instead of the database")
 	// Flags may appear ANYWHERE, including after a positional argument.
 	//
 	// Go's flag package stops at the first non-flag, so `raorm diff init
@@ -124,6 +128,9 @@ func run(args []string) error {
 		}
 		return diff(*dsn, *ns, *out, arg(0), model, *allowDestructive)
 
+	case "explain":
+		return explain(*dsn, *ns, model, *maxSeqRows)
+
 	case "lint":
 		return lint(model, *maxTrips)
 
@@ -135,6 +142,9 @@ func run(args []string) error {
 		return generate(dir, model)
 
 	case "verify":
+		if *pending {
+			return verifyPending(*dsn, *out, model)
+		}
 		if *stale {
 			dir := "internal/store"
 			if nargs > 0 {
@@ -343,6 +353,56 @@ func verifyStale(dir string, model *schema.Schema) error {
 		fmt.Fprintf(os.Stderr, "stale:   %s\n", f)
 	}
 	return fmt.Errorf("generated code is out of date — run 'raorm generate %s'", dir)
+}
+
+// verifyPending is ADR-0001's third mode: model against MIGRATIONS. "Changed
+// the model, forgot to run diff" becomes a CI failure instead of a deploy that
+// quietly runs against a schema the code no longer describes.
+//
+// Mechanism: replay every migration into a scratch namespace, then diff the
+// result against the model. A non-empty diff is exactly the SQL the missing
+// migration would contain, so the failure prints its own fix. It needs a
+// database (the same dev database ADR-0001 already assumes) but never touches
+// a real namespace — the scratch schema is dropped on every exit path.
+func verifyPending(dsn, out string, model *schema.Schema) error {
+	c, ctx, done, err := connect(dsn)
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	const scratch = "raorm_pending"
+	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
+		return fmt.Errorf("create scratch schema: %w", err)
+	}
+	defer func() { _, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE") }()
+
+	files, err := filepath.Glob(filepath.Join(out, "*.up.sql"))
+	if err != nil {
+		return err
+	}
+	sort.Strings(files) // the numbered prefix is the replay order
+	for _, f := range files {
+		sql, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		if _, err := c.Exec(ctx, "SET search_path TO "+scratch+"; "+string(sql)); err != nil {
+			return fmt.Errorf("replaying %s: %w", filepath.Base(f), err)
+		}
+	}
+
+	plan, err := migrate.For(ctx, c, scratch, model)
+	if err != nil {
+		return err
+	}
+	if plan.Empty() {
+		fmt.Printf("✓ %d migration(s) carry every model change\n", len(files))
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "the model has %d change(s) no migration carries:\n\n%s\n",
+		len(plan.Changes), plan.SQL())
+	return fmt.Errorf("model changed without a migration — run 'raorm diff <name>' and commit the result")
 }
 
 func verify(dsn, ns string, model *schema.Schema) error {

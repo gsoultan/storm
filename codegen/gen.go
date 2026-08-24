@@ -432,19 +432,6 @@ func (g *gen) scanner() {
 	g.p("")
 }
 
-// argOps counts the operators that take a bound value. They must be numbered
-// before the argument-less ones for the range check in bind to be valid.
-func argOps() int {
-	n := 0
-	for _, op := range ops {
-		if op.args == 0 {
-			break
-		}
-		n++
-	}
-	return n
-}
-
 func (g *gen) terminals() {
 	g.p("// All runs the query and decodes every row.")
 	g.p("func (q Query) All(ctx context.Context, ex runtime.Executor, dst []Row) ([]Row, error) {")

@@ -220,3 +220,48 @@ func TestPlanCosts(t *testing.T) {
 		}
 	}
 }
+
+// explain examines the statements production will run, so the enumeration must
+// cover every table's base read and every plan's loads — including nested and
+// to-one members, which take different key columns.
+func TestExplainQueries(t *testing.T) {
+	s := fixtureSchema(t)
+	var names []string
+	for _, tb := range s.Tables {
+		names = append(names, tb.Name)
+	}
+	qs, err := codegen.ExplainQueries(s, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byLabel := map[string]string{}
+	for _, q := range qs {
+		if q.SQL == "" {
+			t.Errorf("%s has no SQL", q.Label)
+		}
+		byLabel[q.Label] = q.SQL
+	}
+	// Every table gets a base read with its LIMIT placeholder numbered.
+	for _, tb := range s.Tables {
+		sql, ok := byLabel[tb.Name+" (base read)"]
+		if !ok {
+			t.Errorf("no base read for %s", tb.Name)
+			continue
+		}
+		if !strings.Contains(sql, "LIMIT $1") {
+			t.Errorf("%s base read has a misnumbered limit:\n%s", tb.Name, sql)
+		}
+	}
+	// A to-many member filters on the child's foreign key; a to-one member on
+	// the child's primary key. Both appear in UserFeed.
+	if sql := byLabel["UserFeed → posts"]; !strings.Contains(sql, `"author_id" = ANY($1)`) {
+		t.Errorf("the has-many member does not filter on the foreign key:\n%s", sql)
+	}
+	if sql := byLabel["UserFeed → orgs"]; !strings.Contains(sql, `"id" = ANY($1)`) {
+		t.Errorf("the to-one member does not filter on the primary key:\n%s", sql)
+	}
+	if sql := byLabel["UserFeed → posts → comments"]; !strings.Contains(sql, `"post_id" = ANY($1)`) {
+		t.Errorf("the nested member does not filter on its own key:\n%s", sql)
+	}
+}

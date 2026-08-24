@@ -308,6 +308,3 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 	}
 	return false
 }
-
-// inApplies reports whether a column supports IN, and so needs an array slot.
-func inApplies(c colInfo) bool { return opApplies("In", c.kind, c.col) }

@@ -33,37 +33,6 @@ func (g *gen) predType() {
 	g.p("")
 }
 
-// predField picks the union member a column's value travels in.
-func predField(c colInfo) string {
-	switch c.kind {
-	case kindText:
-		return "p.str"
-	case kindUUID:
-		return "p.raw"
-	case kindTimestamptz, kindDate:
-		return "p.tim"
-	case kindInet:
-		return "p.pfx"
-	case kindBool:
-		return "p.num != 0"
-	case kindFloat4:
-		return "float32(p.f64)"
-	case kindFloat8:
-		return "p.f64"
-	case kindInt2:
-		return "int16(p.num)"
-	case kindInt4:
-		return "int32(p.num)"
-	case kindInt8:
-		return "p.num"
-	case kindNumeric:
-		return "p.dec"
-	case kindBytes:
-		return "nil"
-	}
-	return "nil"
-}
-
 // predCtor renders the expression that packs a value into a Pred.
 func predCtor(c colInfo, op string, i int) string {
 	set := ""

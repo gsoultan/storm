@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gsoultan/raorm"
 	"github.com/gsoultan/raorm/internal/testmodel"
 	"github.com/jackc/pgx/v5"
 )
@@ -202,4 +203,72 @@ func truncate(s string) string {
 		return s[:600] + "\n…"
 	}
 	return s
+}
+
+// ADR-0001's third verify mode: "changed the model, forgot to run diff" must
+// be a CI failure, not a deploy against a schema the code no longer describes.
+func TestCLI_VerifyPending(t *testing.T) {
+	withModels(t, testmodel.All())
+	out := t.TempDir()
+
+	// No migrations at all: everything is pending, and the failure says how to
+	// fix itself.
+	err := run([]string{"verify", "-pending", "-dsn", dsn(t), "-out", out})
+	if err == nil {
+		t.Fatal("an empty migrations directory cannot carry the model")
+	}
+	if !strings.Contains(err.Error(), "raorm diff") {
+		t.Errorf("the error should name the fix, got: %v", err)
+	}
+
+	// Generate the migration; now the set is complete and verify passes.
+	if err := run([]string{"diff", "init", "-dsn", dsn(t), "-schema", namespace(t, "cli_pending"), "-out", out}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"verify", "-pending", "-dsn", dsn(t), "-out", out}); err != nil {
+		t.Fatalf("a freshly-generated migration set is reported pending: %v", err)
+	}
+
+	// Change the model without a new migration: pending again.
+	withModels(t, append(testmodel.All(), &pendingExtra{}))
+	if err := run([]string{"verify", "-pending", "-dsn", dsn(t), "-out", out}); err == nil {
+		t.Fatal("a new table with no migration must be pending")
+	}
+}
+
+type pendingExtra struct {
+	raorm.Model
+	Note string
+}
+
+// explain's validity half: every statement raorm will issue must PLAN, for
+// every table and every named plan, which catches a shape PostgreSQL rejects.
+// (The performance half needs statistics a CI database does not have; the
+// walker's threshold logic is unit-tested against fixtures instead.)
+func TestCLI_ExplainPlansEveryStatement(t *testing.T) {
+	withModels(t, testmodel.All())
+	ns := namespace(t, "cli_explain")
+	out := t.TempDir()
+
+	if err := run([]string{"diff", "init", "-dsn", dsn(t), "-schema", ns, "-out", out}); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(out, "*.sql"))
+	sql, _ := os.ReadFile(files[0])
+	applySQL(t, ns, string(sql))
+
+	stdout := captureStdout(t, func() {
+		if err := run([]string{"explain", "-dsn", dsn(t), "-schema", ns}); err != nil {
+			t.Fatalf("every generated statement must plan: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"users (base read)", "events (base read)",
+		"UserFeed → posts", "UserFeed → posts → comments", "OrgTree → users",
+		"planned",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("explain output is missing %q:\n%s", want, stdout)
+		}
+	}
 }
