@@ -683,8 +683,14 @@ Written as a checklist because "production ready" is not one property.
    EXPLAIN gate in CI and nothing catches a seq scan or a shape explosion.
 5. **Postgres only, and the dialect seam is unproven.** It exists and is
    CI-enforced, but a seam with one implementation is a hypothesis. M9 tests it.
-6. **No transaction helper.** A transaction is "an `Executor` you were given",
-   which is the right model and is currently undocumented and unexercised.
+6. ~~No transaction helper.~~ **`pgxdrv.Tx` shipped 2026-08-24.** The doctrine
+   is now a capability: `Tx{T: tx}` runs every generated surface — queries,
+   plans, COPY, a Unit flush — inside one pgx transaction unchanged, proven by
+   a compose test that rolls all of it back. And the write path's key
+   integrity property got its test rather than its argument: **a failed Unit
+   flush is atomic** — a pgx batch runs between one Sync, PostgreSQL treats it
+   as an implicit transaction, and the test plants a failing second statement
+   and asserts the first left nothing behind.
 7. **The wall-clock story is still unmeasured** over a unix socket — see the
    debts table above.
 

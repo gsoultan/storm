@@ -113,3 +113,15 @@ binder. Asserted by comparing two row counts, so the test measures *scaling*
 rather than the fixed setup cost.
 
 See [[plan_types]] for the relation layer that sits on top.
+
+## Transactions (2026-08-24)
+**`pgxdrv.Tx{T: tx}`** makes ADR-0005's sentence a capability — before it, Pool
+was the only Executor and nothing could actually be handed a transaction. Every
+generated surface composes inside one tx (queries, plans, COPY, Unit), proven
+by a compose-then-rollback test.
+
+**A failed Unit flush is ATOMIC, tested not argued:** a pgx batch runs between
+one Sync, so PostgreSQL treats it as an implicit transaction and an error
+aborts the whole flush. The test plants a failing second statement and asserts
+the first's row does not exist afterwards. A half-written graph is the failure
+mode a Unit exists to prevent, so this property has a regression test.

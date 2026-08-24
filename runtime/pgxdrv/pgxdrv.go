@@ -63,7 +63,13 @@ func (e Pool) Batch(ctx context.Context, ops []runtime.BatchOp, each func(int, r
 	for _, op := range ops {
 		b.Queue(op.SQL, op.Args...)
 	}
-	br := e.P.SendBatch(ctx, b)
+	return drainBatch(e.P.SendBatch(ctx, b), ops, each)
+}
+
+// drainBatch walks a batch's results in order, shared by Pool and Tx — the
+// discipline (consume strictly in order, close each result before requesting
+// the next, always Close the batch) is identical whoever sent it.
+func drainBatch(br pgx.BatchResults, ops []runtime.BatchOp, each func(int, runtime.Rows, int64, error) error) error {
 	// Close must happen even on an early return: an unclosed batch leaves the
 	// connection with unread results and poisons it for the next borrower.
 	defer br.Close()
