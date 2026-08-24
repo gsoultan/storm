@@ -46,7 +46,7 @@ they are called out here so the override is deliberate.
 | M4 | Writes, unit of work, batching | ✅ | **PASSED 2026-08-24** — 1,000 inserts = 1 `COPY`; 1,000 mixed = 1 batch; FK order correct with constraints *not* deferred | *(cleared)* |
 | M5 | Typed escape hatch | 2 | real analytical query, fully typed, no `any` | — |
 | M6 | First adopter: `anubis/authz` | 3 | authorize p95 does not regress | > 3 wks or p95 regression → freeze features |
-| M7 | Tooling gate + hardening | 2 | `explain`/`lint`/`verify` green in CI; fuzz clean | — |
+| M7 | Tooling gate + hardening | ✅ | **PASSED 2026-08-24** — explain/lint/verify(-stale,-pending) shipped and tested; fuzz corpus + injection suite in CI; coverage floors enforced | *(cleared)* |
 | M8 | v1.0 release (Postgres) | 2 | docs, examples, stability policy | — |
 | M9 | MySQL 8 + MariaDB | 4 | full suite green on both; seam has no leaks | seam leaked → fix `compile/` before any further target |
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
@@ -686,13 +686,13 @@ Written as a checklist because "production ready" is not one property.
    until someone runs it against a real workload.
 3. **No release, no API stability policy** (M8). Nothing is tagged and nothing
    is promised.
-4. **`raorm lint` shipped 2026-08-24; `raorm explain` still missing.** lint
-   costs every named plan in round trips from the IR alone — no database — and
-   fails over `-max-round-trips` (default 4), so a plan that quietly grew
-   fails CI naming itself instead of failing a latency SLO naming nothing.
-   The counts are worst-case; empty levels skip their query at run time.
-   `explain` (EXPLAIN ANALYZE per named query, seq-scan detection) still needs
-   building and needs a live database.
+4. ~~No `raorm lint`, no `raorm explain`.~~ **Both shipped 2026-08-24**, plus
+   `verify -pending` (ADR-0001's third mode: "changed the model, no migration"
+   as a CI failure that prints its own fix). lint budgets every named plan's
+   round trips from the IR alone; explain plans every statement raorm will
+   issue via GENERIC_PLAN — a validity gate on any database, a seq-scan gate
+   only where statistics exist, and the doc says which is which. M7's tooling
+   gate is closed; the fuzz corpus and injection suite closed earlier.
 5. **Postgres only, and the dialect seam is unproven.** It exists and is
    CI-enforced, but a seam with one implementation is a hypothesis. M9 tests it.
 6. ~~No transaction helper.~~ **`pgxdrv.Tx` shipped 2026-08-24.** The doctrine

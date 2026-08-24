@@ -70,3 +70,21 @@ It was at 0% and hid **three** bugs, two able to lose data:
 and the CLI is the surface every user touches first.
 
 See [[core]], [[write_path]], [[plan_types]], [[seam_and_codegen]].
+
+## M7 closed (2026-08-24)
+`lint` (plan round-trip budgets from the IR), `explain` (GENERIC_PLAN validity
+gate everywhere + seq-scan gate where statistics exist — the CI-database trap
+is documented, not hidden), `verify -pending` (replay migrations into scratch,
+diff against model; the failure prints the missing migration's SQL). 
+
+**pgx trap worth remembering:** GENERIC_PLAN needs the raw wire. Both extended
+AND "simple" pgx modes sanitise `$n` client-side and refuse zero arguments;
+`PgConn().Exec` ships text untouched.
+
+**Floors caught dead code:** codegen fell 0.7 under its floor and the gap was
+four zero-caller functions dead since the tree-IR migration. Deleted, not
+tested — a floor cannot tell dead from untested, and neither can a reader.
+
+What now stands before production: the M6 adopter run, M8 release policy, the
+machine-blocked unix-socket benchmark, and P5 expressiveness (joins,
+projections, CTEs) for M5.
