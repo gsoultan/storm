@@ -10,11 +10,19 @@ allocation, stdlib-only; 18 significant digits, with a GENERATION error past
 that and a decode ERROR rather than a wrong number). **`jsonb` shipped** as
 `runtime.JSON` — raw bytes the caller unmarshals, no value predicates.
 
-Still missing: `date`, `time`, `interval`, `jsonb`,
-`inet`, and **arrays of anything**. The generator binds bool, integer and float
+**`text[]` and `uuid[]` shipped 2026-08-24** — nil vs `'{}'` kept distinct, a
+NULL element is `ErrArrayNull` not `""`, no value predicates (equality on an
+array is order-sensitive; `@>`/`&&` do not exist yet). Two bugs found before
+commit: the scanner clobbered decode errors (later column overwrote the one
+that mattered — scan now returns on FIRST failure), and the fuzzer found a
+17-byte value whose count field made `make` allocate gigabytes — allocations
+are now bounded by the input, never by a field inside it.
+
+Still missing: `date`, `time`, `interval`,
+`inet`, and remaining array element types (`int8[]`, `numeric[]`). The
+generator binds bool, integer and float
 widths, text/varchar, bytea, uuid, timestamptz, enums — and stops. The fixture
-itself has two columns (`prefs jsonb`, `scopes text[]`) the generator silently
-omits.
+no longer has any column the generator omits.
 
 No application handling money can model its own tables. This is the first thing
 a real adopter hits, and it is invisible from the benchmarks because the bench

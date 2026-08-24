@@ -663,8 +663,16 @@ Written as a checklist because "production ready" is not one property.
    is almost never what a caller means, and content filtering needs `->>` and
    `@>`, which the operator set does not have.
 
-   **Still missing:** `date`, `time`, `interval`, `inet`, and **arrays of
-   anything**. All are stdlib-expressible and none needs a decision.
+   **`text[]` and `uuid[]` shipped 2026-08-24.** nil is SQL NULL and an empty
+   non-nil slice is `'{}'` — different facts, kept distinct. A NULL *element*
+   is `ErrArrayNull`, not `""`. The fuzzer found the decoder could be made to
+   allocate gigabytes by a corrupt 17-byte count field before the fix; the
+   allocation is now bounded by the input, never by a field inside it. The
+   fixture no longer has any column the generator omits.
+
+   **Still missing:** `date`, `time`, `interval`, `inet`, and the remaining
+   array element types (`int8[]`, `numeric[]`). All are stdlib-expressible and
+   none needs a decision.
 2. **No adopter has run it.** M6 exists because the first adopter finds what
    benchmarks miss — and testing the CLI in one sitting found three defects,
    two able to lose data. That is the rate to expect, and it does not fall
