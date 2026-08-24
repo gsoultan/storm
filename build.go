@@ -2,21 +2,25 @@ package raorm
 
 import (
 	"fmt"
+	"net/netip"
 	"reflect"
 	"strings"
 	"time"
 	"unsafe"
 
+	"github.com/gsoultan/raorm/runtime"
 	"github.com/gsoultan/raorm/schema"
 )
 
 var (
-	timeType    = reflect.TypeOf(time.Time{})
-	uuidType    = reflect.TypeOf(UUID{})
-	bytesType   = reflect.TypeOf([]byte(nil))
-	decimalType = reflect.TypeOf(Decimal{})
-	enumerType  = reflect.TypeOf((*Enumer)(nil)).Elem()
-	schemerTyp  = reflect.TypeOf((*Schemer)(nil)).Elem()
+	timeType     = reflect.TypeOf(time.Time{})
+	intervalType = reflect.TypeOf(runtime.Interval{})
+	prefixType   = reflect.TypeOf(netip.Prefix{})
+	uuidType     = reflect.TypeOf(UUID{})
+	bytesType    = reflect.TypeOf([]byte(nil))
+	decimalType  = reflect.TypeOf(Decimal{})
+	enumerType   = reflect.TypeOf((*Enumer)(nil)).Elem()
+	schemerTyp   = reflect.TypeOf((*Schemer)(nil)).Elem()
 )
 
 // Build turns a set of model structs into a schema. Pass pointers to zero
@@ -592,6 +596,14 @@ func (b *builder) inferType(t reflect.Type) (schema.Type, bool) {
 		return schema.Type{Name: schema.TypeUUID}, true
 	case bytesType:
 		return schema.Type{Name: schema.TypeBytea}, true
+	case intervalType:
+		return schema.Type{Name: schema.TypeInterval}, true
+	case prefixType:
+		// netip.Prefix serves inet AND cidr: an inet is an address that may
+		// carry a prefix (host bits allowed), a cidr is a network (host bits
+		// forbidden, and the DATABASE polices that). One Go type; .Cidr() on
+		// the column opts into the stricter database type.
+		return schema.Type{Name: schema.TypeInet}, true
 	case decimalType:
 		// Precision and scale are unset here on purpose: numeric with no
 		// bounds is legal and means "as much as you need". A model that wants

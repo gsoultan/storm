@@ -153,12 +153,16 @@ func (g *gen) header() {
 	g.p("import (")
 	g.p("\t%q", "context")
 	g.p("\t%q", "errors")
+	g.p("\t%q", "net/netip")
 	g.p("\t%q", "time")
 	g.p("")
 	g.p("\t%q", g.o.Import+"/runtime")
 	g.p(")")
 	g.p("")
-	g.p("var _ = time.Time{}")
+	g.p("var (")
+	g.p("\t_ = time.Time{}")
+	g.p("\t_ = netip.Prefix{}")
+	g.p(")")
 	g.p("")
 }
 
@@ -623,7 +627,8 @@ func (g *gen) colIndex(name string) int {
 // fallibleColumn reports whether one column's decoder can fail.
 func fallibleColumn(c *schema.Column) bool {
 	switch goKind(c) {
-	case kindNumeric, kindTextArray, kindUUIDArray:
+	case kindNumeric, kindTextArray, kindUUIDArray, kindInt8Array,
+		kindInterval, kindInet:
 		return true
 	}
 	return false

@@ -26,6 +26,10 @@ const (
 	kindJSONB
 	kindTextArray
 	kindUUIDArray
+	kindDate
+	kindInterval
+	kindInet
+	kindInt8Array
 )
 
 func goKind(c *schema.Column) kind {
@@ -38,6 +42,8 @@ func goKind(c *schema.Column) kind {
 			return kindTextArray
 		case schema.TypeUUID:
 			return kindUUIDArray
+		case schema.TypeInt8:
+			return kindInt8Array
 		}
 		return kindUnsupported
 	}
@@ -66,6 +72,12 @@ func goKind(c *schema.Column) kind {
 		return kindNumeric
 	case schema.TypeJSONB:
 		return kindJSONB
+	case schema.TypeDate:
+		return kindDate
+	case schema.TypeInterval:
+		return kindInterval
+	case schema.TypeInet, schema.TypeCIDR:
+		return kindInet
 	}
 	if c.Type.Enum {
 		return kindText // an enum arrives on the wire as its label
@@ -80,6 +92,14 @@ func baseGoType(c *schema.Column) string {
 		return "[]string"
 	case kindUUIDArray:
 		return "[][16]byte"
+	case kindDate:
+		return "time.Time"
+	case kindInterval:
+		return "runtime.Interval"
+	case kindInet:
+		return "netip.Prefix"
+	case kindInt8Array:
+		return "[]int64"
 	case kindNumeric:
 		return "runtime.Decimal"
 	case kindJSONB:
@@ -157,7 +177,7 @@ func checkNumeric(table string, c *schema.Column) error {
 // the wrong one.
 func isNullable(c *schema.Column) bool {
 	switch goKind(c) {
-	case kindBytes, kindTextArray, kindUUIDArray:
+	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array:
 		return false
 	}
 	return !c.NotNull
@@ -170,6 +190,27 @@ func decodeExpr(c *schema.Column, i int) string {
 
 	if k == kindBytes {
 		return fmt.Sprintf("r.%s = runtime.Bytes(rv[%d])", f, i)
+	}
+	if k == kindDate {
+		if c.NotNull {
+			return fmt.Sprintf("r.%s = runtime.Date(rv[%d])", f, i)
+		}
+		return fmt.Sprintf("r.%s = runtime.Nullable(rv[%d], runtime.Date)", f, i)
+	}
+	if k == kindInt8Array {
+		return fmt.Sprintf("r.%s, decErr = runtime.Int8Array(rv[%d])", f, i)
+	}
+	if k == kindInterval {
+		if c.NotNull {
+			return fmt.Sprintf("r.%s, decErr = runtime.IntervalErr(rv[%d])", f, i)
+		}
+		return fmt.Sprintf("r.%s, decErr = runtime.NullInterval(rv[%d])", f, i)
+	}
+	if k == kindInet {
+		if c.NotNull {
+			return fmt.Sprintf("r.%s, decErr = runtime.InetErr(rv[%d])", f, i)
+		}
+		return fmt.Sprintf("r.%s, decErr = runtime.NullInet(rv[%d])", f, i)
 	}
 	if k == kindTextArray {
 		return fmt.Sprintf("r.%s, decErr = runtime.TextArray(rv[%d], sl)", f, i)
@@ -240,7 +281,7 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 	case "Gt", "Gte", "Lt", "Lte":
 		switch k {
 		case kindInt2, kindInt4, kindInt8, kindFloat4, kindFloat8, kindText,
-			kindTimestamptz, kindNumeric:
+			kindTimestamptz, kindNumeric, kindDate:
 			return true
 		}
 		return false
@@ -255,7 +296,12 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		// need @> and &&, which the operator set does not have, and equality
 		// on an array is order-sensitive in a way almost nobody means.
 		switch k {
-		case kindBytes, kindJSONB, kindTextArray, kindUUIDArray:
+		case kindBytes, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array:
+			return false
+		case kindInterval:
+			// Interval equality compares normalised values ('24:00' = '1 day'),
+			// which surprises in both directions. Until an operator can say
+			// which comparison it means, offering none beats offering a trap.
 			return false
 		}
 		return true

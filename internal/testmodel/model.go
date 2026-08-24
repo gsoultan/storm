@@ -2,6 +2,7 @@
 package testmodel
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/gsoultan/raorm"
@@ -186,6 +187,24 @@ func (a *Attachment) Schema(t *raorm.Table) {
 	t.Col(&a.Filename).Size(255)
 }
 
+// Event exercises the temporal and network types end to end: a calendar date,
+// an interval with months kept apart from days, inet vs cidr, and int8[].
+type Event struct {
+	raorm.Model
+
+	On     time.Time // a date, not a timestamp — see Schema
+	Window *raorm.Interval
+	Addr   netip.Prefix // inet: host bits allowed
+	Net    netip.Prefix // cidr: host bits rejected by the database
+	Tags   []int64
+}
+
+func (e *Event) Schema(t *raorm.Table) {
+	t.Col(&e.On).Date()
+	t.Col(&e.Net).Cidr()
+	t.Col(&e.Tags).Default("'{}'")
+}
+
 type Booking struct {
 	raorm.Model
 
@@ -209,6 +228,6 @@ func (b *Booking) Schema(t *raorm.Table) {
 // All returns every model in the fixture, in registration order.
 func All() []any {
 	return []any{
-		&Org{}, &User{}, &Profile{}, &Post{}, &Comment{}, &Booking{}, &Attachment{},
+		&Org{}, &User{}, &Profile{}, &Post{}, &Comment{}, &Booking{}, &Attachment{}, &Event{},
 	}
 }

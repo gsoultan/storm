@@ -16,15 +16,17 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		return "strs", "ns"
 	case kindUUID:
 		return "raws", "nr"
-	case kindTimestamptz:
+	case kindTimestamptz, kindDate:
 		return "tims", "ntm"
+	case kindInet:
+		return "pfxs", "npf"
 	case kindFloat4, kindFloat8:
 		return "f64s", "nf"
 	case kindNumeric:
 		// Its own arena: a Decimal is two words and does not fit the int64
 		// slot every other scalar shares.
 		return "decs", "nd"
-	case kindJSONB, kindBytes, kindTextArray, kindUUIDArray:
+	case kindJSONB, kindBytes, kindTextArray, kindUUIDArray, kindInt8Array, kindInterval:
 		// No arena. Neither is a value a predicate binds or an ordering
 		// compares — jsonb offers only IS [NOT] NULL, and bytea offers
 		// nothing — so there is nothing to store.
@@ -36,7 +38,7 @@ func arenaFor(c colInfo) (arena, cursor string) {
 
 func arenaCast(c colInfo, expr string) string {
 	switch c.kind {
-	case kindText, kindUUID, kindTimestamptz, kindNumeric:
+	case kindText, kindUUID, kindTimestamptz, kindDate, kindNumeric, kindInet:
 		return expr
 	case kindFloat4:
 		return "float32(" + expr + ")"
@@ -51,7 +53,7 @@ func arenaCast(c colInfo, expr string) string {
 
 func arenaStore(c colInfo, v string) string {
 	switch c.kind {
-	case kindText, kindUUID, kindTimestamptz, kindNumeric:
+	case kindText, kindUUID, kindTimestamptz, kindDate, kindNumeric, kindInet:
 		return v
 	case kindFloat4, kindFloat8:
 		return "float64(" + v + ")"
@@ -71,6 +73,7 @@ const (
 	maxTime  = 4
 	maxFloat = 4
 	maxDec   = 4
+	maxPfx   = 4
 )
 
 func (g *gen) treeQuery() {
@@ -88,7 +91,8 @@ func (g *gen) treeQuery() {
 	g.p("\ttims [%d]time.Time", maxTime)
 	g.p("\tf64s [%d]float64", maxFloat)
 	g.p("\tdecs [%d]runtime.Decimal", maxDec)
-	g.p("\tns, nn, nr, ntm, nf, nd uint8")
+	g.p("\tpfxs [%d]netip.Prefix", maxPfx)
+	g.p("\tns, nn, nr, ntm, nf, nd, npf uint8")
 	g.p("")
 	g.p("\tanyRaw [][16]byte")
 	g.p("\tanyStr []string")
@@ -353,7 +357,7 @@ func (g *gen) treePreds() {
 			continue // no value arena: this column has no value-taking operator
 		}
 		max := map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
-			"tims": maxTime, "f64s": maxFloat, "decs": maxDec}[arena]
+			"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx}[arena]
 		g.p("\tcase %d:", i)
 		g.p("\t\tif int(q.%s) >= %d {", cur, max)
 		g.p("\t\t\tq.over = true")
@@ -375,12 +379,14 @@ func predSlotFor(c colInfo) string {
 		return "p.str"
 	case kindUUID:
 		return "p.raw"
-	case kindTimestamptz:
+	case kindTimestamptz, kindDate:
 		return "p.tim"
 	case kindFloat4, kindFloat8:
 		return "p.f64"
 	case kindNumeric:
 		return "p.dec"
+	case kindInet:
+		return "p.pfx"
 	default:
 		return "p.num"
 	}
@@ -396,6 +402,7 @@ func (g *gen) treeBind() {
 	g.p("\ttims   [%d]time.Time", maxTime)
 	g.p("\tf64s   [%d]float64", maxFloat)
 	g.p("\tdecs   [%d]runtime.Decimal", maxDec)
+	g.p("\tpfxs   [%d]netip.Prefix", maxPfx)
 	g.p("\tanyRaw [][16]byte")
 	g.p("\tanyStr []string")
 	g.p("\tlimit  int64")
@@ -422,10 +429,10 @@ func (g *gen) treeBind() {
 		if a == "" {
 			continue
 		}
-		used[map[string]string{"strs": "ns", "nums": "nn", "raws": "nr", "tims": "ntm", "f64s": "nf", "decs": "nd"}[a]] = true
+		used[map[string]string{"strs": "ns", "nums": "nn", "raws": "nr", "tims": "ntm", "f64s": "nf", "decs": "nd", "pfxs": "npf"}[a]] = true
 	}
 	var cursors []string
-	for _, n := range []string{"ns", "nn", "nr", "ntm", "nf", "nd"} {
+	for _, n := range []string{"ns", "nn", "nr", "ntm", "nf", "nd", "npf"} {
 		if used[n] {
 			cursors = append(cursors, n)
 		}
@@ -463,7 +470,7 @@ func (g *gen) treeBind() {
 			continue // no value arena: nothing to copy into the binder
 		}
 		short := map[string]string{"strs": "ns", "nums": "nn", "raws": "nr",
-			"tims": "ntm", "f64s": "nf", "decs": "nd"}[arena]
+			"tims": "ntm", "f64s": "nf", "decs": "nd", "pfxs": "npf"}[arena]
 		g.p("\t\tcase %d:", i)
 		g.p("\t\t\tb.%s[%s] = q.%s[%s]", arena, short, arena, short)
 		g.p("\t\t\tv = append(v, &b.%s[%s])", arena, short)

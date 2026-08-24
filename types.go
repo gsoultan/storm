@@ -126,3 +126,9 @@ func UUIDv7() Expr { return "uuidv7()" }
 // is the default for an embedded raorm.Model because it works everywhere the
 // rest of raorm does.
 func GenRandomUUID() Expr { return "gen_random_uuid()" }
+
+// Interval is a PostgreSQL interval: months, days and microseconds kept
+// separate, because a month has no fixed length and a day is not always 24
+// hours. An alias for the same reason Decimal is — the model's type and the
+// generated code's type must be one type.
+type Interval = runtime.Interval

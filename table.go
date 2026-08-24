@@ -205,6 +205,31 @@ func (b *ColBuilder) Numeric(p, s int) *ColBuilder {
 	b.c.sc.Type.Precision, b.c.sc.Type.Scale = p, s
 	return b
 }
+
+// Date narrows a time.Time column to a calendar date. The Go type stays
+// time.Time (there is no stdlib date), decoded as midnight UTC.
+func (b *ColBuilder) Date() *ColBuilder {
+	if b.c.sc.Type.Name != schema.TypeTimestamptz {
+		b.t.errs.add(fmt.Errorf("%s: .Date() applies to a time.Time field, not %s",
+			b.t.out.Name, b.c.sc.Type.Name))
+		return b
+	}
+	b.c.sc.Type.Name = schema.TypeDate
+	return b
+}
+
+// Cidr narrows a netip.Prefix column from inet to cidr — the database then
+// rejects host bits, which is the entire difference between the two types.
+func (b *ColBuilder) Cidr() *ColBuilder {
+	if b.c.sc.Type.Name != schema.TypeInet {
+		b.t.errs.add(fmt.Errorf("%s: .Cidr() applies to a netip.Prefix field, not %s",
+			b.t.out.Name, b.c.sc.Type.Name))
+		return b
+	}
+	b.c.sc.Type.Name = schema.TypeCIDR
+	return b
+}
+
 func (b *ColBuilder) Default(e Expr) *ColBuilder   { b.c.sc.Default = string(e); return b }
 func (b *ColBuilder) Generated(e Expr) *ColBuilder { b.c.sc.Generated = string(e); return b }
 func (b *ColBuilder) Immutable() *ColBuilder       { b.c.sc.Immutable = true; return b }

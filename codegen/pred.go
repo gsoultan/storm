@@ -26,6 +26,7 @@ func (g *gen) predType() {
 	g.p("\ttim time.Time")
 	g.p("\tf64 float64")
 	g.p("\tdec runtime.Decimal")
+	g.p("\tpfx netip.Prefix")
 	g.p("\tanyRaw [][16]byte")
 	g.p("\tanyStr []string")
 	g.p("}")
@@ -39,8 +40,10 @@ func predField(c colInfo) string {
 		return "p.str"
 	case kindUUID:
 		return "p.raw"
-	case kindTimestamptz:
+	case kindTimestamptz, kindDate:
 		return "p.tim"
+	case kindInet:
+		return "p.pfx"
 	case kindBool:
 		return "p.num != 0"
 	case kindFloat4:
@@ -69,8 +72,10 @@ func predCtor(c colInfo, op string, i int) string {
 		set = "str: v"
 	case kindUUID:
 		set = "raw: v"
-	case kindTimestamptz:
+	case kindTimestamptz, kindDate:
 		set = "tim: v"
+	case kindInet:
+		set = "pfx: v"
 	case kindNumeric:
 		set = "dec: v"
 	case kindBool:
@@ -200,6 +205,10 @@ func handleType(c colInfo) string {
 		kindBytes:       "BytesCol",
 		kindUUID:        "UUIDCol",
 		kindTimestamptz: "TimeCol",
+		kindDate:        "DateCol",
+		kindInterval:    "IntervalCol",
+		kindInet:        "InetCol",
+		kindInt8Array:   "Int64ArrayCol",
 		kindNumeric:     "DecimalCol",
 		kindJSONB:       "JSONCol",
 		kindTextArray:   "TextArrayCol",

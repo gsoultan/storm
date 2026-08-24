@@ -6,12 +6,16 @@ package comment
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"time"
 
 	"github.com/gsoultan/raorm/runtime"
 )
 
-var _ = time.Time{}
+var (
+	_ = time.Time{}
+	_ = netip.Prefix{}
+)
 
 // Row is what a full read returns: the model struct with relations
 // replaced by their scalar foreign keys and *T rewritten to Null[T].
@@ -50,13 +54,14 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs                    [6]string
-	nums                    [6]int64
-	raws                    [4][16]byte
-	tims                    [4]time.Time
-	f64s                    [4]float64
-	decs                    [4]runtime.Decimal
-	ns, nn, nr, ntm, nf, nd uint8
+	strs                         [6]string
+	nums                         [6]int64
+	raws                         [4][16]byte
+	tims                         [4]time.Time
+	f64s                         [4]float64
+	decs                         [4]runtime.Decimal
+	pfxs                         [4]netip.Prefix
+	ns, nn, nr, ntm, nf, nd, npf uint8
 
 	anyRaw [][16]byte
 	anyStr []string
@@ -280,6 +285,7 @@ type Pred struct {
 	tim    time.Time
 	f64    float64
 	dec    runtime.Decimal
+	pfx    netip.Prefix
 	anyRaw [][16]byte
 	anyStr []string
 }
@@ -816,6 +822,7 @@ type binder struct {
 	tims   [4]time.Time
 	f64s   [4]float64
 	decs   [4]runtime.Decimal
+	pfxs   [4]netip.Prefix
 	anyRaw [][16]byte
 	anyStr []string
 	limit  int64
