@@ -443,6 +443,19 @@ raorm: internal/store/reports.go:14  raorm.SQL[EarnerRow]
   → add `Headcount int64` or alias the column away
 ```
 
+The no-rows half is `SQLExec` — junction DELETEs, `ON CONFLICT DO NOTHING`
+inserts, statements run for their effect. Same declaration discipline, same
+`PREPARE`, one extra rule: the statement must return **zero** columns, so "I
+meant to read those rows" is a generation error pointing at `SQL[T]`, never a
+silent drop of a result set the server actually sent. (A void function call
+wraps as `SELECT (fn($1) IS NULL) AS done` and stays `SQL[T]`.)
+
+```go
+var DeleteRoleParents = raorm.SQLExec(`DELETE FROM role_parents WHERE role_id = $1`)
+
+n, err := DeleteRoleParents.Exec(ctx, db, roleID)   // rows affected
+```
+
 And raw fragments compose *into* typed queries as join sources:
 
 ```go

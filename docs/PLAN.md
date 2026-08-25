@@ -705,6 +705,12 @@ sanctioned home, ADR-0009 amended §5).
 Docs, runnable examples, API stability policy, semver commitments, and a
 `MIGRATING-FROM-SQLC.md`. Ship only after M6 has run in `anubis` for two weeks.
 
+**Soak clock started 2026-08-25** (M6 completion, anubis 26f612c). Every prep
+artifact exists — STABILITY.md, MIGRATING-FROM-SQLC.md (now carrying the real
+M6 patterns, not the predicted ones), examples/blog, the as-built API.md —
+so the earliest honest `v0.1.0` tag is **2026-09-08**, contingent only on the
+soak surfacing nothing. Whatever it does surface goes here first.
+
 ---
 
 ## Production readiness — an honest assessment (2026-08-24)

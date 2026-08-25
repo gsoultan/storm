@@ -22,6 +22,8 @@ repeat.
 | N `LEFT JOIN` + regroup in Go | a named plan: `store.UserFeed()`, 1 + relations round trips, asserted |
 | `EXISTS` subqueries | `user.HasPosts()` / `store.UserHavingPosts(q, ps...)` |
 | analytical queries | keep the SQL: `raorm.SQL[T](...)` — PREPARE-validated, generated scanner |
+| `:exec` statements | `raorm.SQLExec(...)` — same PREPARE check, must return zero columns |
+| `SELECT fn(...)` calls | `raorm.SQL[T]` on the function's row; wrap void as `(fn($1) IS NULL) AS done` |
 | migration files (hand-written) | `raorm diff <name>` emits them; you still review and apply |
 | `db.WithTx(tx)` | `pgxdrv.Tx{T: tx}` — same idea, four-method port |
 
@@ -66,3 +68,45 @@ memory per thousand-row scan.
   comment will try to talk you into keyset, and it is right.
 - Version-column optimistic locking is generated only if the model declares
   `.Version()` — sqlc had no equivalent, consider adopting it.
+- `sqlc.arg(name)` becomes positional `$n`. You choose the numbering, and a
+  repeated `sqlc.arg` becomes a repeated `$n` — but nothing checks that your
+  call sites pass arguments in the order you chose. Test it (below).
+- Two queries may share a row type only if their SELECT lists agree column
+  for column — scanners decode by position, and generation enforces the
+  agreement rather than transposing silently.
+- In raw rows, nullable columns are `runtime.Null[T]`, not `*T`.
+
+## What the first real migration taught (anubis/authz, 2026-08-25)
+
+One day, 44 queries, sqlc deleted from the context, authorize p95 unchanged.
+Three patterns from it are worth prescribing:
+
+**The SQL-owns-semantics variant.** anubis's queries call database functions
+(`authorize()`, `membership_assign()`) and carry guarded UPDATEs by design —
+ADR'd, deliberate, not builder material. That migration is mostly steps 5–6:
+`raorm.SQL[T]`/`SQLExec` declarations in **one designated package per
+context** (files mirroring the old `queries/` layout so diffs read side by
+side), plus builder queries where the shape is a plain table read. The
+builder count being small is fine; the property that matters — every
+statement schema-checked at build time — covers both forms equally.
+
+**PREPARE against the live dev database when migrations are the schema of
+record.** raorm's own `generate` PREPAREs against the *model* in a scratch
+schema, so the model vouches for every query. If your functions and views
+live only in migrations, the model cannot vouch for calls into them — write
+a small adopter-owned generate command (anubis's is ~100 lines: connect,
+PREPARE each declaration, `codegen.ResolveRawScanner`, `codegen.Package`)
+and point it at the dev database. Say in its doc comment that the model is a
+projection and migrations remain the truth.
+
+**PREPARE proves shape, not argument order.** The one thing generate-time
+checking cannot see is whether call sites pass `$1, $2` in the order you
+numbered them. The anubis acceptance suite is the template: for each query
+family, assert VALUES against a direct-SQL twin, assert the not-found
+mapping, and run every write inside a deliberately rolled-back transaction —
+which also proves your executor adapter keeps ambient transactions ambient.
+
+Domain layers that speak string ids (sqlc's uuid→string override) keep that
+contract by selecting uuid columns `::text` and binding strings — pgx's uuid
+codec accepts them for parameters — with one `[16]byte`↔string crossing next
+to the executor adapter for builder queries.

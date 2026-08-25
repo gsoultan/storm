@@ -64,6 +64,7 @@ ada, err := n.Insert(ctx, ex)
 // Anything PostgreSQL can run, typed, validated against the model at
 // generate time — mismatches fail the build naming the column and the fix.
 var Top = raorm.SQL[TopRow](`WITH ranked AS (...) SELECT ... LIMIT $1`)
+var Purge = raorm.SQLExec(`DELETE FROM sessions WHERE expires_at < now()`)
 ```
 
 ## The numbers
