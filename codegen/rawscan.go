@@ -49,9 +49,12 @@ func ResolveRawScanner(rt reflect.Type, typeImport string, fields []RawField) (R
 	if rt.Kind() != reflect.Struct {
 		return RawScanner{}, fmt.Errorf("raorm.SQL's type parameter must be a struct, not %s", rt)
 	}
+	// The qualifier must be the package's declared NAME, not its directory:
+	// the two differ in perfectly legal layouts (dir rquery, package
+	// authzrquery), and reflect reports the name via String().
 	rs := RawScanner{
 		TypeImport: typeImport,
-		TypePkg:    rt.PkgPath()[strings.LastIndex(rt.PkgPath(), "/")+1:],
+		TypePkg:    strings.TrimSuffix(rt.String(), "."+rt.Name()),
 		TypeName:   rt.Name(),
 	}
 

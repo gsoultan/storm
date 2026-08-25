@@ -243,7 +243,14 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 		for _, rs := range o.RawScanners {
 			if !seenTI[rs.TypeImport] {
 				seenTI[rs.TypeImport] = true
-				g.p("\t%q", rs.TypeImport)
+				// Alias when the declared package name differs from the
+				// directory, or the plain import would bind a different
+				// identifier than the scanner bodies use.
+				if base := rs.TypeImport[strings.LastIndex(rs.TypeImport, "/")+1:]; base != rs.TypePkg {
+					g.p("\t%s %q", rs.TypePkg, rs.TypeImport)
+				} else {
+					g.p("\t%q", rs.TypeImport)
+				}
 			}
 		}
 	}
