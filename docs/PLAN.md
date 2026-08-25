@@ -317,7 +317,7 @@ and there is no `OFFSET` and no cursor — a hard blocker for any list endpoint
 
 | Debt | Source | Status |
 |---|---|---|
-| **Ent benchmark** — needs its own codegen step | M0 scope, never done | open |
+| **Ent benchmark** — needs its own codegen step | M0 scope | **✅ done 2026-08-25** — Get 159 allocs, Scan1000 23,016 (GORM-class); its one-table client is 164K generated code. `bench/RESULTS.md` |
 | **Unix-socket re-benchmark** | M0 finding #3 | **blocked on the machine, not the code** |
 
 **Unix socket — why it is still open.** `make db` runs Postgres in an Apple

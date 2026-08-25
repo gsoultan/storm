@@ -599,3 +599,48 @@ larger the fraction of children kept, the less the window form wastes. The
 window lowering stays generated and exported for a caller whose data sits at
 that end, and because a default chosen by measurement needs something to have
 been measured against.
+
+---
+
+## Ent joins the rivals (2026-08-25)
+
+The last M0 debt: Ent was the one rival needing its own dependency and codegen
+step, which is why it kept being the one left out. Its client is **genuinely
+generated** (ent v0.14.6, committed like sqlc's output): **164K of code for
+this ONE table** — R2, "generated-code volume becomes Ent's disease", measured
+rather than asserted; raorm's whole six-table context is smaller.
+
+Same pool (8 conns), same workload, same run. Loopback :5433 through the
+container VM's port forward — wall clocks remain round-trip-dominated, so the
+allocation columns are the comparison:
+
+**Get (single row by id):**
+
+| | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| raorm (spike) | 94,606 | 532 | **6** |
+| sqlc | 91,655 | 1,006 | 13 |
+| raw pgx | 97,251 | 926 | 18 |
+| Bun | 280,795 | 7,818 | 73 |
+| GORM | 92,582 | 5,823 | 110 |
+| **Ent** | 92,047 | 6,043 | **159** |
+
+**Scan1000 (status filter, ordered, 1,000 rows):**
+
+| | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| raorm (generated) | 2,630,722 | 41,354 | **6** |
+| raw pgx | 2,372,746 | 184,748 | 5,012 |
+| sqlc | 2,796,736 | 912,460 | 5,022 |
+| Bun | 2,745,265 | 447,536 | 13,899 |
+| **Ent** | 2,857,854 | 805,224 | **23,016** |
+| GORM | 3,782,505 | 751,056 | 23,934 |
+
+Ent's single-row read allocates the most of ANY rival — 159, where a
+hand-written pgx read is 18 and raorm is 6 — and its thousand-row scan is
+GORM-class (23,016 vs 23,934) despite Ent being fully code-generated. Being
+generated is not what makes raorm cheap; generating the SCAN PATH instead of
+generating calls into a reflective core is.
+
+Bun's ~281µs Get remains the unexplained outlier noted earlier; still do not
+cite it.

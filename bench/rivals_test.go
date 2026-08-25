@@ -6,7 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
 	"github.com/google/uuid"
+	"github.com/gsoultan/raorm/bench/entbench"
+	entuser "github.com/gsoultan/raorm/bench/entbench/user"
 	sqlcgen "github.com/gsoultan/raorm/bench/sqlcbench/gen"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -58,6 +62,7 @@ var (
 	stdDB  *sql.DB
 	bunDB  *bun.DB
 	gormDB *gorm.DB
+	entDB  *entbench.Client
 )
 
 func initRivals(tb testing.TB) {
@@ -72,6 +77,8 @@ func initRivals(tb testing.TB) {
 	bunDB = bun.NewDB(stdDB, pgdialect.New())
 
 	var err error
+	entDB = entbench.NewClient(entbench.Driver(entsql.OpenDB(dialect.Postgres, stdDB)))
+
 	gormDB, err = gorm.Open(postgres.New(postgres.Config{Conn: stdDB}), &gorm.Config{
 		Logger:                 gormlogger.Discard,
 		SkipDefaultTransaction: true,
@@ -166,6 +173,42 @@ func BenchmarkScan1000_Gorm(b *testing.B) {
 		out := make([]GormUser, 0, 1000)
 		if err := gormDB.Where("status = ?", "active").
 			Order("created_at DESC, id").Limit(1000).Find(&out).Error; err != nil {
+			b.Fatal(err)
+		}
+		if len(out) != 1000 {
+			b.Fatal(len(out))
+		}
+	}
+}
+
+// Ent, genuinely generated — its client is 164K of code for this one table,
+// which is R2 ("generated-code volume becomes Ent's disease") measured rather
+// than asserted. Same pool, same workload as every other rival.
+
+func BenchmarkGet_Ent(b *testing.B) {
+	initRivals(b)
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		if _, err := entDB.User.Get(ctx, ids[i%len(ids)]); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkScan1000_Ent(b *testing.B) {
+	initRivals(b)
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		out, err := entDB.User.Query().
+			Where(entuser.StatusEQ("active")).
+			Order(entuser.ByCreatedAt(entsql.OrderDesc()), entuser.ByID()).
+			Limit(1000).
+			All(ctx)
+		if err != nil {
 			b.Fatal(err)
 		}
 		if len(out) != 1000 {
