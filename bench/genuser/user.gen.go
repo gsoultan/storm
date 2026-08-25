@@ -1302,6 +1302,87 @@ func batchTopByOrgIDLateralSQL(order []Sort) string {
 	return batchTopByOrgIDLateralCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL
 }
 
+// ContactRow is the "Contact" projection: the same read, 2 column(s) instead of
+// the whole row. Narrower tuples, no TOAST fetch for what nobody asked,
+// and an index-only scan becomes POSSIBLE — the full-row read forecloses
+// it by construction.
+type ContactRow struct {
+	Email string
+	Name  string
+}
+
+const contactPrefix = `SELECT "email", "name" FROM "users"`
+
+var (
+	contactCache       = runtime.NewTreeCache()
+	contactOffsetCache = runtime.NewTreeCache()
+)
+
+func contactStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
+	c, suffix := contactCache, limitSuffix
+	if withOffset {
+		c, suffix = contactOffsetCache, limitOffsetSuffix
+	}
+	if st := c.Get(toks); st != nil {
+		return st
+	}
+	return c.Put(toks, runtime.SpliceTree(contactPrefix, toks, lowering, suffix))
+}
+
+func scanContact(rv [][]byte, r *ContactRow, sl *runtime.Slab) error {
+	r.Email = sl.Str(rv[0])
+	r.Name = sl.Str(rv[1])
+	return nil
+}
+
+// AllContact runs the query projected to ContactRow. Predicates, ordering, limit,
+// offset and keyset all apply exactly as on All — a projection changes
+// what a row CARRIES, never which rows qualify. (After takes the full Row;
+// populate its ordering columns and the cursor works unchanged.)
+func (q Query) AllContact(ctx context.Context, ex runtime.Executor) ([]ContactRow, error) {
+	var sl runtime.Slab
+	return q.AllContactInto(ctx, ex, nil, &sl)
+}
+
+// AllContactInto lets the caller own the output slice and the arena, exactly
+// as AllInto does — a projection's terminals mirror the full read's, so a
+// hot loop reuses both and a benchmark compares like with like.
+func (q Query) AllContactInto(ctx context.Context, ex runtime.Executor, dst []ContactRow, sl *runtime.Slab) ([]ContactRow, error) {
+	if err := q.Err(); err != nil {
+		return dst, err
+	}
+	var buf [21]runtime.Tok
+	st := contactStmtFor(q.stream(&buf), q.offset > 0)
+	if st.Err != nil {
+		return dst, st.Err
+	}
+	sl.Reserve(st.SlabHint())
+	b := binders.Get()
+	defer binders.Put(b)
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, ContactRow{})
+		if err := scanContact(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
+	}
+	st.ObserveSlab(sl.Size())
+	return dst, rows.Err()
+}
+
+// OneContact is AllContact stopped at one row.
+func (q Query) OneContact(ctx context.Context, ex runtime.Executor) (ContactRow, bool, error) {
+	out, err := q.Limit(1).AllContact(ctx, ex)
+	if err != nil || len(out) == 0 {
+		return ContactRow{}, false, err
+	}
+	return out[0], true, nil
+}
+
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
 const insertSQL = `INSERT INTO "users" ("id", "org_id", "email", "name", "age", "status", "created_at", "updated_at") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING "id", "org_id", "email", "name", "age", "status", "created_at", "updated_at"`

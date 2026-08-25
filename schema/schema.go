@@ -56,6 +56,13 @@ type Table struct {
 	// back — three nullable foreign keys look like three ordinary relations.
 	Arcs []*Arc
 
+	// Projections are the named column subsets the model declared. Named, not
+	// inferred, for R3's reason: you get the projections you use, never 2^n.
+	// Each one exists so a read can fetch LESS — narrower tuples, no TOAST
+	// fetch for the jsonb nobody asked for, and the possibility of an
+	// index-only scan, which the full-row read forecloses by construction.
+	Projections []*Projection
+
 	// Plans are the named fetch plans the model declared. The generator emits
 	// exactly these and no others — which is the whole answer to the
 	// projection-type explosion: you get the plans you name, not every subset
@@ -90,6 +97,12 @@ type ArcVariant struct {
 	Table  string // referenced table
 	GoName string // referenced model type
 	Column string // this table's nullable foreign key for that variant
+}
+
+// Projection is one named column subset.
+type Projection struct {
+	Name    string
+	Columns []string // declaration order: it becomes the row type's field order
 }
 
 // Plan is a named fetch plan: a set of relations loaded together.

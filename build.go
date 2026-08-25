@@ -61,6 +61,13 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.callSchemas(mi)
 	}
+	// Pass 4b': projections ride the same window as plans, for the same
+	// reasons.
+	for _, mi := range b.ordered {
+		if pr, ok := mi.ptr.Interface().(Projector); ok {
+			pr.Projections(&Projections{t: mi.tbl, out: &mi.tbl.out.Projections})
+		}
+	}
 	// Pass 4b: fetch plans, after Schema so a plan names relations whose
 	// declarations are final, and after pass 3b so a has-many named by a plan
 	// has already been validated to have a key on the other side.

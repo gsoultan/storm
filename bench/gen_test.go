@@ -550,3 +550,24 @@ func TestQuerySize_HasATripwire(t *testing.T) {
 		t.Errorf("genuser.Pred is %d bytes (was 120 after the diet, 176 at the regression)", s)
 	}
 }
+
+// The projection's whole reason: the same 1,000 rows, two columns instead of
+// eight. Same predicates, same run, same session as the full read above it.
+func BenchmarkGenScan1000_Contact(b *testing.B) {
+	ex := pgxdrv.Pool{P: pool}
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	q := genuser.New().Where(genuser.Status.Eq("active"))
+	var sl runtime.Slab
+	buf := make([]genuser.ContactRow, 0, 1000)
+	var err error
+	for b.Loop() {
+		if buf, err = q.AllContactInto(ctx, ex, buf[:0], &sl); err != nil {
+			b.Fatal(err)
+		}
+		if len(buf) != 1000 {
+			b.Fatal(len(buf))
+		}
+	}
+}

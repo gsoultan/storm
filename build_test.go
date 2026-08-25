@@ -311,3 +311,67 @@ type planValueRecv struct {
 }
 
 func (p planValueRecv) Plans(pl *raorm.Plans) { pl.Named("Feed").With(&p.Targets) }
+
+// Projection declaration errors, each caught at build time with the mistake
+// named — the alternative is a generated type that is silently wrong.
+func TestProjections_DeclarationErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model any
+		want  string
+	}{
+		{"duplicate name", &projDupName{}, "declared twice"},
+		{"duplicate column", &projDupCol{}, "twice"},
+		{"empty", &projEmpty{}, "no columns"},
+		{"reserved name", &projReserved{}, "reserved"},
+		{"unexported name", &projBadName{}, "exported Go identifier"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := raorm.Build(tc.model)
+			if err == nil {
+				t.Fatal("expected a build error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should mention %q, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+type projDupName struct {
+	raorm.Model
+	A string
+}
+
+func (m *projDupName) Projections(p *raorm.Projections) {
+	p.Named("X", &m.A)
+	p.Named("X", &m.A)
+}
+
+type projDupCol struct {
+	raorm.Model
+	A string
+}
+
+func (m *projDupCol) Projections(p *raorm.Projections) { p.Named("X", &m.A, &m.A) }
+
+type projEmpty struct {
+	raorm.Model
+	A string
+}
+
+func (m *projEmpty) Projections(p *raorm.Projections) { p.Named("X") }
+
+type projReserved struct {
+	raorm.Model
+	A string
+}
+
+func (m *projReserved) Projections(p *raorm.Projections) { p.Named("Into", &m.A) }
+
+type projBadName struct {
+	raorm.Model
+	A string
+}
+
+func (m *projBadName) Projections(p *raorm.Projections) { p.Named("contact", &m.A) }

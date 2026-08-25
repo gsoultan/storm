@@ -19,4 +19,10 @@ type User struct {
 	UpdatedAt time.Time
 }
 
+// Projections gives the benchmark a narrow read to measure against the full
+// one on identical predicates.
+func (u *User) Projections(p *raorm.Projections) {
+	p.Named("Contact", &u.Email, &u.Name)
+}
+
 func All() []any { return []any{&User{}} }

@@ -112,6 +112,14 @@ func (u *User) Schema(t *raorm.Table) {
 // Plans is the one reviewable file's worth of load patterns for User — every
 // way this system reads a user with its relations, in one place a reviewer can
 // count round trips from.
+// Projections: the declared column subsets this system reads. Contact is the
+// list-endpoint shape; Fin exercises decimal and a nullable through the
+// projected scanner.
+func (u *User) Projections(p *raorm.Projections) {
+	p.Named("Contact", &u.Email, &u.Name)
+	p.Named("Fin", &u.Email, &u.Balance, &u.Age)
+}
+
 func (u *User) Plans(p *raorm.Plans) {
 	// Posts carry their comments: one round trip for the users, one for the
 	// posts, one for the comments — three, whatever the row counts.

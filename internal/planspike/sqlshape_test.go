@@ -342,3 +342,95 @@ func TestHaving_SelfReferenceScopesToTheInnerTable(t *testing.T) {
 			"the outer table this would match the child instead", len(got))
 	}
 }
+
+// A projection changes what a row CARRIES, never which rows qualify: same
+// predicates, ordering and paging over a narrower tuple, with its own
+// generated row type and scanner.
+func TestProjection_ReadsLessOfTheSameRows(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	cap := &capture{Executor: ex}
+	rows, err := user.New().
+		Where(user.Status.Eq("pending")).
+		Order(user.Email.Asc()).
+		Limit(5).
+		AllContact(ctx, cap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("got %d rows, want 5", len(rows))
+	}
+	sql := cap.sqls[0]
+	if !strings.HasPrefix(sql, `SELECT "email", "name" FROM "users"`) {
+		t.Errorf("the projection selects more than it declares:\n%s", sql)
+	}
+	for _, absent := range []string{`"prefs"`, `"scopes"`, `"created_at"`, `"id",`} {
+		if strings.Contains(strings.SplitN(sql, " FROM ", 2)[0], absent) {
+			t.Errorf("column %s travels though nobody asked:\n%s", absent, sql)
+		}
+	}
+	for i := 1; i < len(rows); i++ {
+		if rows[i-1].Email > rows[i].Email {
+			t.Fatal("ordering did not survive the projection")
+		}
+	}
+
+	// The same query, full and projected, qualifies the SAME rows.
+	full, err := user.New().Where(user.Status.Eq("pending")).Order(user.Email.Asc()).Limit(5).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range full {
+		if full[i].Email != rows[i].Email || full[i].Name != rows[i].Name {
+			t.Fatalf("row %d differs between full and projected reads", i)
+		}
+	}
+}
+
+// Decimal and Null decode through a projected scanner exactly as through the
+// full one.
+func TestProjection_CarriesDecimalAndNull(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	r := mustCreateWith(t, ctx, ex, "fin@example.com", dec(t, "1234.5678"))
+	t.Cleanup(func() { _ = user.Delete(ctx, ex, r.ID) })
+
+	got, ok, err := user.New().Where(user.ID.Eq(r.ID)).OneFin(ctx, ex)
+	if err != nil || !ok {
+		t.Fatalf("OneFin: %v ok=%v", err, ok)
+	}
+	if got.Balance.String() != "1234.5678" {
+		t.Errorf("Balance = %s through the projection", got.Balance)
+	}
+	if _, has := got.Age.Get(); has {
+		t.Error("a NULL age materialised through the projection")
+	}
+}
+
+// Keyset pagination composes: After reads only the ordering columns off the
+// full Row, so a caller pages a projection by carrying the cursor fields.
+func TestProjection_PagesByKeyset(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	p1, err := user.New().Order(user.Email.Asc(), user.ID.Asc()).Limit(10).AllContact(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, _, err := user.New().Where(user.Email.Eq(p1[len(p1)-1].Email)).One(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := user.New().Order(user.Email.Asc(), user.ID.Asc()).
+		After(user.Row{Email: last.Email, ID: last.ID}).
+		Limit(10).AllContact(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p2) == 0 || p2[0].Email <= p1[len(p1)-1].Email {
+		t.Fatalf("projected page two did not advance: %q then %q", p1[len(p1)-1].Email, p2[0].Email)
+	}
+}

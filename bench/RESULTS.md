@@ -731,3 +731,37 @@ The audit also confirmed what needed no fix: `= ANY($1)` plans as an index
 scan; LATERAL top-n as measured; keyset row comparisons walk the index; every
 statement names its columns; pgx's statement cache keeps shapes server-side
 prepared.
+
+---
+
+## Named projections (2026-08-25)
+
+`p.Named("Contact", &u.Email, &u.Name)` → `q.AllContact(ctx, ex)`. Same
+predicates, ordering and keyset over a narrower tuple. Three numbers, one of
+them deliberately unflattering:
+
+**Client side** (Scan1000, Into-parity harness, same session):
+Contact 30.5 KB / **5 allocs** vs full 40.4 KB / 6 — −26% bytes.
+
+**Wall clock on THIS query: parity, honestly.** The bench query is sort-bound
+(`ORDER BY created_at DESC, id` over 16k matches with no covering index — both
+shapes pay the identical top-N sort) and the table has nothing to TOAST, so
+the narrow read cannot win here and does not. A projection is not a
+go-faster-stripe; it is a plan-changer.
+
+**Where it changes the plan** (the structural claim, measured):
+
+    SELECT "id" FROM users ORDER BY "id" LIMIT 1000
+      → Index Only Scan, Heap Fetches: 0 .......... 0.138 ms
+    full row, same predicate and order
+      → Index Scan (heap visit per row) ........... 0.667 ms      4.8x
+
+The full-row read FORECLOSES the index-only plan by construction — it always
+touches the heap. A projection covered by an index never does. That, plus
+skipping TOAST fetches for wide columns nobody asked for, is what the feature
+is for; declare projections where those shapes exist.
+
+The first benchmark run was harness-skew (fresh slab/slice vs the full read's
+reused ones) and read 17 allocs / 103 KB — worth recording because it is the
+comparison mistake AGENTS.md's perf profile exists to veto: capacities must
+match on both sides.
