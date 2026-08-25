@@ -282,7 +282,10 @@ func TestCLI_ExplainPlansEveryStatement(t *testing.T) {
 func TestCLI_GenerateRawQueries(t *testing.T) {
 	withModels(t, testmodel.All())
 	prevQ := RawQueries
-	RawQueries = testmodel.Queries()
+	// One SQL[T] and one SQLExec: the exec form is validated by the same
+	// PREPARE but must emit no scanner.
+	RawQueries = append(testmodel.Queries(),
+		raorm.SQLExec(`DELETE FROM users WHERE id = $1`))
 	t.Cleanup(func() { RawQueries = prevQ })
 
 	// Capture the DSN before the no-DSN sub-check clears the env — reading it
@@ -370,6 +373,11 @@ func TestCLI_RawQueryMismatchesFailGeneration(t *testing.T) {
 			"does not prepare",
 			raorm.SQL[struct{ X int64 }](`SELECT nope FROM users`),
 			[]string{"does not prepare against the model"},
+		},
+		{
+			"exec that returns rows",
+			raorm.SQLExec(`SELECT email FROM users`),
+			[]string{"raorm.SQLExec returns 1 column(s)", "use raorm.SQL[T]"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

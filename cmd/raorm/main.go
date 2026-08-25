@@ -269,9 +269,24 @@ func prepareRawQueries(dsn string, model *schema.Schema) ([]codegen.RawScanner, 
 	var out []codegen.RawScanner
 	for i, d := range RawQueries {
 		rt, sql := raorm.DeclOf(d)
+		name := "raorm.SQLExec"
+		if rt != nil {
+			name = "raorm.SQL[" + rt.Name() + "]"
+		}
 		sd, err := c.Prepare(ctx, fmt.Sprintf("raorm_sqlcheck_%d", i), sql)
 		if err != nil {
-			return nil, fmt.Errorf("raorm.SQL[%s] does not prepare against the model:\n  %w", rt.Name(), err)
+			return nil, fmt.Errorf("%s does not prepare against the model:\n  %w", name, err)
+		}
+		if rt == nil {
+			// SQLExec: validated like any declaration, but it must not
+			// return rows — an exec that reads as "fire and forget" while
+			// the server sends a result set is a bug, not a convenience.
+			if len(sd.Fields) > 0 {
+				return nil, fmt.Errorf(
+					"%s returns %d column(s) — use raorm.SQL[T] to read them, or make the statement return nothing",
+					name, len(sd.Fields))
+			}
+			continue
 		}
 		fields := make([]codegen.RawField, len(sd.Fields))
 		for j, f := range sd.Fields {
@@ -279,7 +294,7 @@ func prepareRawQueries(dsn string, model *schema.Schema) ([]codegen.RawScanner, 
 		}
 		rs, err := codegen.ResolveRawScanner(rt, rt.PkgPath(), fields)
 		if err != nil {
-			return nil, fmt.Errorf("raorm.SQL[%s]\n  %w", rt.Name(), err)
+			return nil, fmt.Errorf("%s\n  %w", name, err)
 		}
 		out = append(out, rs)
 	}

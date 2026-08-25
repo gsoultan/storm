@@ -95,6 +95,33 @@ func (q *SQLQuery[T]) decl() (reflect.Type, string) {
 	return reflect.TypeOf(zero), q.sql
 }
 
+// SQLStmt is the no-rows half of the escape hatch: DELETEs, junction-table
+// INSERTs, `SELECT maintenance_fn(...)` calls. It carries no row type — and
+// the generator enforces that, failing generation if the statement's result
+// descriptor has columns, so "I meant to read those rows" cannot compile
+// into silently dropping them.
+type SQLStmt struct {
+	sql  string
+	nArg int
+}
+
+// SQLExec declares a raw statement executed for its effect.
+func SQLExec(sql string) *SQLStmt {
+	return &SQLStmt{sql: sql, nArg: maxPlaceholder(sql)}
+}
+
+// Exec runs the statement and reports rows affected.
+func (q *SQLStmt) Exec(ctx context.Context, ex runtime.Executor, args ...any) (int64, error) {
+	if len(args) != q.nArg {
+		return 0, fmt.Errorf("raorm: statement wants %d argument(s), got %d", q.nArg, len(args))
+	}
+	return ex.Exec(ctx, q.sql, args)
+}
+
+// decl reports a nil row type: the generator PREPAREs and validates the
+// statement like any other declaration, but resolves no scanner for it.
+func (q *SQLStmt) decl() (reflect.Type, string) { return nil, q.sql }
+
 // RawDecl is implemented by every SQLQuery, so a bootstrap can register them
 // as a plain []any the way it registers models.
 type RawDecl interface {
