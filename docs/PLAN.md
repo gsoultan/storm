@@ -345,7 +345,7 @@ and there is no `OFFSET` and no cursor — a hard blocker for any list endpoint
 | Debt | Source | Status |
 |---|---|---|
 | **Ent benchmark** — needs its own codegen step | M0 scope | **✅ done 2026-08-25** — Get 159 allocs, Scan1000 23,016 (GORM-class); its one-table client is 164K generated code. `bench/RESULTS.md` |
-| **Unix-socket re-benchmark** | M0 finding #3 | **blocked on the machine, not the code** |
+| **Unix-socket re-benchmark** | M0 finding #3 | **✅ done 2026-08-25** — host PG 17.11 on a pure socket, ~22µs round trips: Get **0.99×** raw pgx, Scan1000 ~0.97×. The thesis gate survives 4× better resolution. `bench/RESULTS.md` |
 
 **Unix socket — why it is still open.** `make db` runs Postgres in an Apple
 container reachable only over TCP, and there is no local Postgres on the dev

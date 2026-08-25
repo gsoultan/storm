@@ -798,3 +798,37 @@ recording:
 Also in this pass: `govulncheck` found `x/text`'s norm vulnerability REACHABLE
 through pgx's SCRAM path on every connect; dependencies bumped, reachable
 count now zero, and the scan gates CI so it stays zero.
+
+---
+
+## The unix-socket re-benchmark (2026-08-25) — M0's last debt closes
+
+M0 finding #3 said the wall-clock gate passed *without discriminating*: the
+container round trip was ~64µs and raorm's whole CPU cost ~45ns, so the ratio
+measured the network. This run removes most of the network: host PostgreSQL
+17.11 on a PURE unix socket (no TCP), same schema, same 50k rows.
+
+    initdb + postgres -c listen_addresses='' -c unix_socket_directories=/tmp/raorm-sock -c port=5499
+    RAORM_DSN='postgres://raorm@localhost/raorm?host=/tmp/raorm-sock&port=5499'
+
+Round trip: ~92µs (loopback through the container VM) → **~22µs**. Medians of
+five, and an interleaved stability pass for the scans:
+
+| | unix socket | vs raw pgx |
+|---|---|---|
+| Get, raw pgx | 21.9 µs | — |
+| Get, raorm | 21.6 µs | **0.99×** |
+| Get, sqlc | 21.8 µs | 1.00× |
+| Scan1000, raw pgx | ~2.02 ms | — |
+| Scan1000, raorm (generated) | ~1.95 ms | **~0.97×** |
+| Scan1000, sqlc | ~1.99 ms | 0.99× |
+
+**The thesis gate survives 4× better resolution**: raorm at parity with raw
+pgx (M0's gate was ≤1.15×, kill at 1.30×), while allocating 6 vs 5,012 and
+moving 41KB vs 185KB per thousand-row scan. The first raorm scan batch read
+~2.2ms — cold-start, disappearing entirely when interleaved; medians and
+interleaving are the method, single cold runs are not.
+
+The same discipline as ever applies in the other direction: parity is parity.
+Do NOT quote 0.97× as "faster than pgx" — both sides wait on the same socket,
+and the honest, durable numbers remain the allocation and byte columns.
