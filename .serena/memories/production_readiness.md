@@ -167,3 +167,18 @@ truth. docs/API.md carries an as-built banner naming the four flagrant drifts
 (Query()→New(), no Get/Iter, Insert(row)→Create() builder, field-pointer
 plans). Remaining before v1: M6 adopter run (anubis), M8 release policy, the
 machine-blocked socket bench, and the full design-doc reconciliation.
+
+## The retention audit (2026-08-25) — pools pinned finished work
+**Pooled binders retained caller memory**: In(...) slice refs + string
+HEADERS survived Put — 33.7MB measured after one 64-way burst, held forever,
+per table. `putBinder` clears external refs (strs loop + anyRaw/anyStr; value
+arenas pin nothing). Unit.Flush same in miniature.
+**Tripwire lessons (4 attempts):** retention is a CEILING not a ramp (baseline
+must predate any pin); occupancy must be FORCED (barrier holding 64 binders
+live — schedulers starve it); and my strip-regex never produced the unfixed
+build, so early "failures" were pgx's grown per-conn write buffers (real,
+bounded, not ours). A tripwire is trusted only after tripping BOTH ways.
+**govulncheck**: x/text norm was REACHABLE via pgx SCRAM on every connect;
+deps bumped, reachable=0, scan gates CI. planspike pool now goes through
+pgxdrv.NewPoolConfig (tests run the pool adopters run) — which surfaced the
+uncovered NullInet + interval/decimal bridges.
