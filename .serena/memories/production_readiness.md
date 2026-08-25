@@ -182,3 +182,19 @@ bounded, not ours). A tripwire is trusted only after tripping BOTH ways.
 deps bumped, reachable=0, scan gates CI. planspike pool now goes through
 pgxdrv.NewPoolConfig (tests run the pool adopters run) — which surfaced the
 uncovered NullInet + interval/decimal bridges.
+
+## COMPLETION STATE (2026-08-25) — everything executable from this repo is done
+**All debts closed.** Unix socket measured at last (host PG 17.11, pure
+socket, /tmp/raorm-sock, port 5499, ephemeral — rerun recipe in RESULTS): ~22µs
+round trips, Get **0.99× raw pgx**, Scan1000 ~0.97× — the M0 thesis gate at 4×
+better resolution, at parity, with the standing rule intact (parity is parity;
+claim allocations, not wall). Ent benchmarked earlier. govulncheck: 0
+reachable, gated in CI.
+**P5 closed for v1 by decision**: remaining IR (cross-table rows, CTEs,
+windows, FILTER, GROUPING SETS, UNION ALL) is post-v1 — claim #4 is satisfied
+by SQL[T]. **M8 artifacts written** (STABILITY.md — semver for a generator,
+generated output IS API; MIGRATING-FROM-SQLC.md).
+**What remains needs the user**: M6 (migrate anubis/authz, its gates are in
+PLAN.md; examples/blog is the dress rehearsal) → two-week soak → M8 tag. The
+full doc-reconciliation of API/REFERENCE/EXAMPLE prose remains optional
+pre-tag polish; the as-built banner + executable example cover the drift.

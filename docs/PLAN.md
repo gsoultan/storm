@@ -86,7 +86,7 @@ findings from reading the code as it actually stands drove the reordering:
 | **P2** | plan-type ergonomics spike, hand-written ✅ | de-risks M3 | 3 d |
 | **P3** | writes, unit of work, batching ✅ | **M4** | 2 wk |
 | **P4** | relations, named plans, `= ANY` alloc fix ◐ | **M3** | 4 wk |
-| **P5** | joins, ordering, pagination, projections, CTEs, windows ◐ | **M2** rest | 4 wk+ |
+| **P5** | joins, ordering, pagination, projections, semi-joins ✅ (v1 scope; remaining IR post-v1 via `SQL[T]`) | **M2** rest | 4 wk+ |
 
 ≈ 12 weeks to a write-capable, relation-capable Postgres ORM with the dialect
 seam intact; P5 before the M6 adopter.
@@ -326,10 +326,16 @@ go-faster-stripe); and the structural claim measured — a covered projection
 runs as an Index Only Scan with zero heap fetches at 4.8× the full row, a plan
 the full-row read forecloses by construction.
 
-**Still owed:** inner/left joins with cross-table rows, CTEs as values,
-windows, `FILTER`, `GROUPING SETS`, `UNION ALL` — all currently reachable
-through `raorm.SQL[T]`, typed and validated, which is what makes the native
-versions incremental rather than blocking.
+**P5 closes for v1 (2026-08-25).** The native surface ships: predicates with
+full boolean structure, ordering, LIMIT/OFFSET, keyset pagination, both
+semi-join tiers, per-parent limits, recursive traversal, and named
+projections. The remaining constructs — inner/left joins with cross-table
+rows, CTEs as values, windows, `FILTER`, `GROUPING SETS`, `UNION ALL` — are
+**post-v1 IR work by decision, not omission**: v1's falsifiable claim #4
+("any SQL Postgres can run is expressible, typed, with a generated scanner")
+is satisfied by `raorm.SQL[T]`, which validates against the model at build
+time. Each native construct lands when its declared form beats the escape
+hatch on review-ability, not before.
 
 Joins, runtime `Order`, `OFFSET` and keyset pagination, projections into custom
 row types, CTEs, windows, `FILTER`, `GROUPING SETS`, `UNION ALL`. The largest
