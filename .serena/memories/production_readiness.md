@@ -88,3 +88,29 @@ tested — a floor cannot tell dead from untested, and neither can a reader.
 What now stands before production: the M6 adopter run, M8 release policy, the
 machine-blocked unix-socket benchmark, and P5 expressiveness (joins,
 projections, CTEs) for M5.
+
+## M5 closed (2026-08-25), and two fresh-environment lessons
+`raorm.SQL[T]` ships both halves: runtime (typed rows, atomic scanner cache,
+arg-count check before the server) and generation (PREPARE against the MODEL
+in a scratch schema — needs a server, NOT a schema snapshot; a drifted dev DB
+cannot vouch for a query the model would reject). Matching is by NAME, both
+directions surplus-checked. Unbuilt: raw fragments as join sources (needs P5
+IR joins).
+
+**The fresh-container harvest — dev databases are never fresh, and that is the
+gap's camouflage:**
+1. `pgddl` never emitted `btree_gist`; every generated migration failed on a
+   fresh cluster and worked everywhere developers looked. Emitted now, as a DO
+   block because `CREATE EXTENSION IF NOT EXISTS` **races with itself** across
+   connections (pg_extension_name_index).
+2. "The output compiles" as a test bar found: import paths glued from absolute
+   dirs; module root ≠ working directory (under `go test` and for users in
+   subdirs — walk up to go.mod); generate and verify -stale deriving imports
+   separately and disagreeing.
+
+## Dev environment (this machine, 2026-08-25)
+Go binaries get EHOSTUNREACH dialing the Apple container's 192.168.64.x IP
+(macOS local-network privacy; nc/ping fine). **raorm-pg now publishes
+127.0.0.1:5433** (5432 is another project's forward). Run tests with
+`RAORM_DSN=postgres://raorm:raorm@127.0.0.1:5433/raorm`; the Makefile's
+container-IP DSN derivation is broken for Go on this machine.
