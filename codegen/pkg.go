@@ -152,6 +152,14 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	body.emitRelPlans(plans)
 	body.emitNamedPlans(named)
 
+	having, err := havingSpecs(s, names)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range having {
+		body.emitHaving(h)
+	}
+
 	// Arc loaders need every variant's package, which only a whole-context
 	// generation knows.
 	variantPkg := map[string]string{}
@@ -202,6 +210,10 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 		}
 	}
 	body.emitRawScanners(o.RawScanners)
+	for _, h := range having {
+		arcPkgs[h.ParentPkg] = true
+		arcPkgs[h.ChildPkg] = true
+	}
 	if body.err != nil {
 		return nil, body.err
 	}
@@ -213,7 +225,7 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	g.p("package %s", o.Package)
 	g.p("")
 	g.p("import (")
-	if len(plans) > 0 || len(named) > 0 || arcOwners > 0 {
+	if len(plans) > 0 || len(named) > 0 || arcOwners > 0 || len(having) > 0 {
 		g.p("\t%q", "context")
 		if anyToOne(plans) || anyNamedToOne(named) {
 			g.p("\t%q", "fmt")

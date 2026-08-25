@@ -230,3 +230,40 @@ func TestSpliceTree_RowComparisonComposesWithPredicates(t *testing.T) {
 		t.Errorf("NArg = %d, want 3", st.NArg)
 	}
 }
+
+// A filtered semi-join is ordinary tokens plus one wrapper: the child
+// predicates were lowered by the same stack walk, and placeholder numbering
+// runs straight across the parent/child boundary.
+func TestSpliceTree_ExistsWrapsAndNumbersAcross(t *testing.T) {
+	frag := func(op, col uint32) runtime.Frag {
+		if col >= 512 {
+			return runtime.Frag{A: "c = $"} // a child predicate
+		}
+		return runtime.Frag{A: "p = $"} // a parent predicate
+	}
+	l := lw(frag)
+	l.Exists = func(rel uint32) string { return `EXISTS (SELECT 1 FROM "posts" AS "e" WHERE "e"."fk" = "users"."id"` }
+
+	st := runtime.SpliceTree("SEL", []runtime.Tok{
+		runtime.MakeLeaf(1, 0),   // parent: p = $1
+		runtime.MakeLeaf(1, 512), // child:  c = $2
+		runtime.MakeLeaf(1, 513), // child:  c = $3
+		runtime.MakeExists(0, 2),
+		runtime.MakeGroup(runtime.KAnd, 2),
+	}, l, "")
+	want := `SEL WHERE p = $1 AND EXISTS (SELECT 1 FROM "posts" AS "e" WHERE "e"."fk" = "users"."id" AND c = $2 AND c = $3)`
+	if st.SQL != want {
+		t.Errorf("got  %s\nwant %s", st.SQL, want)
+	}
+	if st.NArg != 3 {
+		t.Errorf("NArg = %d, want 3", st.NArg)
+	}
+
+	// Zero child predicates: the bare existence check.
+	st = runtime.SpliceTree("SEL", []runtime.Tok{
+		runtime.MakeExists(0, 0),
+	}, l, "")
+	if want := `SEL WHERE EXISTS (SELECT 1 FROM "posts" AS "e" WHERE "e"."fk" = "users"."id")`; st.SQL != want {
+		t.Errorf("bare exists:\ngot  %s\nwant %s", st.SQL, want)
+	}
+}

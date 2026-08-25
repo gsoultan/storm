@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gsoultan/raorm/internal/planspike/store"
 	"github.com/gsoultan/raorm/internal/planspike/store/org"
@@ -231,5 +232,113 @@ func TestHasRelation_ComposesAndCostsNothing(t *testing.T) {
 		}
 	}); n != 0 {
 		t.Errorf("a semi-join predicate allocates %v times per build, want 0", n)
+	}
+}
+
+// The filtered semi-join: child predicates typed by the CHILD's package, one
+// statement, placeholders numbered straight across the package boundary.
+func TestHaving_FiltersTheSemiJoin(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	// Two authors: one with a published post, one with only a draft.
+	pub := mustCreate(t, ctx, ex, "pub@example.com", "Published")
+	dra := mustCreate(t, ctx, ex, "dra@example.com", "Drafter")
+	mk := func(author [16]byte, published bool) [16]byte {
+		np := post.Create()
+		np.SetTitle("t")
+		np.SetBody("b")
+		np.SetAuthorID(author)
+		if published {
+			np.SetPublishedAt(time.Now())
+		}
+		pr, err := np.Insert(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pr.ID
+	}
+	p1, p2 := mk(pub.ID, true), mk(dra.ID, false)
+	t.Cleanup(func() {
+		_ = post.Delete(ctx, ex, p1)
+		_ = post.Delete(ctx, ex, p2)
+		_ = user.Delete(ctx, ex, pub.ID)
+		_ = user.Delete(ctx, ex, dra.ID)
+	})
+
+	cap := &capture{Executor: ex}
+	rows, err := store.UserHavingPosts(
+		user.New().Where(user.ID.In(pub.ID, dra.ID)),
+		post.PublishedAt.IsNotNull(),
+	).All(ctx, cap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != pub.ID {
+		t.Fatalf("matched %d users, want exactly the published author", len(rows))
+	}
+	sql := cap.sqls[0]
+	for _, want := range []string{
+		`EXISTS (SELECT 1 FROM "posts" AS "_raorm_e" WHERE "_raorm_e"."author_id" = "users"."id" AND `,
+		`"published_at" IS NOT NULL`,
+		`"id" = ANY($1)`, // the parent predicate numbered first
+		"ORDER BY",       // the parent's ordering survives composition
+		"LIMIT $2",       // and its paging numbers after the child values
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("composed SQL is missing %q:\n%s", want, sql)
+		}
+	}
+
+	// A bound child value numbers across the boundary.
+	cap = &capture{Executor: ex}
+	if _, err := store.UserHavingPosts(
+		user.New().Where(user.Status.Eq("pending")),
+		post.Title.Eq("t"),
+	).All(ctx, cap); err != nil {
+		t.Fatal(err)
+	}
+	if sql := cap.sqls[0]; !strings.Contains(sql, `"status" = $1`) || !strings.Contains(sql, `"title" = $2`) {
+		t.Errorf("cross-boundary numbering is off:\n%s", sql)
+	}
+
+	// No child predicates degrades to the bare existence check.
+	n, err := store.UserHavingPosts(user.New().Where(user.ID.In(pub.ID, dra.ID))).Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("bare Having counted %d, want both authors", n)
+	}
+
+	// Two calls, different values: ONE statement — values do not mint shapes.
+	cap = &capture{Executor: ex}
+	for _, title := range []string{"a", "b"} {
+		if _, err := store.UserHavingPosts(user.New(), post.Title.Eq(title)).All(ctx, cap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cap.sqls[0] != cap.sqls[1] {
+		t.Error("two values compiled two statements")
+	}
+}
+
+// The self-referential composer: the child predicate's unqualified column must
+// resolve to the ALIASED inner table, not capture the outer one.
+func TestHaving_SelfReferenceScopesToTheInnerTable(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+	ids := tree(t, ctx, ex, "having", 2) // parent "having-a" → child "having-b"
+
+	got, err := store.OrgHavingChildren(
+		org.New().Where(org.ID.In(ids...)),
+		org.Name.Eq("having-b"), // matches the CHILD's name
+	).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != ids[0] {
+		t.Fatalf("matched %d orgs, want exactly the parent — if the inner column captured "+
+			"the outer table this would match the child instead", len(got))
 	}
 }

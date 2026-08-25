@@ -45,6 +45,15 @@ const (
 	// thing; only the row comparison lets Postgres walk a multi-column index
 	// once instead of planning a disjunction.
 	KRowCmp
+
+	// KExists wraps the preceding arity entries in a correlated EXISTS whose
+	// header — table, alias, correlation — the back end supplies per relation
+	// through Lowering.Exists. The child predicates inside were lowered by the
+	// SAME stack walk as everything else: a filtered semi-join is ordinary
+	// tokens plus one wrapper, so statement identity, caching, and cross-
+	// boundary placeholder numbering all come from machinery that already
+	// exists. The operator field carries the relation id.
+	KExists
 )
 
 // Sort directions, carried in an order token's operator field.
@@ -80,6 +89,9 @@ func MakeCol(col uint32) Tok { return Tok(KCol<<28 | col<<12) }
 
 // MakeRowCmp builds a row comparison over the preceding arity column tokens.
 func MakeRowCmp(op, arity uint32) Tok { return Tok(KRowCmp<<28 | op<<22 | arity&0xfff) }
+
+// MakeExists wraps the preceding arity entries in relation rel's EXISTS.
+func MakeExists(rel, arity uint32) Tok { return Tok(KExists<<28 | rel<<22 | arity&0xfff) }
 
 // MakeGroup builds an AND/OR/NOT token over the previous arity tokens.
 func MakeGroup(kind, arity uint32) Tok { return Tok(kind<<28 | arity&0xfff) }
@@ -221,6 +233,12 @@ type Lowering struct {
 	// RowCmp renders a row-comparison operator, e.g. " > ".
 	RowCmp func(op uint32) string
 
+	// Exists opens relation rel's correlated subquery, correlation included:
+	// `EXISTS (SELECT 1 FROM "posts" AS "_raorm_e" WHERE "_raorm_e"."fk" =
+	// "parent"."pk"`. The splicer appends " AND ", the wrapped predicates,
+	// and the close. Nil when the context has no filtered relations.
+	Exists func(rel uint32) string
+
 	// TupleOpen, TupleSep and TupleClose punctuate both sides of a row
 	// comparison.
 	TupleOpen, TupleSep, TupleClose string
@@ -282,6 +300,24 @@ func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
 
 		case KCol:
 			stack = append(stack, lw.Ident(t.Col()))
+
+		case KExists:
+			n := t.Arity()
+			if n > len(stack) {
+				n = len(stack)
+			}
+			open := ""
+			if lw.Exists != nil {
+				open = lw.Exists(t.Op())
+			}
+			inner := join(stack[len(stack)-n:], " AND ")
+			stack = stack[:len(stack)-n]
+			if n == 0 {
+				// No child predicates: the bare existence check, closed as-is.
+				stack = append(stack, open+")")
+				continue
+			}
+			stack = append(stack, open+" AND "+inner+")")
 
 		case KRowCmp:
 			n := t.Arity()
@@ -451,3 +487,26 @@ func SpliceOrder(stmt string, terms []string, lead, sep string) string {
 // OrderMarker is where SpliceOrder puts the ORDER BY clause. It is not SQL and
 // never reaches a database.
 const OrderMarker = "\x00order\x00"
+
+// ChildColBase is where a wrapped child's column ids start inside a combined
+// stream. The context package rebases child tokens past it; each side's FragOf
+// stays blind to the other, and the composite lowering routes on the range.
+// Tok's column field is ten bits, so both halves keep 512 columns.
+const ChildColBase = 512
+
+// OffsetCols rebases the column id of every leaf and cursor token by delta,
+// appending to dst. Group, order and exists tokens carry no column and pass
+// through unchanged.
+func OffsetCols(dst, toks []Tok, delta uint32) []Tok {
+	for _, t := range toks {
+		switch t.Kind() {
+		case KLeaf:
+			dst = append(dst, MakeLeaf(t.Op(), t.Col()+delta))
+		case KCol:
+			dst = append(dst, MakeCol(t.Col()+delta))
+		default:
+			dst = append(dst, t)
+		}
+	}
+	return dst
+}

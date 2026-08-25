@@ -226,3 +226,11 @@ func ExistsFrag(childTable, childFK, parentTable, parentPK string) string {
 func NotExistsFrag(childTable, childFK, parentTable, parentPK string) string {
 	return "NOT " + ExistsFrag(childTable, childFK, parentTable, parentPK)
 }
+
+// ExistsOpen is ExistsFrag WITHOUT its closing paren: the splicer appends the
+// wrapped child predicates and closes. Split here rather than string-surgered
+// in codegen, so the two forms cannot drift.
+func ExistsOpen(childTable, childFK, parentTable, parentPK string) string {
+	f := ExistsFrag(childTable, childFK, parentTable, parentPK)
+	return f[:len(f)-1]
+}

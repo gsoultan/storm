@@ -2155,6 +2155,616 @@ func (p UserSummaryQuery) load0(ctx context.Context, ex runtime.Executor, out []
 	return nil
 }
 
+// CommentHavingReplies narrows q to rows with at least one matching comments row — the
+// filtered semi-join, in one statement. The child predicates are typed
+// by the child's own package; ids and values meet only here.
+func CommentHavingReplies(q comment.Query, ps ...comment.Pred) CommentHavingRepliesQuery {
+	return CommentHavingRepliesQuery{q: q, c: comment.New().Unordered().Where(ps...)}
+}
+
+type CommentHavingRepliesQuery struct {
+	q comment.Query
+	c comment.Query
+}
+
+var commentHavingRepliesLowering = func() runtime.Lowering {
+	lw := comment.Lowering()
+	parentFrag := lw.Frag
+	lw.Frag = func(op, col uint32) runtime.Frag {
+		if col >= runtime.ChildColBase {
+			return comment.FragOf(op, col-runtime.ChildColBase)
+		}
+		return parentFrag(op, col)
+	}
+	lw.Exists = func(uint32) string {
+		return "EXISTS (SELECT 1 FROM \"comments\" AS \"_raorm_e\" WHERE \"_raorm_e\".\"parent_id\" = \"comments\".\"id\""
+	}
+	return lw
+}()
+
+var commentHavingRepliesCache = runtime.NewTreeCache()
+
+func (h CommentHavingRepliesQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+	var buf [44]runtime.Tok
+	toks := h.q.PredToks(buf[:0])
+	parentPreds := len(toks) > 0
+	child := h.c.PredToks(nil)
+	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+	arity := uint32(0)
+	if len(child) > 0 {
+		arity = 1 // the child stream reduces to one stack entry
+	}
+	toks = append(toks, runtime.MakeExists(0, arity))
+	if parentPreds {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	}
+	if !count {
+		toks = h.q.OrderToks(toks)
+	}
+	sel, cnt, limitSfx := comment.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := commentHavingRepliesCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return commentHavingRepliesCache.Put(toks, runtime.SpliceTree(prefix, toks, commentHavingRepliesLowering, suffix)), toks
+}
+
+// All runs the composed statement. Bind order is stream order: parent
+// values, child values, then the parent's paging.
+func (h CommentHavingRepliesQuery) All(ctx context.Context, ex runtime.Executor) ([]comment.Row, error) {
+	if err := h.q.Err(); err != nil {
+		return nil, err
+	}
+	if err := h.c.Err(); err != nil {
+		return nil, err
+	}
+	st, _ := h.stmt(false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := comment.GetBinder()
+	defer comment.PutBinder(pb)
+	cb := comment.GetBinder()
+	defer comment.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	args = h.q.BindPaging(pb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []comment.Row
+	for rows.Next() {
+		out = append(out, comment.Row{})
+		if err := comment.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+// Count runs the composed count: no ordering, no paging.
+func (h CommentHavingRepliesQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.q.Err(); err != nil {
+		return 0, err
+	}
+	if err := h.c.Err(); err != nil {
+		return 0, err
+	}
+	st, _ := h.stmt(true)
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := comment.GetBinder()
+	defer comment.PutBinder(pb)
+	cb := comment.GetBinder()
+	defer comment.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+// OrgHavingChildren narrows q to rows with at least one matching orgs row — the
+// filtered semi-join, in one statement. The child predicates are typed
+// by the child's own package; ids and values meet only here.
+func OrgHavingChildren(q org.Query, ps ...org.Pred) OrgHavingChildrenQuery {
+	return OrgHavingChildrenQuery{q: q, c: org.New().Unordered().Where(ps...)}
+}
+
+type OrgHavingChildrenQuery struct {
+	q org.Query
+	c org.Query
+}
+
+var orgHavingChildrenLowering = func() runtime.Lowering {
+	lw := org.Lowering()
+	parentFrag := lw.Frag
+	lw.Frag = func(op, col uint32) runtime.Frag {
+		if col >= runtime.ChildColBase {
+			return org.FragOf(op, col-runtime.ChildColBase)
+		}
+		return parentFrag(op, col)
+	}
+	lw.Exists = func(uint32) string {
+		return "EXISTS (SELECT 1 FROM \"orgs\" AS \"_raorm_e\" WHERE \"_raorm_e\".\"parent_id\" = \"orgs\".\"id\""
+	}
+	return lw
+}()
+
+var orgHavingChildrenCache = runtime.NewTreeCache()
+
+func (h OrgHavingChildrenQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+	var buf [44]runtime.Tok
+	toks := h.q.PredToks(buf[:0])
+	parentPreds := len(toks) > 0
+	child := h.c.PredToks(nil)
+	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+	arity := uint32(0)
+	if len(child) > 0 {
+		arity = 1 // the child stream reduces to one stack entry
+	}
+	toks = append(toks, runtime.MakeExists(0, arity))
+	if parentPreds {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	}
+	if !count {
+		toks = h.q.OrderToks(toks)
+	}
+	sel, cnt, limitSfx := org.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := orgHavingChildrenCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return orgHavingChildrenCache.Put(toks, runtime.SpliceTree(prefix, toks, orgHavingChildrenLowering, suffix)), toks
+}
+
+// All runs the composed statement. Bind order is stream order: parent
+// values, child values, then the parent's paging.
+func (h OrgHavingChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([]org.Row, error) {
+	if err := h.q.Err(); err != nil {
+		return nil, err
+	}
+	if err := h.c.Err(); err != nil {
+		return nil, err
+	}
+	st, _ := h.stmt(false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := org.GetBinder()
+	defer org.PutBinder(pb)
+	cb := org.GetBinder()
+	defer org.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	args = h.q.BindPaging(pb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []org.Row
+	for rows.Next() {
+		out = append(out, org.Row{})
+		if err := org.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+// Count runs the composed count: no ordering, no paging.
+func (h OrgHavingChildrenQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.q.Err(); err != nil {
+		return 0, err
+	}
+	if err := h.c.Err(); err != nil {
+		return 0, err
+	}
+	st, _ := h.stmt(true)
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := org.GetBinder()
+	defer org.PutBinder(pb)
+	cb := org.GetBinder()
+	defer org.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+// OrgHavingUsers narrows q to rows with at least one matching users row — the
+// filtered semi-join, in one statement. The child predicates are typed
+// by the child's own package; ids and values meet only here.
+func OrgHavingUsers(q org.Query, ps ...user.Pred) OrgHavingUsersQuery {
+	return OrgHavingUsersQuery{q: q, c: user.New().Unordered().Where(ps...)}
+}
+
+type OrgHavingUsersQuery struct {
+	q org.Query
+	c user.Query
+}
+
+var orgHavingUsersLowering = func() runtime.Lowering {
+	lw := org.Lowering()
+	parentFrag := lw.Frag
+	lw.Frag = func(op, col uint32) runtime.Frag {
+		if col >= runtime.ChildColBase {
+			return user.FragOf(op, col-runtime.ChildColBase)
+		}
+		return parentFrag(op, col)
+	}
+	lw.Exists = func(uint32) string {
+		return "EXISTS (SELECT 1 FROM \"users\" AS \"_raorm_e\" WHERE \"_raorm_e\".\"org_id\" = \"orgs\".\"id\""
+	}
+	return lw
+}()
+
+var orgHavingUsersCache = runtime.NewTreeCache()
+
+func (h OrgHavingUsersQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+	var buf [44]runtime.Tok
+	toks := h.q.PredToks(buf[:0])
+	parentPreds := len(toks) > 0
+	child := h.c.PredToks(nil)
+	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+	arity := uint32(0)
+	if len(child) > 0 {
+		arity = 1 // the child stream reduces to one stack entry
+	}
+	toks = append(toks, runtime.MakeExists(0, arity))
+	if parentPreds {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	}
+	if !count {
+		toks = h.q.OrderToks(toks)
+	}
+	sel, cnt, limitSfx := org.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := orgHavingUsersCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return orgHavingUsersCache.Put(toks, runtime.SpliceTree(prefix, toks, orgHavingUsersLowering, suffix)), toks
+}
+
+// All runs the composed statement. Bind order is stream order: parent
+// values, child values, then the parent's paging.
+func (h OrgHavingUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]org.Row, error) {
+	if err := h.q.Err(); err != nil {
+		return nil, err
+	}
+	if err := h.c.Err(); err != nil {
+		return nil, err
+	}
+	st, _ := h.stmt(false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := org.GetBinder()
+	defer org.PutBinder(pb)
+	cb := user.GetBinder()
+	defer user.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	args = h.q.BindPaging(pb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []org.Row
+	for rows.Next() {
+		out = append(out, org.Row{})
+		if err := org.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+// Count runs the composed count: no ordering, no paging.
+func (h OrgHavingUsersQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.q.Err(); err != nil {
+		return 0, err
+	}
+	if err := h.c.Err(); err != nil {
+		return 0, err
+	}
+	st, _ := h.stmt(true)
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := org.GetBinder()
+	defer org.PutBinder(pb)
+	cb := user.GetBinder()
+	defer user.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+// PostHavingComments narrows q to rows with at least one matching comments row — the
+// filtered semi-join, in one statement. The child predicates are typed
+// by the child's own package; ids and values meet only here.
+func PostHavingComments(q post.Query, ps ...comment.Pred) PostHavingCommentsQuery {
+	return PostHavingCommentsQuery{q: q, c: comment.New().Unordered().Where(ps...)}
+}
+
+type PostHavingCommentsQuery struct {
+	q post.Query
+	c comment.Query
+}
+
+var postHavingCommentsLowering = func() runtime.Lowering {
+	lw := post.Lowering()
+	parentFrag := lw.Frag
+	lw.Frag = func(op, col uint32) runtime.Frag {
+		if col >= runtime.ChildColBase {
+			return comment.FragOf(op, col-runtime.ChildColBase)
+		}
+		return parentFrag(op, col)
+	}
+	lw.Exists = func(uint32) string {
+		return "EXISTS (SELECT 1 FROM \"comments\" AS \"_raorm_e\" WHERE \"_raorm_e\".\"post_id\" = \"posts\".\"id\""
+	}
+	return lw
+}()
+
+var postHavingCommentsCache = runtime.NewTreeCache()
+
+func (h PostHavingCommentsQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+	var buf [44]runtime.Tok
+	toks := h.q.PredToks(buf[:0])
+	parentPreds := len(toks) > 0
+	child := h.c.PredToks(nil)
+	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+	arity := uint32(0)
+	if len(child) > 0 {
+		arity = 1 // the child stream reduces to one stack entry
+	}
+	toks = append(toks, runtime.MakeExists(0, arity))
+	if parentPreds {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	}
+	if !count {
+		toks = h.q.OrderToks(toks)
+	}
+	sel, cnt, limitSfx := post.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := postHavingCommentsCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return postHavingCommentsCache.Put(toks, runtime.SpliceTree(prefix, toks, postHavingCommentsLowering, suffix)), toks
+}
+
+// All runs the composed statement. Bind order is stream order: parent
+// values, child values, then the parent's paging.
+func (h PostHavingCommentsQuery) All(ctx context.Context, ex runtime.Executor) ([]post.Row, error) {
+	if err := h.q.Err(); err != nil {
+		return nil, err
+	}
+	if err := h.c.Err(); err != nil {
+		return nil, err
+	}
+	st, _ := h.stmt(false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := post.GetBinder()
+	defer post.PutBinder(pb)
+	cb := comment.GetBinder()
+	defer comment.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	args = h.q.BindPaging(pb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []post.Row
+	for rows.Next() {
+		out = append(out, post.Row{})
+		if err := post.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+// Count runs the composed count: no ordering, no paging.
+func (h PostHavingCommentsQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.q.Err(); err != nil {
+		return 0, err
+	}
+	if err := h.c.Err(); err != nil {
+		return 0, err
+	}
+	st, _ := h.stmt(true)
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := post.GetBinder()
+	defer post.PutBinder(pb)
+	cb := comment.GetBinder()
+	defer comment.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+// UserHavingPosts narrows q to rows with at least one matching posts row — the
+// filtered semi-join, in one statement. The child predicates are typed
+// by the child's own package; ids and values meet only here.
+func UserHavingPosts(q user.Query, ps ...post.Pred) UserHavingPostsQuery {
+	return UserHavingPostsQuery{q: q, c: post.New().Unordered().Where(ps...)}
+}
+
+type UserHavingPostsQuery struct {
+	q user.Query
+	c post.Query
+}
+
+var userHavingPostsLowering = func() runtime.Lowering {
+	lw := user.Lowering()
+	parentFrag := lw.Frag
+	lw.Frag = func(op, col uint32) runtime.Frag {
+		if col >= runtime.ChildColBase {
+			return post.FragOf(op, col-runtime.ChildColBase)
+		}
+		return parentFrag(op, col)
+	}
+	lw.Exists = func(uint32) string {
+		return "EXISTS (SELECT 1 FROM \"posts\" AS \"_raorm_e\" WHERE \"_raorm_e\".\"author_id\" = \"users\".\"id\""
+	}
+	return lw
+}()
+
+var userHavingPostsCache = runtime.NewTreeCache()
+
+func (h UserHavingPostsQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+	var buf [44]runtime.Tok
+	toks := h.q.PredToks(buf[:0])
+	parentPreds := len(toks) > 0
+	child := h.c.PredToks(nil)
+	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+	arity := uint32(0)
+	if len(child) > 0 {
+		arity = 1 // the child stream reduces to one stack entry
+	}
+	toks = append(toks, runtime.MakeExists(0, arity))
+	if parentPreds {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	}
+	if !count {
+		toks = h.q.OrderToks(toks)
+	}
+	sel, cnt, limitSfx := user.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := userHavingPostsCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return userHavingPostsCache.Put(toks, runtime.SpliceTree(prefix, toks, userHavingPostsLowering, suffix)), toks
+}
+
+// All runs the composed statement. Bind order is stream order: parent
+// values, child values, then the parent's paging.
+func (h UserHavingPostsQuery) All(ctx context.Context, ex runtime.Executor) ([]user.Row, error) {
+	if err := h.q.Err(); err != nil {
+		return nil, err
+	}
+	if err := h.c.Err(); err != nil {
+		return nil, err
+	}
+	st, _ := h.stmt(false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := user.GetBinder()
+	defer user.PutBinder(pb)
+	cb := post.GetBinder()
+	defer post.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	args = h.q.BindPaging(pb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []user.Row
+	for rows.Next() {
+		out = append(out, user.Row{})
+		if err := user.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+// Count runs the composed count: no ordering, no paging.
+func (h UserHavingPostsQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.q.Err(); err != nil {
+		return 0, err
+	}
+	if err := h.c.Err(); err != nil {
+		return 0, err
+	}
+	st, _ := h.stmt(true)
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := user.GetBinder()
+	defer user.PutBinder(pb)
+	cb := post.GetBinder()
+	defer post.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
 // AttachmentWithSubjectRow is attachments with its Subject resolved.
 //
 // One field per variant, at most one of them non-nil — the same shape the

@@ -786,6 +786,57 @@ func countStmtFor(toks []runtime.Tok) *runtime.Stmt {
 	return countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, lowering, ""))
 }
 
+// Composition seams, for the generated CONTEXT package and it alone:
+// cross-table statements (a filtered semi-join spans two packages) are
+// assembled there from each side's tokens, fragments and bindings. Ids
+// only — no SQL text and no value crosses here.
+
+// FragOf is the compiled fragment table, exported for composition.
+func FragOf(op, col uint32) runtime.Frag { return fragOf(op, col) }
+
+// Lowering is this package's back-end text, exported for composition.
+func Lowering() runtime.Lowering { return lowering }
+
+// StmtPieces are the statement's constant parts, exported for composition.
+func StmtPieces() (selectPfx, countPfx, limitSfx string) {
+	return selectPrefix, countPrefix, limitSuffix
+}
+
+// PredToks appends this query's predicate stream to dst: top-level
+// conjuncts reduced to one entry, order excluded.
+func (q Query) PredToks(dst []runtime.Tok) []runtime.Tok {
+	var buf [21]runtime.Tok
+	return append(dst, q.preds(&buf)...)
+}
+
+// OrderToks appends this query's ordering — explicit, or the default
+// unless Unordered.
+func (q Query) OrderToks(dst []runtime.Tok) []runtime.Tok {
+	if q.no == 0 {
+		if q.noOrder {
+			return dst
+		}
+		return append(dst, defaultOrder[:]...)
+	}
+	return append(dst, q.otoks[:q.no]...)
+}
+
+// BindPreds binds this query's predicate values into b, appending to v.
+func (q Query) BindPreds(b *Binder, v []any) []any {
+	return append(v, q.bindPreds(b)...)
+}
+
+// BindPaging appends the LIMIT (and OFFSET when set) arguments.
+func (q Query) BindPaging(b *Binder, v []any) []any {
+	b.limit = q.limit
+	v = append(v, &b.limit)
+	if q.offset > 0 {
+		b.offset = q.offset
+		v = append(v, &b.offset)
+	}
+	return v
+}
+
 // Shape is a fingerprint of this query's structure — equal shapes share a
 // compiled statement. Values do not contribute, which is the point.
 func (q Query) Shape() uint64 {
