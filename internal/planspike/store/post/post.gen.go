@@ -968,7 +968,22 @@ var binders = runtime.NewPool(func() *binder {
 type Binder = binder
 
 func GetBinder() *Binder  { return binders.Get() }
-func PutBinder(b *Binder) { binders.Put(b) }
+func PutBinder(b *Binder) { putBinder(b) }
+
+// putBinder clears every field that references memory OUTSIDE the binder
+// before pooling it. A pooled binder otherwise PINS the caller's data —
+// the slice behind an In(...) and the bytes behind every bound string —
+// for as long as the pool holds it, which is forever. The numeric, time
+// and uuid arenas are value arrays and pin nothing; vals points at the
+// binder's own fields. A few nil stores against a round trip is free.
+func putBinder(b *binder) {
+	for i := range b.strs {
+		b.strs[i] = ""
+	}
+	b.anyRaw = nil
+	b.anyStr = nil
+	binders.Put(b)
+}
 
 // bindPreds copies arena values into the pooled buffer and points the
 // []any at the buffer's own fields — boxing a pointer does not allocate.
@@ -1069,7 +1084,7 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	}
 	sl.Reserve(st.SlabHint())
 	b := binders.Get()
-	defer binders.Put(b)
+	defer putBinder(b)
 
 	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
 	if err != nil {
@@ -1110,7 +1125,7 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 		return 0, st.Err
 	}
 	b := binders.Get()
-	defer binders.Put(b)
+	defer putBinder(b)
 	// bindPreds, not bind: a count has no LIMIT and no OFFSET. The old
 	// form bound everything and sliced the last argument off, which was
 	// the limit — unless Offset was set, in which case it silently kept
@@ -1142,7 +1157,7 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 		return false, st.Err
 	}
 	b := binders.Get()
-	defer binders.Put(b)
+	defer putBinder(b)
 	rows, err := ex.Query(ctx, st.SQL, q.bindPreds(b))
 	if err != nil {
 		return false, err

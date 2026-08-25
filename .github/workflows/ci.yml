@@ -60,6 +60,13 @@ jobs:
           go test ./runtime/ -run XXX -fuzz FuzzSpliceSections -fuzztime 30s
           go test ./compile/pgsql/ -run XXX -fuzz FuzzIdent -fuzztime 30s
 
+      # A REACHABLE vulnerability fails the build; "required but not called"
+      # is reported and tolerated (Ent's toolchain drags modules nothing here
+      # executes). The first run of this found x/text's norm reachable through
+      # pgx's SCRAM path on every connect — found by scanning, not by luck.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
       # Coverage floors, per profile, from AGENTS.md. A floor rather than a
       # target: it stops coverage falling silently, and says nothing about
       # whether the tests are good.

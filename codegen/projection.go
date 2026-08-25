@@ -115,7 +115,7 @@ func (g *gen) projection(name string, columns []string) {
 	g.p("\t}")
 	g.p("\tsl.Reserve(st.SlabHint())")
 	g.p("\tb := binders.Get()")
-	g.p("\tdefer binders.Put(b)")
+	g.p("\tdefer putBinder(b)")
 	g.p("\trows, err := ex.Query(ctx, st.SQL, q.bind(b))")
 	g.p("\tif err != nil {")
 	g.p("\t\treturn dst, err")

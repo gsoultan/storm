@@ -765,3 +765,36 @@ The first benchmark run was harness-skew (fresh slab/slice vs the full read's
 reused ones) and read 17 allocs / 103 KB — worth recording because it is the
 comparison mistake AGENTS.md's perf profile exists to veto: capacities must
 match on both sides.
+
+---
+
+## The retention audit (2026-08-25)
+
+The last un-audited production class. The pools were pinning finished callers'
+memory:
+
+**Pooled binders retained the caller's data.** Binding an `In(...)` copied the
+caller's slice reference into the binder; binding a string copied its header.
+A binder idle in the pool kept all of it alive — measured deterministically at
+**33.7MB after one 64-way burst of 512KB binds**, held for as long as the
+process lives, per table package. Fixed: `putBinder` clears every field that
+references memory outside the binder before pooling (string headers and the
+two list slices; the value arenas pin nothing). A long-lived `Unit` had the
+same shape in miniature (flushed ops' args in the retained backing array);
+cleared likewise.
+
+**The tripwire took four attempts to make honest**, which is why it is worth
+recording:
+1. A sequential loop cannot fail — one binder is reused and overwritten.
+2. Growth-between-bursts cannot fail — it is a retention CEILING, not a ramp;
+   later bursts replace the pinned slices. The baseline must predate any pin.
+3. Scheduler luck starves occupancy — an instant executor completes goroutines
+   nearly sequentially. The barrier now holds all 64 binders live at once.
+4. And the strip that was supposed to produce the unfixed build never matched
+   (a regex that could not cross a brace), so the first "failures" were pgx's
+   grown per-connection write buffers — real, bounded, and not ours.
+   A tripwire is only trusted once it has tripped BOTH ways.
+
+Also in this pass: `govulncheck` found `x/text`'s norm vulnerability REACHABLE
+through pgx's SCRAM path on every connect; dependencies bumped, reachable
+count now zero, and the scan gates CI so it stays zero.

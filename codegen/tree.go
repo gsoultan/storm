@@ -525,7 +525,28 @@ func (g *gen) treeBind() {
 	g.p("type Binder = binder")
 	g.p("")
 	g.p("func GetBinder() *Binder  { return binders.Get() }")
-	g.p("func PutBinder(b *Binder) { binders.Put(b) }")
+	g.p("func PutBinder(b *Binder) { putBinder(b) }")
+	g.p("")
+	g.p("// putBinder clears every field that references memory OUTSIDE the binder")
+	g.p("// before pooling it. A pooled binder otherwise PINS the caller's data —")
+	g.p("// the slice behind an In(...) and the bytes behind every bound string —")
+	g.p("// for as long as the pool holds it, which is forever. The numeric, time")
+	g.p("// and uuid arenas are value arrays and pin nothing; vals points at the")
+	g.p("// binder's own fields. A few nil stores against a round trip is free.")
+	g.p("func putBinder(b *binder) {")
+	if ts.arenas["strs"] {
+		g.p("\tfor i := range b.strs {")
+		g.p("\t\tb.strs[i] = \"\"")
+		g.p("\t}")
+	}
+	if ts.anyRaw {
+		g.p("\tb.anyRaw = nil")
+	}
+	if ts.anyStr {
+		g.p("\tb.anyStr = nil")
+	}
+	g.p("\tbinders.Put(b)")
+	g.p("}")
 	g.p("")
 	g.p("// bindPreds copies arena values into the pooled buffer and points the")
 	g.p("// []any at the buffer's own fields — boxing a pointer does not allocate.")

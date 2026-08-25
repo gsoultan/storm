@@ -106,6 +106,12 @@ func (u *Unit) Flush(ctx context.Context, ex Executor) ([]int64, error) {
 	if first != nil {
 		return affected, first
 	}
+	// Clear before truncating: the backing array survives for the next use,
+	// and each op's Args reference caller values — a long-lived Unit would
+	// otherwise pin every argument of every flush it ever made.
+	for i := range u.ops {
+		u.ops[i] = unitOp{}
+	}
 	u.ops = u.ops[:0]
 	return affected, nil
 }

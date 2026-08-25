@@ -129,3 +129,53 @@ func TestFastDecimal_EncodesAsNumeric(t *testing.T) {
 		t.Errorf("a nil *Decimal encoded to %x, want nil (SQL NULL)", got)
 	}
 }
+
+// The interval and decimal bridges: raorm's types encoded by the registered
+// codecs, byte-compatible with what the decoders read back, nil pointers as
+// SQL NULL, and everything else delegated.
+func TestFastCodecs_IntervalAndDecimal(t *testing.T) {
+	m := pgtype.NewMap()
+	pgxdrv.RegisterFastArrays(m)
+
+	iv := runtime.Interval{Months: 2, Days: 3, Micros: 4}
+	b, err := m.Encode(pgtype.IntervalOID, pgtype.BinaryFormatCode, iv, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := runtime.IntervalErr(b)
+	if err != nil || back != iv {
+		t.Errorf("interval round-trip = %+v, %v", back, err)
+	}
+	if b, err = m.Encode(pgtype.IntervalOID, pgtype.BinaryFormatCode, &iv, nil); err != nil {
+		t.Fatal(err)
+	}
+	if back, _ = runtime.IntervalErr(b); back != iv {
+		t.Errorf("*interval round-trip = %+v", back)
+	}
+	if b, err = m.Encode(pgtype.IntervalOID, pgtype.BinaryFormatCode, (*runtime.Interval)(nil), nil); err != nil || b != nil {
+		t.Errorf("nil *Interval must encode as SQL NULL, got %x, %v", b, err)
+	}
+	// Delegation: pgtype's own Interval still encodes through the wrapped codec.
+	if _, err := m.Encode(pgtype.IntervalOID, pgtype.BinaryFormatCode,
+		pgtype.Interval{Microseconds: 5, Valid: true}, nil); err != nil {
+		t.Errorf("delegation broke: %v", err)
+	}
+
+	d := runtime.Decimal{Unscaled: 12345, Scale: 2}
+	b, err = m.Encode(pgtype.NumericOID, pgtype.BinaryFormatCode, d, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back, err := runtime.DecodeNumeric(b); err != nil || back != d {
+		t.Errorf("decimal round-trip = %+v, %v", back, err)
+	}
+	if b, err = m.Encode(pgtype.NumericOID, pgtype.BinaryFormatCode, &d, nil); err != nil {
+		t.Fatal(err)
+	}
+	if back, _ := runtime.DecodeNumeric(b); back != d {
+		t.Errorf("*decimal round-trip = %+v", back)
+	}
+	if b, err = m.Encode(pgtype.NumericOID, pgtype.BinaryFormatCode, (*runtime.Decimal)(nil), nil); err != nil || b != nil {
+		t.Errorf("nil *Decimal must encode as SQL NULL, got %x, %v", b, err)
+	}
+}

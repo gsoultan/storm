@@ -41,7 +41,11 @@ func TestMain(m *testing.M) {
 	// to serve it, so a concurrent test lands on a different one and sees the
 	// public schema — which cost a debugging round.
 	cfg.ConnConfig.RuntimeParams["search_path"] = planspikeSchm
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	// Through raorm's constructor so the fast parameter encoders — uuid[],
+	// Decimal, Interval — are installed. Without this, interval and decimal
+	// binds either bypass our codecs or fail, and the tests exercise a pool
+	// no adopter would run.
+	pool, err = pgxdrv.NewPoolConfig(ctx, cfg)
 	must(err)
 	defer pool.Close()
 

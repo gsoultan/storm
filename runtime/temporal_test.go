@@ -94,3 +94,34 @@ func TestInet_MalformedIsAnError(t *testing.T) {
 		}
 	}
 }
+
+func TestNullDecoders_NullAndValue(t *testing.T) {
+	// nil is SQL NULL for every nullable decoder; a value decodes as itself.
+	if v, err := runtime.NullInet(nil); err != nil || v.Valid {
+		t.Errorf("NullInet(nil) = %+v, %v", v, err)
+	}
+	v4 := append([]byte{2, 32, 0, 4}, 10, 0, 0, 7)
+	if v, err := runtime.NullInet(v4); err != nil || !v.Valid || v.V.String() != "10.0.0.7/32" {
+		t.Errorf("NullInet(v4) = %+v, %v", v, err)
+	}
+	if _, err := runtime.NullInet([]byte{2}); err == nil {
+		t.Error("a truncated nullable inet must error, not read as NULL")
+	}
+
+	var sl runtime.Slab
+	if v := runtime.NullJSON(nil, &sl); v.Valid {
+		t.Error("NullJSON(nil) is not NULL")
+	}
+	if v := runtime.NullJSON([]byte{1, '{', '}'}, &sl); !v.Valid || v.V.String() != "{}" {
+		t.Errorf("NullJSON = %+v", v)
+	}
+
+	// Numeric's zero-on-error contract: the generated scanner checks the error
+	// path separately; the value returned alongside an error is the zero.
+	if d := runtime.Numeric([]byte{0, 0, 0, 0, 0xC0, 0x00, 0, 0}); d != (runtime.Decimal{}) {
+		t.Errorf("Numeric(NaN) leaked a value: %+v", d)
+	}
+	if d := runtime.Numeric(runtime.EncodeNumeric(runtime.Decimal{Unscaled: 7, Scale: 1}, nil)); d.String() != "0.7" {
+		t.Errorf("Numeric = %s", d)
+	}
+}
