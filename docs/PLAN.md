@@ -44,7 +44,7 @@ they are called out here so the override is deliberate.
 | M2 | Query compiler + read codegen | ◐ | **read path shipped 2026-08-24** — end-to-end parity, 0 allocs, deterministic. Expressiveness (joins, CTEs, windows, ordering, pagination) outstanding → **P5** | *(cleared: codegen model is sound)* |
 | M3 | Relations without N+1 (named plans) | 4 | 2 round trips; unloaded read is a compile error; polymorphic integrity generated | plan types unusable → runtime-checked plan B |
 | M4 | Writes, unit of work, batching | ✅ | **PASSED 2026-08-24** — 1,000 inserts = 1 `COPY`; 1,000 mixed = 1 batch; FK order correct with constraints *not* deferred | *(cleared)* |
-| M5 | Typed escape hatch | 2 | real analytical query, fully typed, no `any` | — |
+| M5 | Typed escape hatch | ✅ | **PASSED 2026-08-25** — the gate query (window over CTE with lateral join) fully typed against live PG; mismatches fail generation naming column and fix; validation needs a server, not a schema | *(cleared)* |
 | M6 | First adopter: `anubis/authz` | 3 | authorize p95 does not regress | > 3 wks or p95 regression → freeze features |
 | M7 | Tooling gate + hardening | ✅ | **PASSED 2026-08-24** — explain/lint/verify(-stale,-pending) shipped and tested; fuzz corpus + injection suite in CI; coverage floors enforced | *(cleared)* |
 | M8 | v1.0 release (Postgres) | 2 | docs, examples, stability policy | — |
@@ -568,7 +568,26 @@ locking on a version column. Upserts with `ON CONFLICT`.
 - dirty-set computation: 0 allocs, asserted by `testing.AllocsPerRun`
 - a concurrent-update test proves the version column rejects the stale writer
 
-## M5 — Typed escape hatch (2 weeks)
+## M5 — Typed escape hatch ✅ PASSED (2026-08-25)
+
+**Gates met.** `raorm.SQL[EarnerRow](…)` runs the gate query — a window
+function over a CTE with a lateral join — fully typed, zero `any` in the scan
+path, against live PostgreSQL. A query whose columns do not match `T` fails
+generation with the column, the type and the fix quoted, all four mismatch
+shapes asserted. The offline gate landed *stronger* than specified: validation
+applies the **model's DDL to a scratch schema** and PREPAREs against that, so
+no schema snapshot is needed at all — only a PostgreSQL server, and a drifted
+dev database cannot vouch for a query the model would reject.
+
+Split as M0 and P2 were: the runtime (registry, atomic scanner cache, argument
+check) proven with a hand-written scanner first; the generator's emission
+proven separately, to the bar of *the output compiles* — which immediately
+found two CLI path bugs and one verify/generate disagreement.
+
+**Not built:** `TopEarners.As("te")` composing raw fragments into typed queries
+as join sources — that needs the IR joins P5 still owes.
+
+### Original specification (M5 — 2 weeks)
 
 `raorm.SQL[T]` raw queries validated at build time by `PREPARE` against a dev
 database, with generated scanners. Raw fragments usable as join sources inside
