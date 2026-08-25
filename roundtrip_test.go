@@ -39,10 +39,6 @@ func applyInto(t *testing.T, c *pgx.Conn, ns, ddl string) *schema.Schema {
 	t.Helper()
 	ctx := context.Background()
 	// btree_gist is what lets an exclusion constraint mix `=` on a scalar with
-	// `&&` on a range. Production needs it too; it is not a test artefact.
-	if _, err := c.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS btree_gist`); err != nil {
-		t.Fatalf("btree_gist: %v", err)
-	}
 	if _, err := c.Exec(ctx, `DROP SCHEMA IF EXISTS `+ns+` CASCADE; CREATE SCHEMA `+ns); err != nil {
 		t.Fatalf("create schema %s: %v", ns, err)
 	}
@@ -220,10 +216,6 @@ func TestMigrateConverges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Start from an empty namespace and let the differ build everything.
-	if _, err := c.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS btree_gist`); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := c.Exec(ctx, `DROP SCHEMA IF EXISTS mig CASCADE; CREATE SCHEMA mig; SET search_path TO mig`); err != nil {
 		t.Fatal(err)
 	}

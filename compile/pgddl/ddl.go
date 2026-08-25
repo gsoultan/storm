@@ -12,8 +12,42 @@ import (
 )
 
 // Create renders CREATE statements for a whole schema, enums first.
+// NeedsBtreeGist reports whether this schema's DDL depends on the btree_gist
+// extension: any exclusion constraint does, because mixing `=` on a scalar
+// with `&&` on a range gives the scalar a GIST operator class only that
+// extension provides.
+//
+// Exported because the DDL is not the only thing that must know: a migration
+// plan applied to a FRESH database needs the extension before the first
+// exclusion constraint, and a plan that omits it works on every long-lived dev
+// database (where something installed it years ago) and fails on production
+// day one — which is exactly how this gap survived until a container was
+// recreated from scratch.
+func NeedsBtreeGist(s *schema.Schema) bool {
+	for _, t := range s.Tables {
+		if len(t.Excludes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// BtreeGistDDL installs btree_gist, safely under concurrency — see the
+// comment at its use in Create.
+const BtreeGistDDL = "DO $raorm$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist; " +
+	"EXCEPTION WHEN unique_violation OR duplicate_object THEN NULL; END $raorm$;"
+
 func Create(s *schema.Schema) string {
 	var b strings.Builder
+	if NeedsBtreeGist(s) {
+		// Wrapped rather than bare because IF NOT EXISTS races with ITSELF:
+		// two connections both pass the existence check and one dies on the
+		// pg_extension_name_index unique constraint — found by two test
+		// packages normalising concurrently, and exactly what two CI jobs or
+		// two deploy replicas would do. The emitted SQL has to be safe
+		// wherever and however concurrently it is applied.
+		b.WriteString(BtreeGistDDL + "\n\n")
+	}
 	for _, e := range s.Enums {
 		b.WriteString(CreateEnum(e))
 		b.WriteString("\n")

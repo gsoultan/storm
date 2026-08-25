@@ -87,7 +87,16 @@ func For(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema) (
 	if err != nil {
 		return Plan{}, fmt.Errorf("introspect %s: %w", target, err)
 	}
-	return Diff(cur, norm), nil
+	plan := Diff(cur, norm)
+	// A plan that creates an exclusion constraint needs btree_gist FIRST. On a
+	// long-lived dev database something installed the extension years ago; on
+	// a fresh production database the migration is the first thing that ever
+	// ran, and without this line it fails there and nowhere else. IF NOT
+	// EXISTS makes it free where the extension already lives.
+	if !plan.Empty() && pgddl.NeedsBtreeGist(want) {
+		plan.Changes = append([]Change{{SQL: pgddl.BtreeGistDDL}}, plan.Changes...)
+	}
+	return plan, nil
 }
 
 // validIdent guards the one place a name is interpolated into SQL. Scratch
