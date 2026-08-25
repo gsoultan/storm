@@ -125,3 +125,18 @@ branches only for kinds the table has. genuser.Query 480B, Pred 120B; builder
 n=10. **TestQuerySize now pins sizes.** Profile says stop: remaining cost is
 the documented value-semantics copies, 0.35% of a round trip. `make db` now
 publishes loopback :5433 (Makefile DSN fixed for this machine's EHOSTUNREACH).
+
+## The emitted-SQL audit (2026-08-25) — read the queries like a DBA
+EXPLAIN ANALYZE on 50k rows convicted three shapes; all fixed, pinned on
+CAPTURED SQL: **Exists was One() discarded** (top-N sort of 16,667 matches →
+`SELECT 1 … LIMIT 1`, 2.95ms→0.017ms, ~170×); **loaders paid for orders their
+bucketing destroyed** (external merge sort, 5MB disk spill → `Unordered()`,
+~50ms→10.4ms; After() on unordered = error); **Count+Offset bound mismatched
+args** (sliced one arg off the end → bindPreds). Confirmed fine: =ANY index
+scans, LATERAL, keyset row comparisons, explicit columns, statement cache.
+**Semi-join predicates shipped** (`HasPosts()`/`HasNoPosts()`): constant EXISTS
+fragments as pseudo-columns past nCols — composition free from the token
+stream, inner table ALWAYS aliased (self-reference capture). Gap recorded:
+inverse one-to-one never reaches IR Relations. Second shared-fixture race
+fixed: scratch schemas are per-process (pid-suffixed) — a literal name shared
+across test binaries had one process dropping it mid-apply of another.
