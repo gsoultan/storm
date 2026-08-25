@@ -6,6 +6,17 @@ status: proposed — illustrative, not implemented
 
 # The API, by example
 
+> **As-built note (2026-08-25).** This document predates the implementation
+> and parts of it are still the *design sketch*. Where they differ, the
+> generated code and [`examples/blog`](../examples/blog) — which runs as a test
+> in CI — are the truth. Known drift, corrected inline below: entry points are
+> `user.New()` (not `user.Query()`); reads are `One`/`All` (there is no `Get`
+> and no `Iter` yet); inserts are the masked builder `user.Create()` (not an
+> `Insert(row)` function), because absence is tracked by a mask, never
+> inferred from a zero value; plans and projections are declared in the model
+> with **field pointers**, not package-level `Plan(...)` values.
+
+
 > For a complete worked domain — every scalar type, foreign keys, one-to-one,
 > many-to-many with payload, self-referential hierarchies, **polymorphic
 > associations in three strategies**, and transactions — see [[EXAMPLE]].

@@ -1,0 +1,55 @@
+// Command gen regenerates the example's store from its model.
+//
+//	go run ./examples/blog/gen
+//
+// A real module uses the raorm CLI template instead (`raorm generate`, with
+// the model registered in the bootstrap); this small main is the same call the
+// CLI makes, kept local so the example is self-contained.
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+
+	"github.com/gsoultan/raorm"
+	"github.com/gsoultan/raorm/codegen"
+	"github.com/gsoultan/raorm/examples/blog/model"
+)
+
+func main() {
+	s, err := raorm.Build(model.All()...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	dir := filepath.Join("examples", "blog", "store")
+	files, err := codegen.Package(s, codegen.PackageOptions{
+		Dir:           dir,
+		Import:        "github.com/gsoultan/raorm",
+		Package:       "store",
+		PackageImport: "github.com/gsoultan/raorm/examples/blog/store",
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	var paths []string
+	for p := range files {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, rel := range paths {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(full, files[rel], 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Printf("→ %s (%d bytes)\n", full, len(files[rel]))
+	}
+}

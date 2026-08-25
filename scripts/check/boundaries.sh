@@ -55,6 +55,10 @@ before=$(cat internal/planspike/store/*.gen.go internal/planspike/store/*/*.gen.
 go run ./cmd/genspike >/dev/null 2>&1
 stale "$before" "$(cat internal/planspike/store/*.gen.go internal/planspike/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./cmd/genspike"
 
+before=$(cat examples/blog/store/*.gen.go examples/blog/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+go run ./examples/blog/gen >/dev/null 2>&1
+stale "$before" "$(cat examples/blog/store/*.gen.go examples/blog/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./examples/blog/gen"
+
 echo "== gofmt =="
 if [ -n "$(gofmt -l . 2>/dev/null)" ]; then
   note "not gofmt'd:"; gofmt -l . | sed 's/^/    /'

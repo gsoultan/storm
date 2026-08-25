@@ -3,87 +3,109 @@
 > **Every other Go ORM builds SQL at runtime. raorm builds it at compile time —
 > including the dynamic queries.**
 
-An embeddable ORM for Go. Generated, not reflected. Imported, not deployed.
-Zero CGO; driver dependencies isolated behind a five-method port.
+An embeddable ORM for PostgreSQL and Go. Generated, not reflected. Imported,
+not deployed. Zero CGO; the driver lives behind a four-method port.
 
-**Postgres first**, then MySQL/MariaDB, SQL Server, Oracle, and MongoDB — the
-dialect is a *compile-time parameter*, so multi-target costs the hot path
-nothing. Model-first: one Go schema, generated query API, generated migrations
-raorm never applies.
+**Model-first:** one plain Go struct per table — no tags, no DSL. Everything
+the type cannot say goes in a `Schema` method using **field pointers**, so the
+editor enforces names and refactors follow them. raorm emits reviewable
+migrations and **never applies DDL**.
 
-**Status: design. No code yet.** Milestone M0 is a two-week spike that will
-either prove the thesis or kill the project — see [PLAN.md](docs/PLAN.md).
+## Status
 
-## Why
+**M0–M5 and M7 passed.** The read path, migrations, relations, writes, the
+typed escape hatch and the tooling gate are built, benchmarked and hardened;
+what remains before v1 is the first-adopter run (M6) and the release policy
+(M8). The milestone log with every exit gate is [docs/PLAN.md](docs/PLAN.md).
 
-`sqlc` proved Go can have build-time SQL and build-time row mapping — raw-driver
-speed, total type safety. It then stopped, because dynamic queries and relation
-loading look like they need a runtime builder. They do not:
+Every claim below is a test or a benchmark in this repository. The quickstart
+is executable: [`examples/blog`](examples/blog) runs as a test in CI, so it
+cannot drift from the library the way prose does.
 
-- a dynamic query has a **bounded set of shapes**; compile each shape once,
-  cache it under a `uint64` mask, and a warm call allocates **nothing** to build
-  its SQL;
-- a relation is a **fetch plan**; put the plan in the *type* and reading an
-  unloaded relation becomes a **compile error** — N+1 stops being a mistake you
-  can make.
+## The sixty-second tour
 
-## The five properties, and who has them
+```go
+// The model: a plain struct. *T = nullable, Xxx Yyy = foreign key,
+// []T = has-many. Field pointers declare the rest.
+type Author struct {
+    raorm.Model            // uuid id + created_at/updated_at
+    Name     string
+    Email    string
+    Articles []Article
+}
 
-| | Build-time SQL | Build-time scan | Dynamic composition | Relations w/o N+1 | Full analytical SQL |
+func (a *Author) Schema(t *raorm.Table)           { t.Unique(&a.Email) }
+func (a *Author) Plans(p *raorm.Plans)            { p.Named("Feed").With(&a.Articles) }
+func (a *Author) Projections(p *raorm.Projections) { p.Named("Card", &a.Name, &a.Email) }
+```
+
+```go
+// Typed queries. A dynamic query has a bounded set of shapes; each compiles
+// once, and a warm call allocates NOTHING to build its SQL.
+rows, err := article.New().
+    Where(article.AuthorID.Eq(id), article.PublishedAt.IsNotNull()).
+    Order(article.PublishedAt.Desc()).
+    All(ctx, ex, nil)
+
+// The semi-join: authors who HAVE a published article. Child predicates are
+// typed by the child's package; one EXISTS probe per row.
+store.AuthorHavingArticles(author.New(), article.PublishedAt.IsNotNull())
+
+// The named plan: authors WITH their articles — exactly two round trips
+// whatever the row count, and reading an unloaded relation DOES NOT COMPILE.
+feed, err := store.AuthorFeed().Limit(10).All(ctx, ex)
+
+// Writes are masked: unset columns take their database defaults, and an
+// UPDATE writes only what was assigned. A version column makes stale writers
+// lose loudly. Graph writes flush in FK order, one batch, atomic.
+n := author.Create(); n.SetName("Ada"); n.SetEmail("ada@example.com")
+ada, err := n.Insert(ctx, ex)
+
+// Anything PostgreSQL can run, typed, validated against the model at
+// generate time — mismatches fail the build naming the column and the fix.
+var Top = raorm.SQL[TopRow](`WITH ranked AS (...) SELECT ... LIMIT $1`)
+```
+
+## The numbers
+
+Measured, never quoted from memory — the methodology and every caveat live in
+[`bench/RESULTS.md`](bench/RESULTS.md). At 1,000 rows, allocations per query:
+
+| raorm | raw pgx | sqlc | Bun | Ent | GORM |
 |---|---|---|---|---|---|
-| GORM | ✗ | ✗ | ✓ | ✗ | ✗ |
-| Ent | ✗ | ~ | ✓ | ~ | ✗ |
-| Bun | ✗ | ✗ | ✓ | ~ | ~ |
-| Hibernate | ~ | ✗ | ✓ | ~ | ✓ |
-| sqlc | ✓ | ✓ | ✗ | ✗ | ✓ |
-| **raorm** | **✓** | **✓** | **✓** | **✓** | **✓** |
+| **6** | 5,012 | 5,022 | 13,899 | 23,016 | 23,934 |
 
-Full reasoning in [COMPARISON.md](docs/COMPARISON.md).
+Wall clock is round-trip-dominated for every ORM — the honest claims are
+allocations, GC pressure (raorm 21 GCs vs pgx's 102 on the 2M-row workload),
+and the plans: `Exists()` is a `LIMIT 1` probe, relation loads carry no
+useless `ORDER BY`, per-parent limits lower to `LATERAL` (measured 33× over
+`row_number()` at 100 parents), and projections make index-only scans
+possible.
 
-## Status — what is built, and what is not
+## Tooling
 
-**This is a working prototype with measured results, not a usable ORM yet.**
-The docs below describe the intended design in full; the table says how much of
-it exists. Every performance claim is measured and reproducible
-(`make db && make bench`), and nothing in `bench/RESULTS.md` is quoted from
-memory.
+```console
+raorm generate [dir]     # one package per table + the context package
+raorm diff <name>        # a reviewable migration; never applied by raorm
+raorm verify             # drift: model vs database
+raorm verify -stale      # generated code vs model (CI, no database)
+raorm verify -pending    # model vs migrations — "forgot to diff" fails CI
+raorm lint               # every named plan costed in round trips, budgeted
+raorm explain            # every statement planned; large seq scans flagged
+raorm import             # an existing database, written back as a model draft
+```
 
-| | state |
-|---|---|
-| **Thesis** — compile-time SQL, zero-alloc warm path | ✅ proven; 0.95× raw pgx, 0 allocs building SQL |
-| **Model → schema IR → DDL → introspection → migration diff** | ✅ round-trip is a fixpoint; migrations converge against a live database |
-| **Read codegen** — Row, typed predicates, scanner, `Count`/`Exists` | ✅ matches a hand-written runtime; 6 allocs per 1,000 rows against GORM's 23,937 |
-| **`= ANY($1)` + two-round-trip relation loading** | ✅ 50 parents + 25,000 children in exactly 2 round trips, asserted |
-| **`Or` / `Not` / `NotAny`** | ✅ expression-tree IR; precedence cross-checked against Postgres |
-| **joins, CTEs, windows, `GROUPING SETS`, `UNION`** | ❌ the tree now carries them structurally; the emitters are unwritten |
-| **Fetch-plan types** (`user.Plan("Feed")`, compile error on unloaded relation) | ❌ mechanism proven, type generation unwritten |
-| **Writes, unit of work, escape hatch, `explain`/`lint`** | ❌ not started |
-| **MySQL, MariaDB, SQL Server, Oracle, MongoDB** | ❌ not started; the IR is dialect-neutral by construction |
+## Design documents
 
-Read [PLAN.md](docs/PLAN.md) for milestone state and
-[bench/RESULTS.md](bench/RESULTS.md) for every measurement, including the ones
-that falsified an assumption.
+[CONCEPT](docs/CONCEPT.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) ·
+[DIALECTS](docs/DIALECTS.md) · [COMPARISON](docs/COMPARISON.md) ·
+[PLAN](docs/PLAN.md) — the ADRs, including the rejected-ideas list, are under
+[docs/adr](docs/adr). Some API sketches in the design docs describe planned
+surface (joins with cross-table rows, aggregate projections); the example and
+the generated code are the as-built truth.
 
-## Read in this order
+## Boundaries
 
-| Doc | What |
-|---|---|
-| [COMPARISON.md](docs/COMPARISON.md) | Ent, GORM, Bun, JPA/Hibernate — mechanism by mechanism, and the gap |
-| [API.md](docs/API.md) | The code design in brief — model, queries, fetch plans, writes, errors |
-| [EXAMPLE.md](docs/EXAMPLE.md) | **Start here for code.** The whole surface in one page: struct → generate → query |
-| [REFERENCE.md](docs/REFERENCE.md) | Lookup: full type table, cascade rules, M:N with payload, polymorphic, unit of work |
-| [COMPLEX-QUERIES.md](docs/COMPLEX-QUERIES.md) | **Eight real queries as objects** — MRR dashboards, churn cohorts, anti-joins, exclusion constraints, facets, recursive trees |
-| [DIALECTS.md](docs/DIALECTS.md) | Capability matrix, lowering passes, why Mongo is a back end |
-| [CONCEPT.md](docs/CONCEPT.md) | The thesis. Eight concepts, **including the rejected ones** |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Package map, IR, design patterns, the shape cache |
-| [PERFORMANCE.md](docs/PERFORMANCE.md) | Budgets, forbidden things, the harness |
-| [PLAN.md](docs/PLAN.md) | Milestones, exit gates, **kill criteria**, risk register |
-| [adr/](docs/adr/) | The four load-bearing decisions |
-| [AGENTS.md](AGENTS.md) | Conventions and the profile roster |
-
-## Scope line
-
-No applied DDL. No lazy loading. No runtime dialect branch. No daemon, no UI,
-no Active Record, no soft-delete-by-default, no reflection fallback.
-
-Each "no" is a year of maintenance not spent.
+No applied DDL. No lazy loading — ever; unloaded relations do not compile. No
+runtime dialect branch. No reflection under `runtime/`. Every "no" is a year
+of maintenance not spent; the reasoning lives in the ADRs.
