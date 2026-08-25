@@ -43,6 +43,12 @@ const (
 	opIn        runtime.Op = 8
 	opIsNull    runtime.Op = 9
 	opIsNotNull runtime.Op = 10
+	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
+	// the real columns in the frag table. Argless, like IsNull: the
+	// fragment is constant, which is what lets a semi-join ride the
+	// ordinary predicate machinery and compose under And/Or/Not free.
+	opExists    runtime.Op = 11
+	opNotExists runtime.Op = 12
 )
 
 const nCols = 8
@@ -656,7 +662,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [nCols][11]runtime.Frag{
+var fragTable = [8][13]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -669,6 +675,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"id\" = ANY($", B: ")"},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -678,6 +686,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -695,6 +705,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // on
 		{}, // opNone
@@ -704,6 +716,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"on\" >= $", B: ""},
 		{A: "\"on\" < $", B: ""},
 		{A: "\"on\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -721,11 +735,15 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{A: "\"window\" IS NULL", B: ""},
 		{A: "\"window\" IS NOT NULL", B: ""},
+		{},
+		{},
 	},
 	{ // addr
 		{}, // opNone
 		{A: "\"addr\" = $", B: ""},
 		{A: "\"addr\" <> $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -747,9 +765,13 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // tags
 		{}, // opNone
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -764,7 +786,10 @@ var fragTable = [nCols][11]runtime.Frag{
 }
 
 func fragOf(op, col uint32) runtime.Frag {
-	if col >= nCols || int(op) >= len(fragTable[0]) {
+	// Bounded by the table, not nCols: existence pseudo-columns live past
+	// the real ones. Order, ident and arena lookups stay nCols-bounded,
+	// so a pseudo-column can never be ordered by, cursored on, or bound.
+	if int(col) >= len(fragTable) || int(op) >= len(fragTable[0]) {
 		return runtime.Frag{}
 	}
 	return fragTable[col][op]

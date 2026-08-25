@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/gsoultan/raorm/internal/planspike/store"
+	"github.com/gsoultan/raorm/internal/planspike/store/org"
+	"github.com/gsoultan/raorm/internal/planspike/store/post"
 	"github.com/gsoultan/raorm/internal/planspike/store/user"
 	"github.com/gsoultan/raorm/runtime"
 )
@@ -134,5 +136,100 @@ func TestPlanLoaders_DoNotOrderWhatTheyBucket(t *testing.T) {
 	}
 	if !strings.Contains(cap.sqls[1], "ORDER BY") {
 		t.Errorf("an explicit ChildOrder was dropped:\n%s", cap.sqls[1])
+	}
+}
+
+// HasPosts is the semi-join: EXISTS over the relation's key, the fastest way
+// to ask "has any related row" — one probe per parent row, no join
+// duplication, no DISTINCT to clean it up. It composes under Where/Any/Not
+// like any predicate because the fragment is constant.
+func TestHasRelation_IsASemiJoin(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	sql := user.New().Where(user.HasPosts()).SQL()
+	if !strings.Contains(sql, `EXISTS (SELECT 1 FROM "posts" AS "_raorm_e"`) {
+		t.Errorf("HasPosts did not lower to a semi-join:\n%s", sql)
+	}
+
+	// Live: the seeded users have no posts; give one a post and the partition
+	// must be exact from both sides.
+	total, err := user.New().Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	author := mustCreate(t, ctx, ex, "author@example.com", "Author")
+	np := post.Create()
+	np.SetTitle("t")
+	np.SetBody("b")
+	np.SetAuthorID(author.ID)
+	pr, err := np.Insert(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = post.Delete(ctx, ex, pr.ID)
+		_ = user.Delete(ctx, ex, author.ID)
+	})
+
+	with, err := user.New().Where(user.HasPosts()).Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	without, err := user.New().Where(user.HasNoPosts()).Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if with != 1 {
+		t.Errorf("HasPosts matched %d users, want 1", with)
+	}
+	if with+without != total+1 {
+		t.Errorf("partition leaks: %d with + %d without != %d total", with, without, total+1)
+	}
+}
+
+// A self-referential existence check correlates a table with itself, which is
+// exactly where an unaliased inner reference would capture the outer table and
+// silently mean something else. The alias makes it correct; the test proves
+// it against real parent/child rows.
+func TestHasRelation_SelfReferenceIsAliased(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	sql := org.New().Where(org.HasChildren()).SQL()
+	if !strings.Contains(sql, `"_raorm_e"."parent_id" = "orgs"."id"`) {
+		t.Errorf("the self-referential correlation is not aliased:\n%s", sql)
+	}
+
+	parent := tree(t, ctx, ex, "semi", 2) // parent → child chain
+	n, err := org.New().Where(org.ID.In(parent...), org.HasChildren()).Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("of a two-org chain, %d have children; want exactly the parent", n)
+	}
+}
+
+// Existence predicates are ordinary predicates: they compose under Any/Not,
+// share compiled statements by structure, and cost nothing to build.
+func TestHasRelation_ComposesAndCostsNothing(t *testing.T) {
+	// The fixture's inverse one-to-one (Profile) never reaches the IR's
+	// Relations — a known gap — so composition is shown over the two
+	// polarities, which are distinct predicates in the frag table.
+	a := user.New().Where(user.Status.Eq("pending")).Any(user.HasPosts(), user.HasNoPosts())
+	if sql := a.SQL(); !strings.Contains(sql, " OR ") || strings.Count(sql, "EXISTS") != 2 {
+		t.Errorf("composition is off:\n%s", sql)
+	}
+	if user.New().Where(user.HasPosts()).Shape() == user.New().Where(user.HasNoPosts()).Shape() {
+		t.Error("Has and HasNo share a shape — they would share a statement")
+	}
+	if n := testing.AllocsPerRun(1000, func() {
+		q := user.New().Where(user.Status.Eq("x"), user.HasPosts()).Limit(10)
+		if q.Err() != nil {
+			t.Fatal(q.Err())
+		}
+	}); n != 0 {
+		t.Errorf("a semi-join predicate allocates %v times per build, want 0", n)
 	}
 }

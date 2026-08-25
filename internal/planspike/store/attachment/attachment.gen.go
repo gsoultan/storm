@@ -42,6 +42,12 @@ const (
 	opIn        runtime.Op = 8
 	opIsNull    runtime.Op = 9
 	opIsNotNull runtime.Op = 10
+	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
+	// the real columns in the frag table. Argless, like IsNull: the
+	// fragment is constant, which is what lets a semi-join ride the
+	// ordinary predicate machinery and compose under And/Or/Not free.
+	opExists    runtime.Op = 11
+	opNotExists runtime.Op = 12
 )
 
 const nCols = 7
@@ -656,7 +662,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [nCols][11]runtime.Frag{
+var fragTable = [7][13]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -669,6 +675,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"id\" = ANY($", B: ")"},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -678,6 +686,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -695,6 +705,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // filename
 		{}, // opNone
@@ -706,6 +718,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"filename\" <= $", B: ""},
 		{A: "\"filename\" LIKE $", B: ""},
 		{A: "\"filename\" = ANY($", B: ")"},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -721,6 +735,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"post_id\" = ANY($", B: ")"},
 		{A: "\"post_id\" IS NULL", B: ""},
 		{A: "\"post_id\" IS NOT NULL", B: ""},
+		{},
+		{},
 	},
 	{ // comment_id
 		{}, // opNone
@@ -734,6 +750,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"comment_id\" = ANY($", B: ")"},
 		{A: "\"comment_id\" IS NULL", B: ""},
 		{A: "\"comment_id\" IS NOT NULL", B: ""},
+		{},
+		{},
 	},
 	{ // user_id
 		{}, // opNone
@@ -747,11 +765,16 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"user_id\" = ANY($", B: ")"},
 		{A: "\"user_id\" IS NULL", B: ""},
 		{A: "\"user_id\" IS NOT NULL", B: ""},
+		{},
+		{},
 	},
 }
 
 func fragOf(op, col uint32) runtime.Frag {
-	if col >= nCols || int(op) >= len(fragTable[0]) {
+	// Bounded by the table, not nCols: existence pseudo-columns live past
+	// the real ones. Order, ident and arena lookups stay nCols-bounded,
+	// so a pseudo-column can never be ordered by, cursored on, or bound.
+	if int(col) >= len(fragTable) || int(op) >= len(fragTable[0]) {
 		return runtime.Frag{}
 	}
 	return fragTable[col][op]

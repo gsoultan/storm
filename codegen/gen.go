@@ -81,6 +81,7 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	g.predType()
 	g.colHandles()
 	g.treePreds()
+	g.existsPreds()
 	g.chained()
 	g.compile()
 	g.scanner()
@@ -214,6 +215,12 @@ func (g *gen) opConstants() {
 	for i, op := range ops {
 		g.p("\top%s runtime.Op = %d", op.name, i+1)
 	}
+	g.p("\t// Existence operators apply to PSEUDO-COLUMNS — relation slots past")
+	g.p("\t// the real columns in the frag table. Argless, like IsNull: the")
+	g.p("\t// fragment is constant, which is what lets a semi-join ride the")
+	g.p("\t// ordinary predicate machinery and compose under And/Or/Not free.")
+	g.p("\topExists    runtime.Op = %d", len(ops)+1)
+	g.p("\topNotExists runtime.Op = %d", len(ops)+2)
 	g.p(")")
 	g.p("")
 	g.p("const nCols = %d", len(g.cols))
@@ -303,7 +310,8 @@ func (g *gen) compile() {
 	g.p("")
 	g.p("// fragTable is every predicate this table can produce, lowered at build")
 	g.p("// time. Runtime splices; it never formats.")
-	g.p("var fragTable = [nCols][%d]runtime.Frag{", len(ops)+1)
+	nRels := len(existsRelations(g.t))
+	g.p("var fragTable = [%d][%d]runtime.Frag{", len(g.cols)+nRels, len(ops)+3)
 	for _, c := range g.cols {
 		g.p("\t{ // %s", c.Name())
 		g.p("\t\t{}, // opNone")
@@ -320,12 +328,18 @@ func (g *gen) compile() {
 			}
 			g.p("\t\t{A: %q, B: %q},", a, b)
 		}
+		g.p("\t\t{},")
+		g.p("\t\t{},")
 		g.p("\t},")
 	}
+	g.existsFragRows()
 	g.p("}")
 	g.p("")
 	g.p("func fragOf(op, col uint32) runtime.Frag {")
-	g.p("\tif col >= nCols || int(op) >= len(fragTable[0]) {")
+	g.p("\t// Bounded by the table, not nCols: existence pseudo-columns live past")
+	g.p("\t// the real ones. Order, ident and arena lookups stay nCols-bounded,")
+	g.p("\t// so a pseudo-column can never be ordered by, cursored on, or bound.")
+	g.p("\tif int(col) >= len(fragTable) || int(op) >= len(fragTable[0]) {")
 	g.p("\t\treturn runtime.Frag{}")
 	g.p("\t}")
 	g.p("\treturn fragTable[col][op]")

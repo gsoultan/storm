@@ -50,6 +50,12 @@ const (
 	opIn        runtime.Op = 8
 	opIsNull    runtime.Op = 9
 	opIsNotNull runtime.Op = 10
+	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
+	// the real columns in the frag table. Argless, like IsNull: the
+	// fragment is constant, which is what lets a semi-join ride the
+	// ordinary predicate machinery and compose under And/Or/Not free.
+	opExists    runtime.Op = 11
+	opNotExists runtime.Op = 12
 )
 
 const nCols = 15
@@ -753,6 +759,13 @@ func (q *Query) leaf(p Pred) {
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 }
 
+// Relation existence — the semi-join. HasPosts() matches rows with at
+// least one related row; HasNoPosts() matches the rest. Both compose
+// under Where/Any/Not like any predicate, because both lower to constant
+// fragments: no bound value, one compiled statement per structure.
+func HasPosts() Pred   { return Pred{col: 15, op: opExists} }
+func HasNoPosts() Pred { return Pred{col: 15, op: opNotExists} }
+
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
 func (q Query) IDEq(v [16]byte) Query                { return q.Where(ID.Eq(v)) }
 func (q Query) IDNotEq(v [16]byte) Query             { return q.Where(ID.NotEq(v)) }
@@ -996,7 +1009,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [nCols][11]runtime.Frag{
+var fragTable = [16][13]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -1009,6 +1022,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"id\" = ANY($", B: ")"},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -1018,6 +1033,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1035,6 +1052,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // version
 		{}, // opNone
@@ -1046,6 +1065,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"version\" <= $", B: ""},
 		{},
 		{A: "\"version\" = ANY($", B: ")"},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -1061,6 +1082,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{A: "\"deleted_at\" IS NULL", B: ""},
 		{A: "\"deleted_at\" IS NOT NULL", B: ""},
+		{},
+		{},
 	},
 	{ // email
 		{}, // opNone
@@ -1072,6 +1095,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"email\" <= $", B: ""},
 		{A: "\"email\" LIKE $", B: ""},
 		{A: "\"email\" = ANY($", B: ")"},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -1087,6 +1112,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"name\" = ANY($", B: ")"},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // status
 		{}, // opNone
@@ -1100,9 +1127,13 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"status\" = ANY($", B: ")"},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // prefs
 		{}, // opNone
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1126,6 +1157,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // age
 		{}, // opNone
@@ -1139,6 +1172,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"age\" = ANY($", B: ")"},
 		{A: "\"age\" IS NULL", B: ""},
 		{A: "\"age\" IS NOT NULL", B: ""},
+		{},
+		{},
 	},
 	{ // last_ip
 		{}, // opNone
@@ -1152,6 +1187,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"last_ip\" = ANY($", B: ")"},
 		{A: "\"last_ip\" IS NULL", B: ""},
 		{A: "\"last_ip\" IS NOT NULL", B: ""},
+		{},
+		{},
 	},
 	{ // balance
 		{}, // opNone
@@ -1161,6 +1198,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"balance\" >= $", B: ""},
 		{A: "\"balance\" < $", B: ""},
 		{A: "\"balance\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1178,6 +1217,8 @@ var fragTable = [nCols][11]runtime.Frag{
 		{},
 		{A: "\"credit\" IS NULL", B: ""},
 		{A: "\"credit\" IS NOT NULL", B: ""},
+		{},
+		{},
 	},
 	{ // org_id
 		{}, // opNone
@@ -1191,11 +1232,31 @@ var fragTable = [nCols][11]runtime.Frag{
 		{A: "\"org_id\" = ANY($", B: ")"},
 		{},
 		{},
+		{},
+		{},
+	},
+	{ // relation Posts (pseudo-column)
+		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "EXISTS (SELECT 1 FROM \"posts\" AS \"_raorm_e\" WHERE \"_raorm_e\".\"author_id\" = \"users\".\"id\")"},
+		{A: "NOT EXISTS (SELECT 1 FROM \"posts\" AS \"_raorm_e\" WHERE \"_raorm_e\".\"author_id\" = \"users\".\"id\")"},
 	},
 }
 
 func fragOf(op, col uint32) runtime.Frag {
-	if col >= nCols || int(op) >= len(fragTable[0]) {
+	// Bounded by the table, not nCols: existence pseudo-columns live past
+	// the real ones. Order, ident and arena lookups stay nCols-bounded,
+	// so a pseudo-column can never be ordered by, cursored on, or bound.
+	if int(col) >= len(fragTable) || int(op) >= len(fragTable[0]) {
 		return runtime.Frag{}
 	}
 	return fragTable[col][op]
