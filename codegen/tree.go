@@ -10,6 +10,56 @@ import "strings"
 // same order, so no index has to be stored in the token.
 
 // arenaFor names the value arena a column's values live in.
+// tableSlots is which value-carrying machinery this table's columns can ever
+// touch. Everything downstream — the Query arenas, the binder, the Pred union
+// — is emitted from this, and ONLY this.
+//
+// It exists because the alternative was measured, not imagined: emitting every
+// arena unconditionally grew Query to 704 bytes (recorded history: ~150 with
+// the mask, ~330 with the tree), with [4]Decimal and [4]netip.Prefix copied on
+// every builder call of every table INCLUDING tables with no numeric or inet
+// column anywhere. The bench table pays for machinery it cannot name, and the
+// warm build+prepare path regressed from 257ns to ~455ns. A value type's size
+// is part of its API.
+type tableSlots struct {
+	arenas  map[string]bool // "strs", "nums", ...
+	cursors []string        // "ns", "nn", ... in canonical order
+	preds   map[string]bool // "str", "num", ... Pred union members
+	anyStr  bool            // a text column offers In
+	anyRaw  bool            // a uuid column offers In
+	hasBool bool            // b2i is only needed if a bool column exists
+}
+
+func slotsFor(cols []colInfo) tableSlots {
+	ts := tableSlots{arenas: map[string]bool{}, preds: map[string]bool{}}
+	for _, c := range cols {
+		if a, _ := arenaFor(c); a != "" {
+			ts.arenas[a] = true
+		}
+		if p := predSlotFor(c); p != "" {
+			ts.preds[strings.TrimPrefix(p, "p.")] = true
+		}
+		switch predArraySlot(c) {
+		case "anyStr":
+			ts.anyStr = true
+		case "anyRaw":
+			ts.anyRaw = true
+		}
+		if c.kind == kindBool {
+			ts.hasBool = true
+		}
+	}
+	for _, pair := range [][2]string{
+		{"strs", "ns"}, {"nums", "nn"}, {"raws", "nr"},
+		{"tims", "ntm"}, {"f64s", "nf"}, {"decs", "nd"}, {"pfxs", "npf"},
+	} {
+		if ts.arenas[pair[0]] {
+			ts.cursors = append(ts.cursors, pair[1])
+		}
+	}
+	return ts
+}
+
 func arenaFor(c colInfo) (arena, cursor string) {
 	switch c.kind {
 	case kindText:
@@ -70,17 +120,30 @@ func (g *gen) treeQuery() {
 	g.p("\tnt   uint8")
 	g.p("\ttop  uint8 // top-level conjuncts, ANDed at compile time")
 	g.p("")
-	g.p("\tstrs [%d]string", maxStr)
-	g.p("\tnums [%d]int64", maxNum)
-	g.p("\traws [%d][16]byte", maxRaw)
-	g.p("\ttims [%d]time.Time", maxTime)
-	g.p("\tf64s [%d]float64", maxFloat)
-	g.p("\tdecs [%d]runtime.Decimal", maxDec)
-	g.p("\tpfxs [%d]netip.Prefix", maxPfx)
-	g.p("\tns, nn, nr, ntm, nf, nd, npf uint8")
+	ts := slotsFor(g.cols)
+	// Arenas exist per KIND THE TABLE HAS, not per kind raorm supports. A
+	// value type's size is part of its API: every builder call copies Query,
+	// and a table with no inet column must not carry four netip.Prefix slots
+	// on every copy. Measured, not aesthetic — see slotsFor.
+	for _, ar := range []struct{ name, decl string }{
+		{"strs", "strs [%d]string"}, {"nums", "nums [%d]int64"},
+		{"raws", "raws [%d][16]byte"}, {"tims", "tims [%d]time.Time"},
+		{"f64s", "f64s [%d]float64"}, {"decs", "decs [%d]runtime.Decimal"},
+		{"pfxs", "pfxs [%d]netip.Prefix"},
+	} {
+		if ts.arenas[ar.name] {
+			g.p("\t"+ar.decl, map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
+				"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx}[ar.name])
+		}
+	}
+	g.p("\t%s uint8", strings.Join(ts.cursors, ", "))
 	g.p("")
-	g.p("\tanyRaw [][16]byte")
-	g.p("\tanyStr []string")
+	if ts.anyRaw {
+		g.p("\tanyRaw [][16]byte")
+	}
+	if ts.anyStr {
+		g.p("\tanyStr []string")
+	}
 	g.p("\thasAny bool")
 	g.p("")
 	g.p("\t// Order terms live in their own buffer and are appended to the stream")
@@ -267,6 +330,8 @@ func (g *gen) treeQuery() {
 
 // treePreds emits Where / Any / Not plus the typed leaf constructors.
 func (g *gen) treePreds() {
+	ts := slotsFor(g.cols)
+	_ = ts
 	g.p("// Where applies predicates, ANDed together.")
 	g.p("func (q Query) Where(ps ...Pred) Query {")
 	g.p("\tfor i := range ps {")
@@ -325,16 +390,33 @@ func (g *gen) treePreds() {
 	g.p("// leaf records one predicate: its value goes to the arena for its type,")
 	g.p("// its structure to the token stream.")
 	g.p("func (q *Query) leaf(p Pred) {")
-	g.p("\tif p.op == opIn {")
-	g.p("\t\tswitch {")
-	g.p("\t\tcase p.anyRaw != nil:")
-	g.p("\t\t\tq.anyRaw, q.hasAny = p.anyRaw, true")
-	g.p("\t\tcase p.anyStr != nil:")
-	g.p("\t\t\tq.anyStr, q.hasAny = p.anyStr, true")
-	g.p("\t\t}")
-	g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
-	g.p("\t\treturn")
-	g.p("\t}")
+	// Only the list branches this table's columns can produce. The generic
+	// two-branch switch referenced slots the trimmed Pred no longer carries.
+	switch {
+	case ts.anyRaw && ts.anyStr:
+		g.p("\tif p.op == opIn {")
+		g.p("\t\tswitch {")
+		g.p("\t\tcase p.anyRaw != nil:")
+		g.p("\t\t\tq.anyRaw, q.hasAny = p.anyRaw, true")
+		g.p("\t\tcase p.anyStr != nil:")
+		g.p("\t\t\tq.anyStr, q.hasAny = p.anyStr, true")
+		g.p("\t\t}")
+		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
+		g.p("\t\treturn")
+		g.p("\t}")
+	case ts.anyRaw:
+		g.p("\tif p.op == opIn {")
+		g.p("\t\tq.anyRaw, q.hasAny = p.anyRaw, true")
+		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
+		g.p("\t\treturn")
+		g.p("\t}")
+	case ts.anyStr:
+		g.p("\tif p.op == opIn {")
+		g.p("\t\tq.anyStr, q.hasAny = p.anyStr, true")
+		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
+		g.p("\t\treturn")
+		g.p("\t}")
+	}
 	g.p("\tswitch p.col {")
 	for i, c := range g.cols {
 		arena, cur := arenaFor(c)
@@ -379,17 +461,26 @@ func predSlotFor(c colInfo) string {
 
 // treeBind walks the token stream and binds arguments in leaf order.
 func (g *gen) treeBind() {
+	ts := slotsFor(g.cols)
 	g.p("type binder struct {")
 	g.p("\tvals   []any")
-	g.p("\tstrs   [%d]string", maxStr)
-	g.p("\tnums   [%d]int64", maxNum)
-	g.p("\traws   [%d][16]byte", maxRaw)
-	g.p("\ttims   [%d]time.Time", maxTime)
-	g.p("\tf64s   [%d]float64", maxFloat)
-	g.p("\tdecs   [%d]runtime.Decimal", maxDec)
-	g.p("\tpfxs   [%d]netip.Prefix", maxPfx)
-	g.p("\tanyRaw [][16]byte")
-	g.p("\tanyStr []string")
+	for _, ar := range []struct{ name, decl string }{
+		{"strs", "strs   [%d]string"}, {"nums", "nums   [%d]int64"},
+		{"raws", "raws   [%d][16]byte"}, {"tims", "tims   [%d]time.Time"},
+		{"f64s", "f64s   [%d]float64"}, {"decs", "decs   [%d]runtime.Decimal"},
+		{"pfxs", "pfxs   [%d]netip.Prefix"},
+	} {
+		if ts.arenas[ar.name] {
+			g.p("\t"+ar.decl, map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
+				"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx}[ar.name])
+		}
+	}
+	if ts.anyRaw {
+		g.p("\tanyRaw [][16]byte")
+	}
+	if ts.anyStr {
+		g.p("\tanyStr []string")
+	}
 	g.p("\tlimit  int64")
 	g.p("\toffset int64")
 	g.p("}")
@@ -438,15 +529,28 @@ func (g *gen) treeBind() {
 	g.p("\t\tswitch runtime.Op(t.Op()) {")
 	g.p("\t\tcase opIsNull, opIsNotNull:")
 	g.p("\t\t\tcontinue")
-	g.p("\t\tcase opIn:")
-	g.p("\t\t\tif q.anyRaw != nil {")
-	g.p("\t\t\t\tb.anyRaw = q.anyRaw")
-	g.p("\t\t\t\tv = append(v, &b.anyRaw)")
-	g.p("\t\t\t} else {")
-	g.p("\t\t\t\tb.anyStr = q.anyStr")
-	g.p("\t\t\t\tv = append(v, &b.anyStr)")
-	g.p("\t\t\t}")
-	g.p("\t\t\tcontinue")
+	switch {
+	case ts.anyRaw && ts.anyStr:
+		g.p("\t\tcase opIn:")
+		g.p("\t\t\tif q.anyRaw != nil {")
+		g.p("\t\t\t\tb.anyRaw = q.anyRaw")
+		g.p("\t\t\t\tv = append(v, &b.anyRaw)")
+		g.p("\t\t\t} else {")
+		g.p("\t\t\t\tb.anyStr = q.anyStr")
+		g.p("\t\t\t\tv = append(v, &b.anyStr)")
+		g.p("\t\t\t}")
+		g.p("\t\t\tcontinue")
+	case ts.anyRaw:
+		g.p("\t\tcase opIn:")
+		g.p("\t\t\tb.anyRaw = q.anyRaw")
+		g.p("\t\t\tv = append(v, &b.anyRaw)")
+		g.p("\t\t\tcontinue")
+	case ts.anyStr:
+		g.p("\t\tcase opIn:")
+		g.p("\t\t\tb.anyStr = q.anyStr")
+		g.p("\t\t\tv = append(v, &b.anyStr)")
+		g.p("\t\t\tcontinue")
+	}
 	g.p("\t\t}")
 	g.p("\t\tswitch t.Col() {")
 	for i, c := range g.cols {

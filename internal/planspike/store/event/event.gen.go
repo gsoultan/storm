@@ -55,17 +55,12 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs                         [6]string
-	nums                         [6]int64
-	raws                         [4][16]byte
-	tims                         [4]time.Time
-	f64s                         [4]float64
-	decs                         [4]runtime.Decimal
-	pfxs                         [4]netip.Prefix
-	ns, nn, nr, ntm, nf, nd, npf uint8
+	raws         [4][16]byte
+	tims         [4]time.Time
+	pfxs         [4]netip.Prefix
+	nr, ntm, npf uint8
 
 	anyRaw [][16]byte
-	anyStr []string
 	hasAny bool
 
 	// Order terms live in their own buffer and are appended to the stream
@@ -274,22 +269,10 @@ type Pred struct {
 	col    uint8
 	op     runtime.Op
 	num    int64
-	str    string
 	raw    [16]byte
 	tim    time.Time
-	f64    float64
-	dec    runtime.Decimal
 	pfx    netip.Prefix
 	anyRaw [][16]byte
-	anyStr []string
-}
-
-// b2i lets a bool ride in the numeric slot of a Pred.
-func b2i(b bool) int64 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // Typed column handles. The type of the handle is what makes
@@ -458,12 +441,7 @@ func (q Query) NotAny(ps ...Pred) Query {
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
 	if p.op == opIn {
-		switch {
-		case p.anyRaw != nil:
-			q.anyRaw, q.hasAny = p.anyRaw, true
-		case p.anyStr != nil:
-			q.anyStr, q.hasAny = p.anyStr, true
-		}
+		q.anyRaw, q.hasAny = p.anyRaw, true
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
@@ -853,15 +831,10 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 
 type binder struct {
 	vals   []any
-	strs   [6]string
-	nums   [6]int64
 	raws   [4][16]byte
 	tims   [4]time.Time
-	f64s   [4]float64
-	decs   [4]runtime.Decimal
 	pfxs   [4]netip.Prefix
 	anyRaw [][16]byte
-	anyStr []string
 	limit  int64
 	offset int64
 }
@@ -895,13 +868,8 @@ func (q Query) bind(b *binder) []any {
 		case opIsNull, opIsNotNull:
 			continue
 		case opIn:
-			if q.anyRaw != nil {
-				b.anyRaw = q.anyRaw
-				v = append(v, &b.anyRaw)
-			} else {
-				b.anyStr = q.anyStr
-				v = append(v, &b.anyStr)
-			}
+			b.anyRaw = q.anyRaw
+			v = append(v, &b.anyRaw)
 			continue
 		}
 		switch t.Col() {

@@ -644,3 +644,50 @@ generating calls into a reflective core is.
 
 Bun's ~281µs Get remains the unexplained outlier noted earlier; still do not
 cite it.
+
+---
+
+## The Query struct diet (2026-08-25)
+
+**A value type's size is part of its API, and nobody was watching it.** Query
+is copied on every builder call by design (value semantics; a pooled pointer
+was rejected for use-after-free hazards — see decisions). The type-coverage
+work silently grew it by emitting EVERY arena into EVERY table: `[4]Decimal`
+(64B) and `[4]netip.Prefix` (128B) landed in the bench table's Query, which
+has no numeric and no inet column to ever use them. Measured, the warm
+build+prepare path had regressed from the recorded 257ns to ~450ns.
+
+Fix: arenas, Pred union slots, cursors and the `opIn` branches are emitted
+only for kinds the table's columns can produce (`slotsFor` in codegen).
+
+Sizes (bytes):
+
+| | before | after |
+|---|---|---|
+| genuser.Query | 704 | **480** |
+| genuser.Pred | 176 | **120** |
+| user.Query | 704 | 544 |
+| event.Query | 704 | 440 |
+
+benchstat, n=10, p=0.000 throughout, all paths still 0 allocs:
+
+| | before | after | Δ |
+|---|---|---|---|
+| GenBuildAndPrepare_Warm | 449.5n | **321.0n** | −28.6% |
+| GenWhere_Chained | 260.9n | **174.6n** | −33.1% |
+| GenBuild_OneCall | 182.7n | **129.5n** | −29.1% |
+| Iso_GenBindOnly | 52.7n | **38.4n** | −27.0% |
+
+Chained composition now beats even the pre-regression record (174.6 vs 257).
+
+**Where the remaining 321ns goes, and why the pass stops here.** The CPU
+profile shows no hotspot left: cost is spread across the six chained-sugar
+Query copies and leaf's arena stores — the documented value-semantics trade.
+Build+prepare is 0.35% of a ~90µs round trip. The decode path was profiled
+too: 53ns/row offline, nothing actionable. Further shrinking (e.g. storing
+times as int64 in the arena) buys ~13% of size for real cleverness; not taken.
+
+**The regression's lesson:** struct sizes need a tripwire the same way
+allocations have one — a size assertion now pins Query and Pred per fixture
+table, so the next unconditional field fails a test instead of a benchmark
+nobody reran.

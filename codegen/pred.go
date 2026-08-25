@@ -17,18 +17,28 @@ func (g *gen) predType() {
 	g.p("// Pred is one predicate, produced by a typed column handle. A value with")
 	g.p("// a small union payload: no interface, nothing to allocate. Structure is")
 	g.p("// assembled by Query into a token stream — see Where/Any/Not.")
+	// The union carries only the slots this table's columns can produce: a
+	// Pred travels BY VALUE through variadic Where, so its size is paid at
+	// every call site. Same measured reasoning as the Query arenas.
+	ts := slotsFor(g.cols)
 	g.p("type Pred struct {")
 	g.p("\tcol uint8")
 	g.p("\top  runtime.Op")
-	g.p("\tnum int64")
-	g.p("\tstr string")
-	g.p("\traw [16]byte")
-	g.p("\ttim time.Time")
-	g.p("\tf64 float64")
-	g.p("\tdec runtime.Decimal")
-	g.p("\tpfx netip.Prefix")
-	g.p("\tanyRaw [][16]byte")
-	g.p("\tanyStr []string")
+	for _, sl := range []struct{ name, decl string }{
+		{"num", "num int64"}, {"str", "str string"}, {"raw", "raw [16]byte"},
+		{"tim", "tim time.Time"}, {"f64", "f64 float64"},
+		{"dec", "dec runtime.Decimal"}, {"pfx", "pfx netip.Prefix"},
+	} {
+		if ts.preds[sl.name] {
+			g.p("\t%s", sl.decl)
+		}
+	}
+	if ts.anyRaw {
+		g.p("\tanyRaw [][16]byte")
+	}
+	if ts.anyStr {
+		g.p("\tanyStr []string")
+	}
 	g.p("}")
 	g.p("")
 }
@@ -78,14 +88,16 @@ func (g *gen) sortMethods(typeName string, idx int) {
 }
 
 func (g *gen) colHandles() {
-	g.p("// b2i lets a bool ride in the numeric slot of a Pred.")
-	g.p("func b2i(b bool) int64 {")
-	g.p("\tif b {")
-	g.p("\t\treturn 1")
-	g.p("\t}")
-	g.p("\treturn 0")
-	g.p("}")
-	g.p("")
+	if slotsFor(g.cols).hasBool {
+		g.p("// b2i lets a bool ride in the numeric slot of a Pred.")
+		g.p("func b2i(b bool) int64 {")
+		g.p("\tif b {")
+		g.p("\t\treturn 1")
+		g.p("\t}")
+		g.p("\treturn 0")
+		g.p("}")
+		g.p("")
+	}
 	g.p("// Typed column handles. The type of the handle is what makes")
 	g.p("// Age.Like(...) fail to compile.")
 	g.p("var (")

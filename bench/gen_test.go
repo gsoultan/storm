@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/gsoultan/raorm/bench/genuser"
 	"github.com/gsoultan/raorm/internal/spike"
@@ -531,5 +532,21 @@ func BenchmarkGenBuild_OneCall(b *testing.B) {
 			b.Fatal(len(args))
 		}
 		genuser.PutBinder(bd)
+	}
+}
+
+// A value type's size is part of its API: Query is copied on every builder
+// call, and the type-coverage work grew it from ~330 to 704 bytes by emitting
+// every arena into every table — a −28% builder regression that no test
+// caught, because sizes had no tripwire the way allocations do. These bounds
+// are deliberately loose (they allow real growth with a real column); what
+// they catch is machinery for kinds this table does not have.
+func TestQuerySize_HasATripwire(t *testing.T) {
+	if s := unsafe.Sizeof(genuser.Query{}); s > 512 {
+		t.Errorf("genuser.Query is %d bytes (was 480 after the diet, 704 at the regression) — "+
+			"did an arena become unconditional again?", s)
+	}
+	if s := unsafe.Sizeof(genuser.Pred{}); s > 136 {
+		t.Errorf("genuser.Pred is %d bytes (was 120 after the diet, 176 at the regression)", s)
 	}
 }

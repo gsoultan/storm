@@ -62,14 +62,12 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs                         [6]string
-	nums                         [6]int64
-	raws                         [4][16]byte
-	tims                         [4]time.Time
-	f64s                         [4]float64
-	decs                         [4]runtime.Decimal
-	pfxs                         [4]netip.Prefix
-	ns, nn, nr, ntm, nf, nd, npf uint8
+	strs                [6]string
+	nums                [6]int64
+	raws                [4][16]byte
+	tims                [4]time.Time
+	decs                [4]runtime.Decimal
+	ns, nn, nr, ntm, nd uint8
 
 	anyRaw [][16]byte
 	anyStr []string
@@ -333,19 +331,9 @@ type Pred struct {
 	str    string
 	raw    [16]byte
 	tim    time.Time
-	f64    float64
 	dec    runtime.Decimal
-	pfx    netip.Prefix
 	anyRaw [][16]byte
 	anyStr []string
-}
-
-// b2i lets a bool ride in the numeric slot of a Pred.
-func b2i(b bool) int64 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // Typed column handles. The type of the handle is what makes
@@ -1282,9 +1270,7 @@ type binder struct {
 	nums   [6]int64
 	raws   [4][16]byte
 	tims   [4]time.Time
-	f64s   [4]float64
 	decs   [4]runtime.Decimal
-	pfxs   [4]netip.Prefix
 	anyRaw [][16]byte
 	anyStr []string
 	limit  int64

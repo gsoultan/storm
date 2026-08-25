@@ -54,14 +54,10 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs                         [6]string
-	nums                         [6]int64
-	raws                         [4][16]byte
-	tims                         [4]time.Time
-	f64s                         [4]float64
-	decs                         [4]runtime.Decimal
-	pfxs                         [4]netip.Prefix
-	ns, nn, nr, ntm, nf, nd, npf uint8
+	strs        [6]string
+	raws        [4][16]byte
+	tims        [4]time.Time
+	ns, nr, ntm uint8
 
 	anyRaw [][16]byte
 	anyStr []string
@@ -279,23 +275,11 @@ func (q Query) stream(buf *[21]runtime.Tok) []runtime.Tok {
 type Pred struct {
 	col    uint8
 	op     runtime.Op
-	num    int64
 	str    string
 	raw    [16]byte
 	tim    time.Time
-	f64    float64
-	dec    runtime.Decimal
-	pfx    netip.Prefix
 	anyRaw [][16]byte
 	anyStr []string
-}
-
-// b2i lets a bool ride in the numeric slot of a Pred.
-func b2i(b bool) int64 {
-	if b {
-		return 1
-	}
-	return 0
 }
 
 // Typed column handles. The type of the handle is what makes
@@ -817,12 +801,8 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 type binder struct {
 	vals   []any
 	strs   [6]string
-	nums   [6]int64
 	raws   [4][16]byte
 	tims   [4]time.Time
-	f64s   [4]float64
-	decs   [4]runtime.Decimal
-	pfxs   [4]netip.Prefix
 	anyRaw [][16]byte
 	anyStr []string
 	limit  int64
