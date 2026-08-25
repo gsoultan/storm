@@ -48,8 +48,14 @@ PREPARE proves SQL/row shape, NOT call-site argument order. The adopter suite
 every write inside a deliberately rolled-back ambient transaction. Any future
 adopter guide should prescribe exactly this.
 
-## Open follow-ups
-- anubis ADR-0009 §5 written; its no-sql-in-go check now catches backtick
-  SQL (line-start keywords) — raorm's docs/MIGRATING-FROM-SQLC.md could
-  absorb both patterns.
-- M8 tag + two-week soak was gated on M6: gate is now open.
+## Follow-ups — closed same day (raorm b050fe4, anubis 54d43e4)
+- MIGRATING-FROM-SQLC.md now carries the real patterns (SQL-owns-semantics
+  variant, live-DB PREPARE, acceptance doctrine, :exec/function-call rows);
+  API.md §10 + README document SQLExec.
+- anubis CI: rgen drift enforced — gen-drift.sh regenerates when
+  ANUBIS_DB_URL is set (honest skip otherwise), and backend-suite.sh
+  re-checks right after migrate on the scratch DB, which also proves every
+  declaration PREPAREs against PURE migrations each run.
+- M8 soak clock started 2026-08-25 → earliest v0.1.0 tag 2026-09-08
+  (recorded in docs/PLAN.md §M8). The tag is the only M-work left; it waits
+  on the calendar, not on code.
