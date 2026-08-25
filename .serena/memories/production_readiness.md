@@ -158,3 +158,12 @@ slab/slice, 17 allocs/103KB) — the exact capacity-mismatch the perf veto
 exists for; kept in RESULTS.md.
 Remaining P5: cross-table joins/rows, CTEs, windows, FILTER, GROUPING SETS,
 UNION ALL — all reachable via SQL[T] meanwhile.
+
+## M8 prep (2026-08-25): executable prose
+`examples/blog` is the quickstart AS A CI TEST against live PG — every shipped
+surface in one readable tour; drift breaks the build, which prose cannot
+promise. README rewritten from "Status: design. No code yet." to the measured
+truth. docs/API.md carries an as-built banner naming the four flagrant drifts
+(Query()→New(), no Get/Iter, Insert(row)→Create() builder, field-pointer
+plans). Remaining before v1: M6 adopter run (anubis), M8 release policy, the
+machine-blocked socket bench, and the full design-doc reconciliation.
