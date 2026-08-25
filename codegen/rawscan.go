@@ -67,13 +67,13 @@ func dedupeRawScanners(in []RawScanner) ([]RawScanner, error) {
 		}
 		if len(prev.cols) != len(rs.cols) {
 			return nil, fmt.Errorf(
-				"row type %s is returned by queries with %d and %d result columns — align the SELECT lists or declare a second row type",
+				"raorm: row type %s is returned by queries with %d and %d result columns — align the SELECT lists or declare a second row type",
 				rs.TypeName, len(prev.cols), len(rs.cols))
 		}
 		for i := range prev.cols {
 			if prev.cols[i] != rs.cols[i] {
 				return nil, fmt.Errorf(
-					"row type %s is returned by two queries whose result columns disagree at position %d (%s vs %s) — align the SELECT lists or declare a second row type",
+					"raorm: row type %s is returned by two queries whose result columns disagree at position %d (%s vs %s) — align the SELECT lists or declare a second row type",
 					rs.TypeName, i+1, prev.cols[i].field, rs.cols[i].field)
 			}
 		}
