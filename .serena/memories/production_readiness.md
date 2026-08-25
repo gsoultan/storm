@@ -114,3 +114,14 @@ Go binaries get EHOSTUNREACH dialing the Apple container's 192.168.64.x IP
 127.0.0.1:5433** (5432 is another project's forward). Run tests with
 `RAORM_DSN=postgres://raorm:raorm@127.0.0.1:5433/raorm`; the Makefile's
 container-IP DSN derivation is broken for Go on this machine.
+
+## Perf pass (2026-08-25): the Query struct diet
+**A value type's size is part of its API.** Type-coverage work emitted every
+arena into every table's Query → 704B (history: ~150 mask, ~330 tree), builder
+regressed 257→~450ns and NO TEST CAUGHT IT — allocations have AllocsPerRun
+tripwires, sizes had none. Fix: `slotsFor` emits arenas/Pred slots/opIn
+branches only for kinds the table has. genuser.Query 480B, Pred 120B; builder
+−24.5% geomean (chained 174.6ns beats the old record), all 0-alloc, p=0.000
+n=10. **TestQuerySize now pins sizes.** Profile says stop: remaining cost is
+the documented value-semantics copies, 0.35% of a round trip. `make db` now
+publishes loopback :5433 (Makefile DSN fixed for this machine's EHOSTUNREACH).
