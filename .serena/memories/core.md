@@ -21,7 +21,7 @@ CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
 single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
 sequence**, which deliberately runs writes (M4) before relations (M3).
 
-See [[m0_results]] for the thesis numbers, [[seam_and_codegen]] for R9 and the
+See [[m6_first_adopter]] for the adopter migration (M6 PASSED 2026-08-25 — anubis/authz fully on raorm, p95 parity, four raorm fixes it forced), [[m0_results]] for the thesis numbers, [[seam_and_codegen]] for R9 and the
 generator, [[plan_types]] for why M3 is de-risked, [[write_path]] for M4.
 
 ## Read in this order

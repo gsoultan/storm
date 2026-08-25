@@ -652,6 +652,39 @@ regresses p95, raorm is not ready for the other seven. Freeze all feature work
 and fix the adoption path — a library that is hard to adopt has no users, and
 its own author is the first one to notice.
 
+### M6 status — PASSED 2026-08-25, in one day, kill criterion does not fire
+
+The whole context migrated, not a slice: 44 sqlc queries became 34
+`raorm.SQL[T]` + 10 `raorm.SQLExec` declarations in one designated
+`rquery` package, plus one builder query (`RoleByName`) over an `rmodel`
+projection. `db/queries/authz/`, sqlc's `gen/` (2,481 lines together) and
+the sqlc.yaml section are deleted; anubis CI is green including a
+tightened no-SQL-in-Go check (backtick bodies now caught, `rquery/` the
+sanctioned home, ADR-0009 amended §5).
+
+- **p95 gate:** same-run, n=500 each, anubis commit 26f612c — authorize
+  over pgx p95=214.875µs vs over the raorm repository p95=203.958µs. No
+  regression; the repository path measured at parity or better in every
+  run of the day.
+- **Diff-size gate:** hand-written surface 379 SQL + ~25 yaml lines →
+  741 declaration lines (row types inline) + 36 model + 74 adapter.
+  Larger in raw lines, but one language, one package, typed rows —
+  the DX claim held by review, and generated volume stayed flat
+  (2,102 → 2,311, of which 1,997 is the reusable roles builder).
+- **Adoption findings, all fixed in raorm the same day:** raw-scanner
+  import alias vs package name (dir `rquery`, package `authzrquery`);
+  `Null[T]` fields never matched because reflect names generics
+  `Null[string]`; duplicate scanners when two queries share a row type
+  (now deduped with a positional-agreement check); `SQLExec` did not
+  exist and real query files are one-third `:exec` statements.
+- **Deviation, documented:** anubis PREPAREs against the live dev
+  database, not a model scratch schema — `authorize()` and friends live
+  in migrations, which remain the schema of record; the model is a
+  projection.
+- Acceptance: five `TestRaormFull_*` integration families drive every
+  repository method with value parity and rolled-back writes, because
+  PREPARE proves SQL shape but not call-site argument order.
+
 ## M7 — Tooling gate and hardening (2 weeks)
 
 `raorm explain` (EXPLAIN ANALYZE per named query, in CI), `raorm lint`
