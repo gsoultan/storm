@@ -86,7 +86,7 @@ findings from reading the code as it actually stands drove the reordering:
 | **P2** | plan-type ergonomics spike, hand-written ✅ | de-risks M3 | 3 d |
 | **P3** | writes, unit of work, batching ✅ | **M4** | 2 wk |
 | **P4** | relations, named plans, `= ANY` alloc fix ◐ | **M3** | 4 wk |
-| **P5** | joins, ordering, pagination, projections, CTEs, windows | **M2** rest | 4 wk+ |
+| **P5** | joins, ordering, pagination, projections, CTEs, windows ◐ | **M2** rest | 4 wk+ |
 
 ≈ 12 weeks to a write-capable, relation-capable Postgres ORM with the dialect
 seam intact; P5 before the M6 adopter.
@@ -302,7 +302,27 @@ compile-fail suite now runs against generated code.
 **Still outstanding for M3:** named multi-relation plans (needs the `plans.go`
 front end), m2m with payload, and polymorphic associations.
 
-### P5 — read expressiveness = rest of M2 (4 weeks+)
+### P5 — read expressiveness = rest of M2 (4 weeks+) ◐
+
+**Shipped 2026-08-25 — the semi-join family, both tiers:**
+
+- `user.HasPosts()` / `HasNoPosts()`: constant `EXISTS` fragments as
+  pseudo-columns past `nCols` — And/Or/Not composition free from the token
+  stream, zero allocations to build, inner table always aliased (a
+  self-reference otherwise captures the outer table).
+- `store.UserHavingPosts(q, post.PublishedAt.IsNotNull())`: the FILTERED
+  semi-join, child predicates typed by the child's package, one statement,
+  placeholders numbered across the package boundary by one splice over the
+  concatenated token streams (child columns rebased past
+  `runtime.ChildColBase`). Each table package exports composition seams —
+  ids and constant fragments only.
+
+Ordering, OFFSET and keyset pagination shipped earlier (see M2 additions).
+**Still owed:** projections into custom row types, inner/left joins with
+cross-table rows, CTEs as values, windows, `FILTER`, `GROUPING SETS`,
+`UNION ALL` — all currently reachable through `raorm.SQL[T]`, typed and
+validated, which is what makes the native versions incremental rather than
+blocking.
 
 Joins, runtime `Order`, `OFFSET` and keyset pagination, projections into custom
 row types, CTEs, windows, `FILTER`, `GROUPING SETS`, `UNION ALL`. The largest
