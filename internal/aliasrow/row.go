@@ -4,7 +4,13 @@
 // qualify row types by the DECLARED name while importing the directory path.
 package aliasrowx
 
-// Row is a raw-query row type for codegen's alias regression test.
+import "github.com/gsoultan/raorm/runtime"
+
+// Row is a raw-query row type for codegen's alias regression test. Note is
+// Null[T] because reflect names a generic instantiation "Null[string]", not
+// "Null" — the shape detection must match the prefix, and anubis's first
+// nullable raw column is what proved it didn't.
 type Row struct {
 	Name string
+	Note runtime.Null[string]
 }

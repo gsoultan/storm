@@ -38,6 +38,49 @@ type rawCol struct {
 	nullable bool // the FIELD chose Null[T]; the descriptor cannot say
 }
 
+// Nullable reports whether the named field resolved as Null[T].
+func (rs RawScanner) Nullable(field string) bool {
+	for _, c := range rs.cols {
+		if c.field == field {
+			return c.nullable
+		}
+	}
+	return false
+}
+
+// dedupeRawScanners collapses queries sharing a row type to one scanner —
+// RegisterScanner keys by type, so one is all that can exist — after
+// verifying the shared descriptors agree column for column. Scanners decode
+// by POSITION: two SELECTs feeding one type in different column orders would
+// make one of them silently transpose, so disagreement is an error naming
+// the type, not a dedupe.
+func dedupeRawScanners(in []RawScanner) ([]RawScanner, error) {
+	var out []RawScanner
+	seen := map[string]RawScanner{}
+	for _, rs := range in {
+		key := rs.TypeImport + "." + rs.TypeName
+		prev, ok := seen[key]
+		if !ok {
+			seen[key] = rs
+			out = append(out, rs)
+			continue
+		}
+		if len(prev.cols) != len(rs.cols) {
+			return nil, fmt.Errorf(
+				"row type %s is returned by queries with %d and %d result columns — align the SELECT lists or declare a second row type",
+				rs.TypeName, len(prev.cols), len(rs.cols))
+		}
+		for i := range prev.cols {
+			if prev.cols[i] != rs.cols[i] {
+				return nil, fmt.Errorf(
+					"row type %s is returned by two queries whose result columns disagree at position %d (%s vs %s) — align the SELECT lists or declare a second row type",
+					rs.TypeName, i+1, prev.cols[i].field, rs.cols[i].field)
+			}
+		}
+	}
+	return out, nil
+}
+
 // ResolveRawScanner matches a result descriptor against a row type.
 //
 // Matching is by NAME, column to exported field (org_name → OrgName), because
@@ -95,8 +138,10 @@ func ResolveRawScanner(rt reflect.Type, typeImport string, fields []RawField) (R
 }
 
 // fieldShape reports the field's element Go type and whether it is Null[T].
+// A generic instantiation's reflect.Name carries its type argument —
+// "Null[string]", not "Null" — which is why this matches on the prefix.
 func fieldShape(t reflect.Type) (string, bool) {
-	if t.Kind() == reflect.Struct && t.Name() == "Null" &&
+	if t.Kind() == reflect.Struct && strings.HasPrefix(t.Name(), "Null[") &&
 		strings.HasPrefix(t.PkgPath(), "github.com/gsoultan/raorm") {
 		v, _ := t.FieldByName("V")
 		return v.Type.String(), true

@@ -209,7 +209,11 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 			arcOwners++
 		}
 	}
-	body.emitRawScanners(o.RawScanners)
+	rawScanners, err := dedupeRawScanners(o.RawScanners)
+	if err != nil {
+		return nil, err
+	}
+	body.emitRawScanners(rawScanners)
 	for _, h := range having {
 		arcPkgs[h.ParentPkg] = true
 		arcPkgs[h.ChildPkg] = true
