@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -270,5 +272,120 @@ func TestCLI_ExplainPlansEveryStatement(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("explain output is missing %q:\n%s", want, stdout)
 		}
+	}
+}
+
+// The generation half of raorm.SQL[T]: the statement PREPAREs against the
+// MODEL in a scratch schema, the descriptor is matched against the row type,
+// and the emitted scanner COMPILES — with the runtime half proven separately
+// by a hand-registered scanner in planspike, the P2 split.
+func TestCLI_GenerateRawQueries(t *testing.T) {
+	withModels(t, testmodel.All())
+	prevQ := RawQueries
+	RawQueries = testmodel.Queries()
+	t.Cleanup(func() { RawQueries = prevQ })
+
+	// Capture the DSN before the no-DSN sub-check clears the env — reading it
+	// back afterwards is how this test skipped itself on the first run.
+	liveDSN := dsn(t)
+
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := func(name string) string {
+		d := filepath.Join(root, "internal", name+strconv.Itoa(os.Getpid()))
+		t.Cleanup(func() { os.RemoveAll(d) })
+		return d
+	}
+
+	// Without a DSN the failure names what is needed and why it is small.
+	t.Setenv("RAORM_DSN", "")
+	if err := run([]string{"generate", scratch("rawnodsn")}); err == nil {
+		t.Fatal("raw queries without a server must fail")
+	} else if !strings.Contains(err.Error(), "an existing schema is not") {
+		t.Errorf("the error should say only a server is needed, got: %v", err)
+	}
+
+	// With one, generation lands the scanner in the context file — into the
+	// repo tree, so the output can be BUILT, which is the bar.
+	rel := filepath.Join("internal", "rawgen"+strconv.Itoa(os.Getpid()))
+	dir := filepath.Join(root, rel)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	if err := run([]string{"generate", dir, "-dsn", liveDSN}); err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(filepath.Join(dir, "rawgen"+strconv.Itoa(os.Getpid())+".gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"raorm.RegisterScanner(scanEarnerRow)",
+		"func scanEarnerRow(rv [][]byte, r *testmodel.EarnerRow, sl *runtime.Slab) error {",
+		"r.OrgUsers = runtime.Int8(rv[3])",
+	} {
+		if !strings.Contains(string(src), want) {
+			t.Errorf("the emitted scanner is missing %q", want)
+		}
+	}
+	cmd := exec.Command("go", "build", "./"+filepath.ToSlash(rel)+"/...")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the generated scanner does not compile: %v\n%s", err, out)
+	}
+}
+
+// The mismatch errors are the feature: each names the column, the type and the
+// fix, at BUILD time.
+func TestCLI_RawQueryMismatchesFailGeneration(t *testing.T) {
+	withModels(t, testmodel.All())
+	prevQ := RawQueries
+	t.Cleanup(func() { RawQueries = prevQ })
+
+	for _, tc := range []struct {
+		name string
+		decl raorm.RawDecl
+		want []string
+	}{
+		{
+			"surplus column",
+			raorm.SQL[struct{ Email string }](`SELECT email, name FROM users`),
+			[]string{`result column 2 "name"`, "has no field", "add `Name string`"},
+		},
+		{
+			"unfed field",
+			raorm.SQL[struct {
+				Email string
+				Ghost int64
+			}](`SELECT email FROM users`),
+			[]string{"Ghost is fed by no result column", `aliased "ghost"`},
+		},
+		{
+			"type mismatch",
+			raorm.SQL[struct{ Email int64 }](`SELECT email FROM users`),
+			[]string{`column 1 "email" is text`, "Email is int64", "cast the column"},
+		},
+		{
+			"does not prepare",
+			raorm.SQL[struct{ X int64 }](`SELECT nope FROM users`),
+			[]string{"does not prepare against the model"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			RawQueries = []raorm.RawDecl{tc.decl}
+			root, _ := filepath.Abs("../..")
+			out := filepath.Join(root, "internal", "rawbad"+strconv.Itoa(os.Getpid()))
+			t.Cleanup(func() { os.RemoveAll(out) })
+			err := run([]string{"generate", out, "-dsn", dsn(t)})
+			if err == nil {
+				t.Fatal("generation must fail")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error should contain %q, got:\n%v", w, err)
+				}
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -13,6 +14,21 @@ import (
 // unhelpfully is a tool people work around. These assert the MESSAGES, not just
 // the exit status: "no models registered" pointing at the docs is the
 // difference between a five-minute start and an afternoon.
+
+// moduleScratch is a per-test output directory INSIDE the module. generate
+// derives import paths from the module root, so t.TempDir() — outside it — is
+// now rejected; the old tests used it anyway, and their generated files
+// carried broken import paths that nothing noticed because nothing built them.
+func moduleScratch(t *testing.T, name string) string {
+	t.Helper()
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := filepath.Join(root, "internal", name+strconv.Itoa(os.Getpid()))
+	t.Cleanup(func() { os.RemoveAll(d) })
+	return d
+}
 
 func withModels(t *testing.T, m []any) {
 	t.Helper()
@@ -74,7 +90,7 @@ func TestCLI_DDL(t *testing.T) {
 
 func TestCLI_GenerateThenVerifyStale(t *testing.T) {
 	withModels(t, testmodel.All())
-	dir := filepath.Join(t.TempDir(), "store")
+	dir := filepath.Join(moduleScratch(t, "clistale"), "store")
 
 	if err := run([]string{"generate", dir}); err != nil {
 		t.Fatal(err)
@@ -99,7 +115,7 @@ func TestCLI_GenerateThenVerifyStale(t *testing.T) {
 // say how to fix it.
 func TestCLI_VerifyStaleDetectsAnEdit(t *testing.T) {
 	withModels(t, testmodel.All())
-	dir := filepath.Join(t.TempDir(), "store")
+	dir := filepath.Join(moduleScratch(t, "clistale"), "store")
 	if err := run([]string{"generate", dir}); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +141,7 @@ func TestCLI_VerifyStaleDetectsAnEdit(t *testing.T) {
 // A missing file is as stale as a wrong one, and must not be silently ignored.
 func TestCLI_VerifyStaleDetectsADeletion(t *testing.T) {
 	withModels(t, testmodel.All())
-	dir := filepath.Join(t.TempDir(), "store")
+	dir := filepath.Join(moduleScratch(t, "clistale"), "store")
 	if err := run([]string{"generate", dir}); err != nil {
 		t.Fatal(err)
 	}

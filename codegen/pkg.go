@@ -38,6 +38,11 @@ type PackageOptions struct {
 	// TopStrategy selects the greatest-n-per-group lowering for every table.
 	TopStrategy TopStrategy
 
+	// RawScanners are the resolved raw-query scanners to emit into the
+	// context package. The generate command resolves them (it owns the
+	// database connection); Package only prints.
+	RawScanners []RawScanner
+
 	// Package is the parent package that holds the context file: the flush
 	// order and the Unit constructor. Empty skips it, which is what a
 	// single-table generation wants.
@@ -196,6 +201,7 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 			arcOwners++
 		}
 	}
+	body.emitRawScanners(o.RawScanners)
 	if body.err != nil {
 		return nil, body.err
 	}
@@ -217,6 +223,17 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	g.p("\t%q", o.Import+"/runtime")
 	for _, pkg := range planPackages(plans, named, arcPkgs) {
 		g.p("\t%q", o.PackageImport+"/"+pkg)
+	}
+	if len(o.RawScanners) > 0 {
+		g.p("")
+		g.p("\t%q", o.Import)
+		seenTI := map[string]bool{}
+		for _, rs := range o.RawScanners {
+			if !seenTI[rs.TypeImport] {
+				seenTI[rs.TypeImport] = true
+				g.p("\t%q", rs.TypeImport)
+			}
+		}
 	}
 	g.p(")")
 	g.p("")

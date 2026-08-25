@@ -35,6 +35,10 @@ const modulePath = "github.com/gsoultan/raorm"
 // variable rather than a plugin keeps the tool a plain Go binary.
 var Models []any
 
+// RawQueries is set by the same bootstrap: every raorm.SQL[T] declaration that
+// wants a generated scanner and build-time validation.
+var RawQueries []raorm.RawDecl
+
 const usage = `raorm — a compile-time ORM for PostgreSQL
 
 usage:
@@ -139,7 +143,7 @@ func run(args []string) error {
 		if nargs > 0 {
 			dir = arg(0)
 		}
-		return generate(dir, model)
+		return generate(dir, model, *dsn)
 
 	case "verify":
 		if *pending {
@@ -183,6 +187,103 @@ func connect(dsn string) (*pgx.Conn, context.Context, func(), error) {
 		return nil, nil, nil, err
 	}
 	return c, ctx, func() { c.Close(ctx); cancel() }, nil
+}
+
+// moduleRoot walks up from the working directory to the go.mod.
+// resolveOutDir pins an output directory to the module: the absolute path to
+// write to, and the module-relative path the IMPORT is built from. One
+// function because generate and verify -stale must agree byte-for-byte — the
+// first split between them reported freshly-generated code as stale.
+func resolveOutDir(dir string) (absDir, rel string, err error) {
+	root, err := moduleRoot()
+	if err != nil {
+		return "", "", err
+	}
+	abs := dir
+	if !filepath.IsAbs(abs) {
+		if abs, err = filepath.Abs(dir); err != nil {
+			return "", "", err
+		}
+	}
+	rel, err = filepath.Rel(root, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", "", fmt.Errorf(
+			"the output directory %s is outside this module — generated code's import "+
+				"path cannot point outside it; use a directory under %s", dir, root)
+	}
+	return filepath.Join(root, rel), rel, nil
+}
+
+func moduleRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", errors.New("no go.mod above the working directory — run raorm inside the module")
+		}
+		dir = parent
+	}
+}
+
+// prepareRawQueries PREPAREs every registered raorm.SQL declaration against
+// the MODEL and resolves its scanner.
+//
+// Against the model, not the live schema: the model DDL is applied to a
+// scratch namespace first, so a drifted dev database cannot vouch for a query
+// the model would reject — and no pre-existing schema is needed at all, only a
+// PostgreSQL server, which is what makes this workable in CI.
+func prepareRawQueries(dsn string, model *schema.Schema) ([]codegen.RawScanner, error) {
+	if len(RawQueries) == 0 {
+		return nil, nil
+	}
+	if dsn == "" {
+		return nil, errors.New(
+			"raw queries are registered, and validating them needs -dsn (or $RAORM_DSN): " +
+				"the model is applied to a scratch schema and each statement is PREPAREd " +
+				"against it — a server is required, an existing schema is not")
+	}
+	c, ctx, done, err := connect(dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
+	const scratch = "raorm_sqlcheck"
+	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
+		return nil, err
+	}
+	defer func() { _, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE") }()
+	if _, err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
+		return nil, err
+	}
+	if _, err := c.Exec(ctx, pgddl.Create(model)); err != nil {
+		return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
+	}
+
+	var out []codegen.RawScanner
+	for i, d := range RawQueries {
+		rt, sql := raorm.DeclOf(d)
+		sd, err := c.Prepare(ctx, fmt.Sprintf("raorm_sqlcheck_%d", i), sql)
+		if err != nil {
+			return nil, fmt.Errorf("raorm.SQL[%s] does not prepare against the model:\n  %w", rt.Name(), err)
+		}
+		fields := make([]codegen.RawField, len(sd.Fields))
+		for j, f := range sd.Fields {
+			fields[j] = codegen.RawField{Name: string(f.Name), OID: f.DataTypeOID}
+		}
+		rs, err := codegen.ResolveRawScanner(rt, rt.PkgPath(), fields)
+		if err != nil {
+			return nil, fmt.Errorf("raorm.SQL[%s]\n  %w", rt.Name(), err)
+		}
+		out = append(out, rs)
+	}
+	return out, nil
 }
 
 // lint costs every named plan and fails when one exceeds the budget.
@@ -229,12 +330,27 @@ func lint(model *schema.Schema, maxTrips int) error {
 // Every file is rendered before any is written. A generation that fails on the
 // ninth table must not leave eight new packages and a broken build behind —
 // `raorm verify` would then be comparing against a tree nobody intended.
-func generate(dir string, model *schema.Schema) error {
+func generate(dir string, model *schema.Schema, dsn string) error {
+	// The import path is derived from the directory, which only means anything
+	// module-relative: gluing an ABSOLUTE path onto the module path produces
+	// an import that cannot compile — found the moment a test finally BUILT
+	// the output instead of reading it. An absolute dir is made relative to
+	// the working directory (the module root, where raorm runs), and one that
+	// escapes the module is an error naming why, not a tree that fails later.
+	dir, rel, err := resolveOutDir(dir)
+	if err != nil {
+		return err
+	}
+	scanners, err := prepareRawQueries(dsn, model)
+	if err != nil {
+		return err
+	}
 	files, err := codegen.Package(model, codegen.PackageOptions{
 		Dir:           dir,
 		Import:        modulePath,
 		Package:       filepath.Base(dir),
-		PackageImport: modulePath + "/" + filepath.ToSlash(dir),
+		PackageImport: modulePath + "/" + filepath.ToSlash(rel),
+		RawScanners:   scanners,
 	})
 	if err != nil {
 		return err
@@ -310,11 +426,20 @@ func diff(dsn, ns, out, name string, model *schema.Schema, allowDestructive bool
 // It compares bytes rather than regenerating in place, so a CI run cannot
 // "fix" the problem by rewriting the tree it was asked to check.
 func verifyStale(dir string, model *schema.Schema) error {
+	dir, rel, err := resolveOutDir(dir)
+	if err != nil {
+		return err
+	}
+	scanners, err := prepareRawQueries(os.Getenv("RAORM_DSN"), model)
+	if err != nil {
+		return err
+	}
 	want, err := codegen.Package(model, codegen.PackageOptions{
 		Dir:           dir,
 		Import:        modulePath,
 		Package:       filepath.Base(dir),
-		PackageImport: modulePath + "/" + filepath.ToSlash(dir),
+		PackageImport: modulePath + "/" + filepath.ToSlash(rel),
+		RawScanners:   scanners,
 	})
 	if err != nil {
 		return err
