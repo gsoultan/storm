@@ -254,7 +254,7 @@ func prepareRawQueries(dsn string, model *schema.Schema) ([]codegen.RawScanner, 
 	}
 	defer done()
 
-	const scratch = "raorm_sqlcheck"
+	scratch := fmt.Sprintf("raorm_sqlcheck_%d", os.Getpid())
 	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
 		return nil, err
 	}
@@ -496,7 +496,7 @@ func verifyPending(dsn, out string, model *schema.Schema) error {
 	}
 	defer done()
 
-	const scratch = "raorm_pending"
+	scratch := fmt.Sprintf("raorm_pending_%d", os.Getpid())
 	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
 		return fmt.Errorf("create scratch schema: %w", err)
 	}

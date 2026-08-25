@@ -88,6 +88,10 @@ type Query struct {
 	// mixed records an After() over an ordering that is not all in one
 	// direction. No single row comparison expresses that.
 	mixed bool
+
+	// noOrder suppresses the default ordering. See Unordered.
+	noOrder  bool
+	badAfter bool
 }
 
 // New starts a query.
@@ -123,6 +127,11 @@ func (q Query) Offset(n int64) Query { q.offset = n; return q }
 func (q Query) After(r Row) Query {
 	terms := q.otoks[:q.no]
 	if q.no == 0 {
+		if q.noOrder {
+			// A keyset cursor without an order is a position in nothing.
+			q.badAfter = true
+			return q
+		}
 		terms = defaultOrder[:]
 	}
 	if len(terms) == 0 {
@@ -246,6 +255,19 @@ func (q *Query) cursor(col uint32, r Row) {
 	}
 }
 
+// Unordered drops the default ordering, for results consumed in an
+// order-independent way — a batch loader that buckets rows into a map,
+// an aggregation, a bulk export.
+//
+// The default exists because paging an unordered read is a bug; the
+// escape exists because ordering a read NOBODY PAGES is a server-side
+// sort for free. Measured on a 50k-row relation load: an external merge
+// sort spilling 5MB to disk, for an order the loader's map bucketing
+// destroyed on arrival. An explicit Order() still applies; After() on an
+// unordered query with no explicit order is an error, because a keyset
+// cursor without an order is a position in nothing.
+func (q Query) Unordered() Query { q.noOrder = true; return q }
+
 // Sort is one ORDER BY term, produced by a column handle: Email.Asc().
 type Sort runtime.Tok
 
@@ -275,8 +297,14 @@ func (q Query) Err() error {
 	if q.mixed {
 		return errMixedOrder
 	}
+	if q.badAfter {
+		return errAfterUnordered
+	}
 	return nil
 }
+
+var errAfterUnordered = errors.New(
+	"raorm: After() on an Unordered() query with no explicit Order — a keyset cursor without an ordering is a position in nothing")
 
 var errMixedOrder = errors.New(
 	"raorm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
@@ -314,6 +342,9 @@ func (q Query) preds(buf *[21]runtime.Tok) []runtime.Tok {
 func (q Query) stream(buf *[21]runtime.Tok) []runtime.Tok {
 	n := len(q.preds(buf))
 	if q.no == 0 {
+		if q.noOrder {
+			return buf[:n]
+		}
 		n += copy(buf[n:], defaultOrder[:])
 		return buf[:n]
 	}
@@ -814,6 +845,8 @@ func (q Query) OrgIDIn(v ...[16]byte) Query          { return q.Where(OrgID.In(v
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "scopes", "age", "last_ip", "balance", "credit", "org_id" FROM "users"`
 const countPrefix = `SELECT count(*) FROM "users"`
+const existsPrefix = `SELECT 1 FROM "users"`
+const existsSuffix = ` LIMIT 1`
 const limitSuffix = ` LIMIT $`
 const limitOffsetSuffix = ` LIMIT $ OFFSET $`
 
@@ -1181,6 +1214,7 @@ var (
 	cache       = runtime.NewTreeCache()
 	offsetCache = runtime.NewTreeCache()
 	countCache  = runtime.NewTreeCache()
+	existsCache = runtime.NewTreeCache()
 )
 
 // Shapes reports how many distinct query structures have compiled.
@@ -1199,6 +1233,16 @@ func stmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 		return st
 	}
 	return c.Put(toks, runtime.SpliceTree(selectPrefix, toks, lowering, suffix))
+}
+
+// existsStmtFor compiles the existence probe: SELECT 1, no ORDER BY,
+// LIMIT 1 — the planner stops at the first matching tuple instead of
+// sorting every match to return the "first" of an order nobody reads.
+func existsStmtFor(toks []runtime.Tok) *runtime.Stmt {
+	if st := existsCache.Get(toks); st != nil {
+		return st
+	}
+	return existsCache.Put(toks, runtime.SpliceTree(existsPrefix, toks, lowering, existsSuffix))
 }
 
 func countStmtFor(toks []runtime.Tok) *runtime.Stmt {
@@ -1287,9 +1331,10 @@ type Binder = binder
 func GetBinder() *Binder  { return binders.Get() }
 func PutBinder(b *Binder) { binders.Put(b) }
 
-// bind copies arena values into the pooled buffer and points the []any
-// at the buffer's own fields — boxing a pointer does not allocate.
-func (q Query) bind(b *binder) []any {
+// bindPreds copies arena values into the pooled buffer and points the
+// []any at the buffer's own fields — boxing a pointer does not allocate.
+// Count and Exists stop here: their statements carry no LIMIT or OFFSET.
+func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
 	var ns, nn, nr, ntm, nd uint8
 	for i := uint8(0); i < q.nt; i++ {
@@ -1370,10 +1415,16 @@ func (q Query) bind(b *binder) []any {
 			nr++
 		}
 	}
+	b.vals = v
+	return v
+}
+
+// bind is bindPreds plus the paging arguments, in suffix order.
+func (q Query) bind(b *binder) []any {
+	v := q.bindPreds(b)
 	b.limit = q.limit
 	v = append(v, &b.limit)
-	// LIMIT and OFFSET are bound last, in the order the suffix spells
-	// them. An offset of zero is absent from the statement, so binding it
+	// An offset of zero is absent from the statement, so binding it
 	// would leave an argument nothing consumes.
 	if q.offset > 0 {
 		b.offset = q.offset
@@ -1445,8 +1496,11 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 	}
 	b := binders.Get()
 	defer binders.Put(b)
-	args := q.bind(b)
-	rows, err := ex.Query(ctx, st.SQL, args[:len(args)-1]) // drop the limit
+	// bindPreds, not bind: a count has no LIMIT and no OFFSET. The old
+	// form bound everything and sliced the last argument off, which was
+	// the limit — unless Offset was set, in which case it silently kept
+	// the limit and dropped the offset, and the statement mismatched.
+	rows, err := ex.Query(ctx, st.SQL, q.bindPreds(b))
 	if err != nil {
 		return 0, err
 	}
@@ -1458,10 +1512,28 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 	return n, rows.Err()
 }
 
-// Exists is One with the row discarded.
+// Exists asks the one-bit question with a one-bit statement: SELECT 1,
+// no ORDER BY, LIMIT 1. It was previously One() with the row thrown
+// away, which projected every column AND carried the default ordering —
+// measured on 50k rows, the planner top-N-sorted all 16,667 matches to
+// return the "first" of an order nobody was going to read.
 func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
-	_, ok, err := q.Limit(1).One(ctx, ex)
-	return ok, err
+	if err := q.Err(); err != nil {
+		return false, err
+	}
+	var buf [21]runtime.Tok
+	st := existsStmtFor(q.preds(&buf))
+	if st.Err != nil {
+		return false, st.Err
+	}
+	b := binders.Get()
+	defer binders.Put(b)
+	rows, err := ex.Query(ctx, st.SQL, q.bindPreds(b))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	return rows.Next(), rows.Err()
 }
 
 // Prepare resolves the structure and binds arguments without executing.

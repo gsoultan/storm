@@ -417,7 +417,7 @@ func (g *gen) emitMemberLoader(q, fn, rowType, parentTable string, m planMemberT
 		g.p("\t\tids[i] = out[i].%s", keyField)
 		g.p("\t\tat[out[i].%s] = i", keyField)
 		g.p("\t}")
-		g.p("\tkids, err := %s.New().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
+		g.p("\tkids, err := %s.New().Unordered().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
 			m.ChildPkg, m.ChildPkg, childKey)
 		g.p("\tif err != nil {")
 		g.p("\t\treturn err")
@@ -480,7 +480,7 @@ func (g *gen) emitMemberLoader(q, fn, rowType, parentTable string, m planMemberT
 	g.p("\tif len(ids) == 0 {")
 	g.p("\t\treturn nil")
 	g.p("\t}")
-	g.p("\ttargets, err := %s.New().Where(%s.%s.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)",
+	g.p("\ttargets, err := %s.New().Unordered().Where(%s.%s.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)",
 		m.ChildPkg, m.ChildPkg, childKey)
 	g.p("\tif err != nil {")
 	g.p("\t\treturn err")
@@ -550,7 +550,7 @@ func (g *gen) emitNestedPass(q, fn, outerRow, outerField, innerRow string, m pla
 	g.p("\t\t\tat[k] = at%s{i, j}", fn)
 	g.p("\t\t}")
 	g.p("\t}")
-	g.p("\tkids, err := %s.New().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
+	g.p("\tkids, err := %s.New().Unordered().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
 		m.ChildPkg, m.ChildPkg, childKey)
 	g.p("\tif err != nil {")
 	g.p("\t\treturn err")
@@ -715,7 +715,10 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	g.p("\t\t// Per-parent limit: one query with the limit expressed in SQL.")
 	g.p("\t\tkids, err = %s.BatchTopBy%s(ctx, ex, ids, p.childTop, p.childOrder...)", p.ChildPkg, exportName(p.rel.Column))
 	g.p("\t} else {")
-	g.p("\t\tcq := %s.New().Where(%s.%s.In(ids...)).Limit(p.childLimit)", p.ChildPkg, p.ChildPkg, childHandle)
+	g.p("\t\t// Unordered: the rows are bucketed into a map by parent, so a")
+	g.p("\t\t// server-side sort is paid and then destroyed. ChildOrder still")
+	g.p("\t\t// applies when given — order WITHIN a parent survives bucketing.")
+	g.p("\t\tcq := %s.New().Unordered().Where(%s.%s.In(ids...)).Limit(p.childLimit)", p.ChildPkg, p.ChildPkg, childHandle)
 	g.p("\t\tif len(p.childOrder) > 0 {")
 	g.p("\t\t\tcq = cq.Order(p.childOrder...)")
 	g.p("\t\t}")
@@ -807,7 +810,7 @@ func (g *gen) emitToOnePlan(p relPlan) {
 	g.p("\tif len(ids) == 0 {")
 	g.p("\t\treturn out, nil")
 	g.p("\t}")
-	g.p("\ttargets, err := %s.New().", p.ChildPkg)
+	g.p("\ttargets, err := %s.New().Unordered().", p.ChildPkg)
 	g.p("\t\tWhere(%s.%s.In(ids...)).", p.ChildPkg, childHandle)
 	g.p("\t\tLimit(int64(len(ids))).")
 	g.p("\t\tAll(ctx, ex, nil)")

@@ -130,7 +130,7 @@ func (p CommentWithAuthorQuery) All(ctx context.Context, ex runtime.Executor) ([
 	if len(ids) == 0 {
 		return out, nil
 	}
-	targets, err := user.New().
+	targets, err := user.New().Unordered().
 		Where(user.ID.In(ids...)).
 		Limit(int64(len(ids))).
 		All(ctx, ex, nil)
@@ -250,7 +250,7 @@ func (p CommentWithParentQuery) All(ctx context.Context, ex runtime.Executor) ([
 	if len(ids) == 0 {
 		return out, nil
 	}
-	targets, err := comment.New().
+	targets, err := comment.New().Unordered().
 		Where(comment.ID.In(ids...)).
 		Limit(int64(len(ids))).
 		All(ctx, ex, nil)
@@ -368,7 +368,7 @@ func (p CommentWithPostQuery) All(ctx context.Context, ex runtime.Executor) ([]C
 	if len(ids) == 0 {
 		return out, nil
 	}
-	targets, err := post.New().
+	targets, err := post.New().Unordered().
 		Where(post.ID.In(ids...)).
 		Limit(int64(len(ids))).
 		All(ctx, ex, nil)
@@ -549,7 +549,10 @@ func (p CommentWithRepliesQuery) All(ctx context.Context, ex runtime.Executor) (
 		// Per-parent limit: one query with the limit expressed in SQL.
 		kids, err = comment.BatchTopByParentID(ctx, ex, ids, p.childTop, p.childOrder...)
 	} else {
-		cq := comment.New().Where(comment.ParentID.In(ids...)).Limit(p.childLimit)
+		// Unordered: the rows are bucketed into a map by parent, so a
+		// server-side sort is paid and then destroyed. ChildOrder still
+		// applies when given — order WITHIN a parent survives bucketing.
+		cq := comment.New().Unordered().Where(comment.ParentID.In(ids...)).Limit(p.childLimit)
 		if len(p.childOrder) > 0 {
 			cq = cq.Order(p.childOrder...)
 		}
@@ -733,7 +736,10 @@ func (p OrgWithChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([]O
 		// Per-parent limit: one query with the limit expressed in SQL.
 		kids, err = org.BatchTopByParentID(ctx, ex, ids, p.childTop, p.childOrder...)
 	} else {
-		cq := org.New().Where(org.ParentID.In(ids...)).Limit(p.childLimit)
+		// Unordered: the rows are bucketed into a map by parent, so a
+		// server-side sort is paid and then destroyed. ChildOrder still
+		// applies when given — order WITHIN a parent survives bucketing.
+		cq := org.New().Unordered().Where(org.ParentID.In(ids...)).Limit(p.childLimit)
 		if len(p.childOrder) > 0 {
 			cq = cq.Order(p.childOrder...)
 		}
@@ -856,7 +862,7 @@ func (p OrgWithParentQuery) All(ctx context.Context, ex runtime.Executor) ([]Org
 	if len(ids) == 0 {
 		return out, nil
 	}
-	targets, err := org.New().
+	targets, err := org.New().Unordered().
 		Where(org.ID.In(ids...)).
 		Limit(int64(len(ids))).
 		All(ctx, ex, nil)
@@ -1040,7 +1046,10 @@ func (p OrgWithUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgW
 		// Per-parent limit: one query with the limit expressed in SQL.
 		kids, err = user.BatchTopByOrgID(ctx, ex, ids, p.childTop, p.childOrder...)
 	} else {
-		cq := user.New().Where(user.OrgID.In(ids...)).Limit(p.childLimit)
+		// Unordered: the rows are bucketed into a map by parent, so a
+		// server-side sort is paid and then destroyed. ChildOrder still
+		// applies when given — order WITHIN a parent survives bucketing.
+		cq := user.New().Unordered().Where(user.OrgID.In(ids...)).Limit(p.childLimit)
 		if len(p.childOrder) > 0 {
 			cq = cq.Order(p.childOrder...)
 		}
@@ -1154,7 +1163,7 @@ func (p PostWithAuthorQuery) All(ctx context.Context, ex runtime.Executor) ([]Po
 	if len(ids) == 0 {
 		return out, nil
 	}
-	targets, err := user.New().
+	targets, err := user.New().Unordered().
 		Where(user.ID.In(ids...)).
 		Limit(int64(len(ids))).
 		All(ctx, ex, nil)
@@ -1335,7 +1344,10 @@ func (p PostWithCommentsQuery) All(ctx context.Context, ex runtime.Executor) ([]
 		// Per-parent limit: one query with the limit expressed in SQL.
 		kids, err = comment.BatchTopByPostID(ctx, ex, ids, p.childTop, p.childOrder...)
 	} else {
-		cq := comment.New().Where(comment.PostID.In(ids...)).Limit(p.childLimit)
+		// Unordered: the rows are bucketed into a map by parent, so a
+		// server-side sort is paid and then destroyed. ChildOrder still
+		// applies when given — order WITHIN a parent survives bucketing.
+		cq := comment.New().Unordered().Where(comment.PostID.In(ids...)).Limit(p.childLimit)
 		if len(p.childOrder) > 0 {
 			cq = cq.Order(p.childOrder...)
 		}
@@ -1449,7 +1461,7 @@ func (p UserWithOrgQuery) All(ctx context.Context, ex runtime.Executor) ([]UserW
 	if len(ids) == 0 {
 		return out, nil
 	}
-	targets, err := org.New().
+	targets, err := org.New().Unordered().
 		Where(org.ID.In(ids...)).
 		Limit(int64(len(ids))).
 		All(ctx, ex, nil)
@@ -1630,7 +1642,10 @@ func (p UserWithPostsQuery) All(ctx context.Context, ex runtime.Executor) ([]Use
 		// Per-parent limit: one query with the limit expressed in SQL.
 		kids, err = post.BatchTopByAuthorID(ctx, ex, ids, p.childTop, p.childOrder...)
 	} else {
-		cq := post.New().Where(post.AuthorID.In(ids...)).Limit(p.childLimit)
+		// Unordered: the rows are bucketed into a map by parent, so a
+		// server-side sort is paid and then destroyed. ChildOrder still
+		// applies when given — order WITHIN a parent survives bucketing.
+		cq := post.New().Unordered().Where(post.AuthorID.In(ids...)).Limit(p.childLimit)
 		if len(p.childOrder) > 0 {
 			cq = cq.Order(p.childOrder...)
 		}
@@ -1763,7 +1778,7 @@ func (p OrgTreeQuery) load0(ctx context.Context, ex runtime.Executor, out []OrgT
 		ids[i] = out[i].ID
 		at[out[i].ID] = i
 	}
-	kids, err := org.New().Where(org.ParentID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	kids, err := org.New().Unordered().Where(org.ParentID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
 	if err != nil {
 		return err
 	}
@@ -1790,7 +1805,7 @@ func (p OrgTreeQuery) load1(ctx context.Context, ex runtime.Executor, out []OrgT
 		ids[i] = out[i].ID
 		at[out[i].ID] = i
 	}
-	kids, err := user.New().Where(user.OrgID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	kids, err := user.New().Unordered().Where(user.OrgID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
 	if err != nil {
 		return err
 	}
@@ -1923,7 +1938,7 @@ func (p UserFeedQuery) load0(ctx context.Context, ex runtime.Executor, out []Use
 		ids[i] = out[i].ID
 		at[out[i].ID] = i
 	}
-	kids, err := post.New().Where(post.AuthorID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	kids, err := post.New().Unordered().Where(post.AuthorID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
 	if err != nil {
 		return err
 	}
@@ -1961,7 +1976,7 @@ func (p UserFeedQuery) load0_0(ctx context.Context, ex runtime.Executor, out []U
 			at[k] = atload0_0{i, j}
 		}
 	}
-	kids, err := comment.New().Where(comment.PostID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	kids, err := comment.New().Unordered().Where(comment.PostID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
 	if err != nil {
 		return err
 	}
@@ -1990,7 +2005,7 @@ func (p UserFeedQuery) load1(ctx context.Context, ex runtime.Executor, out []Use
 	if len(ids) == 0 {
 		return nil
 	}
-	targets, err := org.New().Where(org.ID.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)
+	targets, err := org.New().Unordered().Where(org.ID.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)
 	if err != nil {
 		return err
 	}
@@ -2121,7 +2136,7 @@ func (p UserSummaryQuery) load0(ctx context.Context, ex runtime.Executor, out []
 	if len(ids) == 0 {
 		return nil
 	}
-	targets, err := org.New().Where(org.ID.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)
+	targets, err := org.New().Unordered().Where(org.ID.In(ids...)).Limit(int64(len(ids))).All(ctx, ex, nil)
 	if err != nil {
 		return err
 	}
@@ -2251,7 +2266,7 @@ func (p AttachmentWithSubjectQuery) All(ctx context.Context, ex runtime.Executor
 		// The binder owns the argument slice, so it must outlive the
 		// batch — releasing it before Batch runs would hand the driver
 		// arguments another goroutine may already be overwriting.
-		sql0, args0 := post.New().Where(post.ID.In(ids0...)).Limit(int64(len(ids0))).Prepare(bnd0)
+		sql0, args0 := post.New().Unordered().Where(post.ID.In(ids0...)).Limit(int64(len(ids0))).Prepare(bnd0)
 		ops = append(ops, runtime.BatchOp{SQL: sql0, Args: args0, WantRows: true})
 		which = append(which, 0)
 	}
@@ -2261,7 +2276,7 @@ func (p AttachmentWithSubjectQuery) All(ctx context.Context, ex runtime.Executor
 		// The binder owns the argument slice, so it must outlive the
 		// batch — releasing it before Batch runs would hand the driver
 		// arguments another goroutine may already be overwriting.
-		sql1, args1 := comment.New().Where(comment.ID.In(ids1...)).Limit(int64(len(ids1))).Prepare(bnd1)
+		sql1, args1 := comment.New().Unordered().Where(comment.ID.In(ids1...)).Limit(int64(len(ids1))).Prepare(bnd1)
 		ops = append(ops, runtime.BatchOp{SQL: sql1, Args: args1, WantRows: true})
 		which = append(which, 1)
 	}
@@ -2271,7 +2286,7 @@ func (p AttachmentWithSubjectQuery) All(ctx context.Context, ex runtime.Executor
 		// The binder owns the argument slice, so it must outlive the
 		// batch — releasing it before Batch runs would hand the driver
 		// arguments another goroutine may already be overwriting.
-		sql2, args2 := user.New().Where(user.ID.In(ids2...)).Limit(int64(len(ids2))).Prepare(bnd2)
+		sql2, args2 := user.New().Unordered().Where(user.ID.In(ids2...)).Limit(int64(len(ids2))).Prepare(bnd2)
 		ops = append(ops, runtime.BatchOp{SQL: sql2, Args: args2, WantRows: true})
 		which = append(which, 2)
 	}

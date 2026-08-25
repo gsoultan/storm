@@ -186,7 +186,7 @@ func (g *gen) arcLoader(arcOwnerPkg string, t *schema.Table, arc *schema.Arc, va
 		g.p("\t\t// The binder owns the argument slice, so it must outlive the")
 		g.p("\t\t// batch — releasing it before Batch runs would hand the driver")
 		g.p("\t\t// arguments another goroutine may already be overwriting.")
-		g.p("\t\tsql%d, args%d := %s.New().Where(%s.ID.In(ids%d...)).Limit(int64(len(ids%d))).Prepare(bnd%d)",
+		g.p("\t\tsql%d, args%d := %s.New().Unordered().Where(%s.ID.In(ids%d...)).Limit(int64(len(ids%d))).Prepare(bnd%d)",
 			i, i, pkg, pkg, i, i, i)
 		g.p("\t\tops = append(ops, runtime.BatchOp{SQL: sql%d, Args: args%d, WantRows: true})", i, i)
 		g.p("\t\twhich = append(which, %d)", i)

@@ -50,6 +50,13 @@ func OrderSuffix(orderBy string) string {
 // ExistsSuffix caps an existence probe. Ordering an EXISTS is wasted work.
 func ExistsSuffix() string { return " LIMIT 1" }
 
+// ExistsPrefix projects nothing: an existence probe that selects real columns
+// pays heap fetches and decoding for a boolean. `SELECT 1` with LIMIT 1 lets
+// the planner stop at the first matching tuple — measured against the old
+// full-projection + default-order shape, which sorted 16,667 matching rows in
+// a top-N heapsort to return one.
+func ExistsPrefix(table string) string { return "SELECT 1 FROM " + Ident(table) }
+
 // DefaultOrderBy is the ordering used when the caller names none. A read
 // without ORDER BY has no defined order, so paging one is a bug waiting for a
 // plan change; the primary key is the cheapest total order available.
@@ -189,4 +196,33 @@ func RowCmpOp(op int) string {
 		return " < "
 	}
 	return " > "
+}
+
+// Relation existence: the semi-join.
+//
+// `EXISTS (SELECT 1 FROM child WHERE child.fk = parent.pk)` is the correlated
+// form of "has any children", and its negation is "has none". Both lower to
+// CONSTANT fragments — no bound value, no placeholder — which is what lets
+// them ride the ordinary predicate machinery and compose under AND/OR/NOT for
+// free.
+//
+// The inner table is ALWAYS aliased. A self-referential relation correlates a
+// table with itself ("orgs that have child orgs"), and without the alias the
+// inner reference captures the outer table and the predicate silently means
+// something else. Aliasing only for self-references would make the emitted
+// SQL depend on a distinction the reader has to reconstruct; aliasing always
+// costs nothing and reads the same everywhere.
+const existsAlias = "_raorm_e"
+
+// ExistsFrag lowers "a related row exists". Negated by wrapping in NOT at the
+// token level, or by NotExistsFrag for the direct spelling.
+func ExistsFrag(childTable, childFK, parentTable, parentPK string) string {
+	return "EXISTS (SELECT 1 FROM " + Ident(childTable) + " AS " + Ident(existsAlias) +
+		" WHERE " + Ident(existsAlias) + "." + Ident(childFK) +
+		" = " + Ident(parentTable) + "." + Ident(parentPK) + ")"
+}
+
+// NotExistsFrag lowers "no related row exists".
+func NotExistsFrag(childTable, childFK, parentTable, parentPK string) string {
+	return "NOT " + ExistsFrag(childTable, childFK, parentTable, parentPK)
 }

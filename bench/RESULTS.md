@@ -691,3 +691,43 @@ times as int64 in the arena) buys ~13% of size for real cleverness; not taken.
 allocations have one — a size assertion now pins Query and Pred per fixture
 table, so the next unconditional field fails a test instead of a benchmark
 nobody reran.
+
+---
+
+## The emitted-SQL audit (2026-08-25)
+
+Every statement the generator produces, read as a DBA would and indicted with
+EXPLAIN ANALYZE on the 50k-row bench table. Three convictions.
+
+**`Exists()` was `One()` with the row thrown away** — full projection under the
+default ordering. The planner top-N-sorted every match to return the "first"
+of an order nobody read:
+
+    before: Sort (top-N heapsort) over 16,667 rows ... Execution: 2.95 ms
+    after:  SELECT 1 ... LIMIT 1 → stops at the FIRST tuple
+            Limit → Seq Scan (rows=1) ... Execution: 0.017 ms      ~170x
+
+**Batch loaders paid for an order their map bucketing destroyed.** Every
+relation load inherited the default `ORDER BY id`; at 50k children that was an
+external merge sort spilling 5,160 kB to DISK — 46.6 ms in the sort alone —
+for rows immediately re-bucketed by parent:
+
+    before: Sort (external merge, Disk: 5160kB) ... ~50 ms total
+    after:  no Sort node                        ... 10.45 ms total  ~5x
+
+Fix: `Unordered()` — drops the DEFAULT ordering only; an explicit `Order()` or
+`ChildOrder` still applies, and `After()` on an unordered query is an error
+("a keyset cursor without an ordering is a position in nothing"). Every
+generated loader that buckets — relation plans, named plans, nested passes,
+the arc loader — is unordered now, asserted on the captured SQL.
+
+**`Count()` composed with `Offset()` bound mismatched arguments.** bind
+appended [preds…, limit, offset] and Count sliced ONE argument off the end —
+dropping the offset and keeping a limit its statement has no placeholder for.
+Latent until composed; Count and Exists now bind through `bindPreds`, which
+stops at the predicates.
+
+The audit also confirmed what needed no fix: `= ANY($1)` plans as an index
+scan; LATERAL top-n as measured; keyset row comparisons walk the index; every
+statement names its columns; pgx's statement cache keeps shapes server-side
+prepared.

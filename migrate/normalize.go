@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/gsoultan/raorm/compile/pgddl"
 	"github.com/gsoultan/raorm/schema"
@@ -45,7 +46,12 @@ type pgconnTag = interface{ String() string }
 // The scratch namespace is dropped on every exit path, including failure.
 func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
 	if scratch == "" {
-		scratch = "raorm_normalize"
+		// Per-process, not a shared literal: two processes normalising against
+		// one database — two test binaries under `go test ./...`, or two CI
+		// jobs — otherwise share a schema, and one drops it mid-apply of the
+		// other ("referenced schema was concurrently dropped"). Within a
+		// process the callers are sequential, so the pid is enough.
+		scratch = fmt.Sprintf("raorm_normalize_%d", os.Getpid())
 	}
 	if err := validIdent(scratch); err != nil {
 		return nil, err
