@@ -140,3 +140,21 @@ stream, inner table ALWAYS aliased (self-reference capture). Gap recorded:
 inverse one-to-one never reaches IR Relations. Second shared-fixture race
 fixed: scratch schemas are per-process (pid-suffixed) — a literal name shared
 across test binaries had one process dropping it mid-apply of another.
+
+## P5 progress (2026-08-25): semi-joins + filtered Having + projections
+**Semi-joins**: `HasPosts()` constant-EXISTS pseudo-columns; **filtered tier**
+`store.UserHavingPosts(q, post.Pred…)` — child-typed predicates cross the
+package boundary as CONCATENATED TOKEN STREAMS (child cols rebased past
+`runtime.ChildColBase`, composite FragOf routes by range, ONE splice numbers
+placeholders across). Table packages export composition seams (FragOf,
+PredToks, BindPreds…) — ids and constant fragments only. Inner table ALWAYS
+aliased (self-ref capture, proven live).
+**Projections**: `p.Named("Contact", &u.Email, &u.Name)` → AllContact/Into.
+Honest numbers: −26% client bytes / 5 allocs; wall PARITY on sort-bound bench
+query (not a go-faster-stripe); the real claim measured — covered projection =
+Index Only Scan, Heap Fetches 0, 4.8× vs full row, a plan full-row reads
+foreclose by construction. First bench run was harness skew (fresh vs reused
+slab/slice, 17 allocs/103KB) — the exact capacity-mismatch the perf veto
+exists for; kept in RESULTS.md.
+Remaining P5: cross-table joins/rows, CTEs, windows, FILTER, GROUPING SETS,
+UNION ALL — all reachable via SQL[T] meanwhile.

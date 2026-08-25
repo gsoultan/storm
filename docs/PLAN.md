@@ -318,11 +318,18 @@ front end), m2m with payload, and polymorphic associations.
   ids and constant fragments only.
 
 Ordering, OFFSET and keyset pagination shipped earlier (see M2 additions).
-**Still owed:** projections into custom row types, inner/left joins with
-cross-table rows, CTEs as values, windows, `FILTER`, `GROUPING SETS`,
-`UNION ALL` — all currently reachable through `raorm.SQL[T]`, typed and
-validated, which is what makes the native versions incremental rather than
-blocking.
+**Named projections shipped 2026-08-25** — `p.Named("Contact", &u.Email,
+&u.Name)` → `AllContact`, same predicates/order/keyset over a narrower tuple.
+The receipts, including the honest one: −26% client bytes and 5 allocs on
+Scan1000; wall PARITY on the sort-bound bench query (a projection is not a
+go-faster-stripe); and the structural claim measured — a covered projection
+runs as an Index Only Scan with zero heap fetches at 4.8× the full row, a plan
+the full-row read forecloses by construction.
+
+**Still owed:** inner/left joins with cross-table rows, CTEs as values,
+windows, `FILTER`, `GROUPING SETS`, `UNION ALL` — all currently reachable
+through `raorm.SQL[T]`, typed and validated, which is what makes the native
+versions incremental rather than blocking.
 
 Joins, runtime `Order`, `OFFSET` and keyset pagination, projections into custom
 row types, CTEs, windows, `FILTER`, `GROUPING SETS`, `UNION ALL`. The largest
