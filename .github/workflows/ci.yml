@@ -37,6 +37,13 @@ jobs:
       - name: boundaries
         run: ./scripts/check/boundaries.sh
 
+      # Every other gate runs inside this repository and shares its
+      # assumptions, which is how `generate` shipped emitting raorm's own
+      # module path into other people's modules. This one is a stranger:
+      # a different module path, outside the tree, no database.
+      - name: outsider
+        run: ./scripts/check/outsider.sh
+
       # -race catches the shape cache and binder pool; -shuffle catches tests
       # that only pass in declaration order.
       - name: test
