@@ -59,3 +59,27 @@ adopter guide should prescribe exactly this.
 - M8 soak clock started 2026-08-25 → earliest v0.1.0 tag 2026-09-08
   (recorded in docs/PLAN.md §M8). The tag is the only M-work left; it waits
   on the calendar, not on code.
+
+## v0.1.1: the adopter stopped being a special case (2026-08-26)
+
+anubis's ~100-line hand-rolled `cmd/raormgen` is gone. It existed only because
+v0.1.0's commands lived in `package main` and could not be imported, and the
+cost was quiet but real: the context had codegen and NOTHING else — no
+`verify -stale`, no `verify -pending`, no `lint`, no `explain`, the gates
+raorm is built around.
+
+raorm v0.1.1 makes the commands the importable package `raorm/tool`, so
+raormgen is now `tool.Main(rmodel.All(), rquery.Queries())`. The live-DB
+PREPARE deviation recorded above is a supported flag now — **`-raw-schema
+live`** — added for exactly this shape of adopter (model is a projection,
+migrations are the truth). Generated output is byte-identical apart from the
+version header, which is the proof the tool does what the hand-rolled
+generator did.
+
+Drift callers pass `-dsn "$ANUBIS_DB_URL"`: raorm's tool reads `RAORM_DSN` and
+anubis does not use that name.
+
+**The generalisable finding**: an adopter that has to re-implement your tool
+is telling you the tool is unreachable, not that their case is exotic. It took
+being a stranger (P4) to see it, because from inside the repo the hand-rolled
+generator looked like a reasonable adopter choice.
