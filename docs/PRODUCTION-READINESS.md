@@ -135,7 +135,7 @@ allocations (`benchstat` in `bench/RESULTS.md`), and `Get` is byte-identical
 
 **Driver: perf · Challenger: sec.**
 
-### P1.2 Nobody can depend on raorm
+### P1.2 Nobody can depend on raorm — **mostly resolved 2026-08-26, one push outstanding**
 
 **The defect.** The module is unpublished: `git ls-remote` on
 `github.com/gsoultan/raorm` returns no branches. anubis therefore depends on
@@ -144,16 +144,35 @@ committed `go.work`), which resolves only from `~/projects/anubis`. Proven
 today: a second worktree of the same repo cannot build, and anubis's GitHub CI
 — which checks out one repository — cannot either.
 
-**Fix, in order.**
-1. Push raorm; tag `v0.1.0` when the soak closes (see P3).
-2. anubis pins a real version, deletes the `replace`, and drops `../raorm`
-   from `go.work`. CI then builds from a checksum-verified module.
-3. Until then, anubis's `dev` **must not be pushed** — the branch builds
-   locally and nowhere else. This is a decision for the repo owner, not a
-   task: publishing is irreversible in the way that matters (the code is
-   public, and the module proxy caches it).
+**What actually happened.** The owner published raorm on 2026-08-26 —
+`github.com/gsoultan/raorm` is public with `main` at 67c7b71 — and solved
+consumption from the anubis side rather than by pinning a module version:
+`scripts/ci/fetch-workspace-modules.sh` reads the sibling entries out of
+`go.work` and clones each from GitHub at `ANUBIS_RAORM_REF` (default `main`),
+with a FATAL path that says, correctly, that an unpushed sibling makes the
+repository unbuildable by anyone but its author. The Dockerfile does the same.
+
+That is a legitimate alternative to a pinned version: it works with an
+unreleased module and keeps the workspace layout developers already have. The
+cost is that anubis's build now tracks a moving `main` rather than a
+checksum-verified version, which is fine for a pre-v0.1 dependency and is the
+thing `v0.1.0` will retire.
+
+**Outstanding — one push.** raorm's local `main` is five commits ahead of the
+published one (P0.1, P1.1, P2 and the regeneration). Until those are pushed,
+anubis CI will clone a raorm whose emitter has no version stamp, regenerate
+`rgen/` without one, and fail its own drift gate against the committed files
+that have it. The prediction is precise, so it is worth stating: the failure
+will be a header-only diff on `internal/authz/adapter/postgres/rgen/*`.
+
+`git push origin main` in raorm resolves it. It is the owner's to run — I do
+not push on anyone's behalf.
+
+**Then, at the tag.** `v0.1.0` after the soak, and anubis can decide whether
+to keep cloning `main` or move to a pinned version with a checksum.
 
 **Gate.** anubis CI green on a runner that has never seen `~/projects/raorm`.
+The mechanism exists; it needs the push to be exercised.
 
 **Driver: arch · Challenger: dx.**
 
