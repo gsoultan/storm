@@ -27,13 +27,21 @@ generator, [[plan_types]] for why M3 is de-risked, [[write_path]] for M4.
 ## Production-grade gates (2026-08-25)
 
 `docs/PRODUCTION-READINESS.md` is the operative plan — the PLAN.md assessment
-is superseded in part. P0.1 is the one to fix first and is MEASURED: under
-pgx simple protocol (PgBouncer transaction pooling) `SELECT false` decodes as
-**true** via runtime.Bool, silently; fixed-width ints panic instead. Also
-open: unbounded TreeCache (no eviction), unpublished module forcing a
-relative-path replace that breaks any CI, no version stamp in generated code.
-See [[m6_first_adopter]] for how the adopter surfaced the reading that found
-them.
+is superseded in part.
+
+**P0.1 CLOSED 2026-08-26**: raorm decodes binary wire format and now says so.
+pgxdrv refuses SimpleProtocol/Exec at pool construction AND checks every
+result once per statement (3.82ns/8 cols, 0 allocs = 0.0043% of a Get). The
+rule is a DENY-list of binary-layout types, never an allow-list: pgx sends
+text, varchar, jsonb and **enum labels** as text on a binary connection, so
+"everything must be binary" failed four fixture tests. Domains are safe
+because PostgreSQL reports their base type's OID. See docs/DEPLOYMENT.md for
+the PgBouncer table (transaction pooling: fine; statement pooling: no).
+
+Still open: unbounded TreeCache (no eviction — P1.1), unpublished module
+forcing a relative-path replace that breaks anubis CI (P1.2, owner decision),
+no version stamp in generated code (P2.1). See [[m6_first_adopter]] for how
+the adopter surfaced the reading that found them.
 
 ## Read in this order
 1. `docs/COMPARISON.md` — Ent/GORM/Bun/Hibernate by mechanism; the five-property gap table
