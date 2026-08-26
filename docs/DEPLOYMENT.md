@@ -84,8 +84,44 @@ just an `Executor` you were handed (`pgxdrv.Tx{T: tx}`).
 
 ## Observability
 
-Every round trip goes through the `Executor`, so pgx's `QueryTracer` sees
-every statement raorm issues — attach it to the pool and you have spans and
-slow-query logs without raorm needing an opinion. `runtime.CountingExecutor`
-wraps any executor and counts round trips, which is how the N+1 guarantees are
-asserted in tests and how you can assert them in yours.
+Every round trip goes through the `Executor` and therefore through pgx, so
+pgx's tracers see all of it and raorm needs no tracing API of its own.
+
+**Implement all three interfaces on one type.** pgx splits tracing up, and a
+`QueryTracer` alone is blind to batches — which is where a named plan's
+relation loads travel. Wire only `QueryTracer` and you will watch the one
+query you wrote while never seeing the four the plan issued, which reads
+exactly like an ORM hiding work. (This is not a hypothetical: the test below
+was written asserting `QueryTracer` saw everything, and failed.)
+
+| raorm calls | pgx interface | method carrying the SQL |
+|---|---|---|
+| `Query`, `Exec` | `pgx.QueryTracer` | `TraceQueryStart` → `data.SQL` |
+| `Batch` (plans, units) | `pgx.BatchTracer` | `TraceBatchQuery` → `data.SQL`, once per statement |
+| `CopyFrom` (bulk load) | `pgx.CopyFromTracer` | `TraceCopyFromStart` → `data.TableName` |
+
+```go
+type tracer struct{ /* your span factory */ }
+
+func (t *tracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
+    return startSpan(ctx, d.SQL)          // one span per statement
+}
+func (t *tracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryEndData) {
+    endSpan(ctx, d.Err)
+}
+// ... TraceBatchStart/Query/End and TraceCopyFromStart/End likewise
+
+cfg.ConnConfig.Tracer = &tracer{}          // then pgxdrv.NewPoolConfig(ctx, cfg)
+```
+
+The executable version, asserting the tracer sees a query, an exec and both
+statements inside a batch, is `runtime/pgxdrv/tracing_test.go`.
+
+Two raorm-side signals are worth exporting as gauges next to it:
+
+- `<table>.ShapeFlushes()` — nonzero means a call site is minting query
+  structures from request data rather than from code (see `docs/PRODUCTION-READINESS.md`
+  P1.1). Zero is the expected value forever.
+- `runtime.CountingExecutor` wraps any executor and counts round trips. It is
+  how raorm asserts its own N+1 guarantees, and it works the same way in your
+  tests: load a plan, assert the count is what the plan promised.
