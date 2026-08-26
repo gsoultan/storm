@@ -39,8 +39,14 @@ jobs:
 
       # Every other gate runs inside this repository and shares its
       # assumptions, which is how `generate` shipped emitting raorm's own
-      # module path into other people's modules. This one is a stranger:
-      # a different module path, outside the tree, no database.
+      # module path into other people's modules. This one is a stranger: a
+      # different module path, a directory outside the tree, a model raorm has
+      # never seen, and the five-line main a real user writes.
+      #
+      # With RAORM_DSN set (this job has one) it also walks the migration
+      # path — diff, apply with a runner of its own, verify — which is the
+      # riskiest thing an ORM does and had only ever been exercised from
+      # inside this module.
       - name: outsider
         run: ./scripts/check/outsider.sh
 

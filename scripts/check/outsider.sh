@@ -110,8 +110,82 @@ if ! go build ./... >build.err 2>&1; then
   note "generated code does not compile:"; sed 's/^/    /' build.err | head -5 >&2
 fi
 
+# The migration path, when a server is available. It is the riskiest thing an
+# ORM does — it changes schemas that hold production data — and until now it
+# had only ever been exercised inside raorm's own module, the same blind spot
+# that let `generate` ship broken. Skipped without a DSN so the fast CI job
+# stays database-free.
+if [ -n "${RAORM_DSN:-}" ]; then
+  echo "== a stranger can diff, apply and verify a migration =="
+  ns="raorm_outsider_$$"
+  case "$RAORM_DSN" in *\?*) sep="&" ;; *) sep="?" ;; esac
+  scoped="${RAORM_DSN}${sep}search_path=${ns}"
+
+  # An adopter applies migrations with their own runner — raorm never does.
+  # This is the smallest honest stand-in for one.
+  mkdir -p cmd/apply
+  cat > cmd/apply/main.go <<'GOEOF'
+package main
+
+import (
+	"context"
+	"os"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func main() {
+	ctx := context.Background()
+	c, err := pgx.Connect(ctx, os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	defer c.Close(ctx)
+	sql, err := os.ReadFile(os.Args[2])
+	if err != nil {
+		panic(err)
+	}
+	if _, err := c.Exec(ctx, string(sql)); err != nil {
+		panic(err)
+	}
+}
+GOEOF
+  GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
+
+  drop_ns() { go run ./cmd/apply "$RAORM_DSN" /dev/stdin <<< "DROP SCHEMA IF EXISTS ${ns} CASCADE" >/dev/null 2>&1 || true; }
+  trap 'drop_ns; rm -rf "$TMP"' EXIT
+  if ! go run ./cmd/apply "$RAORM_DSN" /dev/stdin <<< "CREATE SCHEMA ${ns}" >/dev/null 2>&1; then
+    note "could not create a scratch namespace to migrate into"
+  else
+    if ! go run ./cmd/raorm diff init -dsn "$scoped" -schema "$ns" -out migrations >diff.out 2>diff.err; then
+      note "diff failed:"; sed 's/^/    /' diff.err >&2
+    else
+      up="$(ls migrations/*init*.up.sql 2>/dev/null | head -1)"
+      if [ -z "$up" ]; then
+        note "diff wrote no up migration"
+      elif ! grep -q 'CREATE TABLE' "$up"; then
+        note "the migration contains no CREATE TABLE"
+      elif go run ./cmd/raorm verify -dsn "$scoped" -schema "$ns" >/dev/null 2>&1; then
+        # Before applying anything, an empty namespace MUST read as drifted.
+        # Without this the "clean afterwards" below would pass just as well if
+        # verify were broken and always said yes.
+        note "an empty namespace verified clean — verify is not looking"
+      elif ! go run ./cmd/apply "$scoped" "$up" >apply.err 2>&1; then
+        note "the migration raorm emitted does not apply:"; sed 's/^/    /' apply.err | head -5 >&2
+      elif ! go run ./cmd/raorm verify -dsn "$scoped" -schema "$ns" >verify.out 2>&1; then
+        note "after applying its own migration, verify still reports drift:"
+        sed 's/^/    /' verify.out | head -6 >&2
+      fi
+    fi
+  fi
+fi
+
 if [ "$fail" -eq 0 ]; then
-  echo "OK: a module outside this repository can model, generate and build"
+  if [ -n "${RAORM_DSN:-}" ]; then
+    echo "OK: a module outside this repository can model, generate, build, migrate and verify"
+  else
+    echo "OK: a module outside this repository can model, generate and build (migration path skipped — no RAORM_DSN)"
+  fi
 else
   echo "FAILED"
 fi

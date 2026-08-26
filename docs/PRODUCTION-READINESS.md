@@ -270,11 +270,23 @@ subtle — it was the main command, completely broken for everyone else — and
 no test, gate, coverage floor or adopter caught it, because the adopter was
 also us. Ship a stranger's smoke test, or ship the bug.
 
-So the stranger is now a gate: `scripts/check/outsider.sh`, in CI's fast job,
-builds a module with a different path outside the tree and asserts the whole
-model → generate → compile path. It was verified to trip both ways — with the
-fix reverted it names the defect and prints the offending imports. No database
-needed.
+So the stranger is now a gate: `scripts/check/outsider.sh` builds a module
+with a different path outside the tree and asserts the whole path a new
+adopter walks —
+
+    model → five-line main → ddl → generate → compile → diff → apply → verify
+
+— including the migration half, which is the riskiest thing an ORM does and
+had only ever been exercised from inside this module. The migration section
+needs a server and skips without one, so the check still runs where there is
+no database.
+
+Two properties make it a tripwire rather than a passing test. It was verified
+to fail with the import-path fix reverted, where it names the defect and
+prints the offending imports. And it asserts `verify` reports drift on the
+empty namespace BEFORE the migration is applied — without that, "clean
+afterwards" would pass equally well if `verify` were broken and always said
+yes.
 
 **Driver: dx · Challenger: arch.**
 
