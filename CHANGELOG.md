@@ -12,7 +12,12 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.1.1 — 2026-08-26
+
+The release that makes the tool usable by someone who is not its author.
+v0.1.0's `generate` could not produce compiling code in any module but this
+one, and the rest of the commands were unreachable, so **v0.1.0 should be
+skipped**.
 
 ### Fixed — the first-run path, none of which worked outside this repository
 
@@ -44,6 +49,13 @@ the lesson in [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) P4.
 
 ### Added
 
+- **`-raw-schema live`** — validate `raorm.SQL[T]` declarations against the
+  connected database instead of a scratch apply of the model. Required by any
+  adopter whose model is a *projection* of a schema owned by migrations, whose
+  queries therefore call functions and read tables the model does not
+  describe. The first adopter could not use the tool without it. The default
+  is unchanged, and the cost is stated: the model no longer vouches for those
+  statements, so point it at a database built from migrations.
 - **`raorm.SQLExec`** — the no-rows half of the escape hatch, for the `:exec`
   statements that are about a third of a real query file. Same placeholder
   precheck as `SQL[T]`, and generation *requires* a zero-column result, so an
