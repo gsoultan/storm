@@ -36,11 +36,37 @@ var ErrArrayNull = errors.New(
 var ErrArrayDims = errors.New(
 	"raorm: multi-dimensional array cannot be read into a Go slice")
 
+// ErrArrayTextFormat means the server sent the array as text and raorm
+// decodes the binary format.
+//
+// The case that reaches real schemas is an array of a USER-DEFINED type —
+// `my_enum[]` — because pgx has no binary codec for one and falls back to
+// text. A plain text[] is unaffected: pgx sends it as binary. The scalar enum
+// is unaffected too, since its label is the same bytes either way, which is
+// why the executor's format guard lets user-defined types through.
+//
+// Reading the text format here was considered and rejected: it means a second
+// array parser with its own quoting and escaping rules to keep faithful to
+// the first, for a case with two better answers — declare the column
+// `text[]`, or cast it in the query (`col::text[]`).
+var ErrArrayTextFormat = errors.New(
+	"raorm: array arrived in TEXT format and raorm decodes binary — an array of a " +
+		"user-defined type (enum[]) is sent as text by pgx; declare the column text[] " +
+		"or cast it in the query with col::text[]; see docs/DEPLOYMENT.md")
+
 // arrayHeader reads the fixed prefix and returns the element count and the
 // offset of the first element.
 func arrayHeader(b []byte) (n, off int, err error) {
 	if len(b) == 0 {
 		return 0, 0, nil // SQL NULL
+	}
+	// A binary array begins with a big-endian int32 dimension count, so its
+	// first byte is zero for every plausible value; the text format begins
+	// with '{'. Naming the real cause here is the difference between an
+	// actionable error and "it has 2069982320", which is what the dimension
+	// check reported when it read four bytes of "{alp" as a number.
+	if b[0] == '{' {
+		return 0, 0, ErrArrayTextFormat
 	}
 	if len(b) < 12 {
 		return 0, 0, errors.New("raorm: array wire value is too short")

@@ -1,8 +1,10 @@
 package runtime_test
 
 import (
+	"errors"
 	"fmt"
 	goruntime "runtime"
+	"strings"
 	"testing"
 
 	"github.com/gsoultan/raorm/runtime"
@@ -132,5 +134,40 @@ func TestShapeCap_SurvivesFlushing(t *testing.T) {
 func TestShapeCap_DefaultIsBounded(t *testing.T) {
 	if runtime.ShapeCap() <= 0 {
 		t.Fatalf("default cap is %d — unbounded by default is the bug this closed", runtime.ShapeCap())
+	}
+}
+
+// An array of a user-defined type (enum[]) arrives in TEXT format, because
+// pgx has no binary codec for one. The executor's format guard lets
+// user-defined OIDs through deliberately — a scalar enum's label IS its value
+// — so the array case lands here, at the decoder, and must say what actually
+// went wrong. Before this it reported "multi-dimensional array ... it has
+// 2069982320", which is four bytes of "{alp" read as a dimension count: true,
+// useless, and pointing at the wrong feature.
+//
+// Bytes are the real ones, captured from `ARRAY['alpha','beta']::my_enum[]`.
+func TestArray_TextFormatIsNamed(t *testing.T) {
+	var sl runtime.Slab
+	_, err := runtime.TextArray([]byte("{alpha,beta}"), &sl)
+	if !errors.Is(err, runtime.ErrArrayTextFormat) {
+		t.Fatalf("text-format array reported %v, want ErrArrayTextFormat", err)
+	}
+	for _, want := range []string{"TEXT format", "enum[]", "text[]"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should mention %q: %v", want, err)
+		}
+	}
+
+	// The binary path is untouched: a real text[] still decodes.
+	binary := []byte{
+		0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 25, 0, 0, 0, 2, 0, 0, 0, 1,
+		0, 0, 0, 1, 'x', 0, 0, 0, 1, 'y',
+	}
+	got, err := runtime.TextArray(binary, &sl)
+	if err != nil {
+		t.Fatalf("binary text[] must still decode: %v", err)
+	}
+	if len(got) != 2 || got[0] != "x" || got[1] != "y" {
+		t.Fatalf("binary text[] decoded as %#v", got)
 	}
 }

@@ -40,6 +40,16 @@ A user-defined type you add tomorrow does not need raorm to be taught about
 it. Domains get no free pass either way: PostgreSQL reports the base type's
 OID in the row description, so a domain over `int8` is checked as `int8`.
 
+**One case the guard lets through on purpose, and where it lands instead.**
+An *array* of a user-defined type — `my_enum[]` — is sent as text, because pgx
+has no binary codec for one. The executor cannot tell that OID apart from a
+scalar enum's, and refusing every unknown OID would refuse working schemas, so
+the array reaches the decoder and fails there with `ErrArrayTextFormat`, which
+names the two fixes: declare the column `text[]`, or cast it in the query with
+`col::text[]`. Decoding the text format was rejected — it means a second array
+parser with its own quoting rules to keep faithful to the first, for a case
+with two better answers. A plain `text[]` is unaffected: pgx sends it binary.
+
 raorm enforces this in two places, so neither an application's own pool nor a
 per-connection override can slip past:
 
