@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"context"
@@ -292,7 +292,7 @@ func TestCLI_GenerateRawQueries(t *testing.T) {
 	// back afterwards is how this test skipped itself on the first run.
 	liveDSN := dsn(t)
 
-	root, err := filepath.Abs("../..")
+	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestCLI_RawQueryMismatchesFailGeneration(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			RawQueries = []raorm.RawDecl{tc.decl}
-			root, _ := filepath.Abs("../..")
+			root, _ := filepath.Abs("..")
 			out := filepath.Join(root, "internal", "rawbad"+strconv.Itoa(os.Getpid()))
 			t.Cleanup(func() { os.RemoveAll(out) })
 			err := run([]string{"generate", out, "-dsn", dsn(t)})

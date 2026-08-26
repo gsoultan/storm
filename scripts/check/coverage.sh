@@ -23,7 +23,7 @@ declare -a FLOORS=(
   "github.com/gsoultan/raorm/migrate 75"
   "github.com/gsoultan/raorm/schema/pg 80"
   "github.com/gsoultan/raorm 65"
-  "github.com/gsoultan/raorm/cmd/raorm 70"
+  "github.com/gsoultan/raorm/tool 70"
 )
 
 prof=$(mktemp)

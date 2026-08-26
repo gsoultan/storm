@@ -13,10 +13,13 @@ migrations and **never applies DDL**.
 
 ## Status
 
-**M0–M5 and M7 passed.** The read path, migrations, relations, writes, the
-typed escape hatch and the tooling gate are built, benchmarked and hardened;
-what remains before v1 is the first-adopter run (M6) and the release policy
-(M8). The milestone log with every exit gate is [docs/PLAN.md](docs/PLAN.md).
+**v0.1.0 is tagged, and M0–M8 have passed.** The read path, migrations,
+relations, writes, the typed escape hatch and the tooling gate are built,
+benchmarked and hardened; the first adopter migrated a whole bounded context
+(M6) and runs on the published module. The milestone log with every exit gate
+is [docs/PLAN.md](docs/PLAN.md), and what would still stop a team adopting
+this is written down, with gates, in
+[docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md).
 
 Every claim below is a test or a benchmark in this repository. The quickstart
 is executable: [`examples/blog`](examples/blog) runs as a test in CI, so it
@@ -85,15 +88,23 @@ possible.
 
 ## Tooling
 
+The tool is a library you give a five-line `main`, because the commands need
+your models and an installed binary cannot see them
+([EXAMPLE §2](docs/EXAMPLE.md)):
+
+```go
+func main() { tool.Main(model.All(), nil) }   // cmd/raorm/main.go
+```
+
 ```console
-raorm generate [dir]     # one package per table + the context package
-raorm diff <name>        # a reviewable migration; never applied by raorm
-raorm verify             # drift: model vs database
-raorm verify -stale      # generated code vs model (CI, no database)
-raorm verify -pending    # model vs migrations — "forgot to diff" fails CI
-raorm lint               # every named plan costed in round trips, budgeted
-raorm explain            # every statement planned; large seq scans flagged
-raorm import             # an existing database, written back as a model draft
+go run ./cmd/raorm generate [dir]   # one package per table + the context package
+                     diff <name>    # a reviewable migration; never applied by raorm
+                     verify         # drift: model vs database
+                     verify -stale  # generated code vs model (CI, no database)
+                     verify -pending# model vs migrations — "forgot to diff" fails CI
+                     lint           # every named plan costed in round trips, budgeted
+                     explain        # every statement planned; large seq scans flagged
+                     import         # an existing database, written back as a model draft
 ```
 
 ## Design documents

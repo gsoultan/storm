@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"os"
@@ -21,7 +21,7 @@ import (
 // carried broken import paths that nothing noticed because nothing built them.
 func moduleScratch(t *testing.T, name string) string {
 	t.Helper()
-	root, err := filepath.Abs("../..")
+	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,4 +255,61 @@ func TestCLI_LintPlans(t *testing.T) {
 			t.Errorf("the error should mention %q, got: %v", want, err)
 		}
 	}
+}
+
+// Generated packages import each other, so those imports must spell the HOST
+// module's path — the module being generated into, not raorm's.
+//
+// This shipped wrong in v0.1.0 and no test caught it, because every
+// generation that ever ran was inside this repository, where raorm's own
+// module path happens to be the right answer. A user's first `generate`
+// emitted `github.com/gsoultan/raorm/internal/store/user` into their module
+// and produced code that could not compile. So the test generates into a
+// module with a DIFFERENT path, which is the only arrangement that can tell
+// the two apart.
+func TestGenerate_ImportsTheHostModuleNotRaorm(t *testing.T) {
+	withModels(t, testmodel.All())
+
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/someoneelse\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	// A relative path, the way a user in their own module types it.
+	if err := Run([]string{"generate", filepath.Join("internal", "store")}); err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile(filepath.Join(tmp, "internal", "store", "store.gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), `"example.com/someoneelse/internal/store/`) {
+		t.Fatalf("the context package does not import the host module; it says:\n%s",
+			firstImports(string(src)))
+	}
+	if strings.Contains(string(src), `"github.com/gsoultan/raorm/internal/store/`) {
+		t.Fatal("generated code imports raorm's own module path for the user's packages")
+	}
+	// raorm's runtime is still imported from raorm, which is the other half.
+	if !strings.Contains(string(src), `"github.com/gsoultan/raorm/runtime"`) {
+		t.Fatal("the runtime import should still point at raorm")
+	}
+}
+
+func firstImports(src string) string {
+	i := strings.Index(src, "import (")
+	if i < 0 {
+		return src[:200]
+	}
+	j := strings.Index(src[i:], ")")
+	return src[i : i+j+1]
 }

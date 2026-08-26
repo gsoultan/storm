@@ -222,6 +222,58 @@ the server, and raorm must not rewrite it.
 
 ---
 
+## P4 — The first-run path was broken, and only an outsider could see it
+**Found and fixed 2026-08-26, after v0.1.0**
+
+Everything above was verified from inside this repository or from anubis, a
+module written by raorm's author with raorm's assumptions baked in. So the
+last check was to be a stranger: a fresh module outside both trees, `go get
+github.com/gsoultan/raorm@v0.1.0`, and follow the README.
+
+Three defects in the first five minutes, all invisible from inside:
+
+1. **`generate` emitted raorm's own module path into somebody else's
+   module.** `PackageImport` was built from the constant
+   `github.com/gsoultan/raorm`, so a user's generated context package
+   imported `github.com/gsoultan/raorm/internal/store/user` — code that
+   cannot compile, from the tool's flagship command. It went unnoticed
+   because every generation that had ever run was inside this repository,
+   where the wrong answer is the right one. The path now comes from the
+   host module's `go.mod`, and the regression test generates into a module
+   named `example.com/someoneelse`, which is the only arrangement that can
+   tell the two apart.
+
+2. **The tool was unreachable.** `Models` was documented as "set by the
+   generated bootstrap in the user's module", but nothing generated a
+   bootstrap and `Models` lived in `package main`, which cannot be imported.
+   An installed `raorm` binary could only print "no models registered", and
+   the doc it pointed at described a `go tool raorm generate` flow that
+   could not work. So an adopter got `generate` by hand-rolling a `main`
+   around `codegen.Package` — which is what anubis did — and simply never
+   got `verify -pending`, `lint` or `explain` at all. The commands are now
+   the importable package `raorm/tool`, and a user's whole tool is
+   `func main() { tool.Main(model.All(), nil) }`.
+
+3. **An output path through a symlink was refused.** On macOS `/tmp` is a
+   symlink, so an absolute output directory under it compared as "outside
+   this module". Now the deepest existing ancestor is resolved on both
+   sides.
+
+**Gate — met.** A module outside both trees now goes model → five-line main →
+`ddl` → `generate` → compiling generated code → insert and query against
+PostgreSQL, with `Shapes() == 1` after the query. That is the whole adopter
+path, walked by something that shares no assumptions with this repository.
+
+**The lesson, which is the reusable part:** every check that runs inside your
+own repository shares your repository's assumptions. The bug here was not
+subtle — it was the main command, completely broken for everyone else — and
+no test, gate, coverage floor or adopter caught it, because the adopter was
+also us. Ship a stranger's smoke test, or ship the bug.
+
+**Driver: dx · Challenger: arch.**
+
+---
+
 ## P3 — The soak, and what it is actually measuring
 
 The two-week anubis soak (2026-08-25 → 2026-09-08, gating the `v0.1.0` tag)

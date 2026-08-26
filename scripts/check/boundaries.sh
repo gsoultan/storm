@@ -13,9 +13,15 @@ fi
 
 echo "== driver confined to its adapter =="
 # Only runtime/pgxdrv may name pgx, so driver churn cannot reach the tree.
+#
+# The exemptions are all BUILD-TIME code — the tool, introspection, the
+# migration runner — which talks to a database directly and never hands a pgx
+# type to an application. tool/ is on the list because the commands moved
+# there from cmd/ when they became importable; that changed who can call them,
+# not when they run. Nothing an application links at runtime is exempt.
 for f in $(git ls-files '*.go' 2>/dev/null | grep -v '_test.go' | grep -v '^bench/' | grep -v '^cmd/'); do
   case "$f" in
-    runtime/pgxdrv/*|schema/pg/*|migrate/*|internal/spike/*) continue ;;
+    runtime/pgxdrv/*|schema/pg/*|migrate/*|internal/spike/*|tool/*) continue ;;
   esac
   if grep -q 'jackc/pgx' "$f"; then note "pgx imported outside its adapter: $f"; fi
 done

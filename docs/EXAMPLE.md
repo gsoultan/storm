@@ -108,17 +108,43 @@ The struct holds your domain; the method holds the database's opinions about it.
 
 ## 2. Generate
 
-```console
-$ go tool raorm generate
-  orgs   → store/org    (4 columns, 1 relation)
-  users  → store/user   (7 columns, 3 relations)
-  posts  → store/post   (7 columns, 1 relation)
-  ✓ 3 tables · db/migrations/0001_init.up.sql (review and commit)
+The tool needs to see your models, and a binary installed from raorm's
+repository cannot. So the tool is a **library**, and you give it a `main` —
+five lines, once:
+
+```go
+// cmd/raorm/main.go
+package main
+
+import (
+	"github.com/gsoultan/raorm/tool"
+	"example.com/app/model"
+)
+
+func main() { tool.Main(model.All(), nil) }
 ```
 
-One command, one output directory you never open, no install step. Generated
-code is `// Code generated` — commit it or gitignore it, your call. `raorm
-verify` fails CI if it is stale.
+The second argument is your `raorm.SQL[T]` / `raorm.SQLExec` declarations, if
+you have any; `nil` until you do. Then every command works against *your*
+schema:
+
+```console
+$ go run ./cmd/raorm generate internal/store
+  → internal/store/org/org.gen.go (45981 bytes)
+  → internal/store/store.gen.go (13658 bytes)
+  → internal/store/user/user.gen.go (58057 bytes)
+  3 package(s) from 2 table(s)
+
+$ go run ./cmd/raorm ddl              # CREATE statements; raorm never applies them
+$ go run ./cmd/raorm diff init        # a reviewable migration
+$ go run ./cmd/raorm verify -stale    # generated code vs model, no database
+$ go run ./cmd/raorm verify -pending  # "changed the model, forgot the migration"
+$ go run ./cmd/raorm lint             # every named plan costed in round trips
+```
+
+Add `tool` to your `go.mod` tool directives if you want the shorter
+`go tool raorm generate` form. Generated code is `// Code generated` — commit
+it or gitignore it, your call; `verify -stale` fails CI if it is stale.
 
 ## 3. Query
 
