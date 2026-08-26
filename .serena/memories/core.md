@@ -57,6 +57,14 @@ anubis consumes it by cloning the go.work sibling in CI/Docker
 main runs ahead of the published one; until it is pushed, anubis CI
 regenerates without the version stamp and fails its own drift gate.
 
+**Also 2026-08-26**: int8[] and text[] joined uuid[] with fast parameter
+codecs (21x/8x, one allocation each — bigserial-keyed schemas bind int8[] on
+the same `= ANY($1)` loader path raorm's uuid fixtures hid). pgxdrv gained a
+coverage floor (85, at 88.4%) because it now holds the wire-format deny-list;
+reaching it found pgxdrv.Tx.Exec at ZERO coverage — the "every surface"
+transaction test exercised a unit flush, COPY, a plan and a count but never an
+update or delete, the two that reach Executor.Exec.
+
 See [[m6_first_adopter]] for how the adopter surfaced the reading that found
 all of these.
 
