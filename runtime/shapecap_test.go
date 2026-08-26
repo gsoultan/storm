@@ -5,6 +5,7 @@ import (
 	"fmt"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gsoultan/raorm/runtime"
@@ -170,4 +171,68 @@ func TestArray_TextFormatIsNamed(t *testing.T) {
 	if len(got) != 2 || got[0] != "x" || got[1] != "y" {
 		t.Fatalf("binary text[] decoded as %#v", got)
 	}
+}
+
+// Flushing replaces the map while other goroutines are reading it, so the
+// design has to be right rather than lucky: Put holds the write lock, and Get
+// copies the bucket slice header under a read lock before iterating it, so a
+// reader can hold entries the map no longer references and still walk them
+// safely. Append never mutates what a reader can see — it writes past the
+// reader's len or allocates a new array.
+//
+// This hammers that path with the cap set low enough that flushes happen
+// continuously, and asserts every reader gets a usable statement rather than
+// a torn or empty one. It exists to be run under -race.
+func TestShapeCap_ConcurrentGetPutWhileFlushing(t *testing.T) {
+	prev := runtime.ShapeCap()
+	t.Cleanup(func() { runtime.SetShapeCap(prev) })
+	runtime.SetShapeCap(32)
+
+	c := runtime.NewTreeCache()
+	hot := []runtime.Tok{runtime.MakeLeaf(1, 7)}
+	const hotSQL = "SELECT hot"
+	c.Put(hot, &runtime.Stmt{SQL: hotSQL, NArg: 1})
+
+	var wg sync.WaitGroup
+	const writers, readers, each = 4, 4, 2000
+
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				toks := []runtime.Tok{
+					runtime.MakeLeaf(uint32(1+(i+w)%30), uint32((i*7+w)%900)),
+					runtime.MakeLeaf(uint32(1+(i/30+w)%30), uint32((i*13+w)%900)),
+					runtime.MakeGroup(runtime.KAnd, 2),
+				}
+				if c.Get(toks) == nil {
+					c.Put(toks, &runtime.Stmt{SQL: "SELECT churn", NArg: 2})
+				}
+			}
+		}(w)
+	}
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				// The hot shape is either present or was just flushed; what
+				// must never happen is a statement that is neither.
+				if st := c.Get(hot); st != nil && st.SQL != hotSQL {
+					t.Errorf("read a torn statement: %q", st.SQL)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if c.Shapes() > 32 {
+		t.Fatalf("holds %d shapes past a cap of 32 after concurrent use", c.Shapes())
+	}
+	if c.Flushes() == 0 {
+		t.Fatal("the workload never flushed — it is not exercising the path it claims to")
+	}
+	t.Logf("concurrent churn: %d shapes held, %d flushes", c.Shapes(), c.Flushes())
 }
