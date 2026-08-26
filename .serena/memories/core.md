@@ -51,11 +51,14 @@ in docs/DEPLOYMENT.md — and writing its proof found that pgx's QueryTracer is
 BLIND to batches, so the recipe needs QueryTracer + BatchTracer +
 CopyFromTracer or a plan's relation loads go unseen.
 
-**P1.2**: raorm IS public now (owner pushed 2026-08-26; main was 67c7b71).
-anubis consumes it by cloning the go.work sibling in CI/Docker
-(scripts/ci/fetch-workspace-modules.sh) rather than pinning a version. Local
-main runs ahead of the published one; until it is pushed, anubis CI
-regenerates without the version stamp and fails its own drift gate.
+**P1.2 CLOSED + v0.1.0 SHIPPED 2026-08-26**: raorm is public and tagged
+v0.1.0 at d95ac55. anubis consumes it as a PINNED module — no `replace`, no
+go.work sibling — verified by building and running its whole suite from the
+module proxy alone. Generated headers now read `raorm v0.1.0`.
+
+The tag preceded the soak window's close (2026-09-08), so the soak's kill
+criterion now opens a **v0.1.1** rather than moving a tag: p95 drift past
+2ms, monotonic shape growth, or RSS without a plateau. Signals unchanged.
 
 **Also 2026-08-26**: int8[] and text[] joined uuid[] with fast parameter
 codecs (21x/8x, one allocation each — bigserial-keyed schemas bind int8[] on
