@@ -24,6 +24,17 @@ sequence**, which deliberately runs writes (M4) before relations (M3).
 See [[m6_first_adopter]] for the adopter migration (M6 PASSED 2026-08-25 — anubis/authz fully on raorm, p95 parity, four raorm fixes it forced), [[m0_results]] for the thesis numbers, [[seam_and_codegen]] for R9 and the
 generator, [[plan_types]] for why M3 is de-risked, [[write_path]] for M4.
 
+## Production-grade gates (2026-08-25)
+
+`docs/PRODUCTION-READINESS.md` is the operative plan — the PLAN.md assessment
+is superseded in part. P0.1 is the one to fix first and is MEASURED: under
+pgx simple protocol (PgBouncer transaction pooling) `SELECT false` decodes as
+**true** via runtime.Bool, silently; fixed-width ints panic instead. Also
+open: unbounded TreeCache (no eviction), unpublished module forcing a
+relative-path replace that breaks any CI, no version stamp in generated code.
+See [[m6_first_adopter]] for how the adopter surfaced the reading that found
+them.
+
 ## Read in this order
 1. `docs/COMPARISON.md` — Ent/GORM/Bun/Hibernate by mechanism; the five-property gap table
 2. `docs/CONCEPT.md` — 8 concepts + the **rejected** list (higher value than the accepted list)
