@@ -397,3 +397,74 @@ func TestCLI_RawQueryMismatchesFailGeneration(t *testing.T) {
 		})
 	}
 }
+
+// A model that is a PROJECTION of a bigger schema is the case the first
+// adopter actually had: anubis's raorm model describes `roles`, while its raw
+// declarations call `authorize()` and read `grants` — objects the model
+// deliberately does not carry, because migrations are that schema's source of
+// truth. Under the default scratch-apply validation every one of those
+// statements fails to prepare, which is correct and useless, and it is why
+// that adopter could not use this tool at all and wrote its own generator.
+//
+// So: a raw query against a table the model does not describe must fail with
+// -raw-schema model, and succeed against the live database.
+func TestCLI_RawSchemaLiveValidatesAgainstTheDatabase(t *testing.T) {
+	withModels(t, testmodel.All())
+	prevQ := RawQueries
+	t.Cleanup(func() { RawQueries = prevQ })
+
+	live := dsn(t)
+	c, ctx, done, err := connect(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	// An object the MODEL knows nothing about, exactly like a SQL function
+	// that lives only in migrations.
+	if _, err := c.Exec(ctx, `CREATE TABLE IF NOT EXISTS raorm_outside_model (note text NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		c2, ctx2, done2, err := connect(live)
+		if err == nil {
+			defer done2()
+			_, _ = c2.Exec(ctx2, `DROP TABLE IF EXISTS raorm_outside_model`)
+		}
+	})
+
+	type NoteRow struct{ Note string }
+	RawQueries = []raorm.RawDecl{
+		raorm.SQL[NoteRow](`SELECT note FROM raorm_outside_model`),
+	}
+
+	root, _ := filepath.Abs("..")
+	outDir := filepath.Join(root, "internal", "rawlive"+strconv.Itoa(os.Getpid()))
+	t.Cleanup(func() { os.RemoveAll(outDir) })
+
+	// The model cannot vouch for it — and says so naming the mode.
+	err = run([]string{"generate", outDir, "-dsn", live})
+	if err == nil {
+		t.Fatal("a query over a table outside the model must fail the scratch validation")
+	}
+	if !strings.Contains(err.Error(), "does not prepare against the model schema") {
+		t.Errorf("the error should name the mode it validated under, got: %v", err)
+	}
+
+	// Against the live database it resolves, and the scanner is emitted.
+	if err := run([]string{"generate", outDir, "-dsn", live, "-raw-schema", "live"}); err != nil {
+		t.Fatalf("-raw-schema live: %v", err)
+	}
+	ctxFile := filepath.Join(outDir, filepath.Base(outDir)+".gen.go")
+	src, err := os.ReadFile(ctxFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "scanNoteRow") {
+		t.Fatal("the live-validated query got no generated scanner")
+	}
+
+	// A typo picks nothing silently.
+	if err := run([]string{"generate", outDir, "-dsn", live, "-raw-schema", "lvie"}); err == nil {
+		t.Fatal("an unknown -raw-schema must be rejected")
+	}
+}

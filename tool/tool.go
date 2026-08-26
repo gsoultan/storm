@@ -100,6 +100,10 @@ usage:
   raorm verify -pending           fail if the model has changes no migration carries
   raorm import                    print the model implied by an existing database
   raorm generate [dir]            emit one Go package per table (default internal/store)
+                                  -raw-schema live validates raw SQL against the
+                                  connected database rather than a scratch apply
+                                  of the model, for schemas whose truth is
+                                  migrations (functions, views the model omits)
   raorm lint                      cost every named plan in round trips; fail over the budget
   raorm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
@@ -145,6 +149,8 @@ func run(args []string) error {
 	out := fs.String("out", "db/migrations", "migrations directory")
 	allowDestructive := fs.Bool("allow-destructive", false, "permit data-losing steps")
 	stale := fs.Bool("stale", false, "verify generated code against the model instead of the database")
+	rawSchema := fs.String("raw-schema", string(RawAgainstModel),
+		"validate raw SQL declarations against \"model\" (a scratch apply) or \"live\" (the connected database)")
 	maxTrips := fs.Int("max-round-trips", 4, "lint: the most round trips a named plan may cost")
 	maxSeqRows := fs.Int("max-seq-rows", 10000, "explain: flag a seq scan the planner sizes at or above this")
 	pending := fs.Bool("pending", false, "verify the model against the migrations directory instead of the database")
@@ -202,7 +208,11 @@ func run(args []string) error {
 		if nargs > 0 {
 			dir = arg(0)
 		}
-		return generate(dir, model, *dsn)
+		against, err := parseRawSchema(*rawSchema)
+		if err != nil {
+			return err
+		}
+		return generate(dir, model, *dsn, against)
 
 	case "verify":
 		if *pending {
@@ -213,7 +223,11 @@ func run(args []string) error {
 			if nargs > 0 {
 				dir = arg(0)
 			}
-			return verifyStale(dir, model)
+			against, err := parseRawSchema(*rawSchema)
+			if err != nil {
+				return err
+			}
+			return verifyStale(dir, model, against)
 		}
 		return verify(*dsn, *ns, model)
 
@@ -332,15 +346,43 @@ func moduleRoot() (string, error) {
 // scratch namespace first, so a drifted dev database cannot vouch for a query
 // the model would reject — and no pre-existing schema is needed at all, only a
 // PostgreSQL server, which is what makes this workable in CI.
-func prepareRawQueries(dsn string, model *schema.Schema) ([]codegen.RawScanner, error) {
+// RawSchema selects what a raw declaration is PREPAREd against.
+type RawSchema string
+
+const (
+	// RawAgainstModel applies the model to a scratch schema and validates
+	// there, so the MODEL vouches for every statement and a drifted
+	// development database cannot make a broken query look fine. The default,
+	// and the right answer whenever the model describes everything a query
+	// touches.
+	RawAgainstModel RawSchema = "model"
+
+	// RawAgainstLive validates against the connected database as it is.
+	//
+	// It exists because the first adopter needed it and could not use the
+	// tool without it: anubis's queries call SQL functions (`authorize()`)
+	// and read tables its raorm model deliberately does not describe — the
+	// model there is a PROJECTION of a schema whose source of truth is
+	// migrations. Under RawAgainstModel every one of those statements fails
+	// to prepare, which is correct and useless.
+	//
+	// The cost is stated rather than hidden: the model no longer vouches for
+	// these statements, so a development database that has drifted from
+	// migrations will happily validate a query production cannot run. Point
+	// it at a database built by applying migrations from scratch — which is
+	// what CI has anyway.
+	RawAgainstLive RawSchema = "live"
+)
+
+func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]codegen.RawScanner, error) {
 	if len(RawQueries) == 0 {
 		return nil, nil
 	}
 	if dsn == "" {
 		return nil, errors.New(
 			"raw queries are registered, and validating them needs -dsn (or $RAORM_DSN): " +
-				"the model is applied to a scratch schema and each statement is PREPAREd " +
-				"against it — a server is required, an existing schema is not")
+				"each statement is PREPAREd against a real server — a server is " +
+				"required, an existing schema is not (unless -raw-schema live)")
 	}
 	c, ctx, done, err := connect(dsn)
 	if err != nil {
@@ -348,16 +390,18 @@ func prepareRawQueries(dsn string, model *schema.Schema) ([]codegen.RawScanner, 
 	}
 	defer done()
 
-	scratch := fmt.Sprintf("raorm_sqlcheck_%d", os.Getpid())
-	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
-		return nil, err
-	}
-	defer func() { _, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE") }()
-	if _, err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
-		return nil, err
-	}
-	if _, err := c.Exec(ctx, pgddl.Create(model)); err != nil {
-		return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
+	if against == RawAgainstModel {
+		scratch := fmt.Sprintf("raorm_sqlcheck_%d", os.Getpid())
+		if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
+			return nil, err
+		}
+		defer func() { _, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE") }()
+		if _, err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
+			return nil, err
+		}
+		if _, err := c.Exec(ctx, pgddl.Create(model)); err != nil {
+			return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
+		}
 	}
 
 	var out []codegen.RawScanner
@@ -369,7 +413,7 @@ func prepareRawQueries(dsn string, model *schema.Schema) ([]codegen.RawScanner, 
 		}
 		sd, err := c.Prepare(ctx, fmt.Sprintf("raorm_sqlcheck_%d", i), sql)
 		if err != nil {
-			return nil, fmt.Errorf("%s does not prepare against the model:\n  %w", name, err)
+			return nil, fmt.Errorf("%s does not prepare against the %s schema:\n  %w", name, against, err)
 		}
 		if rt == nil {
 			// SQLExec: validated like any declaration, but it must not
@@ -439,7 +483,18 @@ func lint(model *schema.Schema, maxTrips int) error {
 // Every file is rendered before any is written. A generation that fails on the
 // ninth table must not leave eight new packages and a broken build behind —
 // `raorm verify` would then be comparing against a tree nobody intended.
-func generate(dir string, model *schema.Schema, dsn string) error {
+// parseRawSchema keeps a typo from silently selecting the wrong validation.
+func parseRawSchema(v string) (RawSchema, error) {
+	switch RawSchema(v) {
+	case RawAgainstModel:
+		return RawAgainstModel, nil
+	case RawAgainstLive:
+		return RawAgainstLive, nil
+	}
+	return "", fmt.Errorf("-raw-schema %q: want %q or %q", v, RawAgainstModel, RawAgainstLive)
+}
+
+func generate(dir string, model *schema.Schema, dsn string, against RawSchema) error {
 	// The import path is derived from the directory, which only means anything
 	// module-relative: gluing an ABSOLUTE path onto the module path produces
 	// an import that cannot compile — found the moment a test finally BUILT
@@ -450,7 +505,7 @@ func generate(dir string, model *schema.Schema, dsn string) error {
 	if err != nil {
 		return err
 	}
-	scanners, err := prepareRawQueries(dsn, model)
+	scanners, err := prepareRawQueries(dsn, model, against)
 	if err != nil {
 		return err
 	}
@@ -534,12 +589,12 @@ func diff(dsn, ns, out, name string, model *schema.Schema, allowDestructive bool
 //
 // It compares bytes rather than regenerating in place, so a CI run cannot
 // "fix" the problem by rewriting the tree it was asked to check.
-func verifyStale(dir string, model *schema.Schema) error {
+func verifyStale(dir string, model *schema.Schema, against RawSchema) error {
 	dir, rel, hostMod, err := resolveOutDir(dir)
 	if err != nil {
 		return err
 	}
-	scanners, err := prepareRawQueries(os.Getenv("RAORM_DSN"), model)
+	scanners, err := prepareRawQueries(os.Getenv("RAORM_DSN"), model, against)
 	if err != nil {
 		return err
 	}
