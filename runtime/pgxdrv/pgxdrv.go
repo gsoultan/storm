@@ -18,7 +18,7 @@ func (e Pool) Query(ctx context.Context, sql string, args []any) (runtime.Rows, 
 	if err != nil {
 		return nil, err
 	}
-	return rows{r}, nil
+	return newRows(r)
 }
 
 func (e Pool) Exec(ctx context.Context, sql string, args []any) (int64, error) {
@@ -89,7 +89,15 @@ func drainBatch(br pgx.BatchResults, ops []runtime.BatchOp, each func(int, runti
 			}
 			continue
 		}
-		cbErr := each(i, rows{r}, 0, nil)
+		checked, cErr := newRows(r)
+		if cErr != nil {
+			// newRows closed the result already.
+			if cbErr := each(i, nil, 0, cErr); cbErr != nil {
+				return cbErr
+			}
+			continue
+		}
+		cbErr := each(i, checked, 0, nil)
 		r.Close() // invalidates r; nothing may hold it past here
 		if cbErr != nil {
 			return cbErr
@@ -120,6 +128,9 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 
 // NewPoolConfig is NewPool over a config the caller has already tuned.
 func NewPoolConfig(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, error) {
+	if err := refuseTextModes(cfg.ConnConfig.DefaultQueryExecMode); err != nil {
+		return nil, err
+	}
 	prev := cfg.AfterConnect
 	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
 		RegisterFastArrays(c.TypeMap())

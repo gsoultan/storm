@@ -571,3 +571,22 @@ func BenchmarkGenScan1000_Contact(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkGenGetOne is the single-row read: the worst case for any per-query
+// fixed cost, since nothing amortises it over rows. It is the measurement the
+// wire-format guard (docs/PRODUCTION-READINESS.md P0.1) had to clear.
+func BenchmarkGenGetOne(b *testing.B) {
+	ctx, ex := context.Background(), genExec()
+	q := genuser.New().StatusEq("active").Limit(1)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, ok, err := q.One(ctx, ex)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if !ok {
+			b.Fatal("no row")
+		}
+	}
+}

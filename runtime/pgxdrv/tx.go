@@ -30,7 +30,7 @@ func (e Tx) Query(ctx context.Context, sql string, args []any) (runtime.Rows, er
 	if err != nil {
 		return nil, err
 	}
-	return rows{r}, nil
+	return newRows(r)
 }
 
 func (e Tx) Exec(ctx context.Context, sql string, args []any) (int64, error) {

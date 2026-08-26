@@ -832,3 +832,36 @@ interleaving are the method, single cold runs are not.
 The same discipline as ever applies in the other direction: parity is parity.
 Do NOT quote 0.97× as "faster than pgx" — both sides wait on the same socket,
 and the honest, durable numbers remain the allocation and byte columns.
+
+## The wire-format guard costs 0.004% of a query (2026-08-26)
+
+P0.1 required raorm to stop accepting text-format results silently, and set a
+kill criterion: if the per-statement check cannot cost less than 1% of a warm
+`Get`, ship the config-time refusal alone. It cost far less than that.
+
+`checkFormats` walks a result's field descriptors once per statement — not
+per row — comparing each column's format code against what its type needs:
+
+    BenchmarkCheckFormats-15    2000000    3.82 ns/op   0 B/op   0 allocs/op
+    (8 columns: 2 uuid, 2 timestamptz, bool, 2 text, text[]; five runs,
+     3.820 / 3.860 / 3.884 / 3.892 / 3.886)
+
+Same-session baseline over TCP to the container, medians of five runs at
+3000x, so the ratio is computed from numbers measured minutes apart on one
+machine rather than quoted across sessions:
+
+| | ns/op | the check as a share |
+|---|---|---|
+| `Get`, raw pgx | ~101,600 | 0.0038% |
+| `Get`, raorm (`BenchmarkGet_Fast`) | ~89,500 | **0.0043%** |
+| `GenGetOne` (filtered single row, new) | ~1,055,600 | 0.0004% |
+
+The gate wanted under 1%; the measurement is ~230× inside it, with no
+allocation, so the runtime check ships alongside the config-time refusal
+rather than instead of it. Note this machine's round trips are ~4× the
+unix-socket figures above — a slower baseline would only make the share
+*smaller*, so the conclusion does not depend on the day's conditions.
+
+`BenchmarkGenGetOne` is new and worth keeping for its own sake: it is the
+single-row read, the worst case for any per-query fixed cost, which the
+thousand-row scans amortise away.

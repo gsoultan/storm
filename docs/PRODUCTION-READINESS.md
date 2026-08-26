@@ -1,6 +1,6 @@
 ---
 tags: [raorm, production, gates]
-updated: 2026-08-25
+updated: 2026-08-26
 ---
 
 # The road to production-grade
@@ -20,7 +20,7 @@ is only what a first adopter or a reading of the runtime turned up.
 
 ## P0 — Silent wrong answers (nothing ships past these)
 
-### P0.1 raorm silently requires the binary wire format
+### P0.1 raorm silently requires the binary wire format — **CLOSED 2026-08-26**
 
 **The defect, measured** (`runtime/pgxdrv/wireformat_test.go`, against a live
 server on 2026-08-25 — not inferred from reading):
@@ -67,12 +67,26 @@ no error, no log line, and no test failure.
    mode works only with prepared-statement handling pgx already provides;
    simple protocol is refused, and why.
 
-**Gate.** `wireformat_test.go` already holds the evidence and becomes the
-guard's test: after the fix it must assert the *refusal* (and the error naming
-the column) instead of the inversion. **Kill criterion:** if the per-statement
-wire check cannot be made to cost less than 1% of a warm `Get`, the
-config-time refusal ships alone and the residual risk — a hand-built pool in
-simple protocol — is stated in `STABILITY.md` rather than hidden.
+**Gate — met.** Both halves shipped. `NewPool`/`NewPoolConfig` refuse
+`SimpleProtocol` and `Exec` at construction, and every result is checked once
+per statement (`checkFormats`), so a hand-built pool wrapped in
+`pgxdrv.Pool{P: …}` is covered too. `wireformat_test.go` now asserts the
+refusal, the error naming the column, and — still — that the decoder hazard is
+real, so the guard cannot be argued away later.
+
+**Cost — inside the kill criterion by ~230×.** 3.82 ns for an eight-column
+result, zero allocations, against a same-session `Get` of ~89.5 µs: **0.0043%**
+where the criterion allowed 1% (`bench/RESULTS.md`, 2026-08-26). The
+config-time refusal did not have to ship alone.
+
+**What writing it taught.** The first rule was "every column must be binary",
+which failed four fixture tests on a Postgres **enum**: pgx sends an enum's
+label as text, and that label *is* the value. The rule is now a closed
+deny-list of the types raorm decodes from a fixed binary layout, so
+user-defined types a schema adds later need no permission — while domains,
+which PostgreSQL reports under their base type's OID, are still checked
+properly. `docs/DEPLOYMENT.md` states the whole thing for adopters, with the
+PgBouncer pooling-mode table that is the actual reason anyone lands here.
 
 **Driver: dba · Challenger: perf.**
 
