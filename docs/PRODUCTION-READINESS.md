@@ -275,11 +275,13 @@ with a different path outside the tree and asserts the whole path a new
 adopter walks —
 
     model → five-line main → ddl → generate → compile → diff → apply → verify
+          → verify -pending → lint → explain → import
 
-— including the migration half, which is the riskiest thing an ORM does and
-had only ever been exercised from inside this module. The migration section
-needs a server and skips without one, so the check still runs where there is
-no database.
+— every command the tool has. The migration half is the riskiest thing an ORM
+does; `import` is the on-ramp anyone with an existing database walks, and its
+draft is asserted to be Go that parses, because a draft nobody can compile is
+not an on-ramp. The database-backed half skips without a DSN, so the check
+still runs where there is no server.
 
 Two properties make it a tripwire rather than a passing test. It was verified
 to fail with the import-path fix reverted, where it names the defect and

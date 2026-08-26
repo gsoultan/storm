@@ -44,6 +44,10 @@ type Team struct {
 
 func (t *Team) Schema(s *raorm.Table) { s.Unique(&t.Name) }
 
+// A named plan, so `lint` has a load pattern to cost and `explain` has more
+// than one statement to plan.
+func (t *Team) Plans(p *raorm.Plans) { p.Named("Roster").With(&t.Members) }
+
 type Member struct {
 	raorm.Model
 	Team     Team
@@ -175,6 +179,47 @@ GOEOF
       elif ! go run ./cmd/raorm verify -dsn "$scoped" -schema "$ns" >verify.out 2>&1; then
         note "after applying its own migration, verify still reports drift:"
         sed 's/^/    /' verify.out | head -6 >&2
+      else
+        # The commands nobody outside this repository had ever run. `generate`
+        # was broken for every outsider for months; there is no reason to
+        # assume these are not.
+
+        echo "== verify -pending: the model against its migrations =="
+        if ! go run ./cmd/raorm verify -pending -dsn "$scoped" -schema "$ns" -out migrations >pending.out 2>&1; then
+          note "the migration diff just wrote does not carry the model:"
+          sed 's/^/    /' pending.out | head -6 >&2
+        fi
+
+        echo "== lint: the named plan is costed =="
+        if ! go run ./cmd/raorm lint -dsn "$scoped" -schema "$ns" >lint.out 2>&1; then
+          note "lint failed:"; sed 's/^/    /' lint.out | head -6 >&2
+        elif ! grep -qi 'roster' lint.out; then
+          note "lint did not cost the declared plan:"; sed 's/^/    /' lint.out | head -6 >&2
+        fi
+
+        echo "== explain: every statement planned =="
+        if ! go run ./cmd/raorm explain -dsn "$scoped" -schema "$ns" >explain.out 2>&1; then
+          note "explain failed:"; sed 's/^/    /' explain.out | head -8 >&2
+        elif ! grep -qE 'statement\(s\) planned' explain.out; then
+          note "explain planned nothing:"; sed 's/^/    /' explain.out | head -6 >&2
+        fi
+
+        echo "== import: the on-ramp for an existing database =="
+        # The most common adoption path there is: point raorm at a schema you
+        # already have and get a model draft back. It must be Go that parses,
+        # not prose — a draft nobody can compile is not an on-ramp.
+        if ! go run ./cmd/raorm import -dsn "$scoped" -schema "$ns" >imported.go 2>import.err; then
+          note "import failed:"; sed 's/^/    /' import.err | head -6 >&2
+        elif ! grep -q 'type Team' imported.go; then
+          note "the imported model does not describe the schema it read:"
+          sed 's/^/    /' imported.go | head -8 >&2
+        else
+          mkdir -p imported
+          # gofmt parses; a draft that does not is a draft nobody can use.
+          if ! gofmt -e imported.go > imported/model.go 2>fmt.err; then
+            note "the imported model is not valid Go:"; sed 's/^/    /' fmt.err | head -5 >&2
+          fi
+        fi
       fi
     fi
   fi
