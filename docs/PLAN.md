@@ -705,11 +705,17 @@ sanctioned home, ADR-0009 amended §5).
 Docs, runnable examples, API stability policy, semver commitments, and a
 `MIGRATING-FROM-SQLC.md`. Ship only after M6 has run in `anubis` for two weeks.
 
-**Soak clock started 2026-08-25** (M6 completion, anubis 26f612c). Every prep
-artifact exists — STABILITY.md, MIGRATING-FROM-SQLC.md (now carrying the real
-M6 patterns, not the predicted ones), examples/blog, the as-built API.md —
-so the earliest honest `v0.1.0` tag is **2026-09-08**, contingent only on the
-soak surfacing nothing. Whatever it does surface goes here first.
+**Shipped 2026-08-26: `v0.1.0` is tagged** at `d95ac55`, and the first
+adopter consumes it as a pinned, checksum-verified module — anubis's
+`replace` and workspace `use` are gone. Every prep artifact was in place
+(STABILITY.md, MIGRATING-FROM-SQLC.md carrying the real M6 patterns rather
+than the predicted ones, examples/blog, the as-built API.md), and the four
+production-grade gates in [`PRODUCTION-READINESS.md`](PRODUCTION-READINESS.md)
+closed the same day.
+
+The soak clock (started 2026-08-25) keeps running to 2026-09-08 — it just
+gates a **v0.1.1** now instead of the initial tag. Its four signals and their
+thresholds are unchanged; see P3 there.
 
 ---
 

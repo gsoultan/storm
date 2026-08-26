@@ -135,7 +135,7 @@ allocations (`benchstat` in `bench/RESULTS.md`), and `Get` is byte-identical
 
 **Driver: perf · Challenger: sec.**
 
-### P1.2 Nobody can depend on raorm — **mostly resolved 2026-08-26, one push outstanding**
+### P1.2 Nobody can depend on raorm — **CLOSED 2026-08-26**
 
 **The defect.** The module is unpublished: `git ls-remote` on
 `github.com/gsoultan/raorm` returns no branches. anubis therefore depends on
@@ -158,21 +158,21 @@ cost is that anubis's build now tracks a moving `main` rather than a
 checksum-verified version, which is fine for a pre-v0.1 dependency and is the
 thing `v0.1.0` will retire.
 
-**Outstanding — one push.** raorm's local `main` is five commits ahead of the
-published one (P0.1, P1.1, P2 and the regeneration). Until those are pushed,
-anubis CI will clone a raorm whose emitter has no version stamp, regenerate
-`rgen/` without one, and fail its own drift gate against the committed files
-that have it. The prediction is precise, so it is worth stating: the failure
-will be a header-only diff on `internal/authz/adapter/postgres/rgen/*`.
+**How it closed, the same day.** `main` was pushed, **tagged `v0.1.0`**, and
+anubis moved off the sibling entirely: the `replace` is gone from `go.mod`,
+`../raorm` is gone from `go.work`, and the requirement is
+`github.com/gsoultan/raorm v0.1.0` — a checksum-verified module from the
+proxy. The clone-the-sibling scaffolding that made CI work in the meantime is
+no longer load-bearing.
 
-`git push origin main` in raorm resolves it. It is the owner's to run — I do
-not push on anyone's behalf.
+The header-only drift this predicted did happen, exactly as described: the
+committed generated files said `(devel)` and the pinned build emits
+`v0.1.0`, so `rgen/` needed regenerating. The drift gate in
+`scripts/ci/backend-suite.sh` caught it rather than letting it reach CI.
 
-**Then, at the tag.** `v0.1.0` after the soak, and anubis can decide whether
-to keep cloning `main` or move to a pinned version with a checksum.
-
-**Gate.** anubis CI green on a runner that has never seen `~/projects/raorm`.
-The mechanism exists; it needs the push to be exercised.
+**Gate — met.** anubis builds and its whole test suite passes with **no
+sibling checkout anywhere on the machine's path**: the dependency now comes
+from the module proxy. That is the property the gate asked for.
 
 **Driver: arch · Challenger: dx.**
 
@@ -234,10 +234,18 @@ is worth nothing if the only thing observed is "no crash". Record, weekly:
 | RSS after N days | the running process | the shape cache and binder pools are ceilings, not ramps |
 | `raorm verify -stale` in CI | already gated | generated code never silently diverged |
 
-**Kill criterion for the tag.** Any of: p95 drift beyond the 2 ms budget, a
-shape count that grows monotonically with traffic rather than plateauing, or
-RSS without a plateau. Any one of them moves the tag and opens a P0/P1 item —
-the date is not the gate, the signals are.
+**The tag went out first (2026-08-26), so the remedy changed.** `v0.1.0` was
+cut on the day the four P0/P1/P2 gates closed rather than at the end of the
+soak window. That is the owner's call and it is defensible — the gates that
+would have blocked it are closed — but it means the soak is now running
+against a **released** version, and its kill criterion can no longer move a
+tag that exists.
+
+So the criterion is restated rather than quietly dropped. Any of: authorize
+p95 drift beyond the 2 ms budget, a shape count that grows monotonically with
+traffic rather than plateauing, or RSS without a plateau — each now opens a
+**v0.1.1**, and the finding goes in this file first. The signals are
+unchanged; only the remedy is.
 
 ---
 
