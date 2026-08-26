@@ -815,6 +815,17 @@ var (
 // `raorm lint` uses it to catch a builder minting a statement per request.
 func Shapes() int { return cache.Shapes() }
 
+// ShapeFlushes reports how many times a shape cache in this package hit
+// runtime.ShapeCap and dropped. Zero is the expected value forever:
+// nonzero means a call site is minting structures from request data
+// rather than from code, and the fix is that call site, not a bigger
+// cap. Export it as a gauge — it is the cheapest early warning that a
+// filter screen turned into 2^n statements.
+func ShapeFlushes() int {
+	return cache.Flushes() + offsetCache.Flushes() +
+		countCache.Flushes() + existsCache.Flushes()
+}
+
 // stmtFor compiles a read. LIMIT and LIMIT/OFFSET are different
 // statements with different placeholder counts, so they get different
 // caches rather than a sentinel token muddying the key.

@@ -94,7 +94,7 @@ PgBouncer pooling-mode table that is the actual reason anyone lands here.
 
 ## P1 — Unbounded growth and provenance
 
-### P1.1 The shape cache has no bound and no eviction
+### P1.1 The shape cache has no bound and no eviction — **CLOSED 2026-08-26**
 
 **The defect.** `runtime.TreeCache.entries` is a `map[uint64][]*treeEntry`
 that only ever grows: `Put` appends, nothing evicts, and each entry retains a
@@ -109,22 +109,29 @@ structure is then derived from request data, and the standing rule applies:
 Twenty optional filters is a megabyte-scale cache that never shrinks, and the
 process looks like a slow leak with no leak.
 
-**Fix.** A per-cache cap with a documented policy, defaulting high enough that
-a well-behaved program never reaches it. Two candidates, and the choice must
-be measured, not argued:
-- **Cap + refuse:** past the cap, compile without caching (correct, slower,
-  bounded) and expose the event so it can be alerted on.
-- **Cap + evict:** 2-random or CLOCK eviction; keeps the hot set, costs a
-  counter per entry on the warm path — which is exactly what the warm path
-  exists to avoid.
+**Fix — shipped: cap and bulk drop.** Past `runtime.ShapeCap` (default 1024
+per cache) the map is dropped whole and refills from the shapes still in use.
 
-The current `Shapes()` accessor and `raorm lint`'s shape-count budget stay as
-the *design-time* gate; this is the *runtime* backstop for when a call site
-outgrew its review.
+Neither candidate in the original plan won. **Cap + refuse** is not
+self-healing: 100k junk shapes at startup would fill the cache and every
+legitimate shape afterwards would compile forever. **Cap + evict** needs
+per-entry usage tracking, which is a *write on the read path* — a shared
+cache line dirtied by every hit on every core, which is the exact cost the
+warm path exists to avoid. A bulk drop is bounded, self-healing, keeps the
+read path read-only, and costs one allocation on the cold path. Statements
+handed out before a drop stay valid: callers hold the pointer, not the map.
 
-**Gate.** A test that mints 100k distinct shapes and asserts bounded retention
-(the retention tripwire in `bench/RESULTS.md` is the template — it must trip
-both ways). Warm-path benchmark unchanged within noise, published.
+`SetShapeCap(0)` restores the old unbounded behaviour for a program that can
+prove its shapes come from code. Generated packages expose `ShapeFlushes()`,
+so "a filter screen turned into 2ⁿ statements" is a gauge rather than a
+mystery.
+
+**Gate — met.** `TestShapeCap_BoundsAShapeExplosion` mints 100k shapes:
+capped holds 575 and retains 170 KB, unbounded holds 100,000 and retains
+27,833 KB — **164×**, and the test fails if the unbounded arm does *not*
+explode, so it trips both ways. Warm path within half a nanosecond with zero
+allocations (`benchstat` in `bench/RESULTS.md`), and `Get` is byte-identical
+— the check is in `Put`.
 
 **Driver: perf · Challenger: sec.**
 

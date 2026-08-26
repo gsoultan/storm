@@ -865,3 +865,41 @@ unix-socket figures above — a slower baseline would only make the share
 `BenchmarkGenGetOne` is new and worth keeping for its own sake: it is the
 single-row read, the worst case for any per-query fixed cost, which the
 thousand-row scans amortise away.
+
+## The shape cache has a ceiling now, and it costs half a nanosecond (2026-08-26)
+
+P1.1: `TreeCache` only ever grew. Shapes are supposed to come from code, but
+a screen with *n* optional filters mints up to 2ⁿ, so the map was keyed by
+what the caller sent. Past `runtime.ShapeCap` (default 1024) the whole map is
+now dropped and refills from whatever is still in use.
+
+100,000 distinct shapes, each holding a realistic statement, retained
+(`TestShapeCap_BoundsAShapeExplosion`, HeapAlloc after two collections):
+
+| | shapes held | retained | flushes |
+|---|---|---|---|
+| unbounded (`SetShapeCap(0)`, the old behaviour) | 100,000 | 27,833 KB | 0 |
+| capped at 1024 | 575 | **170 KB** | 97 |
+
+**164× less retained**, and the test asserts both directions — the unbounded
+case must reach 100,000 or the workload is not minting what the test claims,
+which is what makes this a tripwire rather than a comforting number.
+
+Warm path, cap off vs on, `benchstat` over 8×300,000 runs each:
+
+```
+GenPrepare_Warm-15            64.08n ± 1%   64.59n ± 1%  +0.80% (p=0.012 n=8)
+GenBuildAndPrepare_Warm-15    304.1n ± 0%   303.5n ± 0%       ~ (p=0.157 n=8)
+geomean                       139.6n        140.0n       +0.29%
+```
+
+Zero allocations either way. The +0.5 ns is real but is not work: `Get` is
+byte-identical (verified against the diff), and the eviction check lives in
+`Put`, which runs once per shape. What changed on the read path is the struct
+— two more fields move it into the next size class, shifting `last` relative
+to a cache line. Reported rather than explained away, and not chased: half a
+nanosecond against a 164× memory ceiling is the trade this was for.
+
+Eviction was rejected on the same grounds. LRU or CLOCK needs per-entry usage
+tracking, which is a WRITE on the read path — a shared cache line dirtied by
+every hit on every core. A bulk drop keeps the read path read-only.

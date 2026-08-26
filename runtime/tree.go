@@ -106,11 +106,29 @@ func (t Tok) Arity() int   { return int(uint32(t) & 0xfff) }
 // The key is a hash of the stream, but a hit is confirmed by comparing the
 // tokens themselves. A 64-bit hash collision is vanishingly unlikely and would
 // return the wrong SQL, which is not a risk an ORM gets to take.
+//
+// It is BOUNDED. Shapes are supposed to come from code structure — that is
+// the whole thesis, and `raorm lint` budgets them at generate time — but a
+// call site can derive structure from request data (n optional filters is up
+// to 2ⁿ shapes, user-chosen sort columns multiply it again), and then this
+// map is keyed by what the caller sent. A cache with no ceiling is a leak
+// that profiles as "memory grows with traffic", so past ShapeCap the whole
+// map is dropped and refills from the shapes still in use.
+//
+// Dropping rather than evicting is deliberate. Eviction needs per-entry usage
+// tracking, which means a write on the READ path — a shared cache line dirtied
+// by every hit on every core, which is precisely what the warm path exists to
+// avoid. A bulk drop costs one allocation on the cold path, keeps the ceiling
+// exact, and self-heals: whatever is genuinely hot recompiles once and is
+// resident again. A cache that is flushing is a call site that outgrew its
+// review, and Flushes reports it.
 type TreeCache struct {
 	last atomic.Pointer[hotTree]
 
 	mu      sync.RWMutex
 	entries map[uint64][]*treeEntry
+	n       int
+	flushes int64
 }
 
 type hotTree struct {
@@ -125,6 +143,39 @@ type treeEntry struct {
 
 func NewTreeCache() *TreeCache {
 	return &TreeCache{entries: map[uint64][]*treeEntry{}}
+}
+
+// shapeCap is the ceiling every cache shares, read on the cold path only.
+//
+// 1024 distinct structures per table is far past what a reviewed call site
+// produces — `raorm lint` fails a plan long before this — and it bounds a
+// cache at roughly a megabyte, so a program that never abuses the builder
+// never learns this exists.
+var shapeCap atomic.Int64
+
+func init() { shapeCap.Store(1024) }
+
+// SetShapeCap changes the ceiling for every cache in the process. A value of
+// zero or less means unbounded, which is the old behaviour and is honest to
+// offer: a program whose shapes provably come from code, and which would
+// rather never recompile, can say so.
+//
+// It is read when a new shape is compiled, so it takes effect immediately and
+// costs nothing on the warm path.
+func SetShapeCap(n int) { shapeCap.Store(int64(n)) }
+
+// ShapeCap reports the current ceiling.
+func ShapeCap() int { return int(shapeCap.Load()) }
+
+// Flushes reports how many times this cache hit the ceiling and dropped.
+//
+// Nonzero means shapes are being minted from data rather than from code. The
+// fix is at the call site — a filter that should be one shape with a
+// nullable parameter rather than 2ⁿ — not a bigger cap.
+func (c *TreeCache) Flushes() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return int(c.flushes)
 }
 
 // HashToks is FNV-1a over the token stream.
@@ -185,6 +236,16 @@ func (c *TreeCache) Put(toks []Tok, st *Stmt) *Stmt {
 	owned := make([]Tok, len(toks))
 	copy(owned, toks)
 	c.entries[key] = append(c.entries[key], &treeEntry{toks: owned, stmt: st})
+	c.n++
+	if max := int(shapeCap.Load()); max > 0 && c.n > max {
+		// Drop everything, including what was just inserted: `last` still
+		// holds it, so this call site keeps its statement and the rest of the
+		// working set pays one recompile each. Statements already handed out
+		// stay valid — callers hold the pointer, not the map.
+		c.entries = make(map[uint64][]*treeEntry)
+		c.n = 0
+		c.flushes++
+	}
 	c.last.Store(&hotTree{toks: owned, stmt: st})
 	return st
 }
@@ -194,11 +255,7 @@ func (c *TreeCache) Put(toks []Tok, st *Stmt) *Stmt {
 func (c *TreeCache) Shapes() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	n := 0
-	for _, b := range c.entries {
-		n += len(b)
-	}
-	return n
+	return c.n
 }
 
 // FragFn returns the lowered SQL for one leaf. Generated code supplies it.
