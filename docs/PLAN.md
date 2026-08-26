@@ -809,8 +809,9 @@ Written as a checklist because "production ready" is not one property.
 ### Not blocking, worth knowing
 
 - `runtime.SpliceTree` assumes a `$N` placeholder (documented at `takesArg`).
-- Only `uuid[]` has a fast array encoder; `text[]` and `int8[]` keys still go
-  through pgx's generic codec.
+- ~~Only `uuid[]` has a fast array encoder~~ — `int8[]` and `text[]` shipped
+  2026-08-26 (21× and 8×, one allocation each; `bench/RESULTS.md`). `numeric[]`
+  still goes through pgx's generic codec.
 - Nesting a plan through a to-one relation is a generation error by choice.
 - The discriminator form of polymorphism (`AnyRef`) is unbuilt; exclusive arcs
   are.

@@ -87,6 +87,7 @@ func (uuidArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
 func RegisterFastArrays(m *pgtype.Map) {
 	registerDecimal(m)
 	registerInterval(m)
+	registerScalarArrays(m)
 	t, ok := m.TypeForOID(pgtype.UUIDArrayOID)
 	if !ok {
 		return // a server without uuid[] has nothing to speed up

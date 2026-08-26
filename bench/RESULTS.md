@@ -903,3 +903,36 @@ nanosecond against a 164× memory ceiling is the trade this was for.
 Eviction was rejected on the same grounds. LRU or CLOCK needs per-entry usage
 tracking, which is a WRITE on the read path — a shared cache line dirtied by
 every hit on every core. A bulk drop keeps the read path read-only.
+
+## int8[] and text[] get the codec uuid[] already had (2026-08-26)
+
+`= ANY($1)` is how every relation load batches its children, so the key array
+is encoded on the hot path of the feature raorm exists for. uuid[] got a fast
+codec early because raorm's fixtures are uuid-keyed. Most Postgres schemas
+that are not uuid-first use **bigserial** primary keys, and every relation
+load in one of those binds `int8[]`; a natural key binds `text[]`.
+
+Measured first, to decide whether the code was justified — 500 elements,
+`pgtype.Map.Encode` straight to a buffer, five runs, medians:
+
+| | pgx generic codec | raorm codec | |
+|---|---|---|---|
+| `uuid[]` (already shipped) | 16,822 ns · 1,003 allocs | 690 ns · 1 alloc | 24× |
+| `int8[]` | 6,333 ns · 466 allocs | **303 ns · 1 alloc** | **21×** |
+| `text[]` | 9,415 ns · 503 allocs | **1,121 ns · 1 alloc** | **8×** |
+
+About one allocation per element in every generic case, which is the same
+disease uuid[] had; the cure is the same one plan for the whole slice writing
+the binary array format straight into the buffer. 24 B/op is the buffer
+header, not per element.
+
+**Correctness is the risk here, not speed.** A hand-written wire encoder that
+is subtly wrong stores or matches the wrong values silently, so every case
+round-trips through a real server and is compared against *pgx's own codec on
+a second connection* — agreement between the two is the property, not
+agreement with anyone's expectations. Covered: empty, nil (which must bind as
+NULL, not `'{}'`), `math.MinInt64`/`MaxInt64`, embedded commas, braces,
+quotes, backslashes, newlines and tabs, unicode and emoji, the literal strings
+"NULL" and `\N`, and `= ANY` matching the right rows. The binary format
+carries lengths rather than delimiters, which is *why* those inputs are safe —
+proven rather than assumed.
