@@ -718,6 +718,15 @@ soak surfacing nothing. Whatever it does surface goes here first.
 What is genuinely solid, and what would stop a team adopting this tomorrow.
 Written as a checklist because "production ready" is not one property.
 
+> **Superseded in part, 2026-08-25.** Blocker 2 ("no adopter has run it") is
+> closed by M6, and blocker 7 by the socket measurement. Reading the runtime
+> after M6 turned up four gaps this list never had — a **silently wrong**
+> decode under pgx's simple protocol, an unbounded shape cache, an
+> unpublishable module, and unstamped generated code. They are sequenced with
+> gates and kill criteria in [`PRODUCTION-READINESS.md`](PRODUCTION-READINESS.md),
+> which is now the operative plan; this section remains as the record of what
+> was known on 2026-08-24.
+
 ### Solid
 
 - **Injection is structural, not a filter.** The SQL is identical whatever the
