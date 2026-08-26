@@ -68,6 +68,16 @@ reaching it found pgxdrv.Tx.Exec at ZERO coverage — the "every surface"
 transaction test exercised a unit flush, COPY, a plan and a count but never an
 update or delete, the two that reach Executor.Exec.
 
+**P4 — the stranger test, 2026-08-26.** After v0.1.0 shipped, a fresh module
+OUTSIDE both repos found three first-run defects in five minutes: `generate`
+emitted raorm's own module path into the caller's module (flagship command,
+never worked for anyone else, invisible here because the wrong answer is the
+right one); the tool was unreachable (Models in package main, "bootstrap" that
+nothing generated) so adopters got no verify/lint/explain at all — now the
+importable `raorm/tool` with `tool.Main(model.All(), nil)`; and a symlinked
+output path was refused. `scripts/check/outsider.sh` makes it a permanent CI
+gate, verified to trip both ways.
+
 See [[m6_first_adopter]] for how the adopter surfaced the reading that found
 all of these.
 

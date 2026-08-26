@@ -270,6 +270,12 @@ subtle — it was the main command, completely broken for everyone else — and
 no test, gate, coverage floor or adopter caught it, because the adopter was
 also us. Ship a stranger's smoke test, or ship the bug.
 
+So the stranger is now a gate: `scripts/check/outsider.sh`, in CI's fast job,
+builds a module with a different path outside the tree and asserts the whole
+model → generate → compile path. It was verified to trip both ways — with the
+fix reverted it names the defect and prints the offending imports. No database
+needed.
+
 **Driver: dx · Challenger: arch.**
 
 ---
