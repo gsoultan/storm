@@ -11,6 +11,12 @@ cd "$(dirname "$0")/../.."
 
 declare -a FLOORS=(
   "github.com/gsoultan/raorm/runtime 95"
+  # The only package that knows pgx exists, and now the home of the wire-format
+  # guard: a wrong entry in its deny-list is a value decoded as the wrong type,
+  # which is precisely the "not observable from outside" failure floors are for.
+  # Lower than the others because a driver adapter's remaining statements are
+  # error plumbing that needs a broken server to reach.
+  "github.com/gsoultan/raorm/runtime/pgxdrv 85"
   "github.com/gsoultan/raorm/compile/pgsql 80"
   "github.com/gsoultan/raorm/compile/pgddl 90"
   "github.com/gsoultan/raorm/codegen 85"

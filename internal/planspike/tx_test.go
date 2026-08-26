@@ -140,10 +140,39 @@ func TestTx_EverySurfaceComposesInsideOneTransaction(t *testing.T) {
 			len(loaded), len(loaded[0].Users))
 	}
 
+	// Update and delete are the surfaces that reach Executor.Exec rather than
+	// Query — the test claimed "every surface" while leaving that method at
+	// zero coverage, which is how a transaction adapter could have shipped
+	// with a broken Exec and nothing to notice.
+	m := user.Mutate(rows[0])
+	m.SetName("renamed inside the transaction")
+	if err := m.Update(ctx, ex); err != nil {
+		t.Fatalf("update inside a transaction: %v", err)
+	}
+	got, ok, err := user.New().Where(user.ID.Eq(rows[0].ID)).One(ctx, ex)
+	if err != nil || !ok {
+		t.Fatalf("reading back the update: ok=%v err=%v", ok, err)
+	}
+	if got.Name != "renamed inside the transaction" {
+		t.Fatalf("the update did not land inside the transaction: name=%q", got.Name)
+	}
+
+	if err := user.Delete(ctx, ex, rows[1].ID); err != nil {
+		t.Fatalf("delete inside a transaction: %v", err)
+	}
+	if n, err := user.New().Where(user.ID.Eq(rows[1].ID)).Count(ctx, ex); err != nil || n != 0 {
+		t.Fatalf("the delete is not visible inside its own transaction: n=%d err=%v", n, err)
+	}
+
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if n, _ := org.New().Where(org.ID.Eq(orgID)).Count(ctx, outer); n != 0 {
 		t.Fatal("the rollback did not erase the composed writes")
+	}
+	// The rollback covers the Exec paths too: the deleted row is back and the
+	// renamed one never existed outside.
+	if n, _ := user.New().Where(user.ID.Eq(rows[1].ID)).Count(ctx, outer); n != 0 {
+		t.Fatal("a row deleted inside a rolled-back transaction is missing outside it")
 	}
 }
