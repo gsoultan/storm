@@ -38,10 +38,27 @@ text, varchar, jsonb and **enum labels** as text on a binary connection, so
 because PostgreSQL reports their base type's OID. See docs/DEPLOYMENT.md for
 the PgBouncer table (transaction pooling: fine; statement pooling: no).
 
-Still open: unbounded TreeCache (no eviction — P1.1), unpublished module
-forcing a relative-path replace that breaks anubis CI (P1.2, owner decision),
-no version stamp in generated code (P2.1). See [[m6_first_adopter]] for how
-the adopter surfaced the reading that found them.
+**P1.1 CLOSED 2026-08-26**: TreeCache is bounded by runtime.ShapeCap (1024,
+SetShapeCap(0) opts out). Past the cap the map is DROPPED whole — not evicted,
+because eviction needs a write on the read path. 100k shapes: 170KB capped vs
+27,833KB unbounded (164x); warm path +0.5ns, Get byte-identical. Generated
+packages expose ShapeFlushes(); nonzero means a call site mints shapes from
+request data.
+
+**P2 CLOSED 2026-08-26**: generated headers carry the raorm version; error/SQL
+value hygiene is a test (bench/errhygiene_test.go, 13 shapes); tracing recipe
+in docs/DEPLOYMENT.md — and writing its proof found that pgx's QueryTracer is
+BLIND to batches, so the recipe needs QueryTracer + BatchTracer +
+CopyFromTracer or a plan's relation loads go unseen.
+
+**P1.2**: raorm IS public now (owner pushed 2026-08-26; main was 67c7b71).
+anubis consumes it by cloning the go.work sibling in CI/Docker
+(scripts/ci/fetch-workspace-modules.sh) rather than pinning a version. Local
+main runs ahead of the published one; until it is pushed, anubis CI
+regenerates without the version stamp and fails its own drift gate.
+
+See [[m6_first_adopter]] for how the adopter surfaced the reading that found
+all of these.
 
 ## Read in this order
 1. `docs/COMPARISON.md` — Ent/GORM/Bun/Hibernate by mechanism; the five-property gap table
