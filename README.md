@@ -11,6 +11,13 @@ the type cannot say goes in a `Schema` method using **field pointers**, so the
 editor enforces names and refactors follow them. storm emits reviewable
 migrations and **never applies DDL**.
 
+> **Renamed from `raorm` (2026-08-27).** The module path is now
+> `github.com/gsoultan/storm`, and **v0.2.0 is the first usable version under
+> it** — GitHub's redirect makes the older tags *visible* under this path, but
+> their `go.mod` declares the old one and Go rejects the mismatch. v0.1.x
+> remains available as `github.com/gsoultan/raorm`. See
+> [CHANGELOG.md](CHANGELOG.md) for the two-step migration.
+
 ## Status
 
 **v0.1.0 is tagged, and M0–M8 have passed.** The read path, migrations,

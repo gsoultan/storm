@@ -39,6 +39,21 @@ The old path is not withdrawn and cannot be: `github.com/gsoultan/raorm`
 v0.1.0 and v0.1.1 stay resolvable through the module proxy forever. They
 simply stop receiving changes.
 
+**One trap worth knowing about.** GitHub redirects the old repository name to
+the new one, so `go list -m -versions github.com/gsoultan/storm` reports
+`v0.1.0 v0.1.1 v0.2.0` — but the first two **cannot be used under this path**.
+Their `go.mod` declares the old module path, and Go refuses the mismatch:
+
+```
+module declares its path as: github.com/gsoultan/raorm
+        but was required as: github.com/gsoultan/storm
+```
+
+That is correct behaviour and not fixable from here — a tag's go.mod is
+immutable. **Under `storm`, v0.2.0 is the first usable version.** If you want
+a v0.1.x, require it under the old path, where it works exactly as it always
+did.
+
 ### Added
 
 - **`numeric[]`** decodes to `[]storm.Decimal` and encodes back, which closes
