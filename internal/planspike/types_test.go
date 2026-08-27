@@ -5,14 +5,14 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/runtime"
 )
 
-func dec(t *testing.T, s string) raorm.Decimal {
+func dec(t *testing.T, s string) storm.Decimal {
 	t.Helper()
-	d, err := raorm.ParseDecimal(s)
+	d, err := storm.ParseDecimal(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestDecimal_OverflowFromTheDatabaseIsAnError(t *testing.T) {
 	}
 }
 
-func mustCreateWith(t *testing.T, ctx context.Context, ex runtime.Executor, email string, bal raorm.Decimal) user.Row {
+func mustCreateWith(t *testing.T, ctx context.Context, ex runtime.Executor, email string, bal storm.Decimal) user.Row {
 	t.Helper()
 	n := user.Create()
 	n.SetEmail(email)

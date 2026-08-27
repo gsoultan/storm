@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
-// Plan costing — the analysis half of `raorm lint --plans`.
+// Plan costing — the analysis half of `storm lint --plans`.
 //
 // A named plan's round-trip cost is knowable at generate time: one for the
 // parents, one per relation, one per nested relation. That is the whole reason

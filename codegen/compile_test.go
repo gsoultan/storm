@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gsoultan/raorm/codegen"
+	"github.com/gsoultan/storm/codegen"
 )
 
 // Parsing is not the bar. A generated package that parses and does not compile
@@ -30,12 +30,12 @@ func TestPackage_Compiles(t *testing.T) {
 
 	files, err := codegen.Package(fixtureSchema(t), codegen.PackageOptions{
 		Dir:    dir,
-		Import: "github.com/gsoultan/raorm",
+		Import: "github.com/gsoultan/storm",
 		// Generate the context file too: the plan layer is where cross-package
 		// type errors live, so a compile check that skipped it would miss the
 		// half most likely to break.
 		Package:       "store",
-		PackageImport: "github.com/gsoultan/raorm/" + filepath.ToSlash(rel),
+		PackageImport: "github.com/gsoultan/storm/" + filepath.ToSlash(rel),
 	})
 	if err != nil {
 		t.Fatal(err)

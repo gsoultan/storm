@@ -1,4 +1,4 @@
-// Package schema is raorm's schema IR: the single representation every front
+// Package schema is storm's schema IR: the single representation every front
 // end produces and every back end consumes.
 //
 // Front ends: the Go model (model), a live database (schema/pg), migration
@@ -6,7 +6,7 @@
 // migration differ (migrate).
 //
 // Everything here is stdlib-only and deterministic: two runs over the same
-// input produce byte-identical output, which is what lets `raorm verify` fail
+// input produce byte-identical output, which is what lets `storm verify` fail
 // CI on a plain diff.
 package schema
 
@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-// Schema is a whole database as raorm understands it.
+// Schema is a whole database as storm understands it.
 type Schema struct {
 	Tables []*Table
 	Enums  []*Enum
@@ -28,7 +28,7 @@ type Table struct {
 	Comment string
 
 	// GoName is the model type this table was declared from — "User" for
-	// table "users". It is a raorm-level fact with no DDL of its own, like
+	// table "users". It is a storm-level fact with no DDL of its own, like
 	// Column.Immutable, and it exists because pluralisation is not
 	// invertible: tableName() turns User into users by naive rules English
 	// does not actually follow, so codegen must not try to turn users back
@@ -46,7 +46,7 @@ type Table struct {
 	// Users slice pointing back, or which side the model considers the owner.
 	// Code generation needs all three.
 	//
-	// This is a raorm-level fact with no DDL of its own; ForeignKeys is what
+	// This is a storm-level fact with no DDL of its own; ForeignKeys is what
 	// the database sees.
 	Relations []*Relation
 
@@ -165,7 +165,7 @@ type Column struct {
 	Identity  bool
 	Comment   string
 
-	// Immutable and Version are raorm-level facts with no DDL of their own.
+	// Immutable and Version are storm-level facts with no DDL of their own.
 	// They change what the generator emits, not what the database enforces.
 	Immutable bool
 	Version   bool

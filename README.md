@@ -1,6 +1,6 @@
-# raorm
+# storm
 
-> **Every other Go ORM builds SQL at runtime. raorm builds it at compile time —
+> **Every other Go ORM builds SQL at runtime. storm builds it at compile time —
 > including the dynamic queries.**
 
 An embeddable ORM for PostgreSQL and Go. Generated, not reflected. Imported,
@@ -8,7 +8,7 @@ not deployed. Zero CGO; the driver lives behind a four-method port.
 
 **Model-first:** one plain Go struct per table — no tags, no DSL. Everything
 the type cannot say goes in a `Schema` method using **field pointers**, so the
-editor enforces names and refactors follow them. raorm emits reviewable
+editor enforces names and refactors follow them. storm emits reviewable
 migrations and **never applies DDL**.
 
 ## Status
@@ -31,15 +31,15 @@ cannot drift from the library the way prose does.
 // The model: a plain struct. *T = nullable, Xxx Yyy = foreign key,
 // []T = has-many. Field pointers declare the rest.
 type Author struct {
-    raorm.Model            // uuid id + created_at/updated_at
+    storm.Model            // uuid id + created_at/updated_at
     Name     string
     Email    string
     Articles []Article
 }
 
-func (a *Author) Schema(t *raorm.Table)           { t.Unique(&a.Email) }
-func (a *Author) Plans(p *raorm.Plans)            { p.Named("Feed").With(&a.Articles) }
-func (a *Author) Projections(p *raorm.Projections) { p.Named("Card", &a.Name, &a.Email) }
+func (a *Author) Schema(t *storm.Table)           { t.Unique(&a.Email) }
+func (a *Author) Plans(p *storm.Plans)            { p.Named("Feed").With(&a.Articles) }
+func (a *Author) Projections(p *storm.Projections) { p.Named("Card", &a.Name, &a.Email) }
 ```
 
 ```go
@@ -66,8 +66,8 @@ ada, err := n.Insert(ctx, ex)
 
 // Anything PostgreSQL can run, typed, validated against the model at
 // generate time — mismatches fail the build naming the column and the fix.
-var Top = raorm.SQL[TopRow](`WITH ranked AS (...) SELECT ... LIMIT $1`)
-var Purge = raorm.SQLExec(`DELETE FROM sessions WHERE expires_at < now()`)
+var Top = storm.SQL[TopRow](`WITH ranked AS (...) SELECT ... LIMIT $1`)
+var Purge = storm.SQLExec(`DELETE FROM sessions WHERE expires_at < now()`)
 ```
 
 ## The numbers
@@ -75,12 +75,12 @@ var Purge = raorm.SQLExec(`DELETE FROM sessions WHERE expires_at < now()`)
 Measured, never quoted from memory — the methodology and every caveat live in
 [`bench/RESULTS.md`](bench/RESULTS.md). At 1,000 rows, allocations per query:
 
-| raorm | raw pgx | sqlc | Bun | Ent | GORM |
+| storm | raw pgx | sqlc | Bun | Ent | GORM |
 |---|---|---|---|---|---|
 | **6** | 5,012 | 5,022 | 13,899 | 23,016 | 23,934 |
 
 Wall clock is round-trip-dominated for every ORM — the honest claims are
-allocations, GC pressure (raorm 21 GCs vs pgx's 102 on the 2M-row workload),
+allocations, GC pressure (storm 21 GCs vs pgx's 102 on the 2M-row workload),
 and the plans: `Exists()` is a `LIMIT 1` probe, relation loads carry no
 useless `ORDER BY`, per-parent limits lower to `LATERAL` (measured 33× over
 `row_number()` at 100 parents), and projections make index-only scans
@@ -93,12 +93,12 @@ your models and an installed binary cannot see them
 ([EXAMPLE §2](docs/EXAMPLE.md)):
 
 ```go
-func main() { tool.Main(model.All(), nil) }   // cmd/raorm/main.go
+func main() { tool.Main(model.All(), nil) }   // cmd/storm/main.go
 ```
 
 ```console
-go run ./cmd/raorm generate [dir]   # one package per table + the context package
-                     diff <name>    # a reviewable migration; never applied by raorm
+go run ./cmd/storm generate [dir]   # one package per table + the context package
+                     diff <name>    # a reviewable migration; never applied by storm
                      verify         # drift: model vs database
                      verify -stale  # generated code vs model (CI, no database)
                      verify -pending# model vs migrations — "forgot to diff" fails CI

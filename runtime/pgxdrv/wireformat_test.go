@@ -6,17 +6,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime"
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func dsn(t *testing.T) string {
 	t.Helper()
-	d := os.Getenv("RAORM_DSN")
+	d := os.Getenv("STORM_DSN")
 	if d == "" {
-		t.Skip("RAORM_DSN not set")
+		t.Skip("STORM_DSN not set")
 	}
 	return d
 }

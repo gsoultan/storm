@@ -1,12 +1,12 @@
 ---
-tags: [raorm, stability, semver]
+tags: [storm, stability, semver]
 updated: 2026-08-25
 status: adopted at v0.x — the commitments below bind from v1.0.0
 ---
 
 # API stability and versioning
 
-raorm is an *embedded* dependency: its API surface is not just the `raorm`
+storm is an *embedded* dependency: its API surface is not just the `storm`
 package but every line of code it generates into your tree. This policy covers
 both, because a breaking change in generated output breaks you exactly as hard
 as a renamed function.
@@ -24,14 +24,14 @@ From **v1.0.0**:
 - **Major**: anything that makes existing model declarations, generated-code
   call sites, or emitted migrations invalid.
 
-**Regenerate on every upgrade.** `raorm verify -stale` in CI makes forgetting
+**Regenerate on every upgrade.** `storm verify -stale` in CI makes forgetting
 impossible; mixed-version generated trees are not a supported state.
 
 ## The stable surface
 
 1. The **declaration API**: plain-struct models, `Schema`/`Plans`/
-   `Projections` methods, field-pointer addressing, `raorm.Model`,
-   `raorm.Decimal`, `raorm.Interval`, `raorm.OneOfN`, `raorm.SQL[T]`.
+   `Projections` methods, field-pointer addressing, `storm.Model`,
+   `storm.Decimal`, `storm.Interval`, `storm.OneOfN`, `storm.SQL[T]`.
 2. The **generated call surface**: `New`, `Where`/`Any`/`Not`, typed column
    handles, `Order`/`Limit`/`Offset`/`After`/`Unordered`, `All`/`AllInto`/
    `One`/`Count`/`Exists`, `Create`/`Mutate`/`Delete`, `InsertAll`, the
@@ -44,7 +44,7 @@ impossible; mixed-version generated trees are not a supported state.
 ## Explicitly not covered
 
 - The `codegen`, `compile/*` and `schema` packages: they are the compiler's
-  internals, exported for the generated context. Pin raorm; do not build on
+  internals, exported for the generated context. Pin storm; do not build on
   them.
 - Unexported anything, generated file layout, comment text, `internal/`.
 - The composition seams (`FragOf`, `PredToks`, …): generated-context plumbing,

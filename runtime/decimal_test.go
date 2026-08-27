@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // Round-tripping through PostgreSQL's own wire format is the only proof that

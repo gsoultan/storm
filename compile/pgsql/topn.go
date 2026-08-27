@@ -110,11 +110,11 @@ func TopNLateral(table string, cols []string, key, keyType string) string {
 const orderMarker = "\x00order\x00"
 
 const (
-	rowNumberAlias = "_raorm_rn"
-	subqueryAlias  = "_raorm_t"
-	lateralAlias   = "_raorm_c"
-	parentAlias    = "_raorm_p"
-	parentKeyAlias = "_raorm_k"
+	rowNumberAlias = "_storm_rn"
+	subqueryAlias  = "_storm_t"
+	lateralAlias   = "_storm_c"
+	parentAlias    = "_storm_p"
+	parentKeyAlias = "_storm_k"
 )
 
 func writeIdents(b *strings.Builder, cols []string) {

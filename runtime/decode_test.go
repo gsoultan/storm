@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // The wire decoders, exercised directly.

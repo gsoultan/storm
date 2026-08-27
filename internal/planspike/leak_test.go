@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/planspike/store"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
-	raormrt "github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/internal/planspike/store"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
+	stormrt "github.com/gsoultan/storm/runtime"
 )
 
 // heapNow forces collection and reports live heap. Two GCs: the first turns
@@ -149,7 +149,7 @@ func (noRows) RawValues() [][]byte { return nil }
 func (noRows) Close()              {}
 func (noRows) Err() error          { return nil }
 
-func (d drainExec) Query(context.Context, string, []any) (raormrt.Rows, error) {
+func (d drainExec) Query(context.Context, string, []any) (stormrt.Rows, error) {
 	if d.arrived != nil {
 		d.arrived <- struct{}{}
 		<-d.release
@@ -157,9 +157,9 @@ func (d drainExec) Query(context.Context, string, []any) (raormrt.Rows, error) {
 	return noRows{}, nil
 }
 func (drainExec) Exec(context.Context, string, []any) (int64, error) { return 0, nil }
-func (drainExec) CopyFrom(context.Context, string, []string, raormrt.CopySource) (int64, error) {
+func (drainExec) CopyFrom(context.Context, string, []string, stormrt.CopySource) (int64, error) {
 	return 0, nil
 }
-func (drainExec) Batch(context.Context, []raormrt.BatchOp, func(int, raormrt.Rows, int64, error) error) error {
+func (drainExec) Batch(context.Context, []stormrt.BatchOp, func(int, stormrt.Rows, int64, error) error) error {
 	return nil
 }

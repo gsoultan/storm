@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/migrate"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/schema"
 )
 
 func tbl(name string, cols ...*schema.Column) *schema.Table {
@@ -56,7 +56,7 @@ func TestDiff_AddNotNullColumnIsDestructive(t *testing.T) {
 	if !p.Destructive() {
 		t.Fatalf("NOT NULL with no default must be flagged:\n%s", p.SQL())
 	}
-	if !strings.Contains(p.SQL(), "-- raorm:destructive") {
+	if !strings.Contains(p.SQL(), "-- storm:destructive") {
 		t.Error("destructive steps must be annotated in the SQL")
 	}
 }

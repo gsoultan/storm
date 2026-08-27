@@ -3,23 +3,23 @@
 // migrations and the live database all still agree — as a LIBRARY.
 //
 // It is a library because the commands need your models, and a binary
-// installed from this repository cannot see them. So the binary in cmd/raorm
+// installed from this repository cannot see them. So the binary in cmd/storm
 // is a stub, and the real tool is five lines in your own module:
 //
 //	package main
 //
 //	import (
-//		"github.com/gsoultan/raorm/tool"
+//		"github.com/gsoultan/storm/tool"
 //		"example.com/app/model"
 //	)
 //
 //	func main() { tool.Main(model.All(), model.Queries()) }
 //
-// Then `go run ./cmd/raorm generate`, `... verify -pending`, `... lint` and
+// Then `go run ./cmd/storm generate`, `... verify -pending`, `... lint` and
 // the rest work against YOUR schema, and `go tool` can install it into your
 // module if you want the short form.
 //
-// raorm never applies DDL. Every command either prints SQL or exits non-zero.
+// storm never applies DDL. Every command either prints SQL or exits non-zero.
 package tool
 
 import (
@@ -34,27 +34,27 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/codegen"
-	"github.com/gsoultan/raorm/compile/pgddl"
-	"github.com/gsoultan/raorm/migrate"
-	"github.com/gsoultan/raorm/schema"
-	pgintro "github.com/gsoultan/raorm/schema/pg"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/compile/pgddl"
+	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/schema"
+	pgintro "github.com/gsoultan/storm/schema/pg"
 	"github.com/jackc/pgx/v5"
 )
 
-// modulePath is raorm's own import path, which generated code imports for the
+// modulePath is storm's own import path, which generated code imports for the
 // runtime. It is a constant because a generated package that pointed at a fork
 // or a stale vendor copy would compile and be subtly wrong.
-const modulePath = "github.com/gsoultan/raorm"
+const modulePath = "github.com/gsoultan/storm"
 
 // hostModule reads the module path of the module being generated INTO — the
-// caller's, not raorm's.
+// caller's, not storm's.
 //
 // Generated packages import each other (the context package imports one
 // package per table), so those imports have to spell the host module's path.
-// This used to be raorm's own constant, which meant `generate` emitted
-// `github.com/gsoultan/raorm/internal/store/user` into somebody else's
+// This used to be storm's own constant, which meant `generate` emitted
+// `github.com/gsoultan/storm/internal/store/user` into somebody else's
 // module and produced code that could not compile. It went unnoticed because
 // every generation that ever ran was inside this repository, where the wrong
 // answer is the right one — which is exactly the bug a first outside user
@@ -86,29 +86,29 @@ func hostModule(root string) (string, error) {
 // because every command needs it and none of them may choose a different one.
 var Models []any
 
-// RawQueries is every raorm.SQL[T] and raorm.SQLExec declaration that wants a
+// RawQueries is every storm.SQL[T] and storm.SQLExec declaration that wants a
 // generated scanner and build-time validation.
-var RawQueries []raorm.RawDecl
+var RawQueries []storm.RawDecl
 
-const usage = `raorm — a compile-time ORM for PostgreSQL
+const usage = `storm — a compile-time ORM for PostgreSQL
 
 usage:
-  raorm ddl                       print CREATE statements for the model
-  raorm diff   <name>             write a migration from the live schema to the model
-  raorm verify                    fail if the database has drifted from the model
-  raorm verify -stale [dir]       fail if generated code is stale (no database needed)
-  raorm verify -pending           fail if the model has changes no migration carries
-  raorm import                    print the model implied by an existing database
-  raorm generate [dir]            emit one Go package per table (default internal/store)
+  storm ddl                       print CREATE statements for the model
+  storm diff   <name>             write a migration from the live schema to the model
+  storm verify                    fail if the database has drifted from the model
+  storm verify -stale [dir]       fail if generated code is stale (no database needed)
+  storm verify -pending           fail if the model has changes no migration carries
+  storm import                    print the model implied by an existing database
+  storm generate [dir]            emit one Go package per table (default internal/store)
                                   -raw-schema live validates raw SQL against the
                                   connected database rather than a scratch apply
                                   of the model, for schemas whose truth is
                                   migrations (functions, views the model omits)
-  raorm lint                      cost every named plan in round trips; fail over the budget
-  raorm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
+  storm lint                      cost every named plan in round trips; fail over the budget
+  storm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
 flags:
-  -dsn        PostgreSQL connection string (or $RAORM_DSN)
+  -dsn        PostgreSQL connection string (or $STORM_DSN)
   -schema     namespace to read/write (default "public")
   -out        migrations directory (default "db/migrations")
   -allow-destructive
@@ -118,10 +118,10 @@ flags:
 // Main is the whole tool: register your models and hand it the command line.
 // It exits the process, because a developer tool that returned an error for
 // its caller to print would have two error formats.
-func Main(models []any, queries []raorm.RawDecl) {
+func Main(models []any, queries []storm.RawDecl) {
 	Models, RawQueries = models, queries
 	if err := Run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "raorm: "+err.Error())
+		fmt.Fprintln(os.Stderr, "storm: "+err.Error())
 		os.Exit(1)
 	}
 }
@@ -134,7 +134,7 @@ func run(args []string) error {
 	// The command comes first and the flags follow it, which is what everyone
 	// expects and what `flag` does not do on its own: Parse stops at the first
 	// non-flag argument, so parsing the whole slice leaves every flag after the
-	// subcommand unread. `raorm verify -stale` silently became `raorm verify`
+	// subcommand unread. `storm verify -stale` silently became `storm verify`
 	// and asked for a database.
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
@@ -142,9 +142,9 @@ func run(args []string) error {
 	}
 	cmd, args := args[0], args[1:]
 
-	fs := flag.NewFlagSet("raorm "+cmd, flag.ContinueOnError)
+	fs := flag.NewFlagSet("storm "+cmd, flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
-	dsn := fs.String("dsn", os.Getenv("RAORM_DSN"), "PostgreSQL connection string")
+	dsn := fs.String("dsn", os.Getenv("STORM_DSN"), "PostgreSQL connection string")
 	ns := fs.String("schema", "public", "namespace")
 	out := fs.String("out", "db/migrations", "migrations directory")
 	allowDestructive := fs.Bool("allow-destructive", false, "permit data-losing steps")
@@ -156,7 +156,7 @@ func run(args []string) error {
 	pending := fs.Bool("pending", false, "verify the model against the migrations directory instead of the database")
 	// Flags may appear ANYWHERE, including after a positional argument.
 	//
-	// Go's flag package stops at the first non-flag, so `raorm diff init
+	// Go's flag package stops at the first non-flag, so `storm diff init
 	// -schema mine` parses no flags at all and -schema silently keeps its
 	// default of "public". For -allow-destructive that fails safe; for -schema
 	// it means diffing the wrong namespace and proposing to drop objects that
@@ -193,7 +193,7 @@ func run(args []string) error {
 
 	case "diff":
 		if nargs < 1 {
-			return errors.New("diff needs a name: raorm diff add_user_status")
+			return errors.New("diff needs a name: storm diff add_user_status")
 		}
 		return diff(*dsn, *ns, *out, arg(0), model, *allowDestructive)
 
@@ -246,12 +246,12 @@ func buildModel() (*schema.Schema, error) {
 			"no models registered — this binary is a template; generate one for your module\n" +
 				"       (see docs/EXAMPLE.md §2)")
 	}
-	return raorm.Build(Models...)
+	return storm.Build(Models...)
 }
 
 func connect(dsn string) (*pgx.Conn, context.Context, func(), error) {
 	if dsn == "" {
-		return nil, nil, nil, errors.New("no -dsn and no $RAORM_DSN")
+		return nil, nil, nil, errors.New("no -dsn and no $STORM_DSN")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	c, err := pgx.Connect(ctx, dsn)
@@ -333,13 +333,13 @@ func moduleRoot() (string, error) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", errors.New("no go.mod above the working directory — run raorm inside the module")
+			return "", errors.New("no go.mod above the working directory — run storm inside the module")
 		}
 		dir = parent
 	}
 }
 
-// prepareRawQueries PREPAREs every registered raorm.SQL declaration against
+// prepareRawQueries PREPAREs every registered storm.SQL declaration against
 // the MODEL and resolves its scanner.
 //
 // Against the model, not the live schema: the model DDL is applied to a
@@ -361,7 +361,7 @@ const (
 	//
 	// It exists because the first adopter needed it and could not use the
 	// tool without it: anubis's queries call SQL functions (`authorize()`)
-	// and read tables its raorm model deliberately does not describe — the
+	// and read tables its storm model deliberately does not describe — the
 	// model there is a PROJECTION of a schema whose source of truth is
 	// migrations. Under RawAgainstModel every one of those statements fails
 	// to prepare, which is correct and useless.
@@ -380,7 +380,7 @@ func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]c
 	}
 	if dsn == "" {
 		return nil, errors.New(
-			"raw queries are registered, and validating them needs -dsn (or $RAORM_DSN): " +
+			"raw queries are registered, and validating them needs -dsn (or $STORM_DSN): " +
 				"each statement is PREPAREd against a real server — a server is " +
 				"required, an existing schema is not (unless -raw-schema live)")
 	}
@@ -391,7 +391,7 @@ func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]c
 	defer done()
 
 	if against == RawAgainstModel {
-		scratch := fmt.Sprintf("raorm_sqlcheck_%d", os.Getpid())
+		scratch := fmt.Sprintf("storm_sqlcheck_%d", os.Getpid())
 		if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
 			return nil, err
 		}
@@ -406,12 +406,12 @@ func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]c
 
 	var out []codegen.RawScanner
 	for i, d := range RawQueries {
-		rt, sql := raorm.DeclOf(d)
-		name := "raorm.SQLExec"
+		rt, sql := storm.DeclOf(d)
+		name := "storm.SQLExec"
 		if rt != nil {
-			name = "raorm.SQL[" + rt.Name() + "]"
+			name = "storm.SQL[" + rt.Name() + "]"
 		}
-		sd, err := c.Prepare(ctx, fmt.Sprintf("raorm_sqlcheck_%d", i), sql)
+		sd, err := c.Prepare(ctx, fmt.Sprintf("storm_sqlcheck_%d", i), sql)
 		if err != nil {
 			return nil, fmt.Errorf("%s does not prepare against the %s schema:\n  %w", name, against, err)
 		}
@@ -421,7 +421,7 @@ func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]c
 			// the server sends a result set is a bug, not a convenience.
 			if len(sd.Fields) > 0 {
 				return nil, fmt.Errorf(
-					"%s returns %d column(s) — use raorm.SQL[T] to read them, or make the statement return nothing",
+					"%s returns %d column(s) — use storm.SQL[T] to read them, or make the statement return nothing",
 					name, len(sd.Fields))
 			}
 			continue
@@ -482,7 +482,7 @@ func lint(model *schema.Schema, maxTrips int) error {
 //
 // Every file is rendered before any is written. A generation that fails on the
 // ninth table must not leave eight new packages and a broken build behind —
-// `raorm verify` would then be comparing against a tree nobody intended.
+// `storm verify` would then be comparing against a tree nobody intended.
 // parseRawSchema keeps a typo from silently selecting the wrong validation.
 func parseRawSchema(v string) (RawSchema, error) {
 	switch RawSchema(v) {
@@ -499,7 +499,7 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema) e
 	// module-relative: gluing an ABSOLUTE path onto the module path produces
 	// an import that cannot compile — found the moment a test finally BUILT
 	// the output instead of reading it. An absolute dir is made relative to
-	// the working directory (the module root, where raorm runs), and one that
+	// the working directory (the module root, where storm runs), and one that
 	// escapes the module is an error naming why, not a tree that fails later.
 	dir, rel, hostMod, err := resolveOutDir(dir)
 	if err != nil {
@@ -569,13 +569,13 @@ func diff(dsn, ns, out, name string, model *schema.Schema, allowDestructive bool
 		return err
 	}
 	file := filepath.Join(out, fmt.Sprintf("%04d_%s.up.sql", seq, name))
-	header := fmt.Sprintf("-- generated by raorm; review before applying\n-- %d step(s)\n\n", len(plan.Changes))
+	header := fmt.Sprintf("-- generated by storm; review before applying\n-- %d step(s)\n\n", len(plan.Changes))
 	if err := os.WriteFile(file, []byte(header+plan.SQL()), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("→ %s (%d steps%s)\n", file, len(plan.Changes),
 		map[bool]string{true: ", DESTRUCTIVE"}[plan.Destructive()])
-	fmt.Println("review and commit — raorm never applies a migration")
+	fmt.Println("review and commit — storm never applies a migration")
 	return nil
 }
 
@@ -594,7 +594,7 @@ func verifyStale(dir string, model *schema.Schema, against RawSchema) error {
 	if err != nil {
 		return err
 	}
-	scanners, err := prepareRawQueries(os.Getenv("RAORM_DSN"), model, against)
+	scanners, err := prepareRawQueries(os.Getenv("STORM_DSN"), model, against)
 	if err != nil {
 		return err
 	}
@@ -641,7 +641,7 @@ func verifyStale(dir string, model *schema.Schema, against RawSchema) error {
 	for _, f := range stale {
 		fmt.Fprintf(os.Stderr, "stale:   %s\n", f)
 	}
-	return fmt.Errorf("generated code is out of date — run 'raorm generate %s'", dir)
+	return fmt.Errorf("generated code is out of date — run 'storm generate %s'", dir)
 }
 
 // verifyPending is ADR-0001's third mode: model against MIGRATIONS. "Changed
@@ -660,7 +660,7 @@ func verifyPending(dsn, out string, model *schema.Schema) error {
 	}
 	defer done()
 
-	scratch := fmt.Sprintf("raorm_pending_%d", os.Getpid())
+	scratch := fmt.Sprintf("storm_pending_%d", os.Getpid())
 	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
 		return fmt.Errorf("create scratch schema: %w", err)
 	}
@@ -691,7 +691,7 @@ func verifyPending(dsn, out string, model *schema.Schema) error {
 	}
 	fmt.Fprintf(os.Stderr, "the model has %d change(s) no migration carries:\n\n%s\n",
 		len(plan.Changes), plan.SQL())
-	return fmt.Errorf("model changed without a migration — run 'raorm diff <name>' and commit the result")
+	return fmt.Errorf("model changed without a migration — run 'storm diff <name>' and commit the result")
 }
 
 func verify(dsn, ns string, model *schema.Schema) error {
@@ -724,7 +724,7 @@ func importSchema(dsn, ns string) error {
 	if err != nil {
 		return err
 	}
-	// A Go MODEL, not the DDL. raorm is model-first, so adopting an existing
+	// A Go MODEL, not the DDL. storm is model-first, so adopting an existing
 	// database means having a model to start from — and hand-writing one for
 	// forty tables is where adoption stops. The DDL is already in the database;
 	// printing it back would help nobody.

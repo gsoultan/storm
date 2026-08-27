@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // arr builds a one-dimensional binary array; a size of -1 marks a NULL element.

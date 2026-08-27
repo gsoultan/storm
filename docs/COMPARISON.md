@@ -1,12 +1,12 @@
 ---
-tags: [raorm, comparison, research]
+tags: [storm, comparison, research]
 updated: 2026-08-23
 status: baseline
 ---
 
 # The field: Ent, GORM, Bun, JPA/Hibernate
 
-> Read this before CONCEPT.md. The design of raorm is a direct response to
+> Read this before CONCEPT.md. The design of storm is a direct response to
 > a gap this table makes visible.
 
 All architectural claims below are about *mechanism* and are stable across
@@ -43,7 +43,7 @@ clauses.
 **Developer friendliness — best in class, and it is not close.** Ten minutes to
 first query. `AutoMigrate`, hooks, associations, soft delete, a plugin ecosystem,
 and answers to every question already on Stack Overflow. This is the bar for
-onboarding and raorm should be measured against it.
+onboarding and storm should be measured against it.
 
 **Performance — the weakest architecture of the four.** Cost is structural, not
 incidental: a statement clone per chained call, a clause map assembled and
@@ -115,7 +115,7 @@ window functions, subqueries as models, `UNION`, `ON CONFLICT` upserts, bulk
 operations, and real relation support. You are rarely *blocked*; you are only
 ever unsafe, because the exotic parts are strings.
 
-**Steal:** the SQL-shaped API surface — this is the DX model raorm should copy
+**Steal:** the SQL-shaped API surface — this is the DX model storm should copy
 outright; CTE and window as first-class nodes; bulk operations.
 **Reject:** strings for identifiers, reflection in the scan path.
 
@@ -162,7 +162,7 @@ query.**
   selectivity and plan quality) and **no relation loading**. This is the current
   tool in `anubis`, and it is the right baseline to beat.
 - **go-jet** — types generated from the live DB, composable typed builder. The
-  closest existing thing to raorm's front half; execution is still a runtime
+  closest existing thing to storm's front half; execution is still a runtime
   builder with reflection scanning.
 - **sqlboiler** — DB-first codegen, genuinely fast. The generated API has aged
   poorly and eager loading is separate queries.
@@ -179,7 +179,7 @@ So "the newest post for each user" — greatest-n-per-group, an ordinary
 requirement — has no correct expression in any of them. The workarounds are
 loading every child row and slicing in Go, or raw SQL with untyped scanning.
 
-raorm's answer is `.Latest(col)` / `.Earliest(col)` / `.LatestN(n, col)`, per
+storm's answer is `.Latest(col)` / `.Earliest(col)` / `.LatestN(n, col)`, per
 parent, lowered to
 `DISTINCT ON`, `LATERAL`, or `row_number()` by a cost model, still in one round
 trip — and `.Limit()` inside a relation is a **generation error** that asks
@@ -196,7 +196,7 @@ Five properties. Nothing has all five.
 | Bun | ✗ | ✗ | ✓ | ~ (extra queries) | ~ (strings) |
 | Hibernate | ~ (plan cache) | ✗ | ✓ | ~ (must opt in) | ✓ |
 | sqlc | ✓ | ✓ | **✗** | **✗** | ✓ |
-| **raorm** | **✓** | **✓** | **✓** | **✓** | **✓** |
+| **storm** | **✓** | **✓** | **✓** | **✓** | **✓** |
 
 The bet is that the last row is reachable, and that the reason nobody has built
 it is that each pair of properties is individually easy and the combination

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/internal/spike"
+	"github.com/gsoultan/storm/internal/spike"
 )
 
 func exec() spike.PgxExec { return spike.PgxExec{Pool: pool} }

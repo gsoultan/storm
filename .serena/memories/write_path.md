@@ -1,4 +1,4 @@
-# raorm — the write path (M4, part 1, 2026-08-24)
+# storm — the write path (M4, part 1, 2026-08-24)
 
 **M4 is complete (2026-08-24).** All four exit gates pass.
 
@@ -101,9 +101,9 @@ as cycles makes every hierarchy unwritable. A genuine mutual reference **is** a
 generation error naming the cycle.
 
 **No deferred id handles, and none needed.** [[docs/API]] §8 sketched them.
-`raorm.Model`'s id is a **client-generated UUID**, so the parent's key is known
+`storm.Model`'s id is a **client-generated UUID**, so the parent's key is known
 *before* the insert. Handles are only unavoidable when the database assigns the
-key — the sequence-id model raorm does not use.
+key — the sequence-id model storm does not use.
 
 ## Measured fix worth remembering
 The first COPY row source boxed **values** into the `[]any` and cost 7

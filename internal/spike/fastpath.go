@@ -111,7 +111,7 @@ var stmtState sync.Map // *pgconn.PgConn -> *connStmts
 // pgxpool's BeforeClose so dead connections do not leak entries.
 func ForgetConn(pc *pgconn.PgConn) { stmtState.Delete(pc) }
 
-func stmtName(mask uint32) string { return "raorm_u_" + strconv.FormatUint(uint64(mask), 10) }
+func stmtName(mask uint32) string { return "storm_u_" + strconv.FormatUint(uint64(mask), 10) }
 
 // AllFast runs the query through pgconn: no []any, no type map, no Scan.
 func (q Query) AllFast(ctx context.Context, ex FastExec, dst []Row, sl *Slab) ([]Row, error) {
@@ -160,7 +160,7 @@ func GetFast(ctx context.Context, ex FastExec, id [16]byte, dst *Row, sl *Slab) 
 	sv, _ := stmtState.LoadOrStore(pc, &connStmts{})
 	cs := sv.(*connStmts)
 	if !cs.getDone {
-		if _, err := pc.Prepare(ctx, "raorm_u_get", getSQL, nil); err != nil {
+		if _, err := pc.Prepare(ctx, "storm_u_get", getSQL, nil); err != nil {
 			return false, err
 		}
 		cs.getDone = true
@@ -172,7 +172,7 @@ func GetFast(ctx context.Context, ex FastExec, id [16]byte, dst *Row, sl *Slab) 
 	b.vals = v
 
 	found := false
-	rr := pc.ExecPrepared(ctx, "raorm_u_get", v, binFormats[:1], binFormats[:8])
+	rr := pc.ExecPrepared(ctx, "storm_u_get", v, binFormats[:1], binFormats[:8])
 	for rr.NextRow() {
 		scanRow(rr.Values(), dst, sl)
 		found = true

@@ -5,12 +5,12 @@ package enttest
 import (
 	"context"
 
-	"github.com/gsoultan/raorm/bench/entbench"
+	"github.com/gsoultan/storm/bench/entbench"
 	// required by schema hooks.
-	_ "github.com/gsoultan/raorm/bench/entbench/runtime"
+	_ "github.com/gsoultan/storm/bench/entbench/runtime"
 
 	"entgo.io/ent/dialect/sql/schema"
-	"github.com/gsoultan/raorm/bench/entbench/migrate"
+	"github.com/gsoultan/storm/bench/entbench/migrate"
 )
 
 type (

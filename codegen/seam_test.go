@@ -61,7 +61,7 @@ func TestNoSQLTextInCodegen(t *testing.T) {
 			//   "//"      a comment emitted into generated code. Explaining
 			//             that an UPDATE's identity is its column set is
 			//             exactly what the output should carry.
-			//   "raorm: " an error message. One of them says `After() needs
+			//   "storm: " an error message. One of them says `After() needs
 			//             every ORDER BY term in the same direction` — it is
 			//             naming the caller's own clause back to them, and
 			//             rewording it to dodge a regex makes the error worse.
@@ -70,7 +70,7 @@ func TestNoSQLTextInCodegen(t *testing.T) {
 			// emits is a bare fragment, and prefixing it with either of these
 			// would not compile.
 			trimmed := strings.TrimSpace(v)
-			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "raorm: ") {
+			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "storm: ") {
 				return true
 			}
 			if m := sqlText.FindString(v); m != "" {

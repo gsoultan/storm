@@ -5,10 +5,10 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
-// Raw-query scanner generation — the build-time half of raorm.SQL[T].
+// Raw-query scanner generation — the build-time half of storm.SQL[T].
 //
 // The generate command PREPAREs each declared statement against the MODEL
 // (applied to a scratch schema, so a drifted dev database cannot vouch for a
@@ -67,13 +67,13 @@ func dedupeRawScanners(in []RawScanner) ([]RawScanner, error) {
 		}
 		if len(prev.cols) != len(rs.cols) {
 			return nil, fmt.Errorf(
-				"raorm: row type %s is returned by queries with %d and %d result columns — align the SELECT lists or declare a second row type",
+				"storm: row type %s is returned by queries with %d and %d result columns — align the SELECT lists or declare a second row type",
 				rs.TypeName, len(prev.cols), len(rs.cols))
 		}
 		for i := range prev.cols {
 			if prev.cols[i] != rs.cols[i] {
 				return nil, fmt.Errorf(
-					"raorm: row type %s is returned by two queries whose result columns disagree at position %d (%s vs %s) — align the SELECT lists or declare a second row type",
+					"storm: row type %s is returned by two queries whose result columns disagree at position %d (%s vs %s) — align the SELECT lists or declare a second row type",
 					rs.TypeName, i+1, prev.cols[i].field, rs.cols[i].field)
 			}
 		}
@@ -90,7 +90,7 @@ func dedupeRawScanners(in []RawScanner) ([]RawScanner, error) {
 // unfed field reads as zero and an unlanded column reads as intended.
 func ResolveRawScanner(rt reflect.Type, typeImport string, fields []RawField) (RawScanner, error) {
 	if rt.Kind() != reflect.Struct {
-		return RawScanner{}, fmt.Errorf("raorm.SQL's type parameter must be a struct, not %s", rt)
+		return RawScanner{}, fmt.Errorf("storm.SQL's type parameter must be a struct, not %s", rt)
 	}
 	// The qualifier must be the package's declared NAME, not its directory:
 	// the two differ in perfectly legal layouts (dir rquery, package
@@ -115,7 +115,7 @@ func ResolveRawScanner(rt reflect.Type, typeImport string, fields []RawField) (R
 		k, tn := oidKind(f.OID)
 		if k == kindUnsupported {
 			return RawScanner{}, fmt.Errorf(
-				"result column %d %q has type %s, which raorm cannot decode yet — cast it in the query",
+				"result column %d %q has type %s, which storm cannot decode yet — cast it in the query",
 				i+1, f.Name, tn)
 		}
 		want, nullable := fieldShape(sf.Type)
@@ -142,7 +142,7 @@ func ResolveRawScanner(rt reflect.Type, typeImport string, fields []RawField) (R
 // "Null[string]", not "Null" — which is why this matches on the prefix.
 func fieldShape(t reflect.Type) (string, bool) {
 	if t.Kind() == reflect.Struct && strings.HasPrefix(t.Name(), "Null[") &&
-		strings.HasPrefix(t.PkgPath(), "github.com/gsoultan/raorm") {
+		strings.HasPrefix(t.PkgPath(), "github.com/gsoultan/storm") {
 		v, _ := t.FieldByName("V")
 		return v.Type.String(), true
 	}
@@ -261,7 +261,7 @@ func (g *gen) emitRawScanners(scanners []RawScanner) {
 	g.p("// results with no reflect and no `any`, exactly like a table scanner.")
 	g.p("func init() {")
 	for _, rs := range scanners {
-		g.p("\traorm.RegisterScanner(scan%s)", rs.TypeName)
+		g.p("\tstorm.RegisterScanner(scan%s)", rs.TypeName)
 	}
 	g.p("}")
 	g.p("")

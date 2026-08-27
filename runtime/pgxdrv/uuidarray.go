@@ -10,7 +10,7 @@ import (
 // Fast uuid[] parameter encoding.
 //
 // `= ANY($1)` is how every relation load batches its children, so the cost of
-// encoding the parent-key array is paid on the hot path of the feature raorm
+// encoding the parent-key array is paid on the hot path of the feature storm
 // exists for. pgx's generic array codec boxes each element into an `any` and
 // builds a per-element encode plan: measured at ~2 allocations per bound id,
 // 1,021 for a 500-id load (bench/RESULTS.md).
@@ -45,7 +45,7 @@ type uuidArrayPlan struct{}
 //	int32 length | int32 lowerBound     (one dimension)
 //	int32 len=16 | 16 bytes             (per element)
 //
-// A raorm key array never contains NULL — the ids come from rows that were read
+// A storm key array never contains NULL — the ids come from rows that were read
 // — so hasnull is zero and no element carries a -1 length.
 func (uuidArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
 	ids, ok := value.([][16]byte)
@@ -76,13 +76,13 @@ func (uuidArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
-// RegisterFastArrays installs raorm's fast parameter encoders on a connection's
+// RegisterFastArrays installs storm's fast parameter encoders on a connection's
 // type map. Call it from pgxpool.Config.AfterConnect, or use NewPool which
 // does.
 //
 // Exported because a type map belongs to a connection, so an application that
 // builds its own pool has to opt in somewhere — and a fast path that only
-// appeared when you used raorm's constructor would make a benchmark depend on
+// appeared when you used storm's constructor would make a benchmark depend on
 // which constructor was called.
 func RegisterFastArrays(m *pgtype.Map) {
 	registerDecimal(m)

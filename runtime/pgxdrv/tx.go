@@ -3,7 +3,7 @@ package pgxdrv
 import (
 	"context"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 	"github.com/jackc/pgx/v5"
 )
 

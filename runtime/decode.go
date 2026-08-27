@@ -45,7 +45,7 @@ func Bytes(b []byte) []byte {
 	return out
 }
 
-// Null[T] mirrors the public raorm.Null so generated code needs no import
+// Null[T] mirrors the public storm.Null so generated code needs no import
 // cycle back to the root package.
 type Null[T any] struct {
 	V     T

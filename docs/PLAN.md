@@ -1,5 +1,5 @@
 ---
-tags: [raorm, plan, milestones]
+tags: [storm, plan, milestones]
 updated: 2026-08-24
 status: proposed
 ---
@@ -20,8 +20,8 @@ Marked `Proposed` in `docs/adr/`. Override any of them and the plan changes;
 they are called out here so the override is deliberate.
 
 1. **Model-first, with migration-mediated DDL.** The Go model is the source of
-   truth; raorm emits reviewable migrations and **never applies one**.
-   Introspection stays as the on-ramp (`raorm import`). *Requires rewording the
+   truth; storm emits reviewable migrations and **never applies one**.
+   Introspection stays as the on-ramp (`storm import`). *Requires rewording the
    `anubis` rule that SQL lives only in `db/queries/` and `migrations/` — the
    DDL still lands there, but generated rather than hand-typed.*
    → [[adr/0001-schema-source-of-truth]]
@@ -67,7 +67,7 @@ order**, and it deliberately does not run M3 → M4 → M5 in numeric order. Thr
 findings from reading the code as it actually stands drove the reordering:
 
 1. **`codegen.File` generates one table per call.** There is no whole-package
-   generation and no `raorm generate` subcommand. M3 and M4 both hard-require
+   generation and no `storm generate` subcommand. M3 and M4 both hard-require
    multi-table output — FK-ordered flush needs the whole graph, relations span
    tables. This is a prerequisite, not a milestone.
 2. **The query-side dialect seam does not exist.** `SELECT` / `ORDER BY` /
@@ -81,7 +81,7 @@ findings from reading the code as it actually stands drove the reordering:
 | Phase | Work | Milestone | Est. |
 |---|---|---|---|
 | **P0** | git baseline + this plan ✅ | — | hours |
-| **P1a** | multi-table package generation, `raorm generate` ✅ | prereq | ~4 d |
+| **P1a** | multi-table package generation, `storm generate` ✅ | prereq | ~4 d |
 | **P1b** | relocate query lowering into `compile/pgsql` + CI check ✅ | R9 | ~2 d |
 | **P2** | plan-type ergonomics spike, hand-written ✅ | de-risks M3 | 3 d |
 | **P3** | writes, unit of work, batching ✅ | **M4** | 2 wk |
@@ -104,7 +104,7 @@ one commit that says so.
 *Driver: compiler · Challenger: dx*
 
 `codegen.Package(*schema.Schema, …)` emitting N tables into one package, driven
-by a real `raorm generate`. Today `cmd/genbench` names a single table by hand.
+by a real `storm generate`. Today `cmd/genbench` names a single table by hand.
 
 **Gate:** output byte-deterministic across 5 regenerations; the existing
 `bench/genuser` output is unchanged (so the P1a diff cannot hide a perf change).
@@ -219,7 +219,7 @@ instead of the bug being hunted. And a NOT NULL column with no default that the
 generator cannot bind made every INSERT fail at runtime; it is a generation
 error now, and it fired on the fixture immediately.
 
-**M4 complete (2026-08-24).** `COPY`, batching, `raorm.Unit` and upserts all
+**M4 complete (2026-08-24).** `COPY`, batching, `storm.Unit` and upserts all
 landed on top of [[adr/0005-executor-port-width]], which grew the `Executor`
 port to four methods and left one of the five-method budget unspent.
 
@@ -236,9 +236,9 @@ Gates met, all four:
 
 **No deferred id handles, and none needed.** [[API]] §8 sketched them — insert a
 parent, get a placeholder, use it as a child's FK before the parent exists.
-`raorm.Model`'s id is a **client-generated UUID**, so the parent's key is known
+`storm.Model`'s id is a **client-generated UUID**, so the parent's key is known
 *before* the insert. Handles are only unavoidable when the database assigns the
-key, which is the sequence-id model raorm does not use.
+key, which is the sequence-id model storm does not use.
 
 **Foreign-key cycles are a generation error** naming the cycle. A mutual
 reference has no write order that satisfies both, and the fix is a modelling
@@ -333,7 +333,7 @@ projections. The remaining constructs — inner/left joins with cross-table
 rows, CTEs as values, windows, `FILTER`, `GROUPING SETS`, `UNION ALL` — are
 **post-v1 IR work by decision, not omission**: v1's falsifiable claim #4
 ("any SQL Postgres can run is expressible, typed, with a generated scanner")
-is satisfied by `raorm.SQL[T]`, which validates against the model at build
+is satisfied by `storm.SQL[T]`, which validates against the model at build
 time. Each native construct lands when its declared form beats the escape
 hatch on review-ability, not before.
 
@@ -355,14 +355,14 @@ and there is no `OFFSET` and no cursor — a hard blocker for any list endpoint
 
 **Unix socket — why it is still open.** `make db` runs Postgres in an Apple
 container reachable only over TCP, and there is no local Postgres on the dev
-machine (`brew list | grep postgres` is empty). Measuring raorm's overhead
+machine (`brew list | grep postgres` is empty). Measuring storm's overhead
 against a ~64 µs round trip is measuring the network, so the ≤ 1.15×
 wall-clock gate passed *without discriminating* — and it will keep doing so
 until this runs over a socket. Unblocking it is:
 
 ```console
 brew install postgresql@17 && brew services start postgresql@17
-RAORM_DSN='postgres:///raorm?host=/tmp' make bench
+STORM_DSN='postgres:///storm?host=/tmp' make bench
 ```
 
 Do not close this by re-running the container benchmark and reporting a better
@@ -385,18 +385,18 @@ concurrent goroutines. Full numbers and caveats: `bench/RESULTS.md`.
 Three findings that amend later milestones:
 
 1. **Allocation budgets need a driver floor.** `pgx.Query` costs 5 allocs
-   before an ORM acts. raorm adds **3** (the string copies); idiomatic pgx
+   before an ORM acts. storm adds **3** (the string copies); idiomatic pgx
    scanning adds **13**. `docs/PERFORMANCE.md` restated accordingly.
 2. **"Allocations independent of row count" is impossible** — 3 text columns
    means 3 allocs/row. The real win is memory: 48 KB vs 185 KB per 1,000 rows.
 3. **M2 must re-benchmark over a unix socket.** Against a container VM the
-   round trip is 63.7 µs and raorm's whole CPU cost is ~45 ns, so the
+   round trip is 63.7 µs and storm's whole CPU cost is ~45 ns, so the
    wall-clock gate passed without discriminating. **No wall-clock claim from
    M0 should be repeated as evidence.**
 
 Rivals benchmarked (2026-08-24): **sqlc, Bun and GORM** are in `bench/`, with
 sqlc genuinely generated rather than hand-written. Headline at 1,000 rows:
-raorm **7 allocations** against sqlc 5,022, Bun 13,899, GORM 23,934 — and 22×
+storm **7 allocations** against sqlc 5,022, Bun 13,899, GORM 23,934 — and 22×
 less memory than sqlc. **Ent is still missing** and needs its own codegen step.
 
 ### Original specification
@@ -427,9 +427,9 @@ indistinguishable.
 
 ## M1 — Model, schema IR, migration diff ✅ PASSED (2026-08-24)
 
-**Shipped:** `raorm` (declaration API + struct walker), `schema` (the IR,
+**Shipped:** `storm` (declaration API + struct walker), `schema` (the IR,
 stdlib-only), `compile/pgddl` (DDL emission), `schema/pg` (introspection),
-`migrate` (diff + normalisation), `cmd/raorm` (ddl · diff · verify · import).
+`migrate` (diff + normalisation), `cmd/storm` (ddl · diff · verify · import).
 
 **Gates met.** The round-trip is a *fixpoint*: model → DDL → apply → introspect
 → emit → apply → introspect produces identical IR. Migrations **converge** —
@@ -467,11 +467,11 @@ composite/array types. Three front ends: **model** (the source of truth),
 
 **Exit gate**
 - round-trip on a 40-table fixture: model → DDL → introspect → IR → diff empty
-- `raorm import` against `anubis`'s real schema reproduces a model that
+- `storm import` against `anubis`'s real schema reproduces a model that
   round-trips to the same DDL; every type mapped or listed as explicitly
   unsupported — silence is not allowed
-- `raorm verify --pending` fails on a model change with no migration; passes
-  after `raorm migrate diff`
+- `storm verify --pending` fails on a model change with no migration; passes
+  after `storm migrate diff`
 - destructive steps require `--allow-destructive` and are annotated in the SQL
 - diff output is byte-deterministic and golden-tested
 
@@ -484,7 +484,7 @@ in-house differ costs little; losing three months to it costs the plan.
 Relational-algebra IR (select, from, join, where, group, having, window, CTE,
 order, limit). Typed predicates via the specification pattern. Shape
 enumeration and fragment lowering in `compile/`. Deterministic Go emission in
-`codegen/`. `raorm generate` producing one package per bounded context.
+`codegen/`. `storm generate` producing one package per bounded context.
 
 **Status (2026-08-24): the read path is shipped and the codegen model is
 proven.** `runtime` (shape cache, slab, decoders, executor port, pgx adapter),
@@ -576,7 +576,7 @@ sites to keep it finite. Designing the API ([[API]] §7) produced a better answe
 **you name the plan**, in a `plans.go` you own, and the generator emits exactly
 those types. No combinatorial explosion, no AST scanning, no chicken-and-egg
 between generation and type-checking. Plans also become the one reviewable file
-listing every load pattern in the system, and `raorm lint --plans` can cost each
+listing every load pattern in the system, and `storm lint --plans` can cost each
 one in round trips.
 
 Ad-hoc inline `.With(...)` remains possible later via AST scanning, as a
@@ -590,7 +590,7 @@ error, still better than Ent's silent empty slice.
 
 ## M4 — Writes, unit of work, batching (2 weeks)
 
-Generated setters flipping a fixed-width dirty mask. `raorm.Unit` with
+Generated setters flipping a fixed-width dirty mask. `storm.Unit` with
 FK-ordered flush through `pgx.Batch`. `COPY` for bulk. `RETURNING`. Optimistic
 locking on a version column. Upserts with `ON CONFLICT`.
 
@@ -603,7 +603,7 @@ locking on a version column. Upserts with `ON CONFLICT`.
 
 ## M5 — Typed escape hatch ✅ PASSED (2026-08-25)
 
-**Gates met.** `raorm.SQL[EarnerRow](…)` runs the gate query — a window
+**Gates met.** `storm.SQL[EarnerRow](…)` runs the gate query — a window
 function over a CTE with a lateral join — fully typed, zero `any` in the scan
 path, against live PostgreSQL. A query whose columns do not match `T` fails
 generation with the column, the type and the fix quoted, all four mismatch
@@ -622,7 +622,7 @@ as join sources — that needs the IR joins P5 still owes.
 
 ### Original specification (M5 — 2 weeks)
 
-`raorm.SQL[T]` raw queries validated at build time by `PREPARE` against a dev
+`storm.SQL[T]` raw queries validated at build time by `PREPARE` against a dev
 database, with generated scanners. Raw fragments usable as join sources inside
 typed queries.
 
@@ -648,14 +648,14 @@ anything the benchmarks missed.
   is not real
 
 **Kill criterion.** If migrating one context takes more than three weeks, or
-regresses p95, raorm is not ready for the other seven. Freeze all feature work
+regresses p95, storm is not ready for the other seven. Freeze all feature work
 and fix the adoption path — a library that is hard to adopt has no users, and
 its own author is the first one to notice.
 
 ### M6 status — PASSED 2026-08-25, in one day, kill criterion does not fire
 
 The whole context migrated, not a slice: 44 sqlc queries became 34
-`raorm.SQL[T]` + 10 `raorm.SQLExec` declarations in one designated
+`storm.SQL[T]` + 10 `storm.SQLExec` declarations in one designated
 `rquery` package, plus one builder query (`RoleByName`) over an `rmodel`
 projection. `db/queries/authz/`, sqlc's `gen/` (2,481 lines together) and
 the sqlc.yaml section are deleted; anubis CI is green including a
@@ -663,7 +663,7 @@ tightened no-SQL-in-Go check (backtick bodies now caught, `rquery/` the
 sanctioned home, ADR-0009 amended §5).
 
 - **p95 gate:** same-run, n=500 each, anubis commit 26f612c — authorize
-  over pgx p95=214.875µs vs over the raorm repository p95=203.958µs. No
+  over pgx p95=214.875µs vs over the storm repository p95=203.958µs. No
   regression; the repository path measured at parity or better in every
   run of the day.
 - **Diff-size gate:** hand-written surface 379 SQL + ~25 yaml lines →
@@ -671,7 +671,7 @@ sanctioned home, ADR-0009 amended §5).
   Larger in raw lines, but one language, one package, typed rows —
   the DX claim held by review, and generated volume stayed flat
   (2,102 → 2,311, of which 1,997 is the reusable roles builder).
-- **Adoption findings, all fixed in raorm the same day:** raw-scanner
+- **Adoption findings, all fixed in storm the same day:** raw-scanner
   import alias vs package name (dir `rquery`, package `authzrquery`);
   `Null[T]` fields never matched because reflect names generics
   `Null[string]`; duplicate scanners when two queries share a row type
@@ -681,15 +681,15 @@ sanctioned home, ADR-0009 amended §5).
   database, not a model scratch schema — `authorize()` and friends live
   in migrations, which remain the schema of record; the model is a
   projection.
-- Acceptance: five `TestRaormFull_*` integration families drive every
+- Acceptance: five `TestStormFull_*` integration families drive every
   repository method with value parity and rolled-back writes, because
   PREPARE proves SQL shape but not call-site argument order.
 
 ## M7 — Tooling gate and hardening (2 weeks)
 
-`raorm explain` (EXPLAIN ANALYZE per named query, in CI), `raorm lint`
+`storm explain` (EXPLAIN ANALYZE per named query, in CI), `storm lint`
 (seq-scan-over-threshold, shape-count explosion, unbounded relation load),
-`raorm verify` (generated code matches schema — fails CI on stale output).
+`storm verify` (generated code matches schema — fails CI on stale output).
 
 **Exit gate**
 - the compiler survives a fuzz corpus over identifiers, types, and predicate
@@ -698,7 +698,7 @@ sanctioned home, ADR-0009 amended §5).
   must be a structural property — the placeholder count for every shape is known
   at build time, so a violation is a generation error, not a runtime check
 - `go test -race -shuffle=on` green
-- `raorm lint` fails a deliberately bad query in a fixture repo
+- `storm lint` fails a deliberately bad query in a fixture repo
 
 ## M8 — v0.1 (2 weeks)
 
@@ -754,7 +754,7 @@ Written as a checklist because "production ready" is not one property.
 1. **Type coverage.** ~~`numeric` and `jsonb` are unsupported~~ — **both
    shipped 2026-08-24.**
 
-   `numeric` is `raorm.Decimal`: an exact fixed-point value, two machine words,
+   `numeric` is `storm.Decimal`: an exact fixed-point value, two machine words,
    no allocation, stdlib-only. float64 is deliberately not offered — it cannot
    represent 0.10, and an accounting system that rounds is a defect rather than
    a tolerance. The limit is stated rather than hidden: an int64 unscaled value
@@ -778,12 +778,12 @@ Written as a checklist because "production ready" is not one property.
 
    **`date`, `interval`, `inet`/`cidr` and `int8[]` shipped 2026-08-24**, each
    with its honesty rule asserted: dates decode as midnight UTC (a stated
-   convention); `raorm.Interval` keeps months/days/micros apart because a month
+   convention); `storm.Interval` keeps months/days/micros apart because a month
    has no length; inet and cidr are one `netip.Prefix` because the *database*
    polices the host-bits distinction; interval offers no equality because
    `'24:00' = '1 day'` surprises in both directions.
 
-   **`time` (time-of-day) shipped 2026-08-27** as `raorm.TimeOfDay`:
+   **`time` (time-of-day) shipped 2026-08-27** as `storm.TimeOfDay`:
    microseconds since midnight, its own type rather than a `time.Time`,
    because an instant is a point on a calendar in a zone and a SQL `time` is
    none of those — decoding one into the other forces a date to be invented.
@@ -801,10 +801,10 @@ Written as a checklist because "production ready" is not one property.
    until someone runs it against a real workload.
 3. **No release, no API stability policy** (M8). Nothing is tagged and nothing
    is promised.
-4. ~~No `raorm lint`, no `raorm explain`.~~ **Both shipped 2026-08-24**, plus
+4. ~~No `storm lint`, no `storm explain`.~~ **Both shipped 2026-08-24**, plus
    `verify -pending` (ADR-0001's third mode: "changed the model, no migration"
    as a CI failure that prints its own fix). lint budgets every named plan's
-   round trips from the IR alone; explain plans every statement raorm will
+   round trips from the IR alone; explain plans every statement storm will
    issue via GENERIC_PLAN — a validity gate on any database, a seq-scan gate
    only where statistics exist, and the doc says which is which. M7's tooling
    gate is closed; the fuzz corpus and injection suite closed earlier.
@@ -836,7 +836,7 @@ Written as a checklist because "production ready" is not one property.
 | # | Risk | Severity | Mitigation | Owner |
 |---|---|---|---|---|
 | R1 | **Thesis wrong** — compilation does not buy enough | fatal | M0 kill criterion answers it in 2 weeks for 2 weeks' cost | perf |
-| R2 | Generated-code volume becomes Ent's disease | high | call-site-driven generation; one package per context; determinism; `raorm verify` | dx |
+| R2 | Generated-code volume becomes Ent's disease | high | call-site-driven generation; one package per context; determinism; `storm verify` | dx |
 | R3 | Projection type explosion (M3) | ~~high~~ **low** | retired by **named plans** — you get only the plans you declare; no AST scanning needed | compiler |
 | R4 | Build-time DB dependency for `PREPARE` | medium | checked-in schema snapshot; DB optional in CI | dba |
 | R5 | Postgres-only until v1.1 costs early users | medium | accepted for v1; M9–M12 sequenced; capability model checks portability at build time | arch |
@@ -856,6 +856,6 @@ Six sentences, all falsifiable:
 3. Any relation load is a bounded, asserted number of round trips.
 4. Any SQL Postgres can run is expressible, typed, with a generated scanner.
 5. The ORM fails CI on a query that regressed its plan.
-6. raorm emits migrations and never applies one.
+6. storm emits migrations and never applies one.
 7. An unsupported construct on any configured target fails **generation**,
    naming the target and the source line.

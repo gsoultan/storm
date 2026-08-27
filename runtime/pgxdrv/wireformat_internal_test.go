@@ -4,7 +4,7 @@ import "testing"
 
 // The rule, as a table, because it was written the wrong way round once and
 // the cost was four failing tests on a schema that had always worked. Refuse
-// only what raorm decodes from a fixed binary layout; let everything else
+// only what storm decodes from a fixed binary layout; let everything else
 // through, since the text-identical set is open-ended (every enum a user
 // declares joins it).
 func TestFormatOK(t *testing.T) {

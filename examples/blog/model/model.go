@@ -9,12 +9,12 @@ package model
 import (
 	"time"
 
-	"github.com/gsoultan/raorm"
+	"github.com/gsoultan/storm"
 )
 
 // Author writes articles.
 type Author struct {
-	raorm.Model // uuid id + created_at/updated_at, with database defaults
+	storm.Model // uuid id + created_at/updated_at, with database defaults
 
 	Name  string
 	Email string
@@ -22,27 +22,27 @@ type Author struct {
 	Articles []Article
 }
 
-func (a *Author) Schema(t *raorm.Table) {
+func (a *Author) Schema(t *storm.Table) {
 	t.Col(&a.Email).Size(320)
 	t.Unique(&a.Email)
 }
 
 // Plans: the reviewable list of every way this example loads an author with
 // its relations. One round trip per relation, whatever the row count.
-func (a *Author) Plans(p *raorm.Plans) {
+func (a *Author) Plans(p *storm.Plans) {
 	p.Named("Feed").With(&a.Articles)
 }
 
 // Projections: the declared column subsets. Card is the list-endpoint read —
 // two columns instead of the row, and a covering index away from an
 // index-only scan.
-func (a *Author) Projections(p *raorm.Projections) {
+func (a *Author) Projections(p *storm.Projections) {
 	p.Named("Card", &a.Name, &a.Email)
 }
 
 // Article belongs to an author.
 type Article struct {
-	raorm.Model
+	storm.Model
 
 	Title       string
 	Body        string
@@ -51,9 +51,9 @@ type Article struct {
 	Author Author
 }
 
-func (ar *Article) Schema(t *raorm.Table) {
+func (ar *Article) Schema(t *storm.Table) {
 	t.Col(&ar.Title).Size(300)
-	t.Col(&ar.Author).OnDelete(raorm.Cascade)
+	t.Col(&ar.Author).OnDelete(storm.Cascade)
 }
 
 // All is what Build and the generator consume.

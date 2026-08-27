@@ -4,15 +4,15 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Fast int8[] and text[] parameter encoding, for the same reason uuid[] has
 // one: `= ANY($1)` is how every relation load batches its children, so the
-// parent-key array is encoded on the hot path of the feature raorm exists for.
+// parent-key array is encoded on the hot path of the feature storm exists for.
 //
-// uuid[] was built first because raorm's own fixtures use uuid keys. A schema
+// uuid[] was built first because storm's own fixtures use uuid keys. A schema
 // with bigserial primary keys — which is most Postgres schemas that are not
 // uuid-first — binds int8[] on exactly the same path, and a natural key binds
 // text[]. Measured before writing this, 500 elements through pgx's generic

@@ -28,9 +28,9 @@ done
 
 echo "== core packages are stdlib-only =="
 for p in ./schema ./compile/pgddl ./compile/pgsql ./codegen; do
-  if go list -deps "$p" 2>/dev/null | grep -v '^github.com/gsoultan/raorm' | grep -q '\.'; then
+  if go list -deps "$p" 2>/dev/null | grep -v '^github.com/gsoultan/storm' | grep -q '\.'; then
     note "$p has a third-party dependency:"
-    go list -deps "$p" | grep -v '^github.com/gsoultan/raorm' | grep '\.' | sed 's/^/    /'
+    go list -deps "$p" | grep -v '^github.com/gsoultan/storm' | grep '\.' | sed 's/^/    /'
   fi
 done
 
@@ -49,7 +49,7 @@ if ! go test ./codegen/ -run TestNoSQLTextInCodegen -count=1 >/dev/null 2>&1; th
 fi
 
 echo "== generated code is not stale =="
-# raorm verify fails CI on stale output; these are the in-tree instances of it.
+# storm verify fails CI on stale output; these are the in-tree instances of it.
 stale() { # <sha-before> <generator> <label>
   if [ "$1" != "$2" ]; then note "generated code is stale — run '$3' and commit"; fi
 }

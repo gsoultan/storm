@@ -49,7 +49,7 @@ type Executor interface {
 	// CopyFrom bulk-loads rows through the driver's copy protocol. This is a
 	// different wire path, not a faster loop: it skips statement parsing and
 	// per-row protocol overhead, which is why "1,000 inserts = one COPY" is a
-	// gate raorm can state and assert.
+	// gate storm can state and assert.
 	//
 	// An adapter whose driver has no copy protocol must emulate it and say so
 	// in its package documentation. Silently degrading to 1,000 round trips

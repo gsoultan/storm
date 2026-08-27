@@ -3,7 +3,7 @@ package pgxdrv
 import (
 	"fmt"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -42,7 +42,7 @@ func (intervalPlan) Encode(value any, buf []byte) ([]byte, error) {
 }
 
 // registerInterval installs the bridge; called from RegisterFastArrays so one
-// registration call covers every raorm type.
+// registration call covers every storm type.
 func registerInterval(m *pgtype.Map) {
 	t, ok := m.TypeForOID(pgtype.IntervalOID)
 	if !ok {

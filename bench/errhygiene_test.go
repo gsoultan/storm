@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/bench/genuser"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/bench/genuser"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // Bound values must not reach an error string or a SQL string. Both land
 // somewhere less protected than the database — logs, traces, a pasted bug
 // report — and a WHERE clause is where the email addresses and the tokens
-// are. raorm's design already keeps them apart (values travel as parameters,
+// are. storm's design already keeps them apart (values travel as parameters,
 // errors are static sentinels), which makes this the cheap kind of test:
 // it costs nothing and it fails the day someone adds `fmt.Errorf("... %v",
 // val)` to be helpful.
@@ -115,11 +115,11 @@ func TestErrorsAndSQLNeverCarryBoundValues(t *testing.T) {
 // any error a caller sees. PostgreSQL puts the offending value in its own
 // diagnostics — `Key (email)=(ada@example.com) already exists` — and that
 // message belongs to the server, is what makes a constraint violation
-// debuggable, and raorm must not rewrite it. The property here is narrower and
-// enforceable: nothing raorm ITSELF writes into a SQL string or an error
+// debuggable, and storm must not rewrite it. The property here is narrower and
+// enforceable: nothing storm ITSELF writes into a SQL string or an error
 // string contains a caller's bound value.
 var errBoom = boomError{}
 
 type boomError struct{}
 
-func (boomError) Error() string { return "raorm test: the database refused" }
+func (boomError) Error() string { return "storm test: the database refused" }

@@ -3,13 +3,13 @@ package pgxdrv
 import (
 	"fmt"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Binding a runtime.Decimal as a numeric parameter.
 //
-// pgx has never heard of raorm's Decimal, and it must not have to: teaching the
+// pgx has never heard of storm's Decimal, and it must not have to: teaching the
 // runtime about pgx is the coupling this adapter exists to prevent. So the
 // knowledge lives here, in the one package allowed to name a pgx type, exactly
 // as the uuid[] encoder does.

@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/compile/pgddl"
-	"github.com/gsoultan/raorm/examples/blog/model"
-	"github.com/gsoultan/raorm/examples/blog/store"
-	"github.com/gsoultan/raorm/examples/blog/store/article"
-	"github.com/gsoultan/raorm/examples/blog/store/author"
-	"github.com/gsoultan/raorm/runtime"
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/compile/pgddl"
+	"github.com/gsoultan/storm/examples/blog/model"
+	"github.com/gsoultan/storm/examples/blog/store"
+	"github.com/gsoultan/storm/examples/blog/store/article"
+	"github.com/gsoultan/storm/examples/blog/store/author"
+	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,14 +27,14 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	dsn := os.Getenv("RAORM_DSN")
+	dsn := os.Getenv("STORM_DSN")
 	if dsn == "" {
-		fmt.Println("RAORM_DSN unset; skipping the example")
+		fmt.Println("STORM_DSN unset; skipping the example")
 		os.Exit(0)
 	}
 	ctx := context.Background()
 
-	// The pool comes from raorm's constructor so the fast parameter encoders
+	// The pool comes from storm's constructor so the fast parameter encoders
 	// are installed; everything else about it is ordinary pgx.
 	var err error
 	pool, err = pgxdrv.NewPool(ctx, dsn)
@@ -43,9 +43,9 @@ func TestMain(m *testing.M) {
 	ex = pgxdrv.Pool{P: pool}
 
 	// The schema: model → DDL, applied to this example's own namespace. In a
-	// real project `raorm diff` emits this as a reviewable migration instead —
-	// raorm itself never applies DDL.
-	s, err := raorm.Build(model.All()...)
+	// real project `storm diff` emits this as a reviewable migration instead —
+	// storm itself never applies DDL.
+	s, err := storm.Build(model.All()...)
 	must(err)
 	_, err = pool.Exec(ctx, "DROP SCHEMA IF EXISTS blog_example CASCADE; CREATE SCHEMA blog_example")
 	must(err)

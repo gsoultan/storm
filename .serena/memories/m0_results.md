@@ -1,4 +1,4 @@
-# raorm — M0 spike result (2026-08-23)
+# storm — M0 spike result (2026-08-23)
 
 **M0 PASSED. The thesis is not falsified.** Numbers live in `bench/RESULTS.md` —
 re-run `make bench`, never quote from memory.
@@ -12,17 +12,17 @@ shapes byte-identical to hand-written pgx, green under `-race -shuffle=on` with
 
 1. **Allocation budgets were written without a driver floor.** `pgx.Query`
    costs **5 allocs / 404 B** before an ORM does anything (`Floor_PgxNoDecode`).
-   So end-to-end: raorm 8, idiomatic pgx 18 → **raorm's own layer costs 3, pgx's
+   So end-to-end: storm 8, idiomatic pgx 18 → **storm's own layer costs 3, pgx's
    scan costs 13**. The three are the unavoidable `string()` copies.
    `docs/PERFORMANCE.md` now states every allocation budget *above the floor*.
 2. **"Allocations independent of row count" is impossible.** 3 text columns = 3
    allocs/row, always. The real win is memory: **48 KB vs 185 KB** per 1,000
    rows (74% less).
 3. **Wall-clock ratios measured the network, not the ORM.** Round trip to the
-   Apple-container Postgres is 63.7 µs; raorm's entire CPU cost is ~45 ns
+   Apple-container Postgres is 63.7 µs; storm's entire CPU cost is ~45 ns
    (14 ns SQL+bind, 31 ns decode) = **0.07% of the query**. The ≤1.15× gate
    passed without discriminating. **Do not repeat the 0.95× as evidence
-   raorm is faster than pgx** — it is inside round-trip noise. M2 must
+   storm is faster than pgx** — it is inside round-trip noise. M2 must
    re-benchmark over a unix socket.
 
 ## Still owed from M0 scope
@@ -65,16 +65,16 @@ See [[core]], [[decisions]].
   concurrency. Code kept in `internal/spike/fastpath.go` marked rejected.
 
 **GC pressure, 4,000 queries x 500 rows, 16 workers:** pgx 102 GCs / 5.55 ms
-pause / 10,060,365 mallocs / 355.6 MiB → raorm **21 GCs / 1.47 ms / 40,379 /
+pause / 10,060,365 mallocs / 355.6 MiB → storm **21 GCs / 1.47 ms / 40,379 /
 73.9 MiB**. Wall clock identical (2.44 s vs 2.38 s) — Postgres is the
 bottleneck.
 
-**Head to head at 1,000 rows (allocs):** raorm **7** · raw pgx 5,012 · sqlc
-5,022 · Bun 13,899 · GORM 23,934. Memory: raorm 41 KB vs sqlc 912 KB.
-Wall clock: raorm 1.10x faster than sqlc, 1.61x Bun, 2.06x GORM.
+**Head to head at 1,000 rows (allocs):** storm **7** · raw pgx 5,012 · sqlc
+5,022 · Bun 13,899 · GORM 23,934. Memory: storm 41 KB vs sqlc 912 KB.
+Wall clock: storm 1.10x faster than sqlc, 1.61x Bun, 2.06x GORM.
 
 ## The claim to make, and the one not to
-**Do not claim raorm is faster than pgx end-to-end.** It is not and cannot be —
+**Do not claim storm is faster than pgx end-to-end.** It is not and cannot be —
 both wait on the same socket, and every single-row wall-clock difference is
 inside noise. Claim the **allocation and GC numbers**, which are measured and
 large. The throughput consequence follows mechanically but only materialises if
@@ -85,14 +85,14 @@ reusing a prepared statement). Do not cite it. Ent is still un-benchmarked.
 
 ## M1 shipped (2026-08-24)
 
-`raorm` (declaration API + struct walker) · `schema` (IR, stdlib-only) ·
+`storm` (declaration API + struct walker) · `schema` (IR, stdlib-only) ·
 `compile/pgddl` · `schema/pg` (introspection) · `migrate` (diff + normalise) ·
-`cmd/raorm`. Gates: round-trip is a **fixpoint**, migrations **converge** on a
+`cmd/storm`. Gates: round-trip is a **fixpoint**, migrations **converge** on a
 live database, destructive steps flagged, build byte-deterministic, 9 error
 paths asserted on message content.
 
 **Four hard-won facts — do not re-derive:**
-1. **`Schema(t *raorm.Table)` needs a POINTER receiver.** A value receiver copies
+1. **`Schema(t *storm.Table)` needs a POINTER receiver.** A value receiver copies
    the struct; `&u.Email` then points into the copy and the offset is garbage
    (verified empirically). Detected at build time.
 2. **Never diff expression text.** Postgres rewrites everything it stores

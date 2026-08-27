@@ -5,20 +5,20 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/codegen"
-	"github.com/gsoultan/raorm/internal/benchmodel"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/internal/benchmodel"
 )
 
 func main() {
-	s, err := raorm.Build(benchmodel.All()...)
+	s, err := storm.Build(benchmodel.All()...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	src, err := codegen.File(s, codegen.Options{
 		Package: "genuser",
-		Import:  "github.com/gsoultan/raorm",
+		Import:  "github.com/gsoultan/storm",
 		Table:   "users",
 		// Match the spike's statement exactly, so the comparison is of the
 		// generator and not of two different query plans.

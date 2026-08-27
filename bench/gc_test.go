@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/internal/spike"
+	"github.com/gsoultan/storm/internal/spike"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -106,7 +106,7 @@ func TestGCPressure(t *testing.T) {
 			rows.Close()
 			return buf, rows.Err()
 		}),
-		measure("raorm (slab)", gcOps, gcWorkers, func(ctx context.Context, buf []spike.Row) ([]spike.Row, error) {
+		measure("storm (slab)", gcOps, gcWorkers, func(ctx context.Context, buf []spike.Row) ([]spike.Row, error) {
 			var sl spike.Slab
 			return sq.AllInto(ctx, slow, buf, &sl)
 		}),
@@ -121,7 +121,7 @@ func TestGCPressure(t *testing.T) {
 			r.mallocs, float64(r.totalAlloc)/(1<<20))
 	}
 	a, b := results[0], results[1]
-	fmt.Printf("\nraorm vs pgx: %.1fx fewer mallocs, %.1fx less allocated, %.1fx fewer GCs\n\n",
+	fmt.Printf("\nstorm vs pgx: %.1fx fewer mallocs, %.1fx less allocated, %.1fx fewer GCs\n\n",
 		float64(a.mallocs)/float64(b.mallocs),
 		float64(a.totalAlloc)/float64(b.totalAlloc),
 		float64(a.numGC)/float64(max(b.numGC, 1)))

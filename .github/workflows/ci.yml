@@ -12,9 +12,9 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: raorm
-          POSTGRES_PASSWORD: raorm
-          POSTGRES_DB: raorm
+          POSTGRES_USER: storm
+          POSTGRES_PASSWORD: storm
+          POSTGRES_DB: storm
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -22,7 +22,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      RAORM_DSN: postgres://raorm:raorm@localhost:5432/raorm
+      STORM_DSN: postgres://storm:storm@localhost:5432/storm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,12 +38,12 @@ jobs:
         run: ./scripts/check/boundaries.sh
 
       # Every other gate runs inside this repository and shares its
-      # assumptions, which is how `generate` shipped emitting raorm's own
+      # assumptions, which is how `generate` shipped emitting storm's own
       # module path into other people's modules. This one is a stranger: a
-      # different module path, a directory outside the tree, a model raorm has
+      # different module path, a directory outside the tree, a model storm has
       # never seen, and the five-line main a real user writes.
       #
-      # With RAORM_DSN set (this job has one) it also walks the migration
+      # With STORM_DSN set (this job has one) it also walks the migration
       # path — diff, apply with a runner of its own, verify — which is the
       # riskiest thing an ORM does and had only ever been exercised from
       # inside this module.

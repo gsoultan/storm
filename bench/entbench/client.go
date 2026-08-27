@@ -10,12 +10,12 @@ import (
 	"reflect"
 
 	"github.com/google/uuid"
-	"github.com/gsoultan/raorm/bench/entbench/migrate"
+	"github.com/gsoultan/storm/bench/entbench/migrate"
 
 	"entgo.io/ent"
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/sql"
-	"github.com/gsoultan/raorm/bench/entbench/user"
+	"github.com/gsoultan/storm/bench/entbench/user"
 )
 
 // Client is the client that holds all ent builders.

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 )
 
 func TestDate_Decodes(t *testing.T) {

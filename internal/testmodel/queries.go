@@ -1,7 +1,7 @@
 package testmodel
 
 import (
-	"github.com/gsoultan/raorm"
+	"github.com/gsoultan/storm"
 )
 
 // EarnerRow is the M5 gate query's row: user-declared, matched against the
@@ -14,7 +14,7 @@ type EarnerRow struct {
 }
 
 // TopPerOrg is the gate query itself: a window over a CTE with a lateral join.
-var TopPerOrg = raorm.SQL[EarnerRow](`
+var TopPerOrg = storm.SQL[EarnerRow](`
 	WITH ranked AS (
 		SELECT u.email, u.org_id,
 		       row_number() OVER (PARTITION BY u.org_id ORDER BY u.email) AS rn
@@ -31,6 +31,6 @@ var TopPerOrg = raorm.SQL[EarnerRow](`
 	LIMIT $2`)
 
 // Queries is what a bootstrap registers, the way All registers models.
-func Queries() []raorm.RawDecl {
-	return []raorm.RawDecl{TopPerOrg}
+func Queries() []storm.RawDecl {
+	return []storm.RawDecl{TopPerOrg}
 }

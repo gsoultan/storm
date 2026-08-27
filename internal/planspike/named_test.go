@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/planspike/store"
-	"github.com/gsoultan/raorm/internal/planspike/store/comment"
-	"github.com/gsoultan/raorm/internal/planspike/store/org"
-	"github.com/gsoultan/raorm/internal/planspike/store/post"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/internal/planspike/store"
+	"github.com/gsoultan/storm/internal/planspike/store/comment"
+	"github.com/gsoultan/storm/internal/planspike/store/org"
+	"github.com/gsoultan/storm/internal/planspike/store/post"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
 )
 
 // A named plan loading two relations costs THREE round trips: one for the

@@ -1,16 +1,16 @@
-# raorm — decisions & negative results
+# storm — decisions & negative results
 
 Four ADRs, all **Proposed** (2026-08-23), in `docs/adr/`. Two were rewritten the
 same day when multi-dialect + MongoDB became requirements — the rewrites matter
 more than the originals.
 
 - **0001 Model-first, migration-mediated DDL.** *(rewritten; originally
-  database-first.)* The Go model is the source of truth. raorm emits a numbered,
+  database-first.)* The Go model is the source of truth. storm emits a numbered,
   forward-only, **reviewable** migration and **never applies one**. The original
   ADR conflated *where schema is declared* with *who applies DDL* — only the
   second is dangerous. Forced by the new targets: **Mongo has no schema to
   introspect**, and five hand-maintained migration sets never stay in sync.
-  `raorm import` keeps database-first as the on-ramp. Three verify modes:
+  `storm import` keeps database-first as the on-ramp. Three verify modes:
   `--stale` (code↔model), `--drift` (model↔db), `--pending` (model↔migrations —
   *"changed the model, no migration"* becomes a CI failure).
   **Costs a schema-diff engine** (M1 kill criterion: delegate to Atlas).
@@ -18,7 +18,7 @@ more than the originals.
   and `migrations/`.
 - **0002 Postgres first, targets sequenced.** *(rewritten; originally
   "Postgres only".)* Key insight: **for an interpreter multi-dialect is a
-  runtime tax; for a compiler it is a build-time cost.** raorm knows the target
+  runtime tax; for a compiler it is a build-time cost.** storm knows the target
   at generate time, so there is no runtime dialect branch and multi-target costs
   the hot path nothing. Sequence v1.0 PG → v1.1 MySQL/MariaDB → v1.2 MSSQL →
   v1.3 Oracle → v2.0 Mongo, ordered by distance from Postgres.
@@ -26,7 +26,7 @@ more than the originals.
   **not reversible**; the load-bearing decision. Now via **named plans**
   (`plans.go`), see below.
 - **0004 MongoDB is a back end, not a dialect.** The IR is a **logical plan**,
-  not a SQL AST. Embed-vs-join is *declared* (`OnDocument(raorm.Embed(...))`),
+  not a SQL AST. Embed-vs-join is *declared* (`OnDocument(storm.Embed(...))`),
   never inferred; silence is a generation error. Gated behind Oracle shipping.
 
 ## Design change worth remembering
@@ -36,7 +36,7 @@ stay finite — with a chicken-and-egg, since user code will not type-check unti
 the generated types exist. Writing the API surfaced the better answer: **the
 developer names the plan** in a `plans.go` they own, and the generator emits
 exactly those types. No explosion, no AST scanning, and plans become the single
-reviewable file listing every load pattern — which `raorm lint --plans` can cost
+reviewable file listing every load pattern — which `storm lint --plans` can cost
 in round trips.
 
 ## Rejected — do not rebuild (reasoning > verdict)
@@ -64,9 +64,9 @@ in round trips.
   codegen are **orthogonal** — the generator reads the struct at build time, so
   simplifying the declaration costs the thesis nothing.
 - **Struct tags — removed entirely** *(2026-08-23, at the user's direction).*
-  Everything the type cannot say goes in an optional `Schema(t *raorm.Table)`
+  Everything the type cannot say goes in an optional `Schema(t *storm.Table)`
   method using **field pointers**: `t.Col(&u.Email).Unique().Size(320)`,
-  `t.Index(&u.Org, raorm.Desc(&u.CreatedAt))`, `t.Inverse(&o.Children, &o.Parent)`.
+  `t.Index(&u.Org, storm.Desc(&u.CreatedAt))`, `t.Inverse(&o.Children, &o.Parent)`.
   The receiver is a **value** (`u User`) so fields are addressable. Resolution is
   AST-level at generation (works before the package compiles) and offset-from-base
   at runtime (for `verify --drift`). Stronger than a generator-validated string,
@@ -74,10 +74,10 @@ in round trips.
   **Only three strings survive**, none a Go identifier: a database column name
   you are assigning (`.Named("reviewer_id")`), a database type
   (`.Raw("geography(Point,4326)", codec)`), and prose (`.AcknowledgeNoFK(reason)`).
-  Plus `raorm.Expr(...)` as a conspicuous, `PREPARE`-checked escape surfaced by
-  `raorm lint --expr`.
+  Plus `storm.Expr(...)` as a conspicuous, `PREPARE`-checked escape surfaced by
+  `storm lint --expr`.
 - **Pretending Mongo and Postgres are interchangeable** — one model can serve
-  both where that genuinely makes sense; raorm's job is making the divergence
+  both where that genuinely makes sense; storm's job is making the divergence
   visible at build time, not hiding it.
 
 ## Open risks

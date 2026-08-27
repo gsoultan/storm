@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gsoultan/raorm/compile/pgddl"
-	"github.com/gsoultan/raorm/schema"
-	pgintro "github.com/gsoultan/raorm/schema/pg"
+	"github.com/gsoultan/storm/compile/pgddl"
+	"github.com/gsoultan/storm/schema"
+	pgintro "github.com/gsoultan/storm/schema/pg"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -24,11 +24,11 @@ import (
 //	UNIQUE (lower((email)::text))
 //
 // No amount of string canonicalisation makes those compare equal in general —
-// BETWEEN genuinely becomes two comparisons. So raorm does not try. It runs the
+// BETWEEN genuinely becomes two comparisons. So storm does not try. It runs the
 // model through PostgreSQL first and diffs catalog form against catalog form.
 //
 // This is why ADR-0001 assumes a dev database. It is the same one that
-// `raorm.SQL[T]` needs for PREPARE validation, and an offline snapshot works
+// `storm.SQL[T]` needs for PREPARE validation, and an offline snapshot works
 // equally well.
 
 // Executor is the slice of pgx that normalisation needs.
@@ -51,7 +51,7 @@ func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schem
 		// jobs — otherwise share a schema, and one drops it mid-apply of the
 		// other ("referenced schema was concurrently dropped"). Within a
 		// process the callers are sequential, so the pid is enough.
-		scratch = fmt.Sprintf("raorm_normalize_%d", os.Getpid())
+		scratch = fmt.Sprintf("storm_normalize_%d", os.Getpid())
 	}
 	if err := validIdent(scratch); err != nil {
 		return nil, err

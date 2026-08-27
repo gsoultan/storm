@@ -27,7 +27,7 @@ opaque compiled artifact and does not know which it holds.
 document representation explicitly:
 
 ```go
-s.HasMany(Address{}, "user_id").OnDocument(raorm.Embed("addresses"))
+s.HasMany(Address{}, "user_id").OnDocument(storm.Embed("addresses"))
 ```
 
 A relation with no `OnDocument` directive is a **generation error** for a Mongo
@@ -36,8 +36,8 @@ target. Silence never becomes a guess.
 **Unsupported constructs fail generation**, naming feature, target, and source
 line: non-equality joins, FK-ordered flush, cross-database joins, arbitrary CTEs.
 
-**No pretence of transparent portability.** raorm's contribution is making the
-difference visible at build time — `raorm lint --portable` prints the capability
+**No pretence of transparent portability.** storm's contribution is making the
+difference visible at build time — `storm lint --portable` prints the capability
 intersection of the configured targets — not pretending it is absent.
 
 ## Consequences
@@ -50,7 +50,7 @@ which is where that decision belongs.
 
 **Bad.** Real scope: a second compilation back end, a second execution path, a
 second test matrix, and a driver dependency (`mongo-go-driver`) that must be
-isolated the way `pgx` is. Some raorm features will simply be unavailable on
+isolated the way `pgx` is. Some storm features will simply be unavailable on
 Mongo — FK-ordered unit-of-work flush most visibly, since there are no foreign
 keys to order by.
 

@@ -1,7 +1,7 @@
 package codegen
 
 import (
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Exclusive-arc emission.
@@ -78,7 +78,7 @@ func (g *gen) arcMatch(arc *schema.Arc) {
 		g.p("\t// Unreachable while the CHECK holds: exactly one variant is set. It")
 		g.p("\t// is reachable if somebody dropped the constraint, and a zero value")
 		g.p("\t// would be a wrong answer rather than a loud one.")
-		g.p("\tpanic(%q)", "raorm: "+g.t.Name+"."+arc.Field+
+		g.p("\tpanic(%q)", "storm: "+g.t.Name+"."+arc.Field+
 			" has no variant set — the exactly-one CHECK is missing or was dropped")
 	}
 	g.p("}")

@@ -1,4 +1,4 @@
-package raorm_test
+package storm_test
 
 import (
 	"context"
@@ -6,19 +6,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/compile/pgddl"
-	"github.com/gsoultan/raorm/internal/testmodel"
-	"github.com/gsoultan/raorm/migrate"
-	"github.com/gsoultan/raorm/schema"
-	pgintro "github.com/gsoultan/raorm/schema/pg"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/compile/pgddl"
+	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/schema"
+	pgintro "github.com/gsoultan/storm/schema/pg"
 	"github.com/jackc/pgx/v5"
 )
 
 func dsn(t testing.TB) string {
-	d := os.Getenv("RAORM_DSN")
+	d := os.Getenv("STORM_DSN")
 	if d == "" {
-		t.Skip("RAORM_DSN unset")
+		t.Skip("STORM_DSN unset")
 	}
 	return d
 }
@@ -65,7 +65,7 @@ func applyInto(t *testing.T, c *pgx.Conn, ns, ddl string) *schema.Schema {
 func TestRoundTrip(t *testing.T) {
 	c := connect(t)
 
-	s, err := raorm.Build(testmodel.All()...)
+	s, err := storm.Build(testmodel.All()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestMigrateConverges(t *testing.T) {
 	c := connect(t)
 	ctx := context.Background()
 
-	want, err := raorm.Build(testmodel.All()...)
+	want, err := storm.Build(testmodel.All()...)
 	if err != nil {
 		t.Fatal(err)
 	}

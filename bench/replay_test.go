@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/internal/spike"
+	"github.com/gsoultan/storm/internal/spike"
 )
 
 // The GC harness shows cost; this shows the ceiling. With the database removed
 // from the loop, the only remaining work is decode + allocate, so throughput
-// here is the limit raorm imposes on an application no matter how fast the
+// here is the limit storm imposes on an application no matter how fast the
 // database gets.
 
 type replayRows struct {
@@ -82,7 +82,7 @@ func TestClientCeiling(t *testing.T) {
 		run  func(buf []spike.Row) []spike.Row
 	}
 	impls := []impl{
-		{"raorm (slab)", func(buf []spike.Row) []spike.Row {
+		{"storm (slab)", func(buf []spike.Row) []spike.Row {
 			var sl spike.Slab
 			out, err := q.AllInto(context.Background(), ex, buf, &sl)
 			if err != nil {

@@ -1,4 +1,4 @@
-# raorm — named plan types: the P2 spike result (2026-08-24)
+# storm — named plan types: the P2 spike result (2026-08-24)
 
 **PASSED. Plan B (runtime-checked plans) is not needed.** M3's only surviving
 risk was whether named plan types are usable at all; three days answered it

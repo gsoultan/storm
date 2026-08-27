@@ -1,4 +1,4 @@
-# raorm — the scope line
+# storm — the scope line
 
 **No *applied* DDL (emitting migrations is fine). No lazy loading. No runtime
 dialect branch. No daemon, no UI, no Active Record, no soft-delete-by-default,

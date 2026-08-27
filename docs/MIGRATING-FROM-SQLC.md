@@ -1,11 +1,11 @@
 ---
-tags: [raorm, migration, sqlc]
+tags: [storm, migration, sqlc]
 updated: 2026-08-25
 ---
 
 # Migrating from sqlc
 
-sqlc and raorm share a creed — SQL decided at build time, rows mapped without
+sqlc and storm share a creed — SQL decided at build time, rows mapped without
 reflection — so a migration is mostly *deleting* things: the queries file, the
 per-query structs, and the hand-rolled dynamic-filter builders that grow beside
 every sqlc project. This guide migrates one bounded context; do one, ship it,
@@ -13,37 +13,37 @@ repeat.
 
 ## What maps to what
 
-| sqlc | raorm |
+| sqlc | storm |
 |---|---|
-| `schema.sql` (hand-written) | the Go model — `raorm import` writes the first draft from your live schema |
+| `schema.sql` (hand-written) | the Go model — `storm import` writes the first draft from your live schema |
 | `queries.sql` static queries | generated typed queries: `user.New().Where(...)` |
 | `queries.sql` `:one` by PK | `user.New().Where(user.ID.Eq(id)).One(ctx, ex)` |
 | hand-rolled dynamic filters | the same builder — every combination compiles once, 0 allocs warm |
 | N `LEFT JOIN` + regroup in Go | a named plan: `store.UserFeed()`, 1 + relations round trips, asserted |
 | `EXISTS` subqueries | `user.HasPosts()` / `store.UserHavingPosts(q, ps...)` |
-| analytical queries | keep the SQL: `raorm.SQL[T](...)` — PREPARE-validated, generated scanner |
-| `:exec` statements | `raorm.SQLExec(...)` — same PREPARE check, must return zero columns |
-| `SELECT fn(...)` calls | `raorm.SQL[T]` on the function's row; wrap void as `(fn($1) IS NULL) AS done` |
-| migration files (hand-written) | `raorm diff <name>` emits them; you still review and apply |
+| analytical queries | keep the SQL: `storm.SQL[T](...)` — PREPARE-validated, generated scanner |
+| `:exec` statements | `storm.SQLExec(...)` — same PREPARE check, must return zero columns |
+| `SELECT fn(...)` calls | `storm.SQL[T]` on the function's row; wrap void as `(fn($1) IS NULL) AS done` |
+| migration files (hand-written) | `storm diff <name>` emits them; you still review and apply |
 | `db.WithTx(tx)` | `pgxdrv.Tx{T: tx}` — same idea, four-method port |
 
 ## The steps
 
-1. **Adopt the schema**: `raorm import -dsn $DEV > model/model.go`. The draft
+1. **Adopt the schema**: `storm import -dsn $DEV > model/model.go`. The draft
    lists everything it could not express as a comment block — re-declare those
    in `Schema` methods before trusting a diff. Then prove the fixpoint:
-   `raorm diff init` against a scratch database must produce your schema, and
+   `storm diff init` against a scratch database must produce your schema, and
    a second diff must be empty.
-2. **Generate**: `raorm generate internal/store`, commit the output, add
-   `raorm verify -stale` and `-pending` to CI next to your existing checks.
+2. **Generate**: `storm generate internal/store`, commit the output, add
+   `storm verify -stale` and `-pending` to CI next to your existing checks.
 3. **Port reads**: static sqlc queries become builder calls; anything sqlc
    couldn't express dynamically was hand-rolled — that code deletes outright.
    Declare `Projections` for your narrow reads (sqlc made you write these as
    separate queries; here they share the builder).
 4. **Port relation loads**: wherever you regrouped joined rows in Go, declare
-   a plan. `raorm lint` then budgets every load pattern in review.
+   a plan. `storm lint` then budgets every load pattern in review.
 5. **Keep the SQL worth keeping**: your analytical queries move into
-   `raorm.SQL[T]` declarations verbatim — they gain build-time validation and
+   `storm.SQL[T]` declarations verbatim — they gain build-time validation and
    a generated scanner and lose nothing.
 6. **Port writes last**: sqlc's `INSERT ... RETURNING` becomes `Create()`;
    note the semantic upgrade — unset columns take DATABASE defaults, because
@@ -61,8 +61,8 @@ memory per thousand-row scan.
 
 ## What to watch
 
-- sqlc queries are per-column nullable-aware from the schema; raorm's model
-  must declare nullability (`*T`) correctly — `raorm import` gets this right,
+- sqlc queries are per-column nullable-aware from the schema; storm's model
+  must declare nullability (`*T`) correctly — `storm import` gets this right,
   hand-written models should double-check.
 - `:many` queries with `LIMIT $n` map directly; `OFFSET` exists but the doc
   comment will try to talk you into keyset, and it is right.
@@ -84,14 +84,14 @@ Three patterns from it are worth prescribing:
 **The SQL-owns-semantics variant.** anubis's queries call database functions
 (`authorize()`, `membership_assign()`) and carry guarded UPDATEs by design —
 ADR'd, deliberate, not builder material. That migration is mostly steps 5–6:
-`raorm.SQL[T]`/`SQLExec` declarations in **one designated package per
+`storm.SQL[T]`/`SQLExec` declarations in **one designated package per
 context** (files mirroring the old `queries/` layout so diffs read side by
 side), plus builder queries where the shape is a plain table read. The
 builder count being small is fine; the property that matters — every
 statement schema-checked at build time — covers both forms equally.
 
 **PREPARE against the live dev database when migrations are the schema of
-record.** raorm's own `generate` PREPAREs against the *model* in a scratch
+record.** storm's own `generate` PREPAREs against the *model* in a scratch
 schema, so the model vouches for every query. If your functions and views
 live only in migrations, the model cannot vouch for calls into them — write
 a small adopter-owned generate command (anubis's is ~100 lines: connect,

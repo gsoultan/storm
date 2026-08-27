@@ -108,7 +108,7 @@ func (t Tok) Arity() int   { return int(uint32(t) & 0xfff) }
 // return the wrong SQL, which is not a risk an ORM gets to take.
 //
 // It is BOUNDED. Shapes are supposed to come from code structure — that is
-// the whole thesis, and `raorm lint` budgets them at generate time — but a
+// the whole thesis, and `storm lint` budgets them at generate time — but a
 // call site can derive structure from request data (n optional filters is up
 // to 2ⁿ shapes, user-chosen sort columns multiply it again), and then this
 // map is keyed by what the caller sent. A cache with no ceiling is a leak
@@ -148,7 +148,7 @@ func NewTreeCache() *TreeCache {
 // shapeCap is the ceiling every cache shares, read on the cold path only.
 //
 // 1024 distinct structures per table is far past what a reviewed call site
-// produces — `raorm lint` fails a plan long before this — and it bounds a
+// produces — `storm lint` fails a plan long before this — and it bounds a
 // cache at roughly a megabyte, so a program that never abuses the builder
 // never learns this exists.
 var shapeCap atomic.Int64
@@ -250,7 +250,7 @@ func (c *TreeCache) Put(toks []Tok, st *Stmt) *Stmt {
 	return st
 }
 
-// Shapes reports how many distinct structures have compiled. `raorm lint` uses
+// Shapes reports how many distinct structures have compiled. `storm lint` uses
 // it to catch a query builder that mints a statement per request.
 func (c *TreeCache) Shapes() int {
 	c.mu.RLock()
@@ -291,7 +291,7 @@ type Lowering struct {
 	RowCmp func(op uint32) string
 
 	// Exists opens relation rel's correlated subquery, correlation included:
-	// `EXISTS (SELECT 1 FROM "posts" AS "_raorm_e" WHERE "_raorm_e"."fk" =
+	// `EXISTS (SELECT 1 FROM "posts" AS "_storm_e" WHERE "_storm_e"."fk" =
 	// "parent"."pk"`. The splicer appends " AND ", the wrapped predicates,
 	// and the close. Nil when the context has no filtered relations.
 	Exists func(rel uint32) string

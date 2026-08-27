@@ -1,5 +1,5 @@
 ---
-tags: [raorm, queries, complex]
+tags: [storm, queries, complex]
 updated: 2026-08-23
 status: proposed — illustrative design, not implemented
 ---
@@ -27,32 +27,32 @@ aggregate — the three things that usually end a query builder's usefulness.
 
 ```go
 type MRRRow struct {
-    Month     raorm.Date
+    Month     storm.Date
     PlanName  string
     MRRCents  int64
     Active    int64
     Trialing  int64
-    PrevCents raorm.Null[int64]
+    PrevCents storm.Null[int64]
 }
 
-month := raorm.DateTrunc(raorm.Month, sub.StartedAt)
+month := storm.DateTrunc(storm.Month, sub.StartedAt)
 
 rows, err := sub.Query().
-    Join(plan.T, raorm.On(sub.PlanID.EqCol(plan.ID))).
+    Join(plan.T, storm.On(sub.PlanID.EqCol(plan.ID))).
     Where(sub.Tenant.Eq(tid), sub.StartedAt.Gte(since)).
     GroupBy(month, plan.ID, plan.Name).
-    Select(raorm.Into[MRRRow](
+    Select(storm.Into[MRRRow](
         month.As(&MRRRow{}.Month),
         plan.Name,
-        raorm.Sum(sub.MonthlyCents).As(&MRRRow{}.MRRCents),
+        storm.Sum(sub.MonthlyCents).As(&MRRRow{}.MRRCents),
 
         // FILTER (WHERE …) — cleaner and faster than SUM(CASE WHEN …)
-        raorm.Count(sub.ID).Filter(sub.Status.Eq(StatusActive)).As(&MRRRow{}.Active),
-        raorm.Count(sub.ID).Filter(sub.Status.Eq(StatusTrialing)).As(&MRRRow{}.Trialing),
+        storm.Count(sub.ID).Filter(sub.Status.Eq(StatusActive)).As(&MRRRow{}.Active),
+        storm.Count(sub.ID).Filter(sub.Status.Eq(StatusTrialing)).As(&MRRRow{}.Trialing),
 
         // a window OVER an aggregate — last month's MRR for the same plan
-        raorm.Lag(raorm.Sum(sub.MonthlyCents)).
-            Over(raorm.PartitionBy(plan.ID).OrderBy(month.Asc())).
+        storm.Lag(storm.Sum(sub.MonthlyCents)).
+            Over(storm.PartitionBy(plan.ID).OrderBy(month.Asc())).
             As(&MRRRow{}.PrevCents),
     )).
     OrderBy(month.Desc(), plan.Name.Asc()).
@@ -61,7 +61,7 @@ rows, err := sub.Query().
 
 `.As(&MRRRow{}.Month)` binds the projection to a **field pointer**, so a rename
 of `MRRRow.Month` is a compile error and a column with no field fails
-generation. `raorm.Into[MRRRow]` checks the set is complete.
+generation. `storm.Into[MRRRow]` checks the set is complete.
 
 **What it buys:** `FILTER` instead of `SUM(CASE WHEN …)`, and `LAG` over an
 aggregate — both of which GORM and Ent can only reach through raw SQL.
@@ -76,25 +76,25 @@ aggregate — both of which GORM and Ent can only reach through raw SQL.
 Two CTEs and a `HAVING` over a ratio. The CTE is a **variable**, not a name:
 
 ```go
-recent := raorm.CTE(event.Query().
-    Where(event.OccurredAt.Gte(raorm.NowMinus(30 * raorm.Day))).
+recent := storm.CTE(event.Query().
+    Where(event.OccurredAt.Gte(storm.NowMinus(30 * storm.Day))).
     GroupBy(event.AccountID).
-    Select(raorm.Into[Bucket](event.AccountID, raorm.Count(event.ID).As(&Bucket{}.N))))
+    Select(storm.Into[Bucket](event.AccountID, storm.Count(event.ID).As(&Bucket{}.N))))
 
-prior := raorm.CTE(event.Query().
-    Where(event.OccurredAt.Between(raorm.NowMinus(60*raorm.Day), raorm.NowMinus(30*raorm.Day))).
+prior := storm.CTE(event.Query().
+    Where(event.OccurredAt.Between(storm.NowMinus(60*storm.Day), storm.NowMinus(30*storm.Day))).
     GroupBy(event.AccountID).
-    Select(raorm.Into[Bucket](event.AccountID, raorm.Count(event.ID).As(&Bucket{}.N))))
+    Select(storm.Into[Bucket](event.AccountID, storm.Count(event.ID).As(&Bucket{}.N))))
 
-ratio := raorm.Div(recent.Col.N, raorm.NullIf(prior.Col.N, 0))
+ratio := storm.Div(recent.Col.N, storm.NullIf(prior.Col.N, 0))
 
 atRisk, err := account.Query().
     With(recent, prior).
-    Join(recent, raorm.On(account.ID.EqCol(recent.Col.AccountID))).
-    Join(prior,  raorm.On(account.ID.EqCol(prior.Col.AccountID))).
-    Where(account.Plan.NotEq(PlanFree), raorm.Gte(prior.Col.N, 100)).
-    Having(raorm.Lt(ratio, 0.6)).
-    Select(raorm.Into[RiskRow](
+    Join(recent, storm.On(account.ID.EqCol(recent.Col.AccountID))).
+    Join(prior,  storm.On(account.ID.EqCol(prior.Col.AccountID))).
+    Where(account.Plan.NotEq(PlanFree), storm.Gte(prior.Col.N, 100)).
+    Having(storm.Lt(ratio, 0.6)).
+    Select(storm.Into[RiskRow](
         account.ID, account.Name,
         recent.Col.N.As(&RiskRow{}.Recent),
         prior.Col.N.As(&RiskRow{}.Prior),
@@ -108,7 +108,7 @@ atRisk, err := account.Query().
 between the dashboard query and the alerting job, and there is one definition of
 "a 30-day bucket" in the codebase. `recent.Col.N` is typed.
 
-`raorm.NullIf(prior.Col.N, 0)` is not decoration — it is the division-by-zero
+`storm.NullIf(prior.Col.N, 0)` is not decoration — it is the division-by-zero
 guard, and it is right there in the expression instead of in a comment.
 
 ---
@@ -122,10 +122,10 @@ A correlated `EXISTS` and a correlated `NOT EXISTS`. Both take a real query
 object, and both are reusable:
 
 ```go
-func OrderedFrom(c raorm.Ref[Category]) raorm.Pred {
-    return raorm.Exists(orderitem.Query().
-        Join(order.T,   raorm.On(orderitem.OrderID.EqCol(order.ID))).
-        Join(product.T, raorm.On(orderitem.ProductID.EqCol(product.ID))).
+func OrderedFrom(c storm.Ref[Category]) storm.Pred {
+    return storm.Exists(orderitem.Query().
+        Join(order.T,   storm.On(orderitem.OrderID.EqCol(order.ID))).
+        Join(product.T, storm.On(orderitem.ProductID.EqCol(product.ID))).
         Where(
             order.CustomerID.EqCol(customer.ID),   // the correlation
             product.CategoryID.Eq(c),
@@ -137,7 +137,7 @@ upsell, err := customer.Query().
     Where(
         customer.Tenant.Eq(tid),
         OrderedFrom(CategoryCoffee),
-        raorm.Not(OrderedFrom(CategoryEquipment)),
+        storm.Not(OrderedFrom(CategoryEquipment)),
     ).
     Load(CustomerCard).
     All(ctx, db)
@@ -158,7 +158,7 @@ three at compile time.
 Range overlap, plus the constraint that makes the check redundant:
 
 ```go
-window := raorm.TstzRange(from, to, raorm.HalfOpen)
+window := storm.TstzRange(from, to, storm.HalfOpen)
 
 conflict, err := booking.Query().
     Where(
@@ -173,17 +173,17 @@ The query is the friendly error. The **exclusion constraint** is the correctness
 guarantee, declared in the model so it cannot be forgotten:
 
 ```go
-func (b *Booking) Schema(t *raorm.Table) {
+func (b *Booking) Schema(t *storm.Table) {
     t.Exclude(
-        raorm.With(&b.Room, raorm.OpEq),
-        raorm.With(&b.Period, raorm.OpOverlaps),
-    ).Where(raorm.NotEq(&b.Status, StatusCancelled))
+        storm.With(&b.Room, storm.OpEq),
+        storm.With(&b.Period, storm.OpOverlaps),
+    ).Where(storm.NotEq(&b.Status, StatusCancelled))
 }
 ```
 
 That generates `EXCLUDE USING gist (room_id WITH =, period WITH &&) WHERE
 (status <> 'cancelled')`. Two concurrent bookings cannot both commit, and the
-insert returns a typed `raorm.ErrExclusion` you can map to a 409.
+insert returns a typed `storm.ErrExclusion` you can map to a 409.
 
 **No other Go ORM models exclusion constraints.** They are the correct answer to
 booking, scheduling, and rate-plan overlap, and they are unreachable without one.
@@ -198,32 +198,32 @@ booking, scheduling, and rate-plan overlap, and they are unreachable without one
 The classic mistake is N+1 queries for N facets. `GROUPING SETS` does it once:
 
 ```go
-base := raorm.CTE(product.Query().
+base := storm.CTE(product.Query().
     Where(
         product.Tenant.Eq(tid),
-        product.Search.Matches(raorm.English, q),
-        raorm.WhenSet(f.MinPrice, product.PriceCents.Gte),
-        raorm.WhenSet(f.BrandID,  product.BrandID.Eq),
+        product.Search.Matches(storm.English, q),
+        storm.WhenSet(f.MinPrice, product.PriceCents.Gte),
+        storm.WhenSet(f.BrandID,  product.BrandID.Eq),
     ))
 
 facets, err := base.Query().
-    GroupBy(raorm.GroupingSets(
-        raorm.Set(base.Col.CategoryID),
-        raorm.Set(base.Col.BrandID),
-        raorm.Set(),                             // the grand total row
+    GroupBy(storm.GroupingSets(
+        storm.Set(base.Col.CategoryID),
+        storm.Set(base.Col.BrandID),
+        storm.Set(),                             // the grand total row
     )).
-    Select(raorm.Into[Facet](
+    Select(storm.Into[Facet](
         base.Col.CategoryID, base.Col.BrandID,
-        raorm.Count(raorm.Star()).As(&Facet{}.N),
+        storm.Count(storm.Star()).As(&Facet{}.N),
     )).
     All(ctx, db)
 
 page, err := base.Query().
-    OrderBy(raorm.TSRank(base.Col.Search, q).Desc(), base.Col.ID.Asc()).
-    Page(ctx, db, raorm.After(cursor, 24))
+    OrderBy(storm.TSRank(base.Col.Search, q).Desc(), base.Col.ID.Asc()).
+    Page(ctx, db, storm.After(cursor, 24))
 ```
 
-`raorm.WhenSet(f.MinPrice, product.PriceCents.Gte)` applies the predicate only
+`storm.WhenSet(f.MinPrice, product.PriceCents.Gte)` applies the predicate only
 when the pointer is non-nil — the dynamic-filter idiom without an `if`, and it
 still sets exactly one bit in the shape mask.
 
@@ -237,34 +237,34 @@ still sets exactly one bit in the shape mask.
 Recursive CTE with a path and a cycle guard:
 
 ```go
-tree := raorm.RecursiveCTE[OrgNode](
+tree := storm.RecursiveCTE[OrgNode](
     // anchor
     org.Query().Where(org.ID.Eq(rootID)).
-        Select(raorm.Into[OrgNode](
+        Select(storm.Into[OrgNode](
             org.ID, org.Name,
-            raorm.Const(0).As(&OrgNode{}.Depth),
-            raorm.ArrayOf(org.ID).As(&OrgNode{}.Path),
+            storm.Const(0).As(&OrgNode{}.Depth),
+            storm.ArrayOf(org.ID).As(&OrgNode{}.Path),
         )),
     // recursive term
-    func(self raorm.Ref[OrgNode]) raorm.Query {
+    func(self storm.Ref[OrgNode]) storm.Query {
         return org.Query().
-            Join(self, raorm.On(org.ParentID.EqCol(self.Col.ID))).
+            Join(self, storm.On(org.ParentID.EqCol(self.Col.ID))).
             Where(
-                raorm.Lt(self.Col.Depth, 10),                    // depth bound
-                raorm.Not(self.Col.Path.Contains(org.ID)),        // cycle guard
+                storm.Lt(self.Col.Depth, 10),                    // depth bound
+                storm.Not(self.Col.Path.Contains(org.ID)),        // cycle guard
             ).
-            Select(raorm.Into[OrgNode](
+            Select(storm.Into[OrgNode](
                 org.ID, org.Name,
-                raorm.Add(self.Col.Depth, 1).As(&OrgNode{}.Depth),
-                raorm.ArrayAppend(self.Col.Path, org.ID).As(&OrgNode{}.Path),
+                storm.Add(self.Col.Depth, 1).As(&OrgNode{}.Depth),
+                storm.ArrayAppend(self.Col.Path, org.ID).As(&OrgNode{}.Path),
             ))
     },
 )
 
 rows, err := account.Query().
     With(tree).
-    Join(tree, raorm.On(account.OrgID.EqCol(tree.Col.ID))).
-    Select(raorm.Into[Reachable](account.ID, account.Email, tree.Col.Name, tree.Col.Depth)).
+    Join(tree, storm.On(account.OrgID.EqCol(tree.Col.ID))).
+    Select(storm.Into[Reachable](account.ID, account.Email, tree.Col.Name, tree.Col.Depth)).
     OrderBy(tree.Col.Depth.Asc()).
     All(ctx, db)
 ```
@@ -285,25 +285,25 @@ and this whole block is unnecessary.
 `UNION ALL` across three shapes, typed as a sum:
 
 ```go
-feed, err := raorm.UnionAll[FeedItem](
+feed, err := storm.UnionAll[FeedItem](
     comment.Query().Where(comment.Author.Eq(uid)).
-        Select(raorm.Into[FeedItem](
-            raorm.Const(KindComment).As(&FeedItem{}.Kind),
+        Select(storm.Into[FeedItem](
+            storm.Const(KindComment).As(&FeedItem{}.Kind),
             comment.ID, comment.CreatedAt, comment.Body.As(&FeedItem{}.Text))),
 
     follow.Query().Where(follow.Follower.Eq(uid)).
-        Join(user.T, raorm.On(follow.TargetID.EqCol(user.ID))).
-        Select(raorm.Into[FeedItem](
-            raorm.Const(KindFollow).As(&FeedItem{}.Kind),
+        Join(user.T, storm.On(follow.TargetID.EqCol(user.ID))).
+        Select(storm.Into[FeedItem](
+            storm.Const(KindFollow).As(&FeedItem{}.Kind),
             follow.ID, follow.CreatedAt, user.Name.As(&FeedItem{}.Text))),
 
     release.Query().Where(release.Project.In(subscribed...)).
-        Select(raorm.Into[FeedItem](
-            raorm.Const(KindRelease).As(&FeedItem{}.Kind),
+        Select(storm.Into[FeedItem](
+            storm.Const(KindRelease).As(&FeedItem{}.Kind),
             release.ID, release.PublishedAt, release.Tag.As(&FeedItem{}.Text))),
 ).
-    OrderBy(raorm.Col(&FeedItem{}.CreatedAt).Desc()).
-    Page(ctx, db, raorm.After(cursor, 50))
+    OrderBy(storm.Col(&FeedItem{}.CreatedAt).Desc()).
+    Page(ctx, db, storm.After(cursor, 50))
 ```
 
 Every branch must project into `FeedItem` with matching types, checked at
@@ -320,17 +320,17 @@ The bug in every hand-rolled version of this is that days with zero rows vanish
 and the chart lies. `generate_series` fixes it:
 
 ```go
-days := raorm.GenerateSeries(raorm.NowMinus(90*raorm.Day), raorm.Now(), raorm.Day)
+days := storm.GenerateSeries(storm.NowMinus(90*storm.Day), storm.Now(), storm.Day)
 
 series, err := days.Query().
     LeftJoinLateral(
         user.Query().
             Where(user.Tenant.Eq(tid), user.CreatedAt.WithinDay(days.Col.Day)).
-            Select(raorm.Into[DayCount](raorm.Count(user.ID).As(&DayCount{}.N))),
+            Select(storm.Into[DayCount](storm.Count(user.ID).As(&DayCount{}.N))),
     ).
-    Select(raorm.Into[Point](
+    Select(storm.Into[Point](
         days.Col.Day.As(&Point{}.Day),
-        raorm.Coalesce(raorm.Col(&DayCount{}.N), 0).As(&Point{}.N),
+        storm.Coalesce(storm.Col(&DayCount{}.N), 0).As(&Point{}.N),
     )).
     OrderBy(days.Col.Day.Asc()).
     All(ctx, db)
@@ -357,7 +357,7 @@ request the way GORM and Bun do.
 
 ## And when they do not
 
-Some SQL is not worth modelling. `raorm.SQL[T]` takes it, `PREPARE`s it at
+Some SQL is not worth modelling. `storm.SQL[T]` takes it, `PREPARE`s it at
 generate time, and gives you a generated scanner — see [[EXAMPLE]] §7. Reach for
 it when the object form would be longer than the SQL, and note that even then
 you keep the typed result and the compile-time column check.

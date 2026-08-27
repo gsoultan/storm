@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/spike"
+	"github.com/gsoultan/storm/internal/spike"
 )
 
 // captureRaw pulls one row's wire bytes so the decoder can be benchmarked
@@ -28,7 +28,7 @@ func captureRaw(tb testing.TB) [][]byte {
 	return out
 }
 
-// BenchmarkDecodeRow_Offline is raorm's whole scan cost for an 8-column row:
+// BenchmarkDecodeRow_Offline is storm's whole scan cost for an 8-column row:
 // no driver, no network, just wire bytes to struct.
 func BenchmarkDecodeRow_Offline(b *testing.B) {
 	rv := captureRaw(b)

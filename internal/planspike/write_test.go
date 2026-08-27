@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/runtime"
 )
 
 func anOrg(t *testing.T) [16]byte {

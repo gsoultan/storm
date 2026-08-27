@@ -14,9 +14,9 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/codegen"
-	"github.com/gsoultan/raorm/internal/testmodel"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/internal/testmodel"
 )
 
 func main() {
@@ -27,17 +27,17 @@ func main() {
 }
 
 func run() error {
-	s, err := raorm.Build(testmodel.All()...)
+	s, err := storm.Build(testmodel.All()...)
 	if err != nil {
 		return err
 	}
 	dir := filepath.Join("internal", "planspike", "store")
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           dir,
-		Import:        "github.com/gsoultan/raorm",
+		Import:        "github.com/gsoultan/storm",
 		Only:          []string{"orgs", "users", "posts", "comments", "attachments", "events"},
 		Package:       "store",
-		PackageImport: "github.com/gsoultan/raorm/internal/planspike/store",
+		PackageImport: "github.com/gsoultan/storm/internal/planspike/store",
 	})
 	if err != nil {
 		return err

@@ -3,7 +3,7 @@ package bench
 import (
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -16,7 +16,7 @@ import (
 // allocation per element — so the codecs were written. The generic arms stay
 // so the comparison keeps being made rather than remembered.
 //
-// int8[] matters more than the fixture suggests: raorm's own schema is
+// int8[] matters more than the fixture suggests: storm's own schema is
 // uuid-keyed, but most Postgres schemas that are not uuid-first use bigserial
 // primary keys, and every relation load in one of those binds int8[].
 func BenchmarkEncodeInt8Array(b *testing.B) {
@@ -42,7 +42,7 @@ func BenchmarkEncodeInt8Array(b *testing.B) {
 			}
 		}
 	})
-	b.Run("int8_raorm", func(b *testing.B) {
+	b.Run("int8_storm", func(b *testing.B) {
 		fm := pgtype.NewMap()
 		pgxdrv.RegisterFastArrays(fm)
 		buf := make([]byte, 0, 1<<16)
@@ -62,7 +62,7 @@ func BenchmarkEncodeInt8Array(b *testing.B) {
 			}
 		}
 	})
-	b.Run("text_raorm", func(b *testing.B) {
+	b.Run("text_storm", func(b *testing.B) {
 		fm := pgtype.NewMap()
 		pgxdrv.RegisterFastArrays(fm)
 		buf := make([]byte, 0, 1<<16)

@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime"
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -130,7 +130,7 @@ func TestFastDecimal_EncodesAsNumeric(t *testing.T) {
 	}
 }
 
-// The interval and decimal bridges: raorm's types encoded by the registered
+// The interval and decimal bridges: storm's types encoded by the registered
 // codecs, byte-compatible with what the decoders read back, nil pointers as
 // SQL NULL, and everything else delegated.
 func TestFastCodecs_IntervalAndDecimal(t *testing.T) {

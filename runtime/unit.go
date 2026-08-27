@@ -13,7 +13,7 @@ import (
 // # Ordering, and why it is not the database's job
 //
 // Postgres will forgive a wrong order if every constraint is DEFERRABLE
-// INITIALLY DEFERRED, and plenty of ORMs quietly rely on that. raorm does not:
+// INITIALLY DEFERRED, and plenty of ORMs quietly rely on that. storm does not:
 // deferring a constraint moves the failure from the statement that caused it to
 // COMMIT, where the error names a constraint and not the write that violated
 // it, and it only works on constraints somebody remembered to declare
@@ -23,10 +23,10 @@ import (
 // # No deferred id handles
 //
 // docs/API.md §8 sketched handles — insert a parent, get a placeholder, use it
-// as a child's foreign key before the parent is written. raorm does not need
-// them: raorm.Model's id is a client-generated UUID, so the parent's key is
+// as a child's foreign key before the parent is written. storm does not need
+// them: storm.Model's id is a client-generated UUID, so the parent's key is
 // known before the insert rather than after it. Handles are only unavoidable
-// when the database assigns the key, which is the sequence-id model raorm does
+// when the database assigns the key, which is the sequence-id model storm does
 // not use. If a table ever does, this is where that machinery goes.
 type Unit struct {
 	// rank orders tables so that a table's dependencies flush before it. It is
@@ -58,7 +58,7 @@ func (u *Unit) Len() int { return len(u.ops) }
 // ordering does not cover — usually a write from another bounded context, which
 // cannot be ordered against this one because the foreign-key graph does not
 // span them.
-var ErrUnknownTable = errors.New("raorm: no flush order for table")
+var ErrUnknownTable = errors.New("storm: no flush order for table")
 
 // Flush sends every staged statement in foreign-key order as ONE round trip,
 // and reports the rows each affected.
@@ -95,7 +95,7 @@ func (u *Unit) Flush(ctx context.Context, ex Executor) ([]int64, error) {
 	var first error
 	err := ex.Batch(ctx, ops, func(i int, _ Rows, n int64, err error) error {
 		if err != nil && first == nil {
-			first = fmt.Errorf("raorm: unit statement %d (%s): %w", i, ordered[i].table, err)
+			first = fmt.Errorf("storm: unit statement %d (%s): %w", i, ordered[i].table, err)
 		}
 		affected[i] = n
 		return nil

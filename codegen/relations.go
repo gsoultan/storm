@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Relation codegen — what internal/planspike hand-wrote in P2, emitted.
@@ -500,7 +500,7 @@ func (g *gen) emitMemberLoader(q, fn, rowType, parentTable string, m planMemberT
 	}
 	g.p("\t\tj, ok := by[key]")
 	g.p("\t\tif !ok {")
-	g.p("\t\t\treturn fmt.Errorf(\"raorm: %%s references a missing %%s row\", %q, %q)",
+	g.p("\t\t\treturn fmt.Errorf(\"storm: %%s references a missing %%s row\", %q, %q)",
 		parentTable, m.child.Name)
 	g.p("\t\t}")
 	if m.KeyNullable {
@@ -834,7 +834,7 @@ func (g *gen) emitToOnePlan(p relPlan) {
 	g.p("\t\tif !ok {")
 	g.p("\t\t\t// A foreign key pointing at a row that is not there. The database")
 	g.p("\t\t\t// forbids it, so reaching this means the constraint was dropped.")
-	g.p("\t\t\treturn nil, fmt.Errorf(\"raorm: %%s references a missing %%s row\", %q, %q)", p.parent.Name, p.child.Name)
+	g.p("\t\t\treturn nil, fmt.Errorf(\"storm: %%s references a missing %%s row\", %q, %q)", p.parent.Name, p.child.Name)
 	g.p("\t\t}")
 	if p.KeyNullable {
 		g.p("\t\tout[i].%s = &targets[j]", exportName(p.rel.Field))

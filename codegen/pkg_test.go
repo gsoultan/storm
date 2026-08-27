@@ -9,15 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/codegen"
-	"github.com/gsoultan/raorm/internal/testmodel"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/schema"
 )
 
 func fixtureSchema(t *testing.T) *schema.Schema {
 	t.Helper()
-	s, err := raorm.Build(testmodel.All()...)
+	s, err := storm.Build(testmodel.All()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestPackage_EveryFixtureTable(t *testing.T) {
 	s := fixtureSchema(t)
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:    "gen",
-		Import: "github.com/gsoultan/raorm",
+		Import: "github.com/gsoultan/storm",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestPackage_EveryFixtureTable(t *testing.T) {
 	}
 }
 
-// Determinism is a promise about the whole tree, not one file: `raorm verify`
+// Determinism is a promise about the whole tree, not one file: `storm verify`
 // fails CI on stale output, so a map iteration leaking into the bytes would
 // make it fail at random.
 func TestPackage_Deterministic(t *testing.T) {
@@ -65,7 +65,7 @@ func TestPackage_Deterministic(t *testing.T) {
 	var want [32]byte
 	for i := range 10 {
 		files, err := codegen.Package(s, codegen.PackageOptions{
-			Dir: "gen", Import: "github.com/gsoultan/raorm",
+			Dir: "gen", Import: "github.com/gsoultan/storm",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -138,7 +138,7 @@ func TestPackage_CollidingNamesAreAnError(t *testing.T) {
 	s2.Tables = append(append([]*schema.Table{}, s.Tables...), &clash)
 
 	_, err := codegen.Package(&s2, codegen.PackageOptions{
-		Dir: "gen", Import: "github.com/gsoultan/raorm",
+		Dir: "gen", Import: "github.com/gsoultan/storm",
 	})
 	if err == nil {
 		t.Fatal("two tables generating the same package must be an error")

@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gsoultan/raorm/bench/genuser"
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/bench/genuser"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 )
 
 // The `= ANY($1)` parameter side is where a relation load's cost now lives:

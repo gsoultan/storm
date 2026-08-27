@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5"
 )
 

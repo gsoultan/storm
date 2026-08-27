@@ -7,8 +7,8 @@ package compilefail
 import (
 	"context"
 
-	"github.com/gsoultan/raorm/internal/planspike/store/org"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/internal/planspike/store/org"
+	"github.com/gsoultan/storm/runtime"
 )
 
 func ReadUnloadedRelation(ctx context.Context, ex runtime.Executor) int {

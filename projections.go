@@ -1,14 +1,14 @@
-package raorm
+package storm
 
 import (
 	"fmt"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Named projections: read less than the whole row, by name.
 //
-//	func (u *User) Projections(p *raorm.Projections) {
+//	func (u *User) Projections(p *storm.Projections) {
 //	    p.Named("Contact", &u.Email, &u.Name)
 //	}
 //

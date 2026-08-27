@@ -2,14 +2,14 @@
 # Be a stranger.
 #
 # Every other gate in this directory runs INSIDE this repository and therefore
-# shares its assumptions. That is how `raorm generate` shipped in v0.1.0
-# emitting raorm's own module path into other people's modules: the wrong
+# shares its assumptions. That is how `storm generate` shipped in v0.1.0
+# emitting storm's own module path into other people's modules: the wrong
 # answer is the right answer here, so nothing could see it — not the tests,
 # not the coverage floors, not even the first adopter, because the adopter was
 # also us.
 #
 # So this builds a module that shares nothing: a different module path, a
-# directory outside the tree, a model raorm has never seen, and the five-line
+# directory outside the tree, a model storm has never seen, and the five-line
 # main a real user writes. It needs no database — `ddl` prints and `generate`
 # only needs a server when there are raw queries to PREPARE — so it belongs in
 # the fast CI job, not the one with a Postgres service.
@@ -21,7 +21,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cd "$TMP"
 
-mkdir -p model cmd/raorm
+mkdir -p model cmd/storm
 cat > go.mod <<EOF
 module example.com/outsider
 
@@ -34,44 +34,44 @@ EOF
 cat > model/model.go <<'EOF'
 package model
 
-import "github.com/gsoultan/raorm"
+import "github.com/gsoultan/storm"
 
 type Team struct {
-	raorm.Model
+	storm.Model
 	Name    string
 	Members []Member
 }
 
-func (t *Team) Schema(s *raorm.Table) { s.Unique(&t.Name) }
+func (t *Team) Schema(s *storm.Table) { s.Unique(&t.Name) }
 
 // A named plan, so `lint` has a load pattern to cost and `explain` has more
 // than one statement to plan.
-func (t *Team) Plans(p *raorm.Plans) { p.Named("Roster").With(&t.Members) }
+func (t *Team) Plans(p *storm.Plans) { p.Named("Roster").With(&t.Members) }
 
 type Member struct {
-	raorm.Model
+	storm.Model
 	Team     Team
 	Email    string
 	Nickname *string
 }
 
-func (m *Member) Schema(s *raorm.Table) { s.Unique(&m.Email) }
+func (m *Member) Schema(s *storm.Table) { s.Unique(&m.Email) }
 
 func All() []any { return []any{&Team{}, &Member{}} }
 EOF
 
-cat > cmd/raorm/main.go <<'EOF'
+cat > cmd/storm/main.go <<'EOF'
 package main
 
 import (
 	"example.com/outsider/model"
-	"github.com/gsoultan/raorm/tool"
+	"github.com/gsoultan/storm/tool"
 )
 
 func main() { tool.Main(model.All(), nil) }
 EOF
 
-go mod edit -replace "github.com/gsoultan/raorm=$REPO"
+go mod edit -replace "github.com/gsoultan/storm=$REPO"
 GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
 
 fail=0
@@ -84,14 +84,14 @@ if ! go build ./... >/dev/null 2>&1; then
 fi
 
 echo "== ddl needs no database =="
-if ! go run ./cmd/raorm ddl > ddl.sql 2>ddl.err; then
+if ! go run ./cmd/storm ddl > ddl.sql 2>ddl.err; then
   note "ddl failed:"; sed 's/^/    /' ddl.err >&2
 elif ! grep -q 'CREATE TABLE "teams"' ddl.sql; then
   note "ddl did not emit the model's tables"
 fi
 
 echo "== generate emits the HOST module's import path =="
-if ! go run ./cmd/raorm generate internal/store >gen.out 2>gen.err; then
+if ! go run ./cmd/storm generate internal/store >gen.out 2>gen.err; then
   note "generate failed:"; sed 's/^/    /' gen.err >&2
 else
   ctx="internal/store/store.gen.go"
@@ -99,33 +99,33 @@ else
     note "generated code does not import the host module — this is the v0.1.0 bug"
     grep -n 'internal/store/' "$ctx" | head -3 | sed 's/^/    /' >&2
   fi
-  if grep -q '"github.com/gsoultan/raorm/internal/store/' "$ctx"; then
-    note "generated code imports RAORM's module path for the user's packages"
+  if grep -q '"github.com/gsoultan/storm/internal/store/' "$ctx"; then
+    note "generated code imports STORM's module path for the user's packages"
   fi
-  # The runtime import must still point at raorm: the two halves are
+  # The runtime import must still point at storm: the two halves are
   # different questions and the fix for one must not break the other.
-  if ! grep -q '"github.com/gsoultan/raorm/runtime"' "$ctx"; then
-    note "the runtime import no longer points at raorm"
+  if ! grep -q '"github.com/gsoultan/storm/runtime"' "$ctx"; then
+    note "the runtime import no longer points at storm"
   fi
 fi
 
-echo "== the generated code compiles in a module that is not raorm =="
+echo "== the generated code compiles in a module that is not storm =="
 if ! go build ./... >build.err 2>&1; then
   note "generated code does not compile:"; sed 's/^/    /' build.err | head -5 >&2
 fi
 
 # The migration path, when a server is available. It is the riskiest thing an
 # ORM does — it changes schemas that hold production data — and until now it
-# had only ever been exercised inside raorm's own module, the same blind spot
+# had only ever been exercised inside storm's own module, the same blind spot
 # that let `generate` ship broken. Skipped without a DSN so the fast CI job
 # stays database-free.
-if [ -n "${RAORM_DSN:-}" ]; then
+if [ -n "${STORM_DSN:-}" ]; then
   echo "== a stranger can diff, apply and verify a migration =="
-  ns="raorm_outsider_$$"
-  case "$RAORM_DSN" in *\?*) sep="&" ;; *) sep="?" ;; esac
-  scoped="${RAORM_DSN}${sep}search_path=${ns}"
+  ns="storm_outsider_$$"
+  case "$STORM_DSN" in *\?*) sep="&" ;; *) sep="?" ;; esac
+  scoped="${STORM_DSN}${sep}search_path=${ns}"
 
-  # An adopter applies migrations with their own runner — raorm never does.
+  # An adopter applies migrations with their own runner — storm never does.
   # This is the smallest honest stand-in for one.
   mkdir -p cmd/apply
   cat > cmd/apply/main.go <<'GOEOF'
@@ -156,12 +156,12 @@ func main() {
 GOEOF
   GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
 
-  drop_ns() { go run ./cmd/apply "$RAORM_DSN" /dev/stdin <<< "DROP SCHEMA IF EXISTS ${ns} CASCADE" >/dev/null 2>&1 || true; }
+  drop_ns() { go run ./cmd/apply "$STORM_DSN" /dev/stdin <<< "DROP SCHEMA IF EXISTS ${ns} CASCADE" >/dev/null 2>&1 || true; }
   trap 'drop_ns; rm -rf "$TMP"' EXIT
-  if ! go run ./cmd/apply "$RAORM_DSN" /dev/stdin <<< "CREATE SCHEMA ${ns}" >/dev/null 2>&1; then
+  if ! go run ./cmd/apply "$STORM_DSN" /dev/stdin <<< "CREATE SCHEMA ${ns}" >/dev/null 2>&1; then
     note "could not create a scratch namespace to migrate into"
   else
-    if ! go run ./cmd/raorm diff init -dsn "$scoped" -schema "$ns" -out migrations >diff.out 2>diff.err; then
+    if ! go run ./cmd/storm diff init -dsn "$scoped" -schema "$ns" -out migrations >diff.out 2>diff.err; then
       note "diff failed:"; sed 's/^/    /' diff.err >&2
     else
       up="$(ls migrations/*init*.up.sql 2>/dev/null | head -1)"
@@ -169,14 +169,14 @@ GOEOF
         note "diff wrote no up migration"
       elif ! grep -q 'CREATE TABLE' "$up"; then
         note "the migration contains no CREATE TABLE"
-      elif go run ./cmd/raorm verify -dsn "$scoped" -schema "$ns" >/dev/null 2>&1; then
+      elif go run ./cmd/storm verify -dsn "$scoped" -schema "$ns" >/dev/null 2>&1; then
         # Before applying anything, an empty namespace MUST read as drifted.
         # Without this the "clean afterwards" below would pass just as well if
         # verify were broken and always said yes.
         note "an empty namespace verified clean — verify is not looking"
       elif ! go run ./cmd/apply "$scoped" "$up" >apply.err 2>&1; then
-        note "the migration raorm emitted does not apply:"; sed 's/^/    /' apply.err | head -5 >&2
-      elif ! go run ./cmd/raorm verify -dsn "$scoped" -schema "$ns" >verify.out 2>&1; then
+        note "the migration storm emitted does not apply:"; sed 's/^/    /' apply.err | head -5 >&2
+      elif ! go run ./cmd/storm verify -dsn "$scoped" -schema "$ns" >verify.out 2>&1; then
         note "after applying its own migration, verify still reports drift:"
         sed 's/^/    /' verify.out | head -6 >&2
       else
@@ -185,30 +185,30 @@ GOEOF
         # assume these are not.
 
         echo "== verify -pending: the model against its migrations =="
-        if ! go run ./cmd/raorm verify -pending -dsn "$scoped" -schema "$ns" -out migrations >pending.out 2>&1; then
+        if ! go run ./cmd/storm verify -pending -dsn "$scoped" -schema "$ns" -out migrations >pending.out 2>&1; then
           note "the migration diff just wrote does not carry the model:"
           sed 's/^/    /' pending.out | head -6 >&2
         fi
 
         echo "== lint: the named plan is costed =="
-        if ! go run ./cmd/raorm lint -dsn "$scoped" -schema "$ns" >lint.out 2>&1; then
+        if ! go run ./cmd/storm lint -dsn "$scoped" -schema "$ns" >lint.out 2>&1; then
           note "lint failed:"; sed 's/^/    /' lint.out | head -6 >&2
         elif ! grep -qi 'roster' lint.out; then
           note "lint did not cost the declared plan:"; sed 's/^/    /' lint.out | head -6 >&2
         fi
 
         echo "== explain: every statement planned =="
-        if ! go run ./cmd/raorm explain -dsn "$scoped" -schema "$ns" >explain.out 2>&1; then
+        if ! go run ./cmd/storm explain -dsn "$scoped" -schema "$ns" >explain.out 2>&1; then
           note "explain failed:"; sed 's/^/    /' explain.out | head -8 >&2
         elif ! grep -qE 'statement\(s\) planned' explain.out; then
           note "explain planned nothing:"; sed 's/^/    /' explain.out | head -6 >&2
         fi
 
         echo "== import: the on-ramp for an existing database =="
-        # The most common adoption path there is: point raorm at a schema you
+        # The most common adoption path there is: point storm at a schema you
         # already have and get a model draft back. It must be Go that parses,
         # not prose — a draft nobody can compile is not an on-ramp.
-        if ! go run ./cmd/raorm import -dsn "$scoped" -schema "$ns" >imported.go 2>import.err; then
+        if ! go run ./cmd/storm import -dsn "$scoped" -schema "$ns" >imported.go 2>import.err; then
           note "import failed:"; sed 's/^/    /' import.err | head -6 >&2
         elif ! grep -q 'type Team' imported.go; then
           note "the imported model does not describe the schema it read:"
@@ -226,10 +226,10 @@ GOEOF
 fi
 
 if [ "$fail" -eq 0 ]; then
-  if [ -n "${RAORM_DSN:-}" ]; then
+  if [ -n "${STORM_DSN:-}" ]; then
     echo "OK: a module outside this repository can model, generate, build, migrate and verify"
   else
-    echo "OK: a module outside this repository can model, generate and build (migration path skipped — no RAORM_DSN)"
+    echo "OK: a module outside this repository can model, generate and build (migration path skipped — no STORM_DSN)"
   fi
 else
   echo "FAILED"

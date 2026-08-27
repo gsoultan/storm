@@ -1,6 +1,6 @@
 // Package runtime is what generated code calls at query time.
 //
-// It is the only part of raorm on the hot path, and it obeys the rules in
+// It is the only part of storm on the hot path, and it obeys the rules in
 // AGENTS.md: no reflect, no `any` boxing per column, no map lookup per query,
 // no allocation on a warm path.
 package runtime
@@ -58,5 +58,5 @@ type Frag struct{ A, B string }
 // emitted a token stream whose predicates do not reduce to one expression:
 // unbalanced arity on a group, or a column token no comparison consumed.
 var ErrMalformedStream = errors.New(
-	"raorm: generated token stream is malformed — its predicates do not reduce to a " +
+	"storm: generated token stream is malformed — its predicates do not reduce to a " +
 		"single expression; this is a code-generation bug, please report it")

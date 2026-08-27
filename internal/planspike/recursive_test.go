@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/internal/planspike/store/org"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/internal/planspike/store/org"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // tree builds a chain root -> a -> b -> c and returns the ids top-down.

@@ -1,12 +1,12 @@
 ---
-tags: [raorm, architecture, design-patterns]
+tags: [storm, architecture, design-patterns]
 updated: 2026-08-23
 status: proposed
 ---
 
 # Architecture
 
-raorm is structured as a **compiler with a thin runtime**, not as a library with
+storm is structured as a **compiler with a thin runtime**, not as a library with
 a builder. Front end → IR → back end, plus an execution layer small enough to
 audit in an afternoon.
 
@@ -16,7 +16,7 @@ audit in an afternoon.
   model/*.go (truth)┐
   migrations/*.sql ─┤─► schema front end ─► SCHEMA IR ─┤─► migration diff
   live pg_catalog ──┘        (import)                  │      ↓ reviewed .sql
-                                                       │   (raorm never applies)
+                                                       │   (storm never applies)
                                                        ▼
   your Go source ──► call-site scanner ──► QUERY IR ─► compile/ ─► codegen/
    (.With chains,      (AST level)          (rel.        │            │
@@ -27,7 +27,7 @@ audit in an afternoon.
                                                          │      · scanners
                                                          │      · projection types
                                                          ▼
-                                              raorm explain / lint (CI gate)
+                                              storm explain / lint (CI gate)
 
   ── runtime ───────────────────────────────────────────────────────────────
   call ─► shape mask (uint64) ─► shape cache ─► [hit] bind args ─► executor
@@ -52,8 +52,8 @@ Folder names state the layer. Core packages import **stdlib only**; the single
 third-party dependency lives in exactly one adapter package.
 
 ```
-raorm/
-  cmd/raorm/          CLI: generate · explain · lint · verify
+storm/
+  cmd/storm/          CLI: generate · explain · lint · verify
   schema/             schema IR: tables, columns, types, FKs, indexes   [stdlib]
   schema/pg/          Postgres introspection front end
   schema/sqlfile/     migration-file front end
@@ -107,7 +107,7 @@ of bug.
 | **Specification** | typed predicates | composable `And`/`Or`/`Not` without string concatenation |
 | **Repository** | generated per aggregate | hand-written repos disappear; the boundary stays |
 | **Strategy** | relation loading | two-query `= ANY` vs `LATERAL` vs `jsonb_agg`, picked by `internal/cost` and *measured* |
-| **Unit of Work + Identity Map** | `raorm.Unit` | batching and FK ordering, explicitly scoped — never ambient |
+| **Unit of Work + Identity Map** | `storm.Unit` | batching and FK ordering, explicitly scoped — never ambient |
 | **Object pool / arena** | buffers, arg arrays, row slabs | the difference between 3 allocs/op and 300 |
 | **Ports & adapters** | `Executor` | pgx isolated; round-trip counting in tests |
 | **Decorator** | executor middleware | tracing, query counting, slow-query capture, without touching the core |
@@ -145,4 +145,4 @@ are the only necessary copies, and `RawValues` keeps those to one each.
 - No package outside `runtime/pgxdrv` may name a pgx type.
 - Generated code imports `runtime/` and the user's domain types. Nothing else.
 - Generated output is **byte-deterministic** across runs and machines, so
-  `raorm verify` can fail CI on stale generated code with a plain diff.
+  `storm verify` can fail CI on stale generated code with a plain diff.

@@ -7,7 +7,7 @@
 package compilefail
 
 import (
-	"github.com/gsoultan/raorm/internal/planspike/store"
+	"github.com/gsoultan/storm/internal/planspike/store"
 )
 
 func ReadUndeclaredRelation(r store.UserSummaryRow) int {

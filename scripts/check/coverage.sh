@@ -10,20 +10,20 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 declare -a FLOORS=(
-  "github.com/gsoultan/raorm/runtime 95"
+  "github.com/gsoultan/storm/runtime 95"
   # The only package that knows pgx exists, and now the home of the wire-format
   # guard: a wrong entry in its deny-list is a value decoded as the wrong type,
   # which is precisely the "not observable from outside" failure floors are for.
   # Lower than the others because a driver adapter's remaining statements are
   # error plumbing that needs a broken server to reach.
-  "github.com/gsoultan/raorm/runtime/pgxdrv 85"
-  "github.com/gsoultan/raorm/compile/pgsql 80"
-  "github.com/gsoultan/raorm/compile/pgddl 90"
-  "github.com/gsoultan/raorm/codegen 85"
-  "github.com/gsoultan/raorm/migrate 75"
-  "github.com/gsoultan/raorm/schema/pg 80"
-  "github.com/gsoultan/raorm 65"
-  "github.com/gsoultan/raorm/tool 70"
+  "github.com/gsoultan/storm/runtime/pgxdrv 85"
+  "github.com/gsoultan/storm/compile/pgsql 80"
+  "github.com/gsoultan/storm/compile/pgddl 90"
+  "github.com/gsoultan/storm/codegen 85"
+  "github.com/gsoultan/storm/migrate 75"
+  "github.com/gsoultan/storm/schema/pg 80"
+  "github.com/gsoultan/storm 65"
+  "github.com/gsoultan/storm/tool 70"
 )
 
 prof=$(mktemp)

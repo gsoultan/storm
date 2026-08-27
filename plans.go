@@ -1,10 +1,10 @@
-package raorm
+package storm
 
 import (
 	"fmt"
 	"reflect"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Named fetch plans.
@@ -22,7 +22,7 @@ import (
 // pattern in a system, which is a thing no other Go ORM has, and which a
 // linter can cost in round trips.
 //
-//	func (u *User) Plans(p *raorm.Plans) {
+//	func (u *User) Plans(p *storm.Plans) {
 //	    p.Named("Feed").With(&u.Posts).With(&u.Org)
 //	}
 //
@@ -50,7 +50,7 @@ type Nested struct {
 
 // Into names a relation on T, for use inside With.
 //
-//	p.Named("Feed").With(&u.Posts, raorm.Into(func(p *Post) any { return &p.Comments }))
+//	p.Named("Feed").With(&u.Posts, storm.Into(func(p *Post) any { return &p.Comments }))
 //
 // The type parameter is what says which table the field belongs to, so a
 // pointer into the wrong model is a compile error rather than a mis-resolved
@@ -157,7 +157,7 @@ func (t *Table) resolveRel(fieldPtr any) (string, error) {
 	if got < base || got >= base+t.typ.Size() {
 		return "", fmt.Errorf(
 			"field pointer does not point into the model — Plans must use a POINTER receiver "+
-				"(func (m *%s) Plans(p *raorm.Plans)); a value receiver copies the struct first",
+				"(func (m *%s) Plans(p *storm.Plans)); a value receiver copies the struct first",
 			t.typ.Name())
 	}
 	name, ok := t.relOff[got-base]

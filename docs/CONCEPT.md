@@ -1,16 +1,16 @@
 ---
-tags: [raorm, concept, thesis]
+tags: [storm, concept, thesis]
 updated: 2026-08-23
 status: proposed
 ---
 
-# raorm — the thesis
+# storm — the thesis
 
-> **Every other Go ORM builds SQL at runtime. raorm builds it at compile time —
+> **Every other Go ORM builds SQL at runtime. storm builds it at compile time —
 > including the dynamic queries.**
 
 An embeddable Postgres ORM for Go. Generated, not reflected. Compiled, not
-interpreted. Module `github.com/gsoultan/raorm`, Go 1.26.
+interpreted. Module `github.com/gsoultan/storm`, Go 1.26.
 
 Read [[COMPARISON]] first — this document only makes sense as a response to it.
 
@@ -69,10 +69,10 @@ better than Ent, where forgetting `WithPosts()` yields a silently empty slice.
 
 Every ORM eventually meets a window function over a CTE with a lateral join.
 Ent and Bun answer with untyped strings; Hibernate answers with a native query
-that leaves entity management behind. raorm answers with sqlc, embedded:
+that leaves entity management behind. storm answers with sqlc, embedded:
 
 ```go
-var TopEarners = raorm.SQL[EarnerRow](`
+var TopEarners = storm.SQL[EarnerRow](`
     WITH ranked AS (SELECT ..., row_number() OVER (PARTITION BY ...) rn FROM ...)
     SELECT ... FROM ranked JOIN LATERAL (...) l ON true WHERE rn <= $1`)
 ```
@@ -93,8 +93,8 @@ fields. `rows.Scan(&a, &b, …)` is banned internally: it boxes every column int
 ### 5. The dialect is a compile-time parameter, not a runtime branch
 
 Multi-dialect support is the tax that forces every other ORM onto a
-lowest-common-denominator **runtime** builder. A compiler does not pay it: raorm
-knows the target at `raorm generate` time, so generated code carries lowered SQL
+lowest-common-denominator **runtime** builder. A compiler does not pay it: storm
+knows the target at `storm generate` time, so generated code carries lowered SQL
 for exactly one dialect and the hot path contains no dialect decision at all.
 
 Postgres ships first — the thesis must be proven once before it is generalised
@@ -109,7 +109,7 @@ a customer's install. See [[DIALECTS]] and ADR-0002.
 
 ### 6. Explicit unit of work, O(1) dirty tracking
 
-No ambient persistence context. `raorm.Unit` is a scoped object you put things
+No ambient persistence context. `storm.Unit` is a scoped object you put things
 into deliberately. Generated setters flip a bit in a fixed-width dirty mask, so
 computing the changed-column set is a bitmask read — no allocation, no
 comparison against a loaded snapshot. Flush emits ordered, batched statements
@@ -120,8 +120,8 @@ without Hibernate's cost (dirty-checking every loaded entity at every flush).
 
 ### 7. The ORM ships the performance gate
 
-`raorm explain` runs `EXPLAIN (ANALYZE, BUFFERS)` for every named query in CI.
-`raorm lint` fails the build on a sequential scan over a table above a
+`storm explain` runs `EXPLAIN (ANALYZE, BUFFERS)` for every named query in CI.
+`storm lint` fails the build on a sequential scan over a table above a
 configured row count, on a query shape count that has exploded, or on a relation
 load that is not provably bounded in round trips.
 
@@ -129,11 +129,11 @@ load that is not provably bounded in round trips.
 (ANALYZE, BUFFERS)"* as a **perf veto** enforced by review. An ORM that enforces
 it mechanically is worth more than one that is 5% faster.
 
-### 8. The model is the source of truth; raorm never applies DDL
+### 8. The model is the source of truth; storm never applies DDL
 
 Schema is a plain Go struct (ADR-0001) — no DSL; `*T` means nullable,
 `OrgID`+`Org *Org` means a foreign key, `[]Post` means has-many. From one model
-raorm generates the query API
+storm generates the query API
 *and* a numbered, forward-only, **reviewable** migration file — which your
 existing runner applies. There is no `AutoMigrate` and no library code path that
 can alter a schema.
@@ -143,10 +143,10 @@ document store are targets: five hand-maintained migration sets never stay in
 sync, and MongoDB has no schema to introspect at all.
 
 Drift is caught by verification rather than by making the database authoritative
-— `raorm verify --stale | --drift | --pending`. The third turns *"you changed
+— `storm verify --stale | --drift | --pending`. The third turns *"you changed
 the model and did not generate a migration"* into a CI failure.
 
-Database-first survives as the **on-ramp**: `raorm import` writes the model from
+Database-first survives as the **on-ramp**: `storm import` writes the model from
 an existing schema.
 
 ## Rejected — do not rebuild these
@@ -154,7 +154,7 @@ an existing schema.
 The reasoning matters more than the verdicts.
 
 **Runtime DDL / AutoMigrate.** The failure mode is silent production schema
-change. raorm *emits* migrations from the model but never applies one — the
+change. storm *emits* migrations from the model but never applies one — the
 distinction ADR-0001's first draft missed, and the whole of the danger.
 
 **Ambient persistence context with lazy loading.** The root cause of nearly all
@@ -187,7 +187,7 @@ Available as an explicit, opt-in, per-table decision.
 
 ## Scope line
 
-raorm is a **library**, imported, not deployed. No daemon, no UI, no applied
+storm is a **library**, imported, not deployed. No daemon, no UI, no applied
 DDL, no lazy loading, no runtime dialect branch. Driver dependencies are
 isolated behind a five-method port, one adapter package each (`pgx/v5` today).
 Everything else is stdlib.

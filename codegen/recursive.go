@@ -3,8 +3,8 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/raorm/compile/pgsql"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Recursive traversal emission for a self-referencing table.
@@ -75,7 +75,7 @@ func (g *gen) recursive() {
 	g.p("// against a hung connection.")
 	g.p("// ErrDepth is returned by a traversal given no positive depth bound.")
 	g.p("var ErrDepth = errors.New(")
-	g.p("\t%q)", "raorm: recursive traversal needs a positive depth bound — "+
+	g.p("\t%q)", "storm: recursive traversal needs a positive depth bound — "+
 		"unbounded recursion over a cycle does not return")
 	g.p("")
 

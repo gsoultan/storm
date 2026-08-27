@@ -35,30 +35,30 @@ Two requirements added after the first draft make the original choice untenable:
 Nullability, foreign keys, has-many, many-to-many, enums and typed `jsonb` are
 all derived from the Go types. **There are no struct tags**: per-column settings
 go through `t.Col(&u.Email).Unique().Size(320)` in an optional
-`Schema(t *raorm.Table)` method, where every field reference is a *field
+`Schema(t *storm.Table)` method, where every field reference is a *field
 pointer* — so a rename is a compile error, not a silent stale string. Struct-as-model and
 codegen are orthogonal — the generator reads the struct at build time, so a
 simpler declaration costs the compilation thesis nothing.
 
-raorm generates both the query API and a **migration file** from it.
+storm generates both the query API and a **migration file** from it.
 
-**raorm never applies DDL.** The generator emits a numbered, forward-only,
+**storm never applies DDL.** The generator emits a numbered, forward-only,
 reviewable `.sql` (or per-target equivalent) into `migrations/`. Your existing
 migration runner applies it. There is no `AutoMigrate`, no runtime DDL, no
 library code path that can alter a schema.
 
-**Introspection remains a first-class front end.** `raorm import` generates the
+**Introspection remains a first-class front end.** `storm import` generates the
 model from an existing database — the adoption path for `anubis` and for any
-schema raorm did not create. Database-first is demoted from *default* to
+schema storm did not create. Database-first is demoted from *default* to
 *on-ramp*, not deleted.
 
 Drift is caught by verification, not by making the database authoritative:
 
 | Command | Compares | Fails when |
 |---|---|---|
-| `raorm verify --stale` | generated code ↔ model | regeneration would change output |
-| `raorm verify --drift` | model ↔ live database | production differs from the model |
-| `raorm verify --pending` | model ↔ `migrations/` | the model changed and no migration was generated |
+| `storm verify --stale` | generated code ↔ model | regeneration would change output |
+| `storm verify --drift` | model ↔ live database | production differs from the model |
+| `storm verify --pending` | model ↔ `migrations/` | the model changed and no migration was generated |
 
 `--pending` is the load-bearing one: *"you changed the model and did not
 generate a migration"* becomes a CI failure rather than a deployment surprise.
@@ -74,7 +74,7 @@ comments would have to encode. Renames are one edit, not a two-step dance
 through a state that does not compile. Schema and fetch plans live in the same
 language.
 
-**Bad.** raorm now owns a schema-diff engine — the subsystem the first draft was
+**Bad.** storm now owns a schema-diff engine — the subsystem the first draft was
 pleased to avoid. Scope grows; a bad diff can emit a bad migration.
 
 **Mitigations.** Migrations are ordinary reviewed files, not applied artifacts.

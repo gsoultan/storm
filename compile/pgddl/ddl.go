@@ -1,14 +1,14 @@
 // Package pgddl lowers the schema IR to PostgreSQL DDL.
 //
 // Output is byte-deterministic: the same IR always produces the same bytes, so
-// `raorm verify` can fail CI on a plain diff and migrations can be golden-tested.
+// `storm verify` can fail CI on a plain diff and migrations can be golden-tested.
 package pgddl
 
 import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Create renders CREATE statements for a whole schema, enums first.
@@ -34,8 +34,8 @@ func NeedsBtreeGist(s *schema.Schema) bool {
 
 // BtreeGistDDL installs btree_gist, safely under concurrency — see the
 // comment at its use in Create.
-const BtreeGistDDL = "DO $raorm$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist; " +
-	"EXCEPTION WHEN unique_violation OR duplicate_object THEN NULL; END $raorm$;"
+const BtreeGistDDL = "DO $storm$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist; " +
+	"EXCEPTION WHEN unique_violation OR duplicate_object THEN NULL; END $storm$;"
 
 func Create(s *schema.Schema) string {
 	var b strings.Builder

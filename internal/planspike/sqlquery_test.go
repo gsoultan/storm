@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // The M5 gate query: a window function over a CTE with a lateral join — the
@@ -24,7 +24,7 @@ type earnerRow struct {
 	OrgUsers int64
 }
 
-var topPerOrg = raorm.SQL[earnerRow](`
+var topPerOrg = storm.SQL[earnerRow](`
 	WITH ranked AS (
 		SELECT u.email, u.org_id,
 		       row_number() OVER (PARTITION BY u.org_id ORDER BY u.email) AS rn
@@ -41,7 +41,7 @@ var topPerOrg = raorm.SQL[earnerRow](`
 	LIMIT $2`)
 
 func init() {
-	raorm.RegisterScanner(func(rv [][]byte, r *earnerRow, sl *runtime.Slab) error {
+	storm.RegisterScanner(func(rv [][]byte, r *earnerRow, sl *runtime.Slab) error {
 		r.Email = sl.Str(rv[0])
 		r.OrgName = sl.Str(rv[1])
 		r.Rank = runtime.Int8(rv[2])
@@ -103,12 +103,12 @@ func TestSQLQuery_ArgumentCountIsChecked(t *testing.T) {
 // A query nothing generated for says how to fix itself.
 func TestSQLQuery_MissingScannerNamesTheFix(t *testing.T) {
 	type orphanRow struct{ X int64 }
-	q := raorm.SQL[orphanRow](`SELECT 1 AS x`)
+	q := storm.SQL[orphanRow](`SELECT 1 AS x`)
 	_, err := q.Query(context.Background(), nil)
 	if err == nil {
 		t.Fatal("a query with no registered scanner must fail")
 	}
-	if !strings.Contains(err.Error(), "raorm generate") {
+	if !strings.Contains(err.Error(), "storm generate") {
 		t.Errorf("the error should name the fix, got: %v", err)
 	}
 }

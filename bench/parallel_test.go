@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/spike"
+	"github.com/gsoultan/storm/internal/spike"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 

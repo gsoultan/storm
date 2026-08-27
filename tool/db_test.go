@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/internal/testmodel"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/internal/testmodel"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -19,9 +19,9 @@ import (
 
 func dsn(t *testing.T) string {
 	t.Helper()
-	d := os.Getenv("RAORM_DSN")
+	d := os.Getenv("STORM_DSN")
 	if d == "" {
-		t.Skip("RAORM_DSN unset")
+		t.Skip("STORM_DSN unset")
 	}
 	return d
 }
@@ -124,12 +124,12 @@ func TestCLI_Import(t *testing.T) {
 	flat := strings.Join(strings.Fields(got), " ")
 	for _, want := range []string{
 		"type User struct", "type Org struct",
-		"raorm.Model",      // the Model triple is embedded, as a human would write it
+		"storm.Model",      // the Model triple is embedded, as a human would write it
 		"Email string",     // a plain column
 		"Status Status",    // an enum column keeps its own type, not string
 		"Org Org",          // a foreign key came back as a relation, not a uuid
 		"Parent *Org",      // a nullable self-reference is a pointer
-		"func All() []any", // ready to pass to raorm.Build
+		"func All() []any", // ready to pass to storm.Build
 		"NOT CARRIED OVER", // and it says what it could not express
 		"EnumValues",       // the enum came with its labels
 	} {
@@ -219,7 +219,7 @@ func TestCLI_VerifyPending(t *testing.T) {
 	if err == nil {
 		t.Fatal("an empty migrations directory cannot carry the model")
 	}
-	if !strings.Contains(err.Error(), "raorm diff") {
+	if !strings.Contains(err.Error(), "storm diff") {
 		t.Errorf("the error should name the fix, got: %v", err)
 	}
 
@@ -239,11 +239,11 @@ func TestCLI_VerifyPending(t *testing.T) {
 }
 
 type pendingExtra struct {
-	raorm.Model
+	storm.Model
 	Note string
 }
 
-// explain's validity half: every statement raorm will issue must PLAN, for
+// explain's validity half: every statement storm will issue must PLAN, for
 // every table and every named plan, which catches a shape PostgreSQL rejects.
 // (The performance half needs statistics a CI database does not have; the
 // walker's threshold logic is unit-tested against fixtures instead.)
@@ -275,7 +275,7 @@ func TestCLI_ExplainPlansEveryStatement(t *testing.T) {
 	}
 }
 
-// The generation half of raorm.SQL[T]: the statement PREPAREs against the
+// The generation half of storm.SQL[T]: the statement PREPAREs against the
 // MODEL in a scratch schema, the descriptor is matched against the row type,
 // and the emitted scanner COMPILES — with the runtime half proven separately
 // by a hand-registered scanner in planspike, the P2 split.
@@ -285,7 +285,7 @@ func TestCLI_GenerateRawQueries(t *testing.T) {
 	// One SQL[T] and one SQLExec: the exec form is validated by the same
 	// PREPARE but must emit no scanner.
 	RawQueries = append(testmodel.Queries(),
-		raorm.SQLExec(`DELETE FROM users WHERE id = $1`))
+		storm.SQLExec(`DELETE FROM users WHERE id = $1`))
 	t.Cleanup(func() { RawQueries = prevQ })
 
 	// Capture the DSN before the no-DSN sub-check clears the env — reading it
@@ -303,7 +303,7 @@ func TestCLI_GenerateRawQueries(t *testing.T) {
 	}
 
 	// Without a DSN the failure names what is needed and why it is small.
-	t.Setenv("RAORM_DSN", "")
+	t.Setenv("STORM_DSN", "")
 	if err := run([]string{"generate", scratch("rawnodsn")}); err == nil {
 		t.Fatal("raw queries without a server must fail")
 	} else if !strings.Contains(err.Error(), "an existing schema is not") {
@@ -324,7 +324,7 @@ func TestCLI_GenerateRawQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"raorm.RegisterScanner(scanEarnerRow)",
+		"storm.RegisterScanner(scanEarnerRow)",
 		"func scanEarnerRow(rv [][]byte, r *testmodel.EarnerRow, sl *runtime.Slab) error {",
 		"r.OrgUsers = runtime.Int8(rv[3])",
 	} {
@@ -348,17 +348,17 @@ func TestCLI_RawQueryMismatchesFailGeneration(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		decl raorm.RawDecl
+		decl storm.RawDecl
 		want []string
 	}{
 		{
 			"surplus column",
-			raorm.SQL[struct{ Email string }](`SELECT email, name FROM users`),
+			storm.SQL[struct{ Email string }](`SELECT email, name FROM users`),
 			[]string{`result column 2 "name"`, "has no field", "add `Name string`"},
 		},
 		{
 			"unfed field",
-			raorm.SQL[struct {
+			storm.SQL[struct {
 				Email string
 				Ghost int64
 			}](`SELECT email FROM users`),
@@ -366,22 +366,22 @@ func TestCLI_RawQueryMismatchesFailGeneration(t *testing.T) {
 		},
 		{
 			"type mismatch",
-			raorm.SQL[struct{ Email int64 }](`SELECT email FROM users`),
+			storm.SQL[struct{ Email int64 }](`SELECT email FROM users`),
 			[]string{`column 1 "email" is text`, "Email is int64", "cast the column"},
 		},
 		{
 			"does not prepare",
-			raorm.SQL[struct{ X int64 }](`SELECT nope FROM users`),
+			storm.SQL[struct{ X int64 }](`SELECT nope FROM users`),
 			[]string{"does not prepare against the model"},
 		},
 		{
 			"exec that returns rows",
-			raorm.SQLExec(`SELECT email FROM users`),
-			[]string{"raorm.SQLExec returns 1 column(s)", "use raorm.SQL[T]"},
+			storm.SQLExec(`SELECT email FROM users`),
+			[]string{"storm.SQLExec returns 1 column(s)", "use storm.SQL[T]"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			RawQueries = []raorm.RawDecl{tc.decl}
+			RawQueries = []storm.RawDecl{tc.decl}
 			root, _ := filepath.Abs("..")
 			out := filepath.Join(root, "internal", "rawbad"+strconv.Itoa(os.Getpid()))
 			t.Cleanup(func() { os.RemoveAll(out) })
@@ -399,7 +399,7 @@ func TestCLI_RawQueryMismatchesFailGeneration(t *testing.T) {
 }
 
 // A model that is a PROJECTION of a bigger schema is the case the first
-// adopter actually had: anubis's raorm model describes `roles`, while its raw
+// adopter actually had: anubis's storm model describes `roles`, while its raw
 // declarations call `authorize()` and read `grants` — objects the model
 // deliberately does not carry, because migrations are that schema's source of
 // truth. Under the default scratch-apply validation every one of those
@@ -421,20 +421,20 @@ func TestCLI_RawSchemaLiveValidatesAgainstTheDatabase(t *testing.T) {
 	defer done()
 	// An object the MODEL knows nothing about, exactly like a SQL function
 	// that lives only in migrations.
-	if _, err := c.Exec(ctx, `CREATE TABLE IF NOT EXISTS raorm_outside_model (note text NOT NULL)`); err != nil {
+	if _, err := c.Exec(ctx, `CREATE TABLE IF NOT EXISTS storm_outside_model (note text NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		c2, ctx2, done2, err := connect(live)
 		if err == nil {
 			defer done2()
-			_, _ = c2.Exec(ctx2, `DROP TABLE IF EXISTS raorm_outside_model`)
+			_, _ = c2.Exec(ctx2, `DROP TABLE IF EXISTS storm_outside_model`)
 		}
 	})
 
 	type NoteRow struct{ Note string }
-	RawQueries = []raorm.RawDecl{
-		raorm.SQL[NoteRow](`SELECT note FROM raorm_outside_model`),
+	RawQueries = []storm.RawDecl{
+		storm.SQL[NoteRow](`SELECT note FROM storm_outside_model`),
 	}
 
 	root, _ := filepath.Abs("..")

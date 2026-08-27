@@ -14,7 +14,7 @@ import "strings"
 //
 // A CYCLE GUARD. `parent_id` is a foreign key, and a foreign key does not stop
 // A pointing at B pointing at A. Postgres will happily recurse forever on that;
-// Postgres 14+ has CYCLE syntax but raorm still targets 13, so the guard is an
+// Postgres 14+ has CYCLE syntax but storm still targets 13, so the guard is an
 // explicit path array. It costs one array append per row and it is the
 // difference between a bad row of data and a hung connection.
 
@@ -109,8 +109,8 @@ func Recursive(table string, cols []string, key, parent string, dir int) string 
 }
 
 const (
-	recursiveAlias = "_raorm_r"
-	recursiveChild = "_raorm_rc"
-	depthAlias     = "_raorm_d"
-	pathAlias      = "_raorm_path"
+	recursiveAlias = "_storm_r"
+	recursiveChild = "_storm_rc"
+	depthAlias     = "_storm_d"
+	pathAlias      = "_storm_path"
 )

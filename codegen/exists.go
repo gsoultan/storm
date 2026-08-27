@@ -1,8 +1,8 @@
 package codegen
 
 import (
-	"github.com/gsoultan/raorm/compile/pgsql"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Relation-existence predicates: the first native join shape.

@@ -5,7 +5,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/gsoultan/raorm"
+	"github.com/gsoultan/storm"
 )
 
 // ---- enums ----
@@ -36,7 +36,7 @@ type SoftDelete struct {
 	DeletedAt *time.Time
 }
 
-func (sd *SoftDelete) Schema(t *raorm.Table) {
+func (sd *SoftDelete) Schema(t *storm.Table) {
 	t.Col(&sd.DeletedAt).Index()
 }
 
@@ -44,14 +44,14 @@ type Auditable struct {
 	Version int32
 }
 
-func (a *Auditable) Schema(t *raorm.Table) {
+func (a *Auditable) Schema(t *storm.Table) {
 	t.Col(&a.Version).Default("0").Version()
 }
 
 // ---- models ----
 
 type Org struct {
-	raorm.Model
+	storm.Model
 
 	Name string
 
@@ -60,14 +60,14 @@ type Org struct {
 	Users    []User
 }
 
-func (o *Org) Schema(t *raorm.Table) {
-	t.Col(&o.Parent).OnDelete(raorm.Cascade)
+func (o *Org) Schema(t *storm.Table) {
+	t.Col(&o.Parent).OnDelete(storm.Cascade)
 	t.Col(&o.Name).Size(200)
 	t.Unique(&o.Name)
 }
 
 type User struct {
-	raorm.Model
+	storm.Model
 	Auditable
 	SoftDelete
 
@@ -81,16 +81,16 @@ type User struct {
 
 	// Money. numeric, not float: a float64 cannot represent 0.10 and an
 	// accounting system that rounds is a defect, not a tolerance.
-	Balance raorm.Decimal
-	Credit  *raorm.Decimal
-	Splits  []raorm.Decimal // numeric[]: exact values, in an array
+	Balance storm.Decimal
+	Credit  *storm.Decimal
+	Splits  []storm.Decimal // numeric[]: exact values, in an array
 
 	Org     Org
 	Posts   []Post
 	Profile *Profile
 }
 
-func (u *User) Schema(t *raorm.Table) {
+func (u *User) Schema(t *storm.Table) {
 	// Nullable on purpose: every other array column in this fixture is NOT
 	// NULL, so nothing exercised the nil-is-SQL-NULL path that arrays are
 	// careful to keep distinct from an empty array.
@@ -105,11 +105,11 @@ func (u *User) Schema(t *raorm.Table) {
 	t.Col(&u.Prefs).Default("'{}'")
 	t.Col(&u.Balance).Numeric(18, 4).Default("0")
 	t.Col(&u.Scopes).Default("'{}'")
-	t.Col(&u.Org).OnDelete(raorm.Restrict)
+	t.Col(&u.Org).OnDelete(storm.Restrict)
 
-	t.Unique(raorm.Lower(&u.Email))
-	t.Index(&u.Org, raorm.Desc(&u.CreatedAt))
-	t.Index(&u.Scopes).Using(raorm.GIN)
+	t.Unique(storm.Lower(&u.Email))
+	t.Index(&u.Org, storm.Desc(&u.CreatedAt))
+	t.Index(&u.Scopes).Using(storm.GIN)
 	t.Index(&u.Status).Where("status <> 'suspended'")
 	t.Check("age IS NULL OR age BETWEEN 0 AND 150")
 }
@@ -120,38 +120,38 @@ func (u *User) Schema(t *raorm.Table) {
 // Projections: the declared column subsets this system reads. Contact is the
 // list-endpoint shape; Fin exercises decimal and a nullable through the
 // projected scanner.
-func (u *User) Projections(p *raorm.Projections) {
+func (u *User) Projections(p *storm.Projections) {
 	p.Named("Contact", &u.Email, &u.Name)
 	p.Named("Fin", &u.Email, &u.Balance, &u.Age)
 }
 
-func (u *User) Plans(p *raorm.Plans) {
+func (u *User) Plans(p *storm.Plans) {
 	// Posts carry their comments: one round trip for the users, one for the
 	// posts, one for the comments — three, whatever the row counts.
 	p.Named("Feed").
-		With(&u.Posts, raorm.Into(func(p *Post) any { return &p.Comments })).
+		With(&u.Posts, storm.Into(func(p *Post) any { return &p.Comments })).
 		With(&u.Org)
 	p.Named("Summary").With(&u.Org)
 }
 
-func (o *Org) Plans(p *raorm.Plans) {
+func (o *Org) Plans(p *storm.Plans) {
 	p.Named("Tree").With(&o.Children).With(&o.Users)
 }
 
 type Profile struct {
-	raorm.Model
+	storm.Model
 
 	Bio  *string
 	User User
 }
 
-func (p *Profile) Schema(t *raorm.Table) {
-	t.Col(&p.User).Unique().OnDelete(raorm.Cascade) // unique FK => one-to-one
+func (p *Profile) Schema(t *storm.Table) {
+	t.Col(&p.User).Unique().OnDelete(storm.Cascade) // unique FK => one-to-one
 	t.Col(&p.Bio).Size(2000)
 }
 
 type Post struct {
-	raorm.Model
+	storm.Model
 
 	Title       string
 	Body        string
@@ -161,14 +161,14 @@ type Post struct {
 	Comments []Comment
 }
 
-func (p *Post) Schema(t *raorm.Table) {
-	t.Col(&p.Author).OnDelete(raorm.Cascade)
+func (p *Post) Schema(t *storm.Table) {
+	t.Col(&p.Author).OnDelete(storm.Cascade)
 	t.Col(&p.Title).Size(300)
-	t.Index(&p.Author, raorm.NullsLast(raorm.Desc(&p.PublishedAt)))
+	t.Index(&p.Author, storm.NullsLast(storm.Desc(&p.PublishedAt)))
 }
 
 type Comment struct {
-	raorm.Model
+	storm.Model
 
 	Body string
 
@@ -178,10 +178,10 @@ type Comment struct {
 	Replies []Comment
 }
 
-func (c *Comment) Schema(t *raorm.Table) {
-	t.Col(&c.Post).OnDelete(raorm.Cascade)
-	t.Col(&c.Author).OnDelete(raorm.Cascade)
-	t.Col(&c.Parent).OnDelete(raorm.Cascade)
+func (c *Comment) Schema(t *storm.Table) {
+	t.Col(&c.Post).OnDelete(storm.Cascade)
+	t.Col(&c.Author).OnDelete(storm.Cascade)
+	t.Col(&c.Parent).OnDelete(storm.Cascade)
 }
 
 // Booking exercises the exclusion constraint no other Go ORM can express.
@@ -190,13 +190,13 @@ func (c *Comment) Schema(t *raorm.Table) {
 // referential integrity survives — the Rails (subject_type, subject_id) pair
 // cannot be constrained by any database.
 type Attachment struct {
-	raorm.Model
+	storm.Model
 
 	Filename string
-	Subject  raorm.OneOf3[Post, Comment, User]
+	Subject  storm.OneOf3[Post, Comment, User]
 }
 
-func (a *Attachment) Schema(t *raorm.Table) {
+func (a *Attachment) Schema(t *storm.Table) {
 	t.Col(&a.Filename).Size(255)
 }
 
@@ -204,18 +204,18 @@ func (a *Attachment) Schema(t *raorm.Table) {
 // a time of day, an interval with months kept apart from days, inet vs cidr,
 // and int8[].
 type Event struct {
-	raorm.Model
+	storm.Model
 
 	On     time.Time // a date, not a timestamp — see Schema
-	Opens  raorm.TimeOfDay
-	Closes *raorm.TimeOfDay
-	Window *raorm.Interval
+	Opens  storm.TimeOfDay
+	Closes *storm.TimeOfDay
+	Window *storm.Interval
 	Addr   netip.Prefix // inet: host bits allowed
 	Net    netip.Prefix // cidr: host bits rejected by the database
 	Tags   []int64
 }
 
-func (e *Event) Schema(t *raorm.Table) {
+func (e *Event) Schema(t *storm.Table) {
 	t.Col(&e.On).Date()
 	t.Col(&e.Opens).Default("'00:00:00'")
 	t.Col(&e.Net).Cidr()
@@ -223,7 +223,7 @@ func (e *Event) Schema(t *raorm.Table) {
 }
 
 type Booking struct {
-	raorm.Model
+	storm.Model
 
 	Room     string
 	StartsAt time.Time
@@ -231,14 +231,14 @@ type Booking struct {
 	Status   Status
 }
 
-func (b *Booking) Schema(t *raorm.Table) {
+func (b *Booking) Schema(t *storm.Table) {
 	t.Col(&b.Room).Size(64)
 	// Two bookings for the same room may not overlap in time. `room WITH =`
 	// needs the btree_gist extension; the overlap is a range expression because
 	// two scalar timestamps cannot express it.
 	t.Exclude(
-		raorm.With(&b.Room, raorm.OpEq),
-		raorm.WithExpr("tstzrange(starts_at, ends_at)", raorm.OpOverlaps),
+		storm.With(&b.Room, storm.OpEq),
+		storm.WithExpr("tstzrange(starts_at, ends_at)", storm.OpOverlaps),
 	).Where("status <> 'suspended'")
 }
 

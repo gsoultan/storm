@@ -1,15 +1,15 @@
-# raorm — core
+# storm — core
 
-Embeddable ORM library for Go. `github.com/gsoultan/raorm`, Go 1.26. Imported,
+Embeddable ORM library for Go. `github.com/gsoultan/storm`, Go 1.26. Imported,
 not deployed. Zero CGO. Driver deps isolated one-per-adapter (`pgx/v5` in
 `runtime/pgxdrv`).
 
 **Postgres first**, then MySQL/MariaDB → SQL Server → Oracle → MongoDB. The
 dialect is a *compile-time parameter*: for an interpreter multi-dialect is a
 runtime tax, for a compiler it is a build-time cost. **Model-first** — one Go
-schema, generated query API, generated migrations raorm never applies.
+schema, generated query API, generated migrations storm never applies.
 
-**Thesis:** every other Go ORM builds SQL at runtime; raorm builds it at compile
+**Thesis:** every other Go ORM builds SQL at runtime; storm builds it at compile
 time, *including the dynamic queries*. A dynamic query has a bounded set of
 shapes — compile each once, cache under a `uint64` mask, warm calls allocate
 nothing to build SQL.
@@ -21,7 +21,7 @@ CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
 single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
 sequence**, which deliberately runs writes (M4) before relations (M3).
 
-See [[m6_first_adopter]] for the adopter migration (M6 PASSED 2026-08-25 — anubis/authz fully on raorm, p95 parity, four raorm fixes it forced), [[m0_results]] for the thesis numbers, [[seam_and_codegen]] for R9 and the
+See [[m6_first_adopter]] for the adopter migration (M6 PASSED 2026-08-25 — anubis/authz fully on storm, p95 parity, four storm fixes it forced), [[m0_results]] for the thesis numbers, [[seam_and_codegen]] for R9 and the
 generator, [[plan_types]] for why M3 is de-risked, [[write_path]] for M4.
 
 ## Production-grade gates (2026-08-25)
@@ -29,7 +29,7 @@ generator, [[plan_types]] for why M3 is de-risked, [[write_path]] for M4.
 `docs/PRODUCTION-READINESS.md` is the operative plan — the PLAN.md assessment
 is superseded in part.
 
-**P0.1 CLOSED 2026-08-26**: raorm decodes binary wire format and now says so.
+**P0.1 CLOSED 2026-08-26**: storm decodes binary wire format and now says so.
 pgxdrv refuses SimpleProtocol/Exec at pool construction AND checks every
 result once per statement (3.82ns/8 cols, 0 allocs = 0.0043% of a Get). The
 rule is a DENY-list of binary-layout types, never an allow-list: pgx sends
@@ -45,16 +45,16 @@ because eviction needs a write on the read path. 100k shapes: 170KB capped vs
 packages expose ShapeFlushes(); nonzero means a call site mints shapes from
 request data.
 
-**P2 CLOSED 2026-08-26**: generated headers carry the raorm version; error/SQL
+**P2 CLOSED 2026-08-26**: generated headers carry the storm version; error/SQL
 value hygiene is a test (bench/errhygiene_test.go, 13 shapes); tracing recipe
 in docs/DEPLOYMENT.md — and writing its proof found that pgx's QueryTracer is
 BLIND to batches, so the recipe needs QueryTracer + BatchTracer +
 CopyFromTracer or a plan's relation loads go unseen.
 
-**P1.2 CLOSED + v0.1.0 SHIPPED 2026-08-26**: raorm is public and tagged
+**P1.2 CLOSED + v0.1.0 SHIPPED 2026-08-26**: storm is public and tagged
 v0.1.0 at d95ac55. anubis consumes it as a PINNED module — no `replace`, no
 go.work sibling — verified by building and running its whole suite from the
-module proxy alone. Generated headers now read `raorm v0.1.0`.
+module proxy alone. Generated headers now read `storm v0.1.0`.
 
 The tag preceded the soak window's close (2026-09-08), so the soak's kill
 criterion now opens a **v0.1.1** rather than moving a tag: p95 drift past
@@ -62,7 +62,7 @@ criterion now opens a **v0.1.1** rather than moving a tag: p95 drift past
 
 **Also 2026-08-26**: int8[] and text[] joined uuid[] with fast parameter
 codecs (21x/8x, one allocation each — bigserial-keyed schemas bind int8[] on
-the same `= ANY($1)` loader path raorm's uuid fixtures hid). pgxdrv gained a
+the same `= ANY($1)` loader path storm's uuid fixtures hid). pgxdrv gained a
 coverage floor (85, at 88.4%) because it now holds the wire-format deny-list;
 reaching it found pgxdrv.Tx.Exec at ZERO coverage — the "every surface"
 transaction test exercised a unit flush, COPY, a plan and a count but never an
@@ -70,11 +70,11 @@ update or delete, the two that reach Executor.Exec.
 
 **P4 — the stranger test, 2026-08-26.** After v0.1.0 shipped, a fresh module
 OUTSIDE both repos found three first-run defects in five minutes: `generate`
-emitted raorm's own module path into the caller's module (flagship command,
+emitted storm's own module path into the caller's module (flagship command,
 never worked for anyone else, invisible here because the wrong answer is the
 right one); the tool was unreachable (Models in package main, "bootstrap" that
 nothing generated) so adopters got no verify/lint/explain at all — now the
-importable `raorm/tool` with `tool.Main(model.All(), nil)`; and a symlinked
+importable `storm/tool` with `tool.Main(model.All(), nil)`; and a symlinked
 output path was refused. `scripts/check/outsider.sh` makes it a permanent CI
 gate, verified to trip both ways.
 

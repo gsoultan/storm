@@ -2,7 +2,7 @@ package schema
 
 import "strconv"
 
-// Type is a column type in raorm's IR. It is deliberately Postgres-shaped but
+// Type is a column type in storm's IR. It is deliberately Postgres-shaped but
 // carries no dialect logic: lowering lives in compile/.
 type Type struct {
 	Name      string // "text", "uuid", "int4", "numeric", "timestamptz", or an enum name

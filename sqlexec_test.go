@@ -1,11 +1,11 @@
-package raorm_test
+package storm_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/runtime"
 )
 
 type execRecorder struct {
@@ -30,7 +30,7 @@ func (e *execRecorder) Batch(context.Context, []runtime.BatchOp, func(int, runti
 // The exec half of the escape hatch keeps SQL[T]'s argument discipline: a
 // wrong count fails at the caller with both numbers, before any bytes move.
 func TestSQLExec_ArgCountAndPassThrough(t *testing.T) {
-	del := raorm.SQLExec(`DELETE FROM t WHERE a = $1 AND b = $2`)
+	del := storm.SQLExec(`DELETE FROM t WHERE a = $1 AND b = $2`)
 	ex := &execRecorder{}
 
 	if _, err := del.Exec(context.Background(), ex, "x"); err == nil {

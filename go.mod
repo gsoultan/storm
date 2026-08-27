@@ -1,4 +1,4 @@
-module github.com/gsoultan/raorm
+module github.com/gsoultan/storm
 
 go 1.26
 

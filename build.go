@@ -1,4 +1,4 @@
-package raorm
+package storm
 
 import (
 	"fmt"
@@ -8,8 +8,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gsoultan/raorm/runtime"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/schema"
 )
 
 var (
@@ -175,7 +175,7 @@ func (b *builder) callSchemas(mi *modelInfo) {
 	if mi.typ.Implements(schemerTyp) {
 		b.errs.add(fmt.Errorf(
 			"%s: Schema has a VALUE receiver — it must be a pointer receiver "+
-				"(func (m *%s) Schema(t *raorm.Table)), or field pointers cannot be resolved",
+				"(func (m *%s) Schema(t *storm.Table)), or field pointers cannot be resolved",
 			mi.typ.Name(), mi.typ.Name()))
 		return
 	}
@@ -264,7 +264,7 @@ func (b *builder) walk(mi *modelInfo, t reflect.Type, base uintptr, tbl *Table) 
 		// A field that is obviously a model but was not registered would
 		// otherwise become a jsonb blob.
 		if looksLikeModel(f.Type) || (f.Type.Kind() == reflect.Slice && looksLikeModel(f.Type.Elem())) {
-			b.errs.add(fmt.Errorf("%s.%s: %s embeds raorm.Model but is not registered — pass it to Build",
+			b.errs.add(fmt.Errorf("%s.%s: %s embeds storm.Model but is not registered — pass it to Build",
 				tbl.out.Name, f.Name, baseName(f.Type)))
 			continue
 		}
@@ -312,7 +312,7 @@ func (b *builder) relationFor(f reflect.StructField) *relation {
 	return nil
 }
 
-// looksLikeModel reports whether a struct embeds raorm.Model. Such a field was
+// looksLikeModel reports whether a struct embeds storm.Model. Such a field was
 // meant to be a relation; without this it would silently become a jsonb column,
 // which is the worst possible failure mode — it compiles, applies, and is wrong.
 func looksLikeModel(t reflect.Type) bool {
@@ -726,7 +726,7 @@ func snake(s string) string {
 	return b.String()
 }
 
-// arcVariants reports whether t is a raorm.OneOfN and returns its variants.
+// arcVariants reports whether t is a storm.OneOfN and returns its variants.
 //
 // Recognised structurally rather than by name: every OneOfN is a zero-sized
 // struct whose fields are all [0]T, so the variants are the element types. That

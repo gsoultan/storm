@@ -2,7 +2,7 @@
 //
 //	go run ./examples/blog/gen
 //
-// A real module uses the raorm CLI template instead (`raorm generate`, with
+// A real module uses the storm CLI template instead (`storm generate`, with
 // the model registered in the bootstrap); this small main is the same call the
 // CLI makes, kept local so the example is self-contained.
 package main
@@ -13,13 +13,13 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/codegen"
-	"github.com/gsoultan/raorm/examples/blog/model"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/examples/blog/model"
 )
 
 func main() {
-	s, err := raorm.Build(model.All()...)
+	s, err := storm.Build(model.All()...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -27,9 +27,9 @@ func main() {
 	dir := filepath.Join("examples", "blog", "store")
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           dir,
-		Import:        "github.com/gsoultan/raorm",
+		Import:        "github.com/gsoultan/storm",
 		Package:       "store",
-		PackageImport: "github.com/gsoultan/raorm/examples/blog/store",
+		PackageImport: "github.com/gsoultan/storm/examples/blog/store",
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

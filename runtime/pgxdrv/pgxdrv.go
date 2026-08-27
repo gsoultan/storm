@@ -1,11 +1,11 @@
-// Package pgxdrv is the only package in raorm that knows pgx exists.
+// Package pgxdrv is the only package in storm that knows pgx exists.
 // No pgx type crosses out of it (AGENTS.md, CI-enforced).
 package pgxdrv
 
 import (
 	"context"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -40,7 +40,7 @@ func (e Pool) CopyFrom(ctx context.Context, table string, cols []string, src run
 	return e.P.CopyFrom(ctx, pgx.Identifier{table}, cols, copySrc{src})
 }
 
-// copySrc adapts raorm's driver-free CopySource to pgx's. The two have the same
+// copySrc adapts storm's driver-free CopySource to pgx's. The two have the same
 // shape on purpose; this exists so that pgx.CopyFromSource does not have to be
 // named anywhere outside this package.
 type copySrc struct{ s runtime.CopySource }
@@ -113,7 +113,7 @@ func drainBatch(br pgx.BatchResults, ops []runtime.BatchOp, each func(int, runti
 
 var _ runtime.Executor = Pool{}
 
-// NewPool builds a pool with raorm's fast parameter encoders installed.
+// NewPool builds a pool with storm's fast parameter encoders installed.
 //
 // It is a thin wrapper: everything else about the pool stays the caller's.
 // An application that configures its own pool should call RegisterFastArrays

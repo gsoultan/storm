@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // FlushOrder ranks tables so that every table's foreign-key targets rank
@@ -46,7 +46,7 @@ func FlushOrder(s *schema.Schema) (map[string]int, error) {
 
 	rank := make(map[string]int, len(names))
 	// Kahn's algorithm over a stable name order, so the output is the same on
-	// every machine — `raorm verify` fails CI on stale output and a map
+	// every machine — `storm verify` fails CI on stale output and a map
 	// iteration leaking in here would make it fail at random.
 	for len(rank) < len(names) {
 		progress := false

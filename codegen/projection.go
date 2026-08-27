@@ -3,7 +3,7 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/raorm/compile/pgsql"
+	"github.com/gsoultan/storm/compile/pgsql"
 )
 
 // Named projection emission.

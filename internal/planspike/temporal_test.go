@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/internal/planspike/store/event"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/internal/planspike/store/event"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
 )
 
 // A calendar date survives the trip exactly, and compares as one.
@@ -73,7 +73,7 @@ func TestInterval_RoundTripKeepsFieldsApart(t *testing.T) {
 	ctx := context.Background()
 	ex, _ := db(t)
 
-	iv := raorm.Interval{Months: 13, Days: 2, Micros: int64(90 * time.Minute / time.Microsecond)}
+	iv := storm.Interval{Months: 13, Days: 2, Micros: int64(90 * time.Minute / time.Microsecond)}
 	n := event.Create()
 	n.SetOn(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	n.SetWindow(iv)
@@ -183,8 +183,8 @@ func TestTimeOfDay_RoundTripOrderingAndComparison(t *testing.T) {
 	ctx := context.Background()
 	ex, _ := db(t)
 
-	mk := func(h, m, s, us int) raorm.TimeOfDay {
-		v, ok := raorm.NewTimeOfDay(h, m, s, us)
+	mk := func(h, m, s, us int) storm.TimeOfDay {
+		v, ok := storm.NewTimeOfDay(h, m, s, us)
 		if !ok {
 			t.Fatalf("NewTimeOfDay(%d,%d,%d,%d) rejected a legal time", h, m, s, us)
 		}
@@ -193,11 +193,11 @@ func TestTimeOfDay_RoundTripOrderingAndComparison(t *testing.T) {
 
 	// Midnight, a fractional second, and 24:00:00 — which PostgreSQL accepts
 	// and which is the boundary an int64 range check gets wrong.
-	opens := []raorm.TimeOfDay{
+	opens := []storm.TimeOfDay{
 		mk(0, 0, 0, 0),
 		mk(9, 30, 0, 0),
 		mk(23, 59, 59, 999999),
-		raorm.MaxTimeOfDay,
+		storm.MaxTimeOfDay,
 	}
 	var ids [][16]byte
 	for i, o := range opens {
@@ -267,7 +267,7 @@ func TestTimeOfDay_RoundTripOrderingAndComparison(t *testing.T) {
 	if s := mk(23, 59, 59, 999999).String(); s != "23:59:59.999999" {
 		t.Fatalf("String() = %q", s)
 	}
-	if _, ok := raorm.NewTimeOfDay(25, 0, 0, 0); ok {
+	if _, ok := storm.NewTimeOfDay(25, 0, 0, 0); ok {
 		t.Fatal("25:00 must be rejected, not normalised to 01:00 the next day")
 	}
 }
@@ -279,9 +279,9 @@ func TestDecimalArray_RoundTripIsExact(t *testing.T) {
 	ctx := context.Background()
 	ex, _ := db(t)
 
-	want := []raorm.Decimal{}
+	want := []storm.Decimal{}
 	for _, s := range []string{"0.10", "0.20", "12345.6789", "-0.01", "0"} {
-		d, err := raorm.ParseDecimal(s)
+		d, err := storm.ParseDecimal(s)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -329,7 +329,7 @@ func TestDecimalArray_RoundTripIsExact(t *testing.T) {
 	n2.SetOrgID(got.OrgID)
 	n2.SetPrefs(emptyJSON)
 	n2.SetScopes([]string{})
-	n2.SetSplits([]raorm.Decimal{})
+	n2.SetSplits([]storm.Decimal{})
 	r2, err := n2.Insert(ctx, ex)
 	if err != nil {
 		t.Fatal(err)

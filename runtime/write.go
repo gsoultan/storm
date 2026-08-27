@@ -101,7 +101,7 @@ func (c *MaskCache) Put(mask uint64, st *Stmt) *Stmt {
 	return st
 }
 
-// Masks reports how many distinct dirty masks have compiled. `raorm lint` uses
+// Masks reports how many distinct dirty masks have compiled. `storm lint` uses
 // it the same way it uses Shapes(): a writer that mints a statement per request
 // shows up as a mask count that tracks traffic.
 func (c *MaskCache) Masks() int {
@@ -115,10 +115,10 @@ func (c *MaskCache) Masks() int {
 // It does not mean "nothing changed". It means the row's version is not the one
 // that was read, so somebody else wrote it first and this update was computed
 // from a value that is no longer true. Retry from a fresh read; do not force it.
-var ErrStaleWrite = errors.New("raorm: stale write — the row changed since it was read")
+var ErrStaleWrite = errors.New("storm: stale write — the row changed since it was read")
 
 // ErrNoRow is returned when an update or delete addressed a row that is gone.
-var ErrNoRow = errors.New("raorm: no such row")
+var ErrNoRow = errors.New("storm: no such row")
 
 // InsertParts carries the punctuation of an INSERT from the back end to the
 // splicer. Generated code fills it from compile/pgsql at build time; runtime
@@ -155,10 +155,10 @@ func SpliceInsert(prefix string, p InsertParts, cols []string, placeholder, suff
 // ErrNothingAssigned is returned by an insert with no columns set. An INSERT
 // naming no columns would take every default, which is almost never what the
 // caller meant and is never what they said.
-var ErrNothingAssigned = errors.New("raorm: insert with no columns assigned")
+var ErrNothingAssigned = errors.New("storm: insert with no columns assigned")
 
 // ErrChildLimit is returned when a relation load reached its child limit.
 //
 // A partial relation load is worse than a failed one: every count computed from
 // it is wrong and nothing says so. Raise ChildLimit or narrow the parent query.
-var ErrChildLimit = errors.New("raorm: relation load hit its child limit — the result would be silently partial")
+var ErrChildLimit = errors.New("storm: relation load hit its child limit — the result would be silently partial")

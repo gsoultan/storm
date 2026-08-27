@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // mintShapes fills a cache with n distinct token streams, each carrying a

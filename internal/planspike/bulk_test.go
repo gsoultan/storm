@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/runtime"
 )
 
 func newID() [16]byte { return uuid.New() }
@@ -104,7 +104,7 @@ func TestInsertAll_RowSourceIsAllocationFlat(t *testing.T) {
 }
 
 // countingCopy drains a CopySource without a database, so the allocation
-// measurement is of raorm and not of pgx's wire encoder.
+// measurement is of storm and not of pgx's wire encoder.
 type countingCopy struct {
 	runtime.Executor
 	n int64

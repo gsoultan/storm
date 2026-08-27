@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/runtime"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -32,7 +32,7 @@ var hostile = []string{
 
 // THE SECURITY GATE, and it is structural rather than a filter.
 //
-// raorm does not escape values, sanitise them, or inspect them. It never has to:
+// storm does not escape values, sanitise them, or inspect them. It never has to:
 // the statement text is assembled from constants chosen at BUILD time and
 // placeholders numbered by position, so no value can reach it. This test states
 // that as the property it is — THE SQL IS IDENTICAL WHATEVER THE VALUE — which

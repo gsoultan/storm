@@ -27,19 +27,19 @@ func InetErr(b []byte) (netip.Prefix, error) {
 		return netip.Prefix{}, nil
 	}
 	if len(b) < 4 {
-		return netip.Prefix{}, errors.New("raorm: inet wire value is too short")
+		return netip.Prefix{}, errors.New("storm: inet wire value is too short")
 	}
 	bits := int(b[1])
 	addrLen := int(b[3])
 	if len(b) < 4+addrLen {
-		return netip.Prefix{}, errors.New("raorm: inet wire value is truncated")
+		return netip.Prefix{}, errors.New("storm: inet wire value is truncated")
 	}
 	addr, ok := netip.AddrFromSlice(b[4 : 4+addrLen])
 	if !ok {
-		return netip.Prefix{}, errors.New("raorm: inet address is neither 4 nor 16 bytes")
+		return netip.Prefix{}, errors.New("storm: inet address is neither 4 nor 16 bytes")
 	}
 	if bits > addr.BitLen() {
-		return netip.Prefix{}, errors.New("raorm: inet prefix length exceeds the address width")
+		return netip.Prefix{}, errors.New("storm: inet prefix length exceeds the address width")
 	}
 	return netip.PrefixFrom(addr, bits), nil
 }

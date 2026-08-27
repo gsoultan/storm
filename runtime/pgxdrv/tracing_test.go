@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime"
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -15,7 +15,7 @@ import (
 // The tracing claim, proved rather than asserted — and the proof corrected
 // the claim.
 //
-// Every round trip raorm makes goes through the Executor and therefore
+// Every round trip storm makes goes through the Executor and therefore
 // through pgx, so pgx's tracers see all of it. But pgx splits tracing across
 // SEPARATE interfaces, and a QueryTracer alone is blind to batches: this test
 // failed on exactly that, which matters because a batch is where a plan's
@@ -25,7 +25,7 @@ import (
 //
 // So the recipe — in docs/DEPLOYMENT.md, and executable here — is one type
 // implementing all three: QueryTracer for Query/Exec, BatchTracer for Batch,
-// CopyFromTracer for bulk loads. raorm has no tracing API of its own on
+// CopyFromTracer for bulk loads. storm has no tracing API of its own on
 // purpose: an interface it invented would be one more thing to learn and one
 // more thing to keep faithful.
 type recordingTracer struct {
@@ -71,7 +71,7 @@ func (r *recordingTracer) seen() []string {
 	return append([]string(nil), r.sqls...)
 }
 
-func TestTracer_SeesEveryStatementRaormIssues(t *testing.T) {
+func TestTracer_SeesEveryStatementStormIssues(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := pgxpool.ParseConfig(dsn(t))
 	if err != nil {
@@ -93,7 +93,7 @@ func TestTracer_SeesEveryStatementRaormIssues(t *testing.T) {
 	}
 	rows.Close()
 
-	if _, err := ex.Exec(ctx, `SELECT set_config('raorm.probe', $1, true)`, []any{"x"}); err != nil {
+	if _, err := ex.Exec(ctx, `SELECT set_config('storm.probe', $1, true)`, []any{"x"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,8 +123,8 @@ func TestTracer_SeesEveryStatementRaormIssues(t *testing.T) {
 }
 
 // CountingExecutor is the other half of the same promise: round-trip counts
-// are assertable in an adopter's own tests, not just in raorm's.
-func TestCountingExecutor_CountsWhatRaormSends(t *testing.T) {
+// are assertable in an adopter's own tests, not just in storm's.
+func TestCountingExecutor_CountsWhatStormSends(t *testing.T) {
 	ctx := context.Background()
 	pool, err := pgxdrv.NewPool(ctx, dsn(t))
 	if err != nil {

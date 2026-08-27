@@ -7,10 +7,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gsoultan/raorm/bench/genuser"
-	"github.com/gsoultan/raorm/internal/spike"
-	"github.com/gsoultan/raorm/runtime"
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/bench/genuser"
+	"github.com/gsoultan/storm/internal/spike"
+	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 )
 
 // M2's kill criterion: generated code must reproduce the M0 spike within 5%.
@@ -448,7 +448,7 @@ func TestOrPrecedence(t *testing.T) {
 	rows.Close()
 
 	if int64(len(got)) != want {
-		t.Fatalf("precedence is wrong: raorm returned %d rows, Postgres says %d\n  %s",
+		t.Fatalf("precedence is wrong: storm returned %d rows, Postgres says %d\n  %s",
 			len(got), want, genuser.New().Where(genuser.OrgID.Eq(orgs[3])).
 				Any(genuser.Status.Eq("pending"), genuser.Status.Eq("suspended")).SQL())
 	}

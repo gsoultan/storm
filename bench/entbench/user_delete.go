@@ -8,8 +8,8 @@ import (
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
-	"github.com/gsoultan/raorm/bench/entbench/predicate"
-	"github.com/gsoultan/raorm/bench/entbench/user"
+	"github.com/gsoultan/storm/bench/entbench/predicate"
+	"github.com/gsoultan/storm/bench/entbench/user"
 )
 
 // UserDelete is the builder for deleting a User entity.

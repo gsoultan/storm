@@ -1,5 +1,5 @@
 ---
-tags: [raorm, bench, results, m0]
+tags: [storm, bench, results, m0]
 generated: 2026-08-23
 ---
 
@@ -60,9 +60,9 @@ So the right way to read the single-row number:
 | | end-to-end | pgx floor | **the layer we control** |
 |---|---:|---:|---:|
 | idiomatic pgx scan | 18 | 5 | **13** |
-| raorm spike | 8 | 5 | **3** |
+| storm spike | 8 | 5 | **3** |
 
-**raorm's decode layer costs 3 allocations; the idiomatic pgx scan costs 13** —
+**storm's decode layer costs 3 allocations; the idiomatic pgx scan costs 13** —
 a 4.3× reduction in the only part an ORM can influence. `DecodeRow_Offline`
 confirms it in isolation: 31 ns, 3 allocs, and those three are the `string()`
 copies for `email`, `name`, and `status`. Nothing else allocates.
@@ -84,17 +84,17 @@ The memory result is the stronger one: **48 KB vs 185 KB, 74% less.**
 ### 3. Wall-clock ratios are currently measuring the network, not the ORM
 
 `Floor_Ping` is 63,670 ns. `Get_Spike` is 66,639 ns. **95.5% of single-row wall
-time is round trip to the container VM.** The CPU work raorm saves is ~3.6 µs
+time is round trip to the container VM.** The CPU work storm saves is ~3.6 µs
 out of 70 — real, but nearly invisible at this latency.
 
-Total raorm CPU cost for a single-row query is **14 ns (SQL + bind) + 31 ns
+Total storm CPU cost for a single-row query is **14 ns (SQL + bind) + 31 ns
 (decode) ≈ 45 ns**, against a 64,000 ns round trip: **0.07% of the query.**
 
 That cuts both ways, and the honest reading is:
 
 - The `≤1.15× raw pgx` gate is **too easy to pass** over a network. It passed,
   but it did not test much.
-- Any claim that raorm is "faster than pgx" is **not supported end-to-end**; the
+- Any claim that storm is "faster than pgx" is **not supported end-to-end**; the
   0.95× is within round-trip noise. What is supported is that it allocates far
   less and its own CPU cost is negligible.
 - M2 must re-run this against a **unix-socket / co-located Postgres**, where CPU
@@ -136,8 +136,8 @@ It did not.
 | Parallel Scan100, 16 procs | ns/op | B/op | allocs |
 |---|---:|---:|---:|
 | pgx `Query` + `Scan` | 494,000 | 19,396 | 514 |
-| **raorm via pgx** | **483,000** | 4,715 | **16** |
-| raorm via pgconn | 530,000 | 4,514 | 22 |
+| **storm via pgx** | **483,000** | 4,715 | **16** |
+| storm via pgconn | 530,000 | 4,514 | 22 |
 
 **The floor is pgconn's, not pgx's.** `pool.Acquire` plus the `ResultReader`
 allocate about as much as `pgx.Query` does, so removing the type map removed
@@ -167,7 +167,7 @@ the next arena exactly and the doubling ramp never runs.
 23% less memory.** And 1.82× the un-hinted slab — the hint, not the arena, was
 where most of the win was hiding.
 
-### Where raorm is and is not "fastest"
+### Where storm is and is not "fastest"
 
 Stated precisely, because the wall-clock numbers invite the wrong claim:
 
@@ -184,10 +184,10 @@ Stated precisely, because the wall-clock numbers invite the wrong claim:
 | 4,000 queries × 500 rows, 16 workers | wall | GCs | GC pause | mallocs | alloc MiB |
 |---|---:|---:|---:|---:|---:|
 | pgx `Query` + `Scan` | 2.438 s | 102 | 5.55 ms | 10,060,365 | 355.6 |
-| **raorm** | **2.379 s** | **21** | **1.47 ms** | **40,379** | **73.9** |
+| **storm** | **2.379 s** | **21** | **1.47 ms** | **40,379** | **73.9** |
 
 This is the honest shape of the claim. Wall clock is a wash because Postgres is
-the bottleneck; what raorm buys is **the allocator and GC budget back**. On a
+the bottleneck; what storm buys is **the allocator and GC budget back**. On a
 service doing 10k queries/sec that is roughly 25 billion fewer allocations per
 hour, which is CPU returned to request handling and tail latency that stops
 being GC-shaped. The mechanism is measured end to end; the throughput *gain*
@@ -196,7 +196,7 @@ and most are not.
 
 Current allocation profile after both passes:
 
-| | pgx | raorm |
+| | pgx | storm |
 |---|---:|---:|
 | Get (1 row) | 18 allocs · 926 B | **6 allocs · 532 B** |
 | Scan 1,000 rows | 5,012 allocs · 185 KB | **7 allocs · 41 KB** |
@@ -215,7 +215,7 @@ hand-written.
 
 | | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| **raorm** | **67,710** | **532** | **6** |
+| **storm** | **67,710** | **532** | **6** |
 | raw pgx (hand-written) | 71,553 | 926 | 18 |
 | sqlc | 71,550 | 1,006 | 13 |
 | GORM | 73,948 | 5,825 | 110 |
@@ -223,21 +223,21 @@ hand-written.
 
 ### 1,000 rows
 
-| | ns/op | B/op | allocs/op | allocs vs raorm |
+| | ns/op | B/op | allocs/op | allocs vs storm |
 |---|---:|---:|---:|---:|
-| **raorm** | **2,180,937** | **41,382** | **7** | — |
+| **storm** | **2,180,937** | **41,382** | **7** | — |
 | raw pgx (hand-written) | 2,151,646 | 184,738 | 5,012 | 716× |
 | sqlc | 2,403,270 | 912,466 | 5,022 | 717× |
 | Bun | 3,511,792 | 447,536 | 13,899 | 1,985× |
 | GORM | 4,500,524 | 751,186 | 23,934 | **3,419×** |
 
 At 1,000 rows the CPU work is finally large enough to show through the network:
-raorm is **1.10× faster than sqlc, 1.61× than Bun, 2.06× than GORM** on wall
+storm is **1.10× faster than sqlc, 1.61× than Bun, 2.06× than GORM** on wall
 clock, and uses **22× less memory than sqlc** and **18× less than GORM**.
 
 ### Reading these fairly
 
-- **raorm ≈ raw pgx on wall clock, everywhere.** 67.7 vs 71.6 µs and 2.18 vs
+- **storm ≈ raw pgx on wall clock, everywhere.** 67.7 vs 71.6 µs and 2.18 vs
   2.15 ms are the same number. Both wait on the same socket. The difference is
   6 allocations against 18, and 7 against 5,012.
 - **sqlc is the honest bar and it is a good one.** Its generated code is
@@ -262,8 +262,8 @@ wrong shape.**
 
 | | ns/op | B/op | allocs |
 |---|---:|---:|---:|
-| **raorm, generated** | **2,355,646** | **41,367** | **6** |
-| raorm, hand-written (M0) | 2,432,559 | 41,400 | 7 |
+| **storm, generated** | **2,355,646** | **41,367** | **6** |
+| storm, hand-written (M0) | 2,432,559 | 41,400 | 7 |
 | raw pgx | 2,231,454 | 184,739 | 5,012 |
 | sqlc | 2,315,063 | 912,470 | 5,022 |
 | Bun | 2,598,374 | 447,538 | 13,899 |
@@ -458,7 +458,7 @@ it immediately; a compiler would not have.
 - **Overflow is an error, never a dropped predicate.** The buffers are fixed;
   a query that outgrows them sets a flag that every terminal returns.
 - `Shapes()` reports how many distinct structures have compiled — the signal
-  `raorm lint` needs to catch a builder minting a statement per request.
+  `storm lint` needs to catch a builder minting a statement per request.
 - Chained sugar (`q.StatusEq(v)`) is now generated as `Where(Status.Eq(v))`, so
   there is one code path and the two forms cannot drift.
 
@@ -497,7 +497,7 @@ side and not the scan:
 | 50 | 2,229,303 | 7,714 | 114 |
 | 500 | 2,678,528 | 74,075 | 1,021 |
 
-**~2 allocations per bound id.** It is on pgx's *parameter* side, not raorm's
+**~2 allocations per bound id.** It is on pgx's *parameter* side, not storm's
 scan path — the scan of a 1,000-row result is still a handful.
 
 `BenchmarkEncodeIDArray` isolates the encoder with no server and no scan:
@@ -530,7 +530,7 @@ Isolated encoder, 500 ids:
 |---|---|---|---|
 | pgx `[][16]byte` | 14,611 | 16,056 | 1,003 |
 | pgx `FlatArray` | 12,610 | 16,032 | 1,002 |
-| **raorm codec** | **576** | **24** | **1** |
+| **storm codec** | **576** | **24** | **1** |
 
 End to end through `= ANY($1)`:
 
@@ -608,7 +608,7 @@ The last M0 debt: Ent was the one rival needing its own dependency and codegen
 step, which is why it kept being the one left out. Its client is **genuinely
 generated** (ent v0.14.6, committed like sqlc's output): **164K of code for
 this ONE table** — R2, "generated-code volume becomes Ent's disease", measured
-rather than asserted; raorm's whole six-table context is smaller.
+rather than asserted; storm's whole six-table context is smaller.
 
 Same pool (8 conns), same workload, same run. Loopback :5433 through the
 container VM's port forward — wall clocks remain round-trip-dominated, so the
@@ -618,7 +618,7 @@ allocation columns are the comparison:
 
 | | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| raorm (spike) | 94,606 | 532 | **6** |
+| storm (spike) | 94,606 | 532 | **6** |
 | sqlc | 91,655 | 1,006 | 13 |
 | raw pgx | 97,251 | 926 | 18 |
 | Bun | 280,795 | 7,818 | 73 |
@@ -629,7 +629,7 @@ allocation columns are the comparison:
 
 | | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| raorm (generated) | 2,630,722 | 41,354 | **6** |
+| storm (generated) | 2,630,722 | 41,354 | **6** |
 | raw pgx | 2,372,746 | 184,748 | 5,012 |
 | sqlc | 2,796,736 | 912,460 | 5,022 |
 | Bun | 2,745,265 | 447,536 | 13,899 |
@@ -637,9 +637,9 @@ allocation columns are the comparison:
 | GORM | 3,782,505 | 751,056 | 23,934 |
 
 Ent's single-row read allocates the most of ANY rival — 159, where a
-hand-written pgx read is 18 and raorm is 6 — and its thousand-row scan is
+hand-written pgx read is 18 and storm is 6 — and its thousand-row scan is
 GORM-class (23,016 vs 23,934) despite Ent being fully code-generated. Being
-generated is not what makes raorm cheap; generating the SCAN PATH instead of
+generated is not what makes storm cheap; generating the SCAN PATH instead of
 generating calls into a reflective core is.
 
 Bun's ~281µs Get remains the unexplained outlier noted earlier; still do not
@@ -804,12 +804,12 @@ count now zero, and the scan gates CI so it stays zero.
 ## The unix-socket re-benchmark (2026-08-25) — M0's last debt closes
 
 M0 finding #3 said the wall-clock gate passed *without discriminating*: the
-container round trip was ~64µs and raorm's whole CPU cost ~45ns, so the ratio
+container round trip was ~64µs and storm's whole CPU cost ~45ns, so the ratio
 measured the network. This run removes most of the network: host PostgreSQL
 17.11 on a PURE unix socket (no TCP), same schema, same 50k rows.
 
-    initdb + postgres -c listen_addresses='' -c unix_socket_directories=/tmp/raorm-sock -c port=5499
-    RAORM_DSN='postgres://raorm@localhost/raorm?host=/tmp/raorm-sock&port=5499'
+    initdb + postgres -c listen_addresses='' -c unix_socket_directories=/tmp/storm-sock -c port=5499
+    STORM_DSN='postgres://storm@localhost/storm?host=/tmp/storm-sock&port=5499'
 
 Round trip: ~92µs (loopback through the container VM) → **~22µs**. Medians of
 five, and an interleaved stability pass for the scans:
@@ -817,15 +817,15 @@ five, and an interleaved stability pass for the scans:
 | | unix socket | vs raw pgx |
 |---|---|---|
 | Get, raw pgx | 21.9 µs | — |
-| Get, raorm | 21.6 µs | **0.99×** |
+| Get, storm | 21.6 µs | **0.99×** |
 | Get, sqlc | 21.8 µs | 1.00× |
 | Scan1000, raw pgx | ~2.02 ms | — |
-| Scan1000, raorm (generated) | ~1.95 ms | **~0.97×** |
+| Scan1000, storm (generated) | ~1.95 ms | **~0.97×** |
 | Scan1000, sqlc | ~1.99 ms | 0.99× |
 
-**The thesis gate survives 4× better resolution**: raorm at parity with raw
+**The thesis gate survives 4× better resolution**: storm at parity with raw
 pgx (M0's gate was ≤1.15×, kill at 1.30×), while allocating 6 vs 5,012 and
-moving 41KB vs 185KB per thousand-row scan. The first raorm scan batch read
+moving 41KB vs 185KB per thousand-row scan. The first storm scan batch read
 ~2.2ms — cold-start, disappearing entirely when interleaved; medians and
 interleaving are the method, single cold runs are not.
 
@@ -835,7 +835,7 @@ and the honest, durable numbers remain the allocation and byte columns.
 
 ## The wire-format guard costs 0.004% of a query (2026-08-26)
 
-P0.1 required raorm to stop accepting text-format results silently, and set a
+P0.1 required storm to stop accepting text-format results silently, and set a
 kill criterion: if the per-statement check cannot cost less than 1% of a warm
 `Get`, ship the config-time refusal alone. It cost far less than that.
 
@@ -853,7 +853,7 @@ machine rather than quoted across sessions:
 | | ns/op | the check as a share |
 |---|---|---|
 | `Get`, raw pgx | ~101,600 | 0.0038% |
-| `Get`, raorm (`BenchmarkGet_Fast`) | ~89,500 | **0.0043%** |
+| `Get`, storm (`BenchmarkGet_Fast`) | ~89,500 | **0.0043%** |
 | `GenGetOne` (filtered single row, new) | ~1,055,600 | 0.0004% |
 
 The gate wanted under 1%; the measurement is ~230× inside it, with no
@@ -907,15 +907,15 @@ every hit on every core. A bulk drop keeps the read path read-only.
 ## int8[] and text[] get the codec uuid[] already had (2026-08-26)
 
 `= ANY($1)` is how every relation load batches its children, so the key array
-is encoded on the hot path of the feature raorm exists for. uuid[] got a fast
-codec early because raorm's fixtures are uuid-keyed. Most Postgres schemas
+is encoded on the hot path of the feature storm exists for. uuid[] got a fast
+codec early because storm's fixtures are uuid-keyed. Most Postgres schemas
 that are not uuid-first use **bigserial** primary keys, and every relation
 load in one of those binds `int8[]`; a natural key binds `text[]`.
 
 Measured first, to decide whether the code was justified — 500 elements,
 `pgtype.Map.Encode` straight to a buffer, five runs, medians:
 
-| | pgx generic codec | raorm codec | |
+| | pgx generic codec | storm codec | |
 |---|---|---|---|
 | `uuid[]` (already shipped) | 16,822 ns · 1,003 allocs | 690 ns · 1 alloc | 24× |
 | `int8[]` | 6,333 ns · 466 allocs | **303 ns · 1 alloc** | **21×** |

@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gsoultan/raorm/codegen"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/schema"
 	"github.com/jackc/pgx/v5"
 )
 
-// explain plans every statement raorm will issue and flags sequential scans
+// explain plans every statement storm will issue and flags sequential scans
 // the planner expects to be large.
 //
 // Two jobs, honestly separated:

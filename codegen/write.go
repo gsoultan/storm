@@ -3,8 +3,8 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/raorm/compile/pgsql"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Write-path emission.
@@ -523,7 +523,7 @@ func (g *gen) insertFn(ins []colInfo) {
 	g.p("// defaults — a generated id, a now() timestamp — land in r rather than")
 	g.p("// needing a second SELECT that would race every other writer.")
 	g.p("//")
-	g.p("// Every insertable column is written, including zero values. raorm does")
+	g.p("// Every insertable column is written, including zero values. storm does")
 	g.p("// not treat a zero as 'unset': that guess is why other ORMs cannot insert")
 	g.p("// a false, a 0 or an empty string into a column with a default.")
 	g.p("func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {")
@@ -863,7 +863,7 @@ func insertComplete(t *schema.Table, ins []colInfo) error {
 			continue
 		}
 		return fmt.Errorf(
-			"codegen: table %s column %s is %s NOT NULL with no default, and raorm "+
+			"codegen: table %s column %s is %s NOT NULL with no default, and storm "+
 				"cannot bind that type yet — every INSERT would fail. Give it a "+
 				"default in the model, or make it nullable",
 			t.Name, c.Name, c.Type.SQL())

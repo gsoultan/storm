@@ -5,7 +5,7 @@
 ## Context
 
 The port shipped with two methods. `AGENTS.md` budgets it at five and says it
-"stays five" — the number is a ceiling on how much of a driver's surface raorm
+"stays five" — the number is a ceiling on how much of a driver's surface storm
 is allowed to depend on, because everything the port names is something every
 future adapter must implement and every driver upgrade can break.
 
@@ -15,7 +15,7 @@ M4's four remaining features all want more than `Query` and `Exec`:
 |---|---|
 | 1,000 inserts as one `COPY` | the COPY protocol — a different wire path, not a statement |
 | 1,000 mixed statements in one round trip | pipelining several statements before reading any result |
-| `raorm.Unit` | both of the above, plus ordering |
+| `storm.Unit` | both of the above, plus ordering |
 | `ON CONFLICT` upserts | **nothing** — it is SQL on the existing insert path |
 
 So the question is real for three of them, and the answer decides whether M4

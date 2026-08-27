@@ -1,11 +1,11 @@
-package raorm
+package storm
 
 import (
 	"fmt"
 	"reflect"
 	"unsafe"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Table is the builder handed to a model's Schema method. Every reference to a
@@ -63,7 +63,7 @@ func (t *Table) resolve(fieldPtr any) (*col, error) {
 	if got < base || got >= base+size {
 		return nil, fmt.Errorf(
 			"%s: field pointer does not point into the model — Schema must use a POINTER receiver "+
-				"(func (m *%s) Schema(t *raorm.Table)); a value receiver copies the struct first",
+				"(func (m *%s) Schema(t *storm.Table)); a value receiver copies the struct first",
 			t.out.Name, t.typ.Name())
 	}
 	c, ok := t.off[got-base]
@@ -162,7 +162,7 @@ func (t *Table) Check(e Expr) *Table {
 // Exclude adds an exclusion constraint — the correct answer to booking and
 // scheduling overlap, and reachable from no other Go ORM.
 //
-//	t.Exclude(raorm.With(&b.Room, raorm.OpEq), raorm.With(&b.Period, raorm.OpOverlaps))
+//	t.Exclude(storm.With(&b.Room, storm.OpEq), storm.With(&b.Period, storm.OpOverlaps))
 func (t *Table) Exclude(parts ...ExcludeSpec) *ExcludeBuilder {
 	ex := &schema.Exclude{}
 	for _, p := range parts {
@@ -238,7 +238,7 @@ func (b *ColBuilder) Comment(s string) *ColBuilder { b.c.sc.Comment = s; return 
 func (b *ColBuilder) NotNull() *ColBuilder         { b.c.sc.NotNull = true; return b }
 func (b *ColBuilder) Nullable() *ColBuilder        { b.c.sc.NotNull = false; return b }
 
-// Raw forces a database type raorm does not model.
+// Raw forces a database type storm does not model.
 func (b *ColBuilder) Raw(sqlType string) *ColBuilder {
 	b.c.sc.Type = schema.Type{Name: sqlType}
 	return b
@@ -372,6 +372,6 @@ func With(field any, op string) ExcludeSpec { return ExcludeSpec{field: field, o
 // WithExpr pairs an expression with an exclusion operator, for the range
 // overlap that scalar columns cannot express:
 //
-//	t.Exclude(raorm.With(&b.Room, raorm.OpEq),
-//	          raorm.WithExpr("tstzrange(starts_at, ends_at)", raorm.OpOverlaps))
+//	t.Exclude(storm.With(&b.Room, storm.OpEq),
+//	          storm.WithExpr("tstzrange(starts_at, ends_at)", storm.OpOverlaps))
 func WithExpr(e Expr, op string) ExcludeSpec { return ExcludeSpec{expr: string(e), op: op} }

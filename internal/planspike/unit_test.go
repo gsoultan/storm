@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/planspike/store"
-	"github.com/gsoultan/raorm/internal/planspike/store/org"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/internal/planspike/store"
+	"github.com/gsoultan/storm/internal/planspike/store/org"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // THE GATE. A graph is staged in the WRONG order — the child first — and must

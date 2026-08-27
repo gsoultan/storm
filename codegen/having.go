@@ -1,8 +1,8 @@
 package codegen
 
 import (
-	"github.com/gsoultan/raorm/compile/pgsql"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Filtered semi-joins, composed in the context package.

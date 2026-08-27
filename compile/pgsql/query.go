@@ -20,7 +20,7 @@ import "strings"
 // case, so everything is quoted: a column named "Order" and a column named
 // "order" are then different columns, which is what the model said.
 //
-// A raorm identifier comes from a Go field name or an explicit .Named(), never
+// A storm identifier comes from a Go field name or an explicit .Named(), never
 // from a runtime value, so there is nothing here to escape — but a quote in an
 // identifier would still break the statement, so it is doubled.
 func Ident(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
@@ -157,7 +157,7 @@ const NDirections = 4
 //
 // OFFSET is generated because callers expect it, not because it is a good idea:
 // the database still walks and discards every skipped row, so page 5,000 costs
-// 5,000 pages of work. Keyset pagination is the answer, and `raorm lint` is
+// 5,000 pages of work. Keyset pagination is the answer, and `storm lint` is
 // where a large constant offset should get flagged.
 func LimitOffsetSuffix(withOffset bool) string {
 	s := " LIMIT " + Placeholder
@@ -212,7 +212,7 @@ func RowCmpOp(op int) string {
 // something else. Aliasing only for self-references would make the emitted
 // SQL depend on a distinction the reader has to reconstruct; aliasing always
 // costs nothing and reads the same everywhere.
-const existsAlias = "_raorm_e"
+const existsAlias = "_storm_e"
 
 // ExistsFrag lowers "a related row exists". Negated by wrapping in NOT at the
 // token level, or by NotExistsFrag for the direct spelling.

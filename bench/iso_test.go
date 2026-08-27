@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/bench/genuser"
-	"github.com/gsoultan/raorm/internal/spike"
+	"github.com/gsoultan/storm/bench/genuser"
+	"github.com/gsoultan/storm/internal/spike"
 )
 
 func BenchmarkIso_GenShapeOnly(b *testing.B) {

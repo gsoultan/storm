@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 )
 
 func frag(op, col uint32) runtime.Frag {

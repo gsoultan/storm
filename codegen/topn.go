@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/raorm/compile/pgsql"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Greatest-n-per-group emission: "each parent with its first N children",
@@ -55,7 +55,7 @@ func (g *gen) batchTop() {
 	g.p("// appears under data the developer did not have. Add the primary key as")
 	g.p("// a final term if the natural ordering is not unique.")
 	g.p("var errNoTopOrder = errors.New(")
-	g.p("\t%q)", "raorm: a per-parent limit needs an ordering — without one "+
+	g.p("\t%q)", "storm: a per-parent limit needs an ordering — without one "+
 		"\"the first three\" is an arbitrary three, and a different three next time")
 	g.p("")
 

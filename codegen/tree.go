@@ -133,7 +133,7 @@ func (g *gen) treeQuery() {
 	g.p("\ttop  uint8 // top-level conjuncts, ANDed at compile time")
 	g.p("")
 	ts := slotsFor(g.cols)
-	// Arenas exist per KIND THE TABLE HAS, not per kind raorm supports. A
+	// Arenas exist per KIND THE TABLE HAS, not per kind storm supports. A
 	// value type's size is part of its API: every builder call copies Query,
 	// and a table with no inet column must not carry four netip.Prefix slots
 	// on every copy. Measured, not aesthetic — see slotsFor.
@@ -319,16 +319,16 @@ func (g *gen) treeQuery() {
 	g.p("}")
 	g.p("")
 	g.p("var errAfterUnordered = errors.New(")
-	g.p("\t%q)", "raorm: After() on an Unordered() query with no explicit Order — "+
+	g.p("\t%q)", "storm: After() on an Unordered() query with no explicit Order — "+
 		"a keyset cursor without an ordering is a position in nothing")
 	g.p("")
 	g.p("var errMixedOrder = errors.New(")
-	g.p("\t%q)", "raorm: After() needs every ORDER BY term in the same direction; "+
+	g.p("\t%q)", "storm: After() needs every ORDER BY term in the same direction; "+
 		"a mixed ordering has no single row comparison, and expanding it into ORs "+
 		"gives up the index walk that makes keyset pagination worth doing")
 	g.p("")
 	g.p("var errTooComplex = errors.New(")
-	g.p("\t%q)", "raorm: query has more predicates than the generated buffers hold; "+
+	g.p("\t%q)", "storm: query has more predicates than the generated buffers hold; "+
 		"split it, or raise the limits in codegen")
 	g.p("")
 	g.p("// push and leaf mutate through a pointer so the builder loop does not")

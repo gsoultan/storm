@@ -1,5 +1,5 @@
 ---
-tags: [raorm, reference, model]
+tags: [storm, reference, model]
 updated: 2026-08-23
 status: proposed — illustrative design, not implemented
 ---
@@ -21,7 +21,7 @@ You declare `model.User`. Queries return `user.Row`. They are related by one
 mechanical rule:
 
 > **`user.Row` is your struct with each relation replaced by its scalar foreign
-> key, and `*T` rewritten to `raorm.Null[T]`.**
+> key, and `*T` rewritten to `storm.Null[T]`.**
 
 So `Org Org` in the model becomes `OrgID uuid.UUID` in the row — you declare the
 relationship once and read the id without loading anything.
@@ -40,39 +40,39 @@ instantiated at runtime, so it stays idiomatic Go.
 
 | Go type in your struct | Postgres | Notes |
 |---|---|---|
-| `uuid.UUID` | `uuid` | `raorm.UUID` (`[16]byte`) if you want zero dependencies |
+| `uuid.UUID` | `uuid` | `storm.UUID` (`[16]byte`) if you want zero dependencies |
 | `string` | `text` | `t.Col(&u.Name).Size(120)` → `varchar(120)` |
 | `bool` | `boolean` | |
 | `int16` `int32` `int64` `int` | `smallint` `integer` `bigint` `bigint` | |
 | `float32` `float64` | `real` `double precision` | never for money |
-| `raorm.Decimal` | `numeric` | `t.Col(&u.Bal).Numeric(18, 4)` |
+| `storm.Decimal` | `numeric` | `t.Col(&u.Bal).Numeric(18, 4)` |
 | `[]byte` | `bytea` | `nil` = NULL |
 | `time.Time` | `timestamptz` | |
-| `raorm.Date` | `date` | |
-| `raorm.TimeOfDay` | `time` | |
-| `raorm.Interval` | `interval` | **not `time.Duration`** — see below |
+| `storm.Date` | `date` | |
+| `storm.TimeOfDay` | `time` | |
+| `storm.Interval` | `interval` | **not `time.Duration`** — see below |
 | a named `string` type with constants | native `enum` | inferred |
 | any other struct type | `jsonb` | inferred; typed scan, no `[]byte` |
 | `[]string` `[]int32` `[]uuid.UUID` | `text[]` `integer[]` `uuid[]` | |
 | `map[string]string` | `hstore` | |
 | `netip.Addr` / `netip.Prefix` | `inet` / `cidr` | stdlib |
 | `net.HardwareAddr` | `macaddr` | |
-| `raorm.TSVector` | `tsvector` | usually a generated column |
-| `raorm.Range[T]` | `int4range` `tstzrange` … | |
+| `storm.TSVector` | `tsvector` | usually a generated column |
+| `storm.Range[T]` | `int4range` `tstzrange` … | |
 | `*T` (any of the above) | the same, `NULL`able | |
 
 Three that bite:
 
 - **`interval` is not `time.Duration`.** Postgres intervals carry months, days
   and microseconds separately, and a month is not a fixed number of seconds.
-  `raorm.Interval` keeps all three. `t.Col(&u.TTL).AsDuration()` opts into the
+  `storm.Interval` keeps all three. `t.Col(&u.TTL).AsDuration()` opts into the
   lossy mapping explicitly.
 - **A struct field becomes typed `jsonb`.** `Prefs Prefs` scans straight into
   your struct with a generated codec — never `[]byte` you decode by hand.
 - **A named string type becomes a native enum**, and its constants become the
   enum labels. Nothing to declare.
 
-Anything raorm does not know is an explicit escape, never a silent `[]byte`:
+Anything storm does not know is an explicit escape, never a silent `[]byte`:
 
 ```go
 Location geo.Point                                          // in the struct
@@ -89,8 +89,8 @@ type TenantScoped struct {
     Tenant Tenant                             // → tenant_id uuid NOT NULL
 }
 
-func (ts *TenantScoped) Schema(t *raorm.Table) {
-    t.Col(&ts.Tenant).OnDelete(raorm.Restrict)
+func (ts *TenantScoped) Schema(t *storm.Table) {
+    t.Col(&ts.Tenant).OnDelete(storm.Restrict)
 }
 
 type Timestamps struct {
@@ -98,9 +98,9 @@ type Timestamps struct {
     UpdatedAt time.Time
 }
 
-func (ts *Timestamps) Schema(t *raorm.Table) {
-    t.Col(&ts.CreatedAt).Default(raorm.Now()).Immutable()
-    t.Col(&ts.UpdatedAt).Default(raorm.Now()).AutoUpdate()
+func (ts *Timestamps) Schema(t *storm.Table) {
+    t.Col(&ts.CreatedAt).Default(storm.Now()).Immutable()
+    t.Col(&ts.UpdatedAt).Default(storm.Now()).AutoUpdate()
 }
 
 type Auditable struct {
@@ -108,9 +108,9 @@ type Auditable struct {
     UpdatedBy *User                           // → updated_by uuid NULL
 }
 
-func (a *Auditable) Schema(t *raorm.Table) {
+func (a *Auditable) Schema(t *storm.Table) {
     t.Col(&a.Version).Version()
-    t.Col(&a.UpdatedBy).OnDelete(raorm.SetNull)
+    t.Col(&a.UpdatedBy).OnDelete(storm.SetNull)
 }
 ```
 
@@ -118,7 +118,7 @@ Embed them and the columns inline:
 
 ```go
 type Post struct {
-    raorm.Model
+    storm.Model
     TenantScoped
     Timestamps
     Auditable
@@ -139,24 +139,24 @@ the id column.
 
 ```go
 type Post struct {
-    raorm.Model
+    storm.Model
 
     Author User   // → author_id NOT NULL
     Org    Org    // → org_id    NOT NULL
     Editor *User  // → editor_id NULL
 }
 
-func (p *Post) Schema(t *raorm.Table) {
-    t.Col(&p.Author).OnDelete(raorm.Cascade)
-    t.Col(&p.Org).OnDelete(raorm.Restrict).OnUpdate(raorm.Cascade)
-    t.Col(&p.Editor).OnDelete(raorm.SetNull)
+func (p *Post) Schema(t *storm.Table) {
+    t.Col(&p.Author).OnDelete(storm.Cascade)
+    t.Col(&p.Org).OnDelete(storm.Restrict).OnUpdate(storm.Cascade)
+    t.Col(&p.Editor).OnDelete(storm.SetNull)
 }
 ```
 
 **Value = required, pointer = optional**, the same rule as scalars. The column
 name comes from the *field* name plus `_id`, so `Author User` and `Editor *User`
 coexist with no ambiguity. `t.Col(&p.Editor).Named("reviewer_id")` overrides it;
-`t.Col(&u.Org).References(raorm.In(func(o *Org) raorm.Set { return raorm.Of(&o.Slug) }))`
+`t.Col(&u.Org).References(storm.In(func(o *Org) storm.Set { return storm.Of(&o.Slug) }))`
 points at a column other than the primary key.
 
 `ondelete=` accepts `cascade`, `restrict`, `setnull`, `setdefault`, `noaction`.
@@ -166,9 +166,9 @@ column is `NOT NULL`, so the action could never fire.
 Composite foreign keys use the method form, still without strings:
 
 ```go
-func (u *User) Schema(t *raorm.Table) {
+func (u *User) Schema(t *storm.Table) {
     t.ForeignKey(&u.TenantID, &u.OrgCode).
-        References(raorm.In(func(o *Org) raorm.Set { return raorm.Of(&o.TenantID, &o.Code) }))
+        References(storm.In(func(o *Org) storm.Set { return storm.Of(&o.TenantID, &o.Code) }))
 }
 ```
 
@@ -182,20 +182,20 @@ A **unique** foreign key is what makes it one-to-one:
 
 ```go
 type Profile struct {
-    raorm.Model
+    storm.Model
 
     User    User
     Bio     *string
     Website *string
 }
 
-func (p *Profile) Schema(t *raorm.Table) {
-    t.Col(&p.User).Unique().OnDelete(raorm.Cascade)   // unique → 1:1, not 1:N
+func (p *Profile) Schema(t *storm.Table) {
+    t.Col(&p.User).Unique().OnDelete(storm.Cascade)   // unique → 1:1, not 1:N
     t.Col(&p.Bio).Size(2000)
 }
 
 type User struct {
-    raorm.Model
+    storm.Model
     Profile *Profile                        // has-one, inferred from the unique FK
 }
 ```
@@ -204,20 +204,20 @@ type User struct {
 
 ```go
 type Org struct {
-    raorm.Model
+    storm.Model
     Name string
 
     Parent   *Org    // pointer is forced → optional → this org is a root
     Children []Org
 }
 
-func (o *Org) Schema(t *raorm.Table) {
-    t.Col(&o.Parent).OnDelete(raorm.Cascade)
+func (o *Org) Schema(t *storm.Table) {
+    t.Col(&o.Parent).OnDelete(storm.Cascade)
     t.Inverse(&o.Children, &o.Parent)      // both field pointers, same receiver
 }
 
 type Comment struct {
-    raorm.Model
+    storm.Model
     Body string
 
     Post    Post
@@ -225,9 +225,9 @@ type Comment struct {
     Replies []Comment
 }
 
-func (c *Comment) Schema(t *raorm.Table) {
-    t.Col(&c.Post).OnDelete(raorm.Cascade)
-    t.Col(&c.Parent).OnDelete(raorm.Cascade)
+func (c *Comment) Schema(t *storm.Table) {
+    t.Col(&c.Post).OnDelete(storm.Cascade)
+    t.Col(&c.Parent).OnDelete(storm.Cascade)
     t.Inverse(&c.Replies, &c.Parent)
 }
 ```
@@ -246,12 +246,12 @@ Plain — declare the slice on both sides and the join table is generated:
 
 ```go
 type Post struct {
-    raorm.Model
+    storm.Model
     Tags []Tag
 }
 
 type Tag struct {
-    raorm.Model
+    storm.Model
     Name  string
     Posts []Post
 }
@@ -270,19 +270,19 @@ type UserRole struct {
     ExpiresAt *time.Time
 }
 
-func (ur *UserRole) Schema(t *raorm.Table) {
+func (ur *UserRole) Schema(t *storm.Table) {
     t.PrimaryKey(&ur.User, &ur.Role)
-    t.Col(&ur.User).OnDelete(raorm.Cascade)
-    t.Col(&ur.Role).OnDelete(raorm.Restrict)
-    t.Col(&ur.GrantedAt).Default(raorm.Now())
+    t.Col(&ur.User).OnDelete(storm.Cascade)
+    t.Col(&ur.Role).OnDelete(storm.Restrict)
+    t.Col(&ur.GrantedAt).Default(storm.Now())
 }
 
 type User struct {
-    raorm.Model
+    storm.Model
     Roles []Role
 }
 
-func (u *User) Schema(t *raorm.Table) {
+func (u *User) Schema(t *storm.Table) {
     t.Through(&u.Roles, UserRole{})
 }
 ```
@@ -295,25 +295,25 @@ columns beyond its two foreign keys.
 
 The type you choose **is** the strategy.
 
-### `raorm.OneOf[…]` — exclusive arc (the default)
+### `storm.OneOf[…]` — exclusive arc (the default)
 
 One nullable FK column per variant plus a `CHECK` that exactly one is set.
 **Referential integrity is preserved** — every variant is a real foreign key.
 
 ```go
 type Attachment struct {
-    raorm.Model
+    storm.Model
     TenantScoped
 
     Filename string
     MimeType string
     Size     int64
 
-    Subject raorm.OneOf[Post, Comment, User]
+    Subject storm.OneOf[Post, Comment, User]
 }
 
-func (a *Attachment) Schema(t *raorm.Table) {
-    t.Col(&a.Subject).OnDelete(raorm.Cascade)
+func (a *Attachment) Schema(t *storm.Table) {
+    t.Col(&a.Subject).OnDelete(storm.Cascade)
 }
 ```
 
@@ -329,23 +329,23 @@ CONSTRAINT ck_attachments_subject CHECK (
 -- plus a partial index per variant
 ```
 
-Use `*raorm.OneOf[...]` for "at most one" — the `CHECK` becomes `<= 1`.
+Use `*storm.OneOf[...]` for "at most one" — the `CHECK` becomes `<= 1`.
 
-### `raorm.AnyRef` — discriminator (Rails / GORM style)
+### `storm.AnyRef` — discriminator (Rails / GORM style)
 
 Two columns, unbounded variants, **no foreign keys possible**:
 
 ```go
 type AuditLog struct {
-    raorm.Model
+    storm.Model
     TenantScoped
 
     Action  Action
     Diff    map[string]any                  // → jsonb
-    Subject raorm.AnyRef
+    Subject storm.AnyRef
 }
 
-func (a *AuditLog) Schema(t *raorm.Table) {
+func (a *AuditLog) Schema(t *storm.Table) {
     t.Col(&a.Subject).AcknowledgeNoFK("audit rows outlive their subjects by design")
 }
 ```
@@ -353,10 +353,10 @@ func (a *AuditLog) Schema(t *raorm.Table) {
 Without that acknowledgement, generation warns:
 
 ```
-raorm: internal/model/audit.go:9
+storm: internal/model/audit.go:9
   AnyRef gives up referential integrity — orphan rows are possible and no
   database constraint will prevent them.
-  Prefer raorm.OneOf[...] (≤ 8 variants), or call .AcknowledgeNoFK("<reason>")
+  Prefer storm.OneOf[...] (≤ 8 variants), or call .AcknowledgeNoFK("<reason>")
 ```
 
 The reason string lands in the model file, where a reviewer sees the trade-off.
@@ -402,13 +402,13 @@ Everything above used `t.Col(&field)` for per-column settings. Table-level
 constraints are direct calls on the same object:
 
 ```go
-func (u *User) Schema(t *raorm.Table) {
-    t.Unique(&u.Tenant, raorm.Lower(&u.Email))
-    t.Index(&u.Org, raorm.Desc(&u.CreatedAt))
-    t.Index(&u.Scopes).Using(raorm.GIN)
-    t.Index(&u.Status).Where(raorm.NotEq(&u.Status, StatusSuspended))   // partial
-    t.Check(raorm.Between(&u.Age, 0, 150))
-    t.Generated(&u.Search, raorm.ToTSVector(raorm.English, &u.Name, &u.Email))
+func (u *User) Schema(t *storm.Table) {
+    t.Unique(&u.Tenant, storm.Lower(&u.Email))
+    t.Index(&u.Org, storm.Desc(&u.CreatedAt))
+    t.Index(&u.Scopes).Using(storm.GIN)
+    t.Index(&u.Status).Where(storm.NotEq(&u.Status, StatusSuspended))   // partial
+    t.Check(storm.Between(&u.Age, 0, 150))
+    t.Generated(&u.Search, storm.ToTSVector(storm.English, &u.Name, &u.Email))
     t.Immutable(&u.CreatedAt)
     t.Default(&u.Status, StatusPending)
     t.Size(&u.Name, 120)
@@ -424,19 +424,19 @@ refactoring tools follow it.
 
 The receiver must be a **pointer** (`u *User`). A value receiver copies the
 struct before the method runs, so `&u.Email` points into the copy and cannot be
-resolved — raorm rejects that at build time rather than emitting a wrong schema.
+resolved — storm rejects that at build time rather than emitting a wrong schema.
 Two resolution paths, both real:
 
 - **Generation** reads the method at AST level and resolves `u.Email` to a field
   by name — no execution, so it works on a package that does not yet compile.
-- **Runtime** (`raorm verify --drift`) allocates one zero value, calls `Schema`,
+- **Runtime** (`storm verify --drift`) allocates one zero value, calls `Schema`,
   and maps each pointer back to a field by offset from the base address.
 
 ### What is still a literal, and why that is fine
 
 `0`, `150`, `StatusPending`, `120` are **values, not identifiers**. They cannot
 be stale, and a rename cannot break them. Their types are checked against the
-field at generate time. `raorm.English` is a typed constant, not the string
+field at generate time. `storm.English` is a typed constant, not the string
 `"english"`.
 
 ### The only strings that remain
@@ -449,15 +449,15 @@ Three, and none of them is a Go identifier:
 | a **database type** | `t.Col(&u.Loc).Raw("geography(Point,4326)", geo.Codec)` | it is Postgres syntax, not Go |
 | **prose** | `.AcknowledgeNoFK("audit rows outlive their subjects")` | it is documentation |
 
-Plus one deliberate escape, `raorm.Expr(...)`, for SQL raorm does not model.
-It is `PREPARE`-checked at generate time and listed by `raorm lint --expr`, so
+Plus one deliberate escape, `storm.Expr(...)`, for SQL storm does not model.
+It is `PREPARE`-checked at generate time and listed by `storm lint --expr`, so
 every occurrence in the codebase is visible in review.
 
 **No string in the model can be stale.** A renamed Go field breaks the build;
 these three name things that live in the database or in English.
 
 ```go
-t.Check(raorm.Expr(`tstzrange(starts_at, ends_at) <> 'empty'`))
+t.Check(storm.Expr(`tstzrange(starts_at, ends_at) <> 'empty'`))
 ```
 
 Every construct above exists so that you almost never reach for that one.
@@ -465,7 +465,7 @@ Every construct above exists so that you almost never reach for that one.
 # Part 2 — Generate
 
 ```console
-$ raorm generate
+$ storm generate
   tenants  → internal/store/tenant       (4 columns)
   orgs     → internal/store/org          (6 columns, 2 relations: Parent, Children)
   users    → internal/store/user         (22 columns, 5 relations, 3 plans)
@@ -478,10 +478,10 @@ $ raorm generate
   audit_logs  → internal/store/auditlog   (8 columns, polymorphic: 4 variants, Discriminator ⚠ no FK)
   ✓ 12 tables · 0 unsupported types · deterministic output
 
-$ raorm migrate diff initial_schema
+$ storm migrate diff initial_schema
   → db/migrations/0001_initial_schema.up.sql   (34 statements, non-destructive)
   → db/migrations/0001_initial_schema.down.sql
-  review and commit — raorm never applies a migration
+  review and commit — storm never applies a migration
 ```
 
 ## What you get, per table
@@ -493,7 +493,7 @@ Given this declaration:
 
 ```go
 type User struct {
-    raorm.Model                     // ID, CreatedAt, UpdatedAt
+    storm.Model                     // ID, CreatedAt, UpdatedAt
     TenantScoped                    // TenantID, Tenant
     Auditable                       // Version, UpdatedBy
 
@@ -503,13 +503,13 @@ type User struct {
     Prefs       Prefs                         // struct → typed jsonb
     Scopes      []string
     Age         *int16
-    CreditBalance *raorm.Decimal
+    CreditBalance *storm.Decimal
     LastLoginAt *time.Time
-    BirthDate   *raorm.Date
-    SessionTTL  *raorm.Interval
+    BirthDate   *storm.Date
+    SessionTTL  *storm.Interval
     LastIP      *netip.Addr
     AvatarThumb []byte
-    SubscriptionPeriod *raorm.Range[raorm.Date]
+    SubscriptionPeriod *storm.Range[storm.Date]
 
     Org     Org                               // → OrgID in the Row
     Profile *Profile
@@ -517,45 +517,45 @@ type User struct {
     Roles   []Role
 }
 
-func (u *User) Schema(t *raorm.Table) {
+func (u *User) Schema(t *storm.Table) {
     t.Col(&u.Email).Unique().Size(320)
     t.Col(&u.DisplayName).Size(120)
     t.Col(&u.CreditBalance).Numeric(18, 4)
-    t.Col(&u.Org).OnDelete(raorm.Restrict)
+    t.Col(&u.Org).OnDelete(storm.Restrict)
     t.Through(&u.Roles, UserRole{})
 }
 ```
 
 you get — the same struct with relations replaced by their scalar foreign keys
-and `*T` rewritten to `raorm.Null[T]`:
+and `*T` rewritten to `storm.Null[T]`:
 
 ```go
 // Row: what a full read returns. No relation fields — see plans.
 type Row struct {
-    ID           raorm.UUID
+    ID           storm.UUID
     Email        string
     DisplayName  string
     Status       model.Status
-    Prefs        raorm.JSON[model.Prefs]
+    Prefs        storm.JSON[model.Prefs]
     Scopes       []string
-    Age          raorm.Null[int16]
-    CreditBalance raorm.Null[raorm.Decimal]
-    LastLoginAt  raorm.Null[time.Time]
-    BirthDate    raorm.Null[raorm.Date]
-    SessionTTL   raorm.Null[raorm.Interval]
-    LastIP       raorm.Null[netip.Addr]
+    Age          storm.Null[int16]
+    CreditBalance storm.Null[storm.Decimal]
+    LastLoginAt  storm.Null[time.Time]
+    BirthDate    storm.Null[storm.Date]
+    SessionTTL   storm.Null[storm.Interval]
+    LastIP       storm.Null[netip.Addr]
     AvatarThumb  []byte
-    SubscriptionPeriod raorm.Null[raorm.Range[raorm.Date]]
-    OrgID        raorm.UUID
-    TenantID     raorm.UUID
+    SubscriptionPeriod storm.Null[storm.Range[storm.Date]]
+    OrgID        storm.UUID
+    TenantID     storm.UUID
     CreatedAt    time.Time
     UpdatedAt    time.Time
     Version      int32
-    UpdatedBy    raorm.Null[raorm.UUID]
+    UpdatedBy    storm.Null[storm.UUID]
 }
 
 // Required: NOT NULL with no default. The constructor takes exactly these.
-func New(email, displayName string, orgID, tenantID raorm.UUID, opt ...Option) Draft
+func New(email, displayName string, orgID, tenantID storm.UUID, opt ...Option) Draft
 
 // Options exist only for columns that are nullable or DB-defaulted.
 func WithStatus(model.Status) Option
@@ -565,13 +565,13 @@ func WithAge(int16) Option
 
 // Typed columns
 var (
-    ID          = raorm.OrdCol[raorm.UUID]{…}
-    Email       = raorm.TextCol{…}
-    Status      = raorm.EnumCol[model.Status]{…}
-    Prefs       = raorm.JSONCol[model.Prefs]{…}
-    Scopes      = raorm.ArrayCol[string]{…}
-    Age         = raorm.NullOrdCol[int16]{…}
-    Search      = raorm.TSVectorCol{…}
+    ID          = storm.OrdCol[storm.UUID]{…}
+    Email       = storm.TextCol{…}
+    Status      = storm.EnumCol[model.Status]{…}
+    Prefs       = storm.JSONCol[model.Prefs]{…}
+    Scopes      = storm.ArrayCol[string]{…}
+    Age         = storm.NullOrdCol[int16]{…}
+    Search      = storm.TSVectorCol{…}
     // …
 )
 ```
@@ -581,7 +581,7 @@ literal was assigned" — `user.Row{}` compiles. The generated **positional
 constructor is the only compile-time guarantee available**, so `New` takes the
 required set positionally and everything else as options. Most tables have one
 to four truly-required columns, which keeps that readable. Three layers back it
-up: the constructor (compile time), `raorm lint` flagging zero-valued required
+up: the constructor (compile time), `storm lint` flagging zero-valued required
 columns in raw literals (build time), and `NOT NULL` (run time, always).
 
 ---
@@ -623,7 +623,7 @@ var (
 ```
 
 ```console
-$ raorm lint --plans
+$ storm lint --plans
   UserCard       1 round trip    users ⋈ orgs
   UserPage       7 round trips   users ⋈ orgs ⋈ orgs(parent) → profiles → user_roles ⋈ roles
                                  → posts → post_tags ⋈ tags → comments ⋈ users → comments(replies)
@@ -640,7 +640,7 @@ Using a plan:
 u, err := user.Query().Where(user.ID.Eq(id)).Load(UserPage).One(ctx, db)
 
 u.Org.Parent.Name                 // typed, guaranteed loaded
-u.Profile.Bio                     // raorm.Null[string]
+u.Profile.Bio                     // storm.Null[string]
 for _, r := range u.Roles {
     r.Key, r.Grant.GrantedAt      // .Grant is the join payload
 }
@@ -676,7 +676,7 @@ user.Query().Where(
     user.Status.In(model.StatusActive, model.StatusPending),  // enum
     user.Age.Between(18, 65),                                 // nullable int → NULLs excluded
     user.Age.IsNotNull(),
-    user.CreditBalance.Gte(raorm.Dec("100.0000")),            // numeric, never float
+    user.CreditBalance.Gte(storm.Dec("100.0000")),            // numeric, never float
     user.Email.HasSuffix("@corp.com"),
     user.DisplayName.ILike("%ada%"),
     user.Scopes.Contains("admin", "billing"),                 // text[] @>
@@ -684,8 +684,8 @@ user.Query().Where(
     user.Prefs.Path("theme").Eq("dark"),                      // jsonb ->>
     user.Prefs.HasKey("digest"),                              // jsonb ?
     user.LastIP.InSubnet(netip.MustParsePrefix("10.0.0.0/8")),// inet <<=
-    user.BirthDate.Before(raorm.DateOf(2008, 1, 1)),
-    user.SubscriptionPeriod.ContainsDate(raorm.Today()),      // range @>
+    user.BirthDate.Before(storm.DateOf(2008, 1, 1)),
+    user.SubscriptionPeriod.ContainsDate(storm.Today()),      // range @>
     user.Search.Matches("english", "ada lovelace"),           // tsvector @@
     user.CreatedAt.Gte(cutoff),
 )
@@ -698,9 +698,9 @@ user.Query().Where(
 
 ```go
 // Reusable specifications live in your domain layer.
-var Active = raorm.And(
+var Active = storm.And(
     user.Status.Eq(model.StatusActive),
-    user.LastLoginAt.Gte(raorm.NowMinus(90*24*time.Hour)),
+    user.LastLoginAt.Gte(storm.NowMinus(90*24*time.Hour)),
 )
 
 q := user.Query().Where(user.TenantID.Eq(tid), Active)
@@ -709,7 +709,7 @@ if f.Search != ""    { q = q.Where(user.Search.Matches("english", f.Search)) }
 if f.OrgID != nil    { q = q.Where(user.OrgID.Eq(*f.OrgID)) }
 if len(f.Scopes) > 0 { q = q.Where(user.Scopes.Contains(f.Scopes...)) }
 if f.MinBalance != nil {
-    q = q.Where(raorm.Or(
+    q = q.Where(storm.Or(
         user.CreditBalance.Gte(*f.MinBalance),
         user.Scopes.Contains("comp"),
     ))
@@ -727,32 +727,32 @@ assembled SQL for that combination is compiled once, ever.
 ```go
 // Explicit join with a projection type — no entity round-tripping.
 type OrgStat struct {
-    OrgID    raorm.UUID
+    OrgID    storm.UUID
     OrgName  string
     Users    int64
-    AvgAge   raorm.Null[float64]
+    AvgAge   storm.Null[float64]
     TopEmail string
 }
 
 stats, err := user.Query().
-    Join(org.T, raorm.On(user.OrgID.EqCol(org.ID))).
+    Join(org.T, storm.On(user.OrgID.EqCol(org.ID))).
     Where(user.TenantID.Eq(tid)).
     GroupBy(org.ID, org.Name).
-    Having(raorm.Count(user.ID).Gt(5)).
-    Select(raorm.Into[OrgStat](
+    Having(storm.Count(user.ID).Gt(5)).
+    Select(storm.Into[OrgStat](
         org.ID.As("org_id"),
         org.Name.As("org_name"),
-        raorm.Count(user.ID).As("users"),
-        raorm.Avg(user.Age).As("avg_age"),
-        raorm.FirstValue(user.Email).
-            Over(raorm.PartitionBy(org.ID).OrderBy(user.CreatedAt.Asc())).
+        storm.Count(user.ID).As("users"),
+        storm.Avg(user.Age).As("avg_age"),
+        storm.FirstValue(user.Email).
+            Over(storm.PartitionBy(org.ID).OrderBy(user.CreatedAt.Asc())).
             As("top_email"),
     )).
-    OrderBy(raorm.Count(user.ID).Desc()).
+    OrderBy(storm.Count(user.ID).Desc()).
     All(ctx, db)
 ```
 
-`raorm.Into[OrgStat](...)` is checked at generation time: a column with no
+`storm.Into[OrgStat](...)` is checked at generation time: a column with no
 matching field, or a type mismatch, fails the build with the offending line.
 
 ## 4.5 Pagination
@@ -760,19 +760,19 @@ matching field, or a type mismatch, fails the build with the offending line.
 ```go
 // Offset paging — fine for small offsets.
 page, err := user.Query().Where(Active).OrderBy(user.CreatedAt.Desc()).
-    Page(ctx, db, raorm.Offset(200, 50))
+    Page(ctx, db, storm.Offset(200, 50))
 
 // Keyset paging — what you want at scale. Cursor is opaque and signed.
 page, err := user.Query().Where(Active).
     OrderBy(user.CreatedAt.Desc(), user.ID.Asc()).
-    Page(ctx, db, raorm.After(cursor, 50))
+    Page(ctx, db, storm.After(cursor, 50))
 
 page.Items      // []user.Row
-page.Next       // raorm.Cursor, empty at the end
-page.Total      // only populated by raorm.Offset — keyset does not count
+page.Next       // storm.Cursor, empty at the end
+page.Total      // only populated by storm.Offset — keyset does not count
 ```
 
-`raorm.After` requires the `OrderBy` to be a strict total order. It is not: a
+`storm.After` requires the `OrderBy` to be a strict total order. It is not: a
 generation error tells you to add a tiebreaker column.
 
 ## 4.6 Streaming
@@ -795,7 +795,7 @@ generated recursive traversal:
 ```go
 // Every descendant org, depth-first, with the path.
 subtree, err := org.Query().Where(org.ID.Eq(rootID)).
-    Descend(org.Children, raorm.MaxDepth(10)).
+    Descend(org.Children, storm.MaxDepth(10)).
     All(ctx, db)
 
 for _, o := range subtree {
@@ -868,8 +868,8 @@ reads like "the latest user" and is a bug waiting to be misread;
 
 | | Meaning | Field type becomes |
 |---|---|---|
-| `.Latest(col)` | newest row per parent by `col` | `raorm.Null[post.Row]` |
-| `.Earliest(col)` | oldest row per parent by `col` | `raorm.Null[post.Row]` |
+| `.Latest(col)` | newest row per parent by `col` | `storm.Null[post.Row]` |
+| `.Earliest(col)` | oldest row per parent by `col` | `storm.Null[post.Row]` |
 | `.LatestN(n, col)` | newest *n* per parent | `[]post.Row`, len ≤ n |
 | `.EarliestN(n, col)` | oldest *n* per parent | `[]post.Row`, len ≤ n |
 | `.First()` / `.Last()` / `.Top(n)` | the same, for an arbitrary `OrderBy` | as above |
@@ -919,7 +919,7 @@ if p, ok := u.Posts.Get(); ok {
 Because it is ambiguous, and every ORM that allows it produces the wrong answer:
 
 ```
-raorm: store/plans.go:12
+storm: store/plans.go:12
   Limit(10) inside With(user.Posts) is ambiguous.
   Did you mean 10 posts PER USER, or 10 posts across all users?
     · Top(10)         — 10 per user   (greatest-n-per-group)
@@ -933,11 +933,11 @@ visible in review.
 
 `OrderBy(post.PublishedAt.Desc())` alone is not a total order — two posts
 published in the same microsecond make the result nondeterministic between runs.
-raorm treats that as a generation error, the same rule as keyset pagination in
+storm treats that as a generation error, the same rule as keyset pagination in
 §4.5:
 
 ```
-raorm: store/plans.go:12
+storm: store/plans.go:12
   First() needs a strict total order; published_at is not unique.
   Add a tiebreaker: OrderBy(post.PublishedAt.Desc(), post.ID.Asc())
   — or use Latest(post.PublishedAt), which appends the primary key for you.
@@ -974,22 +974,22 @@ SELECT * FROM (
 ) t WHERE t.rn <= $2;
 ```
 
-Override the choice when you have measured something raorm has not:
-`.Top(10).Using(raorm.Lateral)`.
+Override the choice when you have measured something storm has not:
+`.Top(10).Using(storm.Lateral)`.
 
 ### The index this needs, and the lint that checks for it
 
 `LATERAL` and `DISTINCT ON` are only fast with an index on
 `(parent_fk, sort_col DESC)`. Without it Postgres sorts the whole child
 partition per parent, which is the slow shape this section exists to avoid. So
-`raorm lint` checks for it:
+`storm lint` checks for it:
 
 ```console
-$ raorm lint --plans
+$ storm lint --plans
   WithLatestPost  2 round trips   users → posts (DISTINCT ON)
   ⚠ WithLatestPost: Posts.Latest(created_at) orders by (created_at DESC, id)
     but posts has no index on (author_id, created_at DESC, id).
-    → t.Index(&p.Author, raorm.Desc(&p.CreatedAt), &p.ID)
+    → t.Index(&p.Author, storm.Desc(&p.CreatedAt), &p.ID)
 ```
 
 The suggested fix is the exact line to paste into your `Schema` method.
@@ -1001,7 +1001,7 @@ The same thing as a flat query — the newest post per author, no users loaded:
 ```go
 latest, err := post.Query().
     Where(post.PublishedAt.IsNotNull()).
-    FirstPer(post.Author, raorm.By(post.PublishedAt.Desc(), post.ID.Asc())).
+    FirstPer(post.Author, storm.By(post.PublishedAt.Desc(), post.ID.Asc())).
     All(ctx, db)
 ```
 
@@ -1041,13 +1041,13 @@ n, err := user.InsertMany(ctx, db, drafts)      // one COPY, whatever len(drafts
 
 ```go
 n, err := user.Update(ctx, db,
-    raorm.Where(user.ID.Eq(id)).At(u.Version),   // optimistic lock
+    storm.Where(user.ID.Eq(id)).At(u.Version),   // optimistic lock
     user.Email.Set("new@corp.com"),
     user.Scopes.Append("billing"),
     user.Prefs.SetPath("theme", "light"),        // jsonb_set, not read-modify-write
-    user.CreditBalance.Dec(raorm.Dec("9.99")),
+    user.CreditBalance.Dec(storm.Dec("9.99")),
 )
-if errors.Is(err, raorm.ErrStaleWrite) { /* version moved under you */ }
+if errors.Is(err, storm.ErrStaleWrite) { /* version moved under you */ }
 
 // user.CreatedAt.Set(...)  → compile error: declared Immutable()
 ```
@@ -1059,15 +1059,15 @@ load-mutate-save cycle, so there is no lost-update window to reason about.
 
 ```go
 err := tag.Upsert(ctx, db, draft,
-    raorm.OnConflict(tag.TenantID, tag.Name).DoNothing())
+    storm.OnConflict(tag.TenantID, tag.Name).DoNothing())
 
-n, err := comment.Delete(ctx, db, raorm.Where(comment.PostID.Eq(pid)))
+n, err := comment.Delete(ctx, db, storm.Where(comment.PostID.Eq(pid)))
 ```
 
 ## 5.4 Unit of work — graph writes, FK-ordered, one batch
 
 ```go
-err := db.Unit(ctx, func(u *raorm.Unit) error {
+err := db.Unit(ctx, func(u *storm.Unit) error {
     orgID  := u.Insert(org.New("Acme", tenantID))            // deferred handle
     userID := u.Insert(user.New("ada@acme.io", "Ada", orgID, tenantID))
     postID := u.Insert(post.New("Hello", "…", userID, tenantID))
@@ -1077,11 +1077,11 @@ err := db.Unit(ctx, func(u *raorm.Unit) error {
 
     for _, name := range []string{"go", "orm"} {
         tagID := u.Upsert(tag.New(name, tenantID),
-            raorm.OnConflict(tag.TenantID, tag.Name).Returning())
+            storm.OnConflict(tag.TenantID, tag.Name).Returning())
         u.Insert(posttag.New(postID, tagID))
     }
 
-    u.Update(auditcounter.Total.Inc(1), raorm.Where(auditcounter.Key.Eq("posts")))
+    u.Update(auditcounter.Total.Inc(1), storm.Where(auditcounter.Key.Eq("posts")))
     return nil
 })
 ```
@@ -1100,18 +1100,18 @@ On MySQL, where there is no `RETURNING`, the same code lowers to `INSERT` +
 # Part 6 — Transactions
 
 ```go
-err := db.Tx(ctx, func(tx raorm.Tx) error {
+err := db.Tx(ctx, func(tx storm.Tx) error {
     from, err := account.Get(ctx, tx, fromID)      // tx satisfies the same
     if err != nil { return err }                   // interface as db
     if from.Balance.LessThan(amount) {
         return ErrInsufficientFunds                // any error → rollback
     }
     if _, err := account.Update(ctx, tx,
-        raorm.Where(account.ID.Eq(fromID)).At(from.Version),
+        storm.Where(account.ID.Eq(fromID)).At(from.Version),
         account.Balance.Dec(amount)); err != nil { return err }
 
     _, err = account.Update(ctx, tx,
-        raorm.Where(account.ID.Eq(toID)), account.Balance.Inc(amount))
+        storm.Where(account.ID.Eq(toID)), account.Balance.Inc(amount))
     return err
 })
 ```
@@ -1120,8 +1120,8 @@ Isolation, read-only hints, and automatic retry on serialization failure:
 
 ```go
 err := db.Tx(ctx,
-    raorm.Serializable().Retry(3, raorm.ExpBackoff(5*time.Millisecond)),
-    func(tx raorm.Tx) error { … })
+    storm.Serializable().Retry(3, storm.ExpBackoff(5*time.Millisecond)),
+    func(tx storm.Tx) error { … })
 ```
 
 Retry fires only on `40001` (serialization failure) and `40P01` (deadlock). The
@@ -1131,9 +1131,9 @@ stated in its doc comment rather than assumed.
 Savepoints nest naturally:
 
 ```go
-db.Tx(ctx, func(tx raorm.Tx) error {
+db.Tx(ctx, func(tx storm.Tx) error {
     mustSucceed(tx)
-    if err := tx.Nested(ctx, func(sp raorm.Tx) error {
+    if err := tx.Nested(ctx, func(sp storm.Tx) error {
         return tryOptional(sp)          // rolls back to the savepoint only
     }); err != nil {
         log.Warn("optional step skipped", "err", err)
@@ -1154,7 +1154,7 @@ Two properties worth naming:
 # Part 7 — When the ORM is not enough
 
 ```go
-var DormantHighValue = raorm.SQL[DormantRow](`
+var DormantHighValue = storm.SQL[DormantRow](`
     WITH per_org AS (
         SELECT u.org_id, u.id, u.email, u.credit_balance,
                percent_rank() OVER (PARTITION BY u.org_id
@@ -1183,7 +1183,7 @@ Raw fragments also compose into typed queries as join sources:
 
 ```go
 user.Query().
-    Join(DormantHighValue.As("d"), raorm.On(user.ID.EqCol(DormantHighValue.Col.ID))).
+    Join(DormantHighValue.As("d"), storm.On(user.ID.EqCol(DormantHighValue.Col.ID))).
     Where(user.TenantID.Eq(tid)).
     Load(UserCard).
     All(ctx, db)

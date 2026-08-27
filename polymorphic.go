@@ -1,4 +1,4 @@
-package raorm
+package storm
 
 // Polymorphic associations: one column referring to a row in one of several
 // tables.
@@ -12,7 +12,7 @@ package raorm
 //
 // The Rails and GORM answer is a (subject_type, subject_id) pair, which no
 // database can constrain: nothing stops subject_id naming a row that does not
-// exist or a table that does not either. raorm can express that too, but it
+// exist or a table that does not either. storm can express that too, but it
 // costs an explicit acknowledgement, because "we gave up referential integrity"
 // should appear in a diff.
 //

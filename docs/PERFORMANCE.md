@@ -1,5 +1,5 @@
 ---
-tags: [raorm, performance, slo]
+tags: [storm, performance, slo]
 updated: 2026-08-23
 status: **M0 measured** — see `bench/RESULTS.md`; budgets below revised by it
 ---
@@ -24,7 +24,7 @@ prepared statements enabled, 8-column table. `raw pgx` means hand-written pgx
 with a hand-written scanner.
 
 **The socket matters.** M0 ran against Postgres in a VM: round-trip was 63.7 µs
-and raorm's entire CPU cost is ~45 ns, so 95.5% of wall time was network and
+and storm's entire CPU cost is ~45 ns, so 95.5% of wall time was network and
 the wall-clock gate passed without testing much. Wall-clock budgets are only
 meaningful on a low-latency connection.
 
@@ -53,7 +53,7 @@ Each is CI-enforced, not review-enforced.
 | `rows.Scan(&a, &b, …)` internally | boxes every column into `any` — one alloc per column per row | lint rule |
 | a map lookup per query on the warm path | hashing a key you already computed as a bitmask | benchmark + review |
 | a fresh arg slice per call where a pooled array fits | the allocation the whole design exists to remove | `-benchmem` regression gate |
-| a query on a hot path without `EXPLAIN (ANALYZE, BUFFERS)` | plan regressions are invisible until production | `raorm explain` in CI |
+| a query on a hot path without `EXPLAIN (ANALYZE, BUFFERS)` | plan regressions are invisible until production | `storm explain` in CI |
 | a benchmark whose capacity/config differs between sides | *"a benchmark comparison must match capacity on both sides"* | review |
 | quoting a number that was not re-measured this run | numbers rot | review |
 
@@ -61,7 +61,7 @@ Each is CI-enforced, not review-enforced.
 
 ```
 bench/
-  raorm_test.go     the subject
+  storm_test.go     the subject
   pgx_test.go       the floor
   sqlc_test.go      the baseline to beat (current anubis tooling)
   bun_test.go       best-in-class runtime ORM
@@ -87,9 +87,9 @@ Honest prediction, to be confirmed or falsified in **M0**:
 - **Simple reads** — should land very close to raw pgx. Generated scanning is
   the same code a human would write. Low risk.
 - **Warm dynamic reads** — should *beat* every rival by a wide margin, because
-  rivals rebuild the string every call and raorm does not build it at all.
+  rivals rebuild the string every call and storm does not build it at all.
 - **Cold shapes** — worse than everyone on the first call of each shape. Only
-  matters for pathological shape counts, which `raorm lint` is there to catch.
+  matters for pathological shape counts, which `storm lint` is there to catch.
 - **Writes** — parity with raw pgx is realistic; the win is batching and
   ordering, not per-statement speed.
 - **Relation loads** — the big win versus GORM `Preload` and Ent `With`, both of

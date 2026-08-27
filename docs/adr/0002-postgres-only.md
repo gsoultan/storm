@@ -12,7 +12,7 @@ branching. That branch is precisely the mechanism that makes GORM, Ent, and Bun
 allocate per query. The first draft therefore treated multi-dialect as a tax to
 be refused.
 
-**A compiler does not pay that tax.** raorm knows the target at generation time;
+**A compiler does not pay that tax.** storm knows the target at generation time;
 generated code contains lowered SQL for exactly one dialect. Dialect support
 costs a back end and a test matrix. It costs the hot path nothing.
 

@@ -1,11 +1,11 @@
-# raorm — production readiness (2026-08-24)
+# storm — production readiness (2026-08-24)
 
 **Not ready to adopt.** Correctness is strong; coverage of the type system and
 the absence of any adopter are what block it. Full checklist in `docs/PLAN.md`
 §"Production readiness".
 
 ## The blocker nobody would guess — NOW CLOSED for numeric and jsonb
-**`numeric` shipped 2026-08-24 as `raorm.Decimal`** (exact, two words, no
+**`numeric` shipped 2026-08-24 as `storm.Decimal`** (exact, two words, no
 allocation, stdlib-only; 18 significant digits, with a GENERATION error past
 that and a decode ERROR rather than a wrong number). **`jsonb` shipped** as
 `runtime.JSON` — raw bytes the caller unmarshals, no value predicates.
@@ -20,7 +20,7 @@ are now bounded by the input, never by a field inside it.
 
 **`date`, `interval`, `inet`/`cidr`, `int8[]` shipped 2026-08-24.** The design
 calls worth remembering: dates are midnight UTC by stated convention;
-`raorm.Interval` keeps months/days/micros APART (a month has no length; a day
+`storm.Interval` keeps months/days/micros APART (a month has no length; a day
 is not 24h across DST — flattening at decode would bake in the error Postgres
 avoids) with `Duration()` returning ok=false when months present; inet and
 cidr are both `netip.Prefix` (the DATABASE polices host bits — two Go types
@@ -37,7 +37,7 @@ No application handling money can model its own tables. This is the first thing
 a real adopter hits, and it is invisible from the benchmarks because the bench
 table has none of those types.
 
-**The decision that was taken:** a raorm-defined fixed-point type, keeping the
+**The decision that was taken:** a storm-defined fixed-point type, keeping the
 stdlib-only rule. Pulling in a decimal package would put a third party's type on
 every row of every financial table; a caller who wants shopspring/decimal
 converts at the edge, which is one line and their choice.
@@ -59,11 +59,11 @@ converts at the edge, which is one line and their choice.
 
 ## The lesson from testing the CLI
 It was at 0% and hid **three** bugs, two able to lose data:
-1. Flags after a positional were silently ignored — `raorm diff init -schema
+1. Flags after a positional were silently ignored — `storm diff init -schema
    mine` diffed `public` and proposed dropping its objects.
 2. Introspection rendered expressions under the wrong `search_path`, so any
    enum outside `public` reported drift **forever**.
-3. `raorm import` printed DDL instead of a model, so the adoption on-ramp
+3. `storm import` printed DDL instead of a model, so the adoption on-ramp
    produced something the adopter already had.
 
 **That is the rate to expect from M6.** Untested surfaces hide data-loss bugs,
@@ -90,7 +90,7 @@ machine-blocked unix-socket benchmark, and P5 expressiveness (joins,
 projections, CTEs) for M5.
 
 ## M5 closed (2026-08-25), and two fresh-environment lessons
-`raorm.SQL[T]` ships both halves: runtime (typed rows, atomic scanner cache,
+`storm.SQL[T]` ships both halves: runtime (typed rows, atomic scanner cache,
 arg-count check before the server) and generation (PREPARE against the MODEL
 in a scratch schema — needs a server, NOT a schema snapshot; a drifted dev DB
 cannot vouch for a query the model would reject). Matching is by NAME, both
@@ -110,9 +110,9 @@ gap's camouflage:**
 
 ## Dev environment (this machine, 2026-08-25)
 Go binaries get EHOSTUNREACH dialing the Apple container's 192.168.64.x IP
-(macOS local-network privacy; nc/ping fine). **raorm-pg now publishes
+(macOS local-network privacy; nc/ping fine). **storm-pg now publishes
 127.0.0.1:5433** (5432 is another project's forward). Run tests with
-`RAORM_DSN=postgres://raorm:raorm@127.0.0.1:5433/raorm`; the Makefile's
+`STORM_DSN=postgres://storm:storm@127.0.0.1:5433/storm`; the Makefile's
 container-IP DSN derivation is broken for Go on this machine.
 
 ## Perf pass (2026-08-25): the Query struct diet
@@ -185,7 +185,7 @@ uncovered NullInet + interval/decimal bridges.
 
 ## COMPLETION STATE (2026-08-25) — everything executable from this repo is done
 **All debts closed.** Unix socket measured at last (host PG 17.11, pure
-socket, /tmp/raorm-sock, port 5499, ephemeral — rerun recipe in RESULTS): ~22µs
+socket, /tmp/storm-sock, port 5499, ephemeral — rerun recipe in RESULTS): ~22µs
 round trips, Get **0.99× raw pgx**, Scan1000 ~0.97× — the M0 thesis gate at 4×
 better resolution, at parity, with the standing rule intact (parity is parity;
 claim allocations, not wall). Ent benchmarked earlier. govulncheck: 0

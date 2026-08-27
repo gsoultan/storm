@@ -1,4 +1,4 @@
-package raorm
+package storm
 
 import (
 	"context"
@@ -7,19 +7,19 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // The typed escape hatch (M5).
 //
 // Anything PostgreSQL can run is expressible here — CTEs, windows, lateral
-// joins — years before the native IR grows each construct. What raorm adds is
+// joins — years before the native IR grows each construct. What storm adds is
 // the part hand-rolled SQL always loses: the RESULT is typed, the scanner is
 // generated, and the statement was validated against the model at GENERATE
 // time, so a query whose columns drifted from its row type fails the build
 // naming the column, not the 3am page.
 //
-//	var TopEarners = raorm.SQL[EarnerRow](`
+//	var TopEarners = storm.SQL[EarnerRow](`
 //	    WITH ranked AS (...)
 //	    SELECT ... WHERE tenant_id = $1 ... LIMIT $2`)
 //
@@ -27,7 +27,7 @@ import (
 //
 // # How the scanner arrives
 //
-// `raorm generate` PREPAREs the statement, matches the result descriptor
+// `storm generate` PREPAREs the statement, matches the result descriptor
 // against T's fields, and emits a scanner that registers itself by type in an
 // init(). The first Query looks it up once and caches it in the value; the
 // warm path is an atomic load. Running a query nothing generated for is an
@@ -52,13 +52,13 @@ func SQL[T any](sql string) *SQLQuery[T] {
 // is the half hand-rolled SQL cannot have.
 func (q *SQLQuery[T]) Query(ctx context.Context, ex runtime.Executor, args ...any) ([]T, error) {
 	if len(args) != q.nArg {
-		return nil, fmt.Errorf("raorm: query wants %d argument(s), got %d", q.nArg, len(args))
+		return nil, fmt.Errorf("storm: query wants %d argument(s), got %d", q.nArg, len(args))
 	}
 	scan := q.scanner()
 	if scan == nil {
 		var zero T
 		return nil, fmt.Errorf(
-			"raorm: no scanner generated for %T — run 'raorm generate' with this query registered",
+			"storm: no scanner generated for %T — run 'storm generate' with this query registered",
 			zero)
 	}
 
@@ -113,7 +113,7 @@ func SQLExec(sql string) *SQLStmt {
 // Exec runs the statement and reports rows affected.
 func (q *SQLStmt) Exec(ctx context.Context, ex runtime.Executor, args ...any) (int64, error) {
 	if len(args) != q.nArg {
-		return 0, fmt.Errorf("raorm: statement wants %d argument(s), got %d", q.nArg, len(args))
+		return 0, fmt.Errorf("storm: statement wants %d argument(s), got %d", q.nArg, len(args))
 	}
 	return ex.Exec(ctx, q.sql, args)
 }

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/compile/pgsql"
+	"github.com/gsoultan/storm/compile/pgsql"
 )
 
 // Identifiers come from the model, not from a runtime value, so this is not an

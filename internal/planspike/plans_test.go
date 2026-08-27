@@ -7,14 +7,14 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/raorm"
-	"github.com/gsoultan/raorm/compile/pgddl"
-	"github.com/gsoultan/raorm/internal/planspike/store"
-	"github.com/gsoultan/raorm/internal/planspike/store/org"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
-	"github.com/gsoultan/raorm/internal/testmodel"
-	"github.com/gsoultan/raorm/runtime"
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/compile/pgddl"
+	"github.com/gsoultan/storm/internal/planspike/store"
+	"github.com/gsoultan/storm/internal/planspike/store/org"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,9 +27,9 @@ const (
 var pool *pgxpool.Pool
 
 func TestMain(m *testing.M) {
-	dsn := os.Getenv("RAORM_DSN")
+	dsn := os.Getenv("STORM_DSN")
 	if dsn == "" {
-		fmt.Println("RAORM_DSN unset; skipping the plan spike")
+		fmt.Println("STORM_DSN unset; skipping the plan spike")
 		os.Exit(0)
 	}
 	ctx := context.Background()
@@ -41,7 +41,7 @@ func TestMain(m *testing.M) {
 	// to serve it, so a concurrent test lands on a different one and sees the
 	// public schema — which cost a debugging round.
 	cfg.ConnConfig.RuntimeParams["search_path"] = planspikeSchm
-	// Through raorm's constructor so the fast parameter encoders — uuid[],
+	// Through storm's constructor so the fast parameter encoders — uuid[],
 	// Decimal, Interval — are installed. Without this, interval and decimal
 	// binds either bypass our codecs or fail, and the tests exercise a pool
 	// no adopter would run.
@@ -54,7 +54,7 @@ func TestMain(m *testing.M) {
 	must(run(ctx, "DROP SCHEMA IF EXISTS "+planspikeSchm+" CASCADE"))
 	must(run(ctx, "CREATE SCHEMA "+planspikeSchm))
 
-	s, err := raorm.Build(testmodel.All()...)
+	s, err := storm.Build(testmodel.All()...)
 	must(err)
 	must(run(ctx, pgddl.Create(s)))
 	must(seed(ctx))

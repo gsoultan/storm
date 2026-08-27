@@ -29,14 +29,14 @@ import (
 // ErrArrayNull means an array contained a NULL element, which a []T cannot
 // represent.
 var ErrArrayNull = errors.New(
-	"raorm: array contains a NULL element, which a Go slice cannot represent — " +
+	"storm: array contains a NULL element, which a Go slice cannot represent — " +
 		"filter them out in SQL with array_remove(col, NULL), or read the column as jsonb")
 
 // ErrArrayDims means an array had more than one dimension.
 var ErrArrayDims = errors.New(
-	"raorm: multi-dimensional array cannot be read into a Go slice")
+	"storm: multi-dimensional array cannot be read into a Go slice")
 
-// ErrArrayTextFormat means the server sent the array as text and raorm
+// ErrArrayTextFormat means the server sent the array as text and storm
 // decodes the binary format.
 //
 // The case that reaches real schemas is an array of a USER-DEFINED type —
@@ -50,7 +50,7 @@ var ErrArrayDims = errors.New(
 // the first, for a case with two better answers — declare the column
 // `text[]`, or cast it in the query (`col::text[]`).
 var ErrArrayTextFormat = errors.New(
-	"raorm: array arrived in TEXT format and raorm decodes binary — an array of a " +
+	"storm: array arrived in TEXT format and storm decodes binary — an array of a " +
 		"user-defined type (enum[]) is sent as text by pgx; declare the column text[] " +
 		"or cast it in the query with col::text[]; see docs/DEPLOYMENT.md")
 
@@ -69,7 +69,7 @@ func arrayHeader(b []byte) (n, off int, err error) {
 		return 0, 0, ErrArrayTextFormat
 	}
 	if len(b) < 12 {
-		return 0, 0, errors.New("raorm: array wire value is too short")
+		return 0, 0, errors.New("storm: array wire value is too short")
 	}
 	ndim := int(int32(binary.BigEndian.Uint32(b[0:4])))
 	switch {
@@ -79,11 +79,11 @@ func arrayHeader(b []byte) (n, off int, err error) {
 		return 0, 0, fmt.Errorf("%w: it has %d", ErrArrayDims, ndim)
 	}
 	if len(b) < 20 {
-		return 0, 0, errors.New("raorm: array wire value is truncated")
+		return 0, 0, errors.New("storm: array wire value is truncated")
 	}
 	n = int(int32(binary.BigEndian.Uint32(b[12:16])))
 	if n < 0 {
-		return 0, 0, errors.New("raorm: array reports a negative length")
+		return 0, 0, errors.New("storm: array reports a negative length")
 	}
 	// Bound the claimed count by what the bytes could possibly hold: every
 	// element costs at least its 4-byte length prefix. Without this, a corrupt
@@ -93,7 +93,7 @@ func arrayHeader(b []byte) (n, off int, err error) {
 	// present in production. The allocation must be bounded by the input, not
 	// by a field inside it.
 	if n > (len(b)-20)/4 {
-		return 0, 0, errors.New("raorm: array claims more elements than the value could hold")
+		return 0, 0, errors.New("storm: array claims more elements than the value could hold")
 	}
 	return n, 20, nil
 }
@@ -124,7 +124,7 @@ func ArrayErr[T any](b []byte, dec func([]byte) (T, error)) ([]T, error) {
 	out := make([]T, 0, n)
 	for i := 0; i < n; i++ {
 		if off+4 > len(b) {
-			return nil, errors.New("raorm: array element is truncated")
+			return nil, errors.New("storm: array element is truncated")
 		}
 		size := int(int32(binary.BigEndian.Uint32(b[off : off+4])))
 		off += 4
@@ -132,7 +132,7 @@ func ArrayErr[T any](b []byte, dec func([]byte) (T, error)) ([]T, error) {
 			return nil, ErrArrayNull
 		}
 		if off+size > len(b) {
-			return nil, errors.New("raorm: array element runs past the value")
+			return nil, errors.New("storm: array element runs past the value")
 		}
 		v, err := dec(b[off : off+size])
 		if err != nil {

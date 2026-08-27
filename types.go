@@ -1,10 +1,10 @@
-// Package raorm is the public surface: the types you declare a model with, and
+// Package storm is the public surface: the types you declare a model with, and
 // the builder that turns those models into a schema.
-package raorm
+package storm
 
 import (
 	"encoding/hex"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 	"time"
 )
 
@@ -59,9 +59,9 @@ func (m *Model) Schema(t *Table) {
 
 // Decimal is an exact fixed-point number for a numeric column.
 //
-// An alias, not a wrapper: the model declares raorm.Decimal and generated code
+// An alias, not a wrapper: the model declares storm.Decimal and generated code
 // reads runtime.Decimal, and those must be the same type or every value would
-// need converting at the boundary raorm exists to remove.
+// need converting at the boundary storm exists to remove.
 //
 // float64 is not offered for numeric. It cannot represent 0.10, and an
 // accounting system that rounds is a defect rather than a tolerance — so the
@@ -112,7 +112,7 @@ const (
 )
 
 // Expr is a raw SQL fragment. It is the one deliberate escape from the typed
-// API: conspicuous, reported by `raorm lint --expr`, and validated against the
+// API: conspicuous, reported by `storm lint --expr`, and validated against the
 // database at generate time.
 type Expr string
 
@@ -123,8 +123,8 @@ func Now() Expr { return "now()" }
 func UUIDv7() Expr { return "uuidv7()" }
 
 // GenRandomUUID renders gen_random_uuid(), built in since PostgreSQL 13. This
-// is the default for an embedded raorm.Model because it works everywhere the
-// rest of raorm does.
+// is the default for an embedded storm.Model because it works everywhere the
+// rest of storm does.
 func GenRandomUUID() Expr { return "gen_random_uuid()" }
 
 // Interval is a PostgreSQL interval: months, days and microseconds kept

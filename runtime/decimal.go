@@ -8,7 +8,7 @@ import (
 
 // Decimal is an exact fixed-point number: Unscaled × 10⁻ᔆᶜᵃˡᵉ.
 //
-// # Why raorm defines its own
+// # Why storm defines its own
 //
 // Go has no decimal in the standard library, and `runtime/` imports stdlib
 // only — a rule that is CI-enforced and load-bearing, because it is what keeps
@@ -37,11 +37,11 @@ type Decimal struct {
 // ErrDecimalRange means the database value needs more than 18 significant
 // digits. Declare the column as text if it genuinely does.
 var ErrDecimalRange = errors.New(
-	"raorm: numeric value exceeds the 18 significant digits a Decimal holds")
+	"storm: numeric value exceeds the 18 significant digits a Decimal holds")
 
 // ErrDecimalNaN means the database returned NaN, which has no fixed-point
 // representation. It is not a zero and must not become one.
-var ErrDecimalNaN = errors.New("raorm: numeric is NaN, which has no Decimal representation")
+var ErrDecimalNaN = errors.New("storm: numeric is NaN, which has no Decimal representation")
 
 // String renders the value with exactly Scale fraction digits, which is what
 // the database displays.
@@ -99,7 +99,7 @@ const (
 // every step rather than at the end, or the check itself overflows.
 func DecodeNumeric(b []byte) (Decimal, error) {
 	if len(b) < 8 {
-		return Decimal{}, errors.New("raorm: numeric wire value is too short")
+		return Decimal{}, errors.New("storm: numeric wire value is too short")
 	}
 	ndigits := int(int16(binary.BigEndian.Uint16(b[0:2])))
 	weight := int(int16(binary.BigEndian.Uint16(b[2:4])))
@@ -113,7 +113,7 @@ func DecodeNumeric(b []byte) (Decimal, error) {
 		return Decimal{Scale: int32(dscale)}, nil
 	}
 	if len(b) < 8+2*ndigits {
-		return Decimal{}, errors.New("raorm: numeric wire value is truncated")
+		return Decimal{}, errors.New("storm: numeric wire value is truncated")
 	}
 
 	// D is the digit groups read as one integer; its last group sits at
@@ -139,7 +139,7 @@ func DecodeNumeric(b []byte) (Decimal, error) {
 		// that carries value, so a non-zero remainder means the wire value did
 		// not match its own declared scale.
 		if d%10 != 0 {
-			return Decimal{}, errors.New("raorm: numeric has more precision than its scale")
+			return Decimal{}, errors.New("storm: numeric has more precision than its scale")
 		}
 		d /= 10
 	}
@@ -209,7 +209,7 @@ func ParseDecimal(s string) (Decimal, error) {
 		intPart, fracPart = s[:i], s[i+1:]
 	}
 	if intPart == "" && fracPart == "" {
-		return Decimal{}, errors.New("raorm: empty decimal")
+		return Decimal{}, errors.New("storm: empty decimal")
 	}
 	u, err := strconv.ParseInt(intPart+fracPart, 10, 64)
 	if err != nil {

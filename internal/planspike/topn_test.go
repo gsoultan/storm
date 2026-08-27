@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/planspike/store"
-	"github.com/gsoultan/raorm/internal/planspike/store/org"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/internal/planspike/store"
+	"github.com/gsoultan/storm/internal/planspike/store/org"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
 )
 
 // THE GATE for greatest-n-per-group: each parent keeps its own N, and it is

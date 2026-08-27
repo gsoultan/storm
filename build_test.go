@@ -1,11 +1,11 @@
-package raorm_test
+package storm_test
 
 import (
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm"
+	"github.com/gsoultan/storm"
 )
 
 // Every one of these is a mistake a real user will make. The test asserts the
@@ -13,16 +13,16 @@ import (
 // bug with extra steps.
 
 type valRecvModel struct {
-	raorm.Model
+	storm.Model
 	Email string
 }
 
 // Deliberately a VALUE receiver: Go copies the struct, so &m.Email points into
 // the copy and cannot be resolved.
-func (m valRecvModel) Schema(t *raorm.Table) { t.Col(&m.Email).Unique() }
+func (m valRecvModel) Schema(t *storm.Table) { t.Col(&m.Email).Unique() }
 
 func TestBuild_ValueReceiverRejected(t *testing.T) {
-	_, err := raorm.Build(&valRecvModel{})
+	_, err := storm.Build(&valRecvModel{})
 	if err == nil {
 		t.Fatal("a value receiver must not silently produce a wrong schema")
 	}
@@ -35,87 +35,87 @@ func TestBuild_ValueReceiverRejected(t *testing.T) {
 }
 
 type foreignPtrModel struct {
-	raorm.Model
+	storm.Model
 	Email string
 }
 
 var elsewhere struct{ Stray string }
 
-func (m *foreignPtrModel) Schema(t *raorm.Table) { t.Col(&elsewhere.Stray).Unique() }
+func (m *foreignPtrModel) Schema(t *storm.Table) { t.Col(&elsewhere.Stray).Unique() }
 
 func TestBuild_ForeignFieldPointerRejected(t *testing.T) {
-	_, err := raorm.Build(&foreignPtrModel{})
+	_, err := storm.Build(&foreignPtrModel{})
 	if err == nil || !strings.Contains(err.Error(), "does not point into the model") {
 		t.Fatalf("pointing at another struct's field must be caught, got: %v", err)
 	}
 }
 
 type danglingSlice struct {
-	raorm.Model
+	storm.Model
 	Others []otherSide // otherSide has no field pointing back
 }
 
 type otherSide struct {
-	raorm.Model
+	storm.Model
 	Name string
 }
 
 func TestBuild_HasManyWithoutInverseRejected(t *testing.T) {
-	_, err := raorm.Build(&danglingSlice{}, &otherSide{})
+	_, err := storm.Build(&danglingSlice{}, &otherSide{})
 	if err == nil || !strings.Contains(err.Error(), "has-many") {
 		t.Fatalf("a has-many with no key on the other side must fail, got: %v", err)
 	}
 }
 
 type unregisteredRef struct {
-	raorm.Model
+	storm.Model
 	Other otherSide
 }
 
 func TestBuild_UnregisteredModelRejected(t *testing.T) {
-	_, err := raorm.Build(&unregisteredRef{})
+	_, err := storm.Build(&unregisteredRef{})
 	if err == nil || !strings.Contains(err.Error(), "not registered") {
 		t.Fatalf("referring to an unregistered model must fail, got: %v", err)
 	}
 }
 
 type setNullOnRequired struct {
-	raorm.Model
+	storm.Model
 	Owner otherSide // value type => NOT NULL
 }
 
-func (m *setNullOnRequired) Schema(t *raorm.Table) {
-	t.Col(&m.Owner).OnDelete(raorm.SetNull)
+func (m *setNullOnRequired) Schema(t *storm.Table) {
+	t.Col(&m.Owner).OnDelete(storm.SetNull)
 }
 
 func TestBuild_SetNullOnRequiredRejected(t *testing.T) {
-	_, err := raorm.Build(&setNullOnRequired{}, &otherSide{})
+	_, err := storm.Build(&setNullOnRequired{}, &otherSide{})
 	if err == nil || !strings.Contains(err.Error(), "could never fire") {
 		t.Fatalf("SET NULL on a NOT NULL column must fail, got: %v", err)
 	}
 }
 
 type actionOnNonFK struct {
-	raorm.Model
+	storm.Model
 	Email string
 }
 
-func (m *actionOnNonFK) Schema(t *raorm.Table) { t.Col(&m.Email).OnDelete(raorm.Cascade) }
+func (m *actionOnNonFK) Schema(t *storm.Table) { t.Col(&m.Email).OnDelete(storm.Cascade) }
 
 func TestBuild_ActionOnNonForeignKeyRejected(t *testing.T) {
-	_, err := raorm.Build(&actionOnNonFK{})
+	_, err := storm.Build(&actionOnNonFK{})
 	if err == nil || !strings.Contains(err.Error(), "not a foreign key") {
 		t.Fatalf("OnDelete on a plain column must fail, got: %v", err)
 	}
 }
 
 type unsupportedField struct {
-	raorm.Model
+	storm.Model
 	Fn func() // no sensible column type
 }
 
 func TestBuild_UnsupportedTypeRejected(t *testing.T) {
-	_, err := raorm.Build(&unsupportedField{})
+	_, err := storm.Build(&unsupportedField{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("an unmappable field must fail, got: %v", err)
 	}
@@ -125,16 +125,16 @@ func TestBuild_UnsupportedTypeRejected(t *testing.T) {
 }
 
 type ambiguousA struct {
-	raorm.Model
+	storm.Model
 	B *ambiguousB
 }
 type ambiguousB struct {
-	raorm.Model
+	storm.Model
 	A *ambiguousA
 }
 
 func TestBuild_AmbiguousOneToOneRejected(t *testing.T) {
-	_, err := raorm.Build(&ambiguousA{}, &ambiguousB{})
+	_, err := storm.Build(&ambiguousA{}, &ambiguousB{})
 	if err == nil || !strings.Contains(err.Error(), "equally optional") {
 		t.Fatalf("a mutually optional pair has no owner and must fail, got: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestBuild_AmbiguousOneToOneRejected(t *testing.T) {
 
 func TestBuild_AllProblemsReportedTogether(t *testing.T) {
 	// Two mistakes in one model must produce two lines, not one round trip each.
-	_, err := raorm.Build(&multiBad{})
+	_, err := storm.Build(&multiBad{})
 	if err == nil {
 		t.Fatal("expected errors")
 	}
@@ -155,17 +155,17 @@ func TestBuild_AllProblemsReportedTogether(t *testing.T) {
 }
 
 type multiBad struct {
-	raorm.Model
+	storm.Model
 	Fn    func()
 	Email string
 }
 
-func (m *multiBad) Schema(t *raorm.Table) { t.Col(&m.Email).OnDelete(raorm.Cascade) }
+func (m *multiBad) Schema(t *storm.Table) { t.Col(&m.Email).OnDelete(storm.Cascade) }
 
 // ---- naming and inference ----
 
 type inferShape struct {
-	raorm.Model
+	storm.Model
 	HTTPStatus int32
 	OrgID      string
 	Payload    map[string]any
@@ -176,7 +176,7 @@ type inferShape struct {
 }
 
 func TestBuild_InfersNamesAndTypes(t *testing.T) {
-	s, err := raorm.Build(&inferShape{})
+	s, err := storm.Build(&inferShape{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,11 +211,11 @@ func TestBuild_InfersNamesAndTypes(t *testing.T) {
 }
 
 func TestBuild_Deterministic(t *testing.T) {
-	// Byte-identical output across runs is what lets `raorm verify` fail CI on
+	// Byte-identical output across runs is what lets `storm verify` fail CI on
 	// a plain diff.
 	var first string
 	for i := 0; i < 20; i++ {
-		s, err := raorm.Build(&inferShape{}, &otherSide{})
+		s, err := storm.Build(&inferShape{}, &otherSide{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,7 +242,7 @@ func TestPlans_DeclarationErrors(t *testing.T) {
 		{"plan name is not an exported identifier", &planBadName{}, "exported Go identifier"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := raorm.Build(tc.model, &planTarget{})
+			_, err := storm.Build(tc.model, &planTarget{})
 			if err == nil {
 				t.Fatal("expected a build error")
 			}
@@ -254,49 +254,49 @@ func TestPlans_DeclarationErrors(t *testing.T) {
 }
 
 type planTarget struct {
-	raorm.Model
+	storm.Model
 	Name string
 }
 
 type planScalar struct {
-	raorm.Model
+	storm.Model
 	Name    string
 	Targets []planTarget
 }
 
-func (p *planScalar) Plans(pl *raorm.Plans) { pl.Named("Bad").With(&p.Name) }
+func (p *planScalar) Plans(pl *storm.Plans) { pl.Named("Bad").With(&p.Name) }
 
 type planDupName struct {
-	raorm.Model
+	storm.Model
 	Targets []planTarget
 }
 
-func (p *planDupName) Plans(pl *raorm.Plans) {
+func (p *planDupName) Plans(pl *storm.Plans) {
 	pl.Named("Feed").With(&p.Targets)
 	pl.Named("Feed").With(&p.Targets)
 }
 
 type planDupRel struct {
-	raorm.Model
+	storm.Model
 	Targets []planTarget
 }
 
-func (p *planDupRel) Plans(pl *raorm.Plans) {
+func (p *planDupRel) Plans(pl *storm.Plans) {
 	pl.Named("Feed").With(&p.Targets).With(&p.Targets)
 }
 
 type planBadName struct {
-	raorm.Model
+	storm.Model
 	Targets []planTarget
 }
 
-func (p *planBadName) Plans(pl *raorm.Plans) { pl.Named("feed").With(&p.Targets) }
+func (p *planBadName) Plans(pl *storm.Plans) { pl.Named("feed").With(&p.Targets) }
 
 // A value receiver copies the struct, so the field pointer points into the copy
 // and the offset is garbage. Same trap as Schema, and it must be caught the
 // same way rather than producing a plan that silently names the wrong field.
 func TestPlans_ValueReceiverIsAnError(t *testing.T) {
-	_, err := raorm.Build(&planValueRecv{}, &planTarget{})
+	_, err := storm.Build(&planValueRecv{}, &planTarget{})
 	if err == nil {
 		t.Fatal("a value receiver must be an error")
 	}
@@ -306,11 +306,11 @@ func TestPlans_ValueReceiverIsAnError(t *testing.T) {
 }
 
 type planValueRecv struct {
-	raorm.Model
+	storm.Model
 	Targets []planTarget
 }
 
-func (p planValueRecv) Plans(pl *raorm.Plans) { pl.Named("Feed").With(&p.Targets) }
+func (p planValueRecv) Plans(pl *storm.Plans) { pl.Named("Feed").With(&p.Targets) }
 
 // Projection declaration errors, each caught at build time with the mistake
 // named — the alternative is a generated type that is silently wrong.
@@ -327,7 +327,7 @@ func TestProjections_DeclarationErrors(t *testing.T) {
 		{"unexported name", &projBadName{}, "exported Go identifier"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := raorm.Build(tc.model)
+			_, err := storm.Build(tc.model)
 			if err == nil {
 				t.Fatal("expected a build error")
 			}
@@ -339,39 +339,39 @@ func TestProjections_DeclarationErrors(t *testing.T) {
 }
 
 type projDupName struct {
-	raorm.Model
+	storm.Model
 	A string
 }
 
-func (m *projDupName) Projections(p *raorm.Projections) {
+func (m *projDupName) Projections(p *storm.Projections) {
 	p.Named("X", &m.A)
 	p.Named("X", &m.A)
 }
 
 type projDupCol struct {
-	raorm.Model
+	storm.Model
 	A string
 }
 
-func (m *projDupCol) Projections(p *raorm.Projections) { p.Named("X", &m.A, &m.A) }
+func (m *projDupCol) Projections(p *storm.Projections) { p.Named("X", &m.A, &m.A) }
 
 type projEmpty struct {
-	raorm.Model
+	storm.Model
 	A string
 }
 
-func (m *projEmpty) Projections(p *raorm.Projections) { p.Named("X") }
+func (m *projEmpty) Projections(p *storm.Projections) { p.Named("X") }
 
 type projReserved struct {
-	raorm.Model
+	storm.Model
 	A string
 }
 
-func (m *projReserved) Projections(p *raorm.Projections) { p.Named("Into", &m.A) }
+func (m *projReserved) Projections(p *storm.Projections) { p.Named("Into", &m.A) }
 
 type projBadName struct {
-	raorm.Model
+	storm.Model
 	A string
 }
 
-func (m *projBadName) Projections(p *raorm.Projections) { p.Named("contact", &m.A) }
+func (m *projBadName) Projections(p *storm.Projections) { p.Named("contact", &m.A) }

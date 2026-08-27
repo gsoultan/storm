@@ -3,7 +3,7 @@ package bench
 import (
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -42,7 +42,7 @@ func BenchmarkEncodeIDArray(b *testing.B) {
 		}
 	})
 
-	b.Run("raorm_codec", func(b *testing.B) {
+	b.Run("storm_codec", func(b *testing.B) {
 		fm := pgtype.NewMap()
 		pgxdrv.RegisterFastArrays(fm)
 		buf := make([]byte, 0, 1<<16)

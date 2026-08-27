@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/internal/testmodel"
+	"github.com/gsoultan/storm/internal/testmodel"
 )
 
 // The CLI is the surface every user touches first, and a tool that fails
@@ -133,7 +133,7 @@ func TestCLI_VerifyStaleDetectsAnEdit(t *testing.T) {
 	if err == nil {
 		t.Fatal("a hand-edited generated file must be reported stale")
 	}
-	if !strings.Contains(err.Error(), "raorm generate") {
+	if !strings.Contains(err.Error(), "storm generate") {
 		t.Errorf("the error should say how to fix it, got: %v", err)
 	}
 }
@@ -156,7 +156,7 @@ func TestCLI_VerifyStaleDetectsADeletion(t *testing.T) {
 // Commands needing a database must say so rather than failing obscurely.
 func TestCLI_DatabaseCommandsNeedADSN(t *testing.T) {
 	withModels(t, testmodel.All())
-	t.Setenv("RAORM_DSN", "")
+	t.Setenv("STORM_DSN", "")
 	for _, cmd := range [][]string{{"verify"}, {"diff", "x"}, {"import"}} {
 		err := run(cmd)
 		if err == nil {
@@ -258,16 +258,16 @@ func TestCLI_LintPlans(t *testing.T) {
 }
 
 // Generated packages import each other, so those imports must spell the HOST
-// module's path — the module being generated into, not raorm's.
+// module's path — the module being generated into, not storm's.
 //
 // This shipped wrong in v0.1.0 and no test caught it, because every
-// generation that ever ran was inside this repository, where raorm's own
+// generation that ever ran was inside this repository, where storm's own
 // module path happens to be the right answer. A user's first `generate`
-// emitted `github.com/gsoultan/raorm/internal/store/user` into their module
+// emitted `github.com/gsoultan/storm/internal/store/user` into their module
 // and produced code that could not compile. So the test generates into a
 // module with a DIFFERENT path, which is the only arrangement that can tell
 // the two apart.
-func TestGenerate_ImportsTheHostModuleNotRaorm(t *testing.T) {
+func TestGenerate_ImportsTheHostModuleNotStorm(t *testing.T) {
 	withModels(t, testmodel.All())
 
 	tmp := t.TempDir()
@@ -296,12 +296,12 @@ func TestGenerate_ImportsTheHostModuleNotRaorm(t *testing.T) {
 		t.Fatalf("the context package does not import the host module; it says:\n%s",
 			firstImports(string(src)))
 	}
-	if strings.Contains(string(src), `"github.com/gsoultan/raorm/internal/store/`) {
-		t.Fatal("generated code imports raorm's own module path for the user's packages")
+	if strings.Contains(string(src), `"github.com/gsoultan/storm/internal/store/`) {
+		t.Fatal("generated code imports storm's own module path for the user's packages")
 	}
-	// raorm's runtime is still imported from raorm, which is the other half.
-	if !strings.Contains(string(src), `"github.com/gsoultan/raorm/runtime"`) {
-		t.Fatal("the runtime import should still point at raorm")
+	// storm's runtime is still imported from storm, which is the other half.
+	if !strings.Contains(string(src), `"github.com/gsoultan/storm/runtime"`) {
+		t.Fatal("the runtime import should still point at storm")
 	}
 }
 

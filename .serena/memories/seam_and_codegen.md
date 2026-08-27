@@ -1,4 +1,4 @@
-# raorm — the dialect seam and the generator (2026-08-24)
+# storm — the dialect seam and the generator (2026-08-24)
 
 ## R9 was not mitigated; now it is
 The query-side dialect seam **did not exist**. `SELECT`, `ORDER BY`, `LIMIT`,
@@ -41,7 +41,7 @@ The package name comes from the **Go type** (`schema.Table.GoName`), never from
 de-pluralising the table name: `addresses` → `addres` is wrong and English has
 no rule to appeal to.
 
-`raorm generate [dir]` wires it up. `cmd/raorm` remains a template — `var Models
+`storm generate [dir]` wires it up. `cmd/storm` remains a template — `var Models
 []any` is set by a bootstrap in the user's module.
 
 ## Dead code cut, and one silent bug it was hiding

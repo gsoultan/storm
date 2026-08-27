@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // The compiler must survive any token stream, including ones a generator would

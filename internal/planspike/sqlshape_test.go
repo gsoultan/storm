@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/internal/planspike/store"
-	"github.com/gsoultan/raorm/internal/planspike/store/org"
-	"github.com/gsoultan/raorm/internal/planspike/store/post"
-	"github.com/gsoultan/raorm/internal/planspike/store/user"
-	"github.com/gsoultan/raorm/runtime"
+	"github.com/gsoultan/storm/internal/planspike/store"
+	"github.com/gsoultan/storm/internal/planspike/store/org"
+	"github.com/gsoultan/storm/internal/planspike/store/post"
+	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/runtime"
 )
 
 // capture records every statement an executor issues, so a test can assert on
@@ -149,7 +149,7 @@ func TestHasRelation_IsASemiJoin(t *testing.T) {
 	ex, _ := db(t)
 
 	sql := user.New().Where(user.HasPosts()).SQL()
-	if !strings.Contains(sql, `EXISTS (SELECT 1 FROM "posts" AS "_raorm_e"`) {
+	if !strings.Contains(sql, `EXISTS (SELECT 1 FROM "posts" AS "_storm_e"`) {
 		t.Errorf("HasPosts did not lower to a semi-join:\n%s", sql)
 	}
 
@@ -198,7 +198,7 @@ func TestHasRelation_SelfReferenceIsAliased(t *testing.T) {
 	ex, _ := db(t)
 
 	sql := org.New().Where(org.HasChildren()).SQL()
-	if !strings.Contains(sql, `"_raorm_e"."parent_id" = "orgs"."id"`) {
+	if !strings.Contains(sql, `"_storm_e"."parent_id" = "orgs"."id"`) {
 		t.Errorf("the self-referential correlation is not aliased:\n%s", sql)
 	}
 
@@ -279,7 +279,7 @@ func TestHaving_FiltersTheSemiJoin(t *testing.T) {
 	}
 	sql := cap.sqls[0]
 	for _, want := range []string{
-		`EXISTS (SELECT 1 FROM "posts" AS "_raorm_e" WHERE "_raorm_e"."author_id" = "users"."id" AND `,
+		`EXISTS (SELECT 1 FROM "posts" AS "_storm_e" WHERE "_storm_e"."author_id" = "users"."id" AND `,
 		`"published_at" IS NOT NULL`,
 		`"id" = ANY($1)`, // the parent predicate numbered first
 		"ORDER BY",       // the parent's ordering survives composition

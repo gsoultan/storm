@@ -5,12 +5,12 @@ package benchmodel
 import (
 	"time"
 
-	"github.com/gsoultan/raorm"
+	"github.com/gsoultan/storm"
 )
 
 type User struct {
-	ID        raorm.UUID
-	OrgID     raorm.UUID
+	ID        storm.UUID
+	OrgID     storm.UUID
 	Email     string
 	Name      string
 	Age       *int32
@@ -21,7 +21,7 @@ type User struct {
 
 // Projections gives the benchmark a narrow read to measure against the full
 // one on identical predicates.
-func (u *User) Projections(p *raorm.Projections) {
+func (u *User) Projections(p *storm.Projections) {
 	p.Named("Contact", &u.Email, &u.Name)
 }
 

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/raorm/codegen"
-	"github.com/gsoultan/raorm/internal/aliasrow"
+	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/internal/aliasrow"
 )
 
 // A row-type package whose declared name differs from its directory (package
@@ -35,8 +35,8 @@ func TestRawScanner_PackageNameNotDirectory(t *testing.T) {
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           "gen",
 		Package:       "ctxgen",
-		Import:        "github.com/gsoultan/raorm",
-		PackageImport: "github.com/gsoultan/raorm/internal/testgen",
+		Import:        "github.com/gsoultan/storm",
+		PackageImport: "github.com/gsoultan/storm/internal/testgen",
 		RawScanners:   []codegen.RawScanner{rs},
 	})
 	if err != nil {
@@ -51,7 +51,7 @@ func TestRawScanner_PackageNameNotDirectory(t *testing.T) {
 	if ctx == "" {
 		t.Fatal("no context package file emitted")
 	}
-	wantImport := `aliasrowx "github.com/gsoultan/raorm/internal/aliasrow"`
+	wantImport := `aliasrowx "github.com/gsoultan/storm/internal/aliasrow"`
 	if !strings.Contains(ctx, wantImport) {
 		t.Fatalf("context file lacks aliased import %s", wantImport)
 	}
@@ -83,8 +83,8 @@ func TestRawScanner_SharedRowType(t *testing.T) {
 	opts := codegen.PackageOptions{
 		Dir:           "gen",
 		Package:       "ctxgen",
-		Import:        "github.com/gsoultan/raorm",
-		PackageImport: "github.com/gsoultan/raorm/internal/testgen",
+		Import:        "github.com/gsoultan/storm",
+		PackageImport: "github.com/gsoultan/storm/internal/testgen",
 		RawScanners:   []codegen.RawScanner{a, b},
 	}
 	files, err := codegen.Package(s, opts)

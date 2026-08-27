@@ -1,13 +1,13 @@
 package codegen
 
 import (
-	"github.com/gsoultan/raorm/compile/pgsql"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/schema"
 )
 
-// Statement enumeration for `raorm explain`.
+// Statement enumeration for `storm explain`.
 //
-// The queries raorm will issue are knowable from the model: every table's base
+// The queries storm will issue are knowable from the model: every table's base
 // read, and every named plan's component loads. Enumerating them here — from
 // the same pgsql lowering the generator uses — means explain examines the
 // statements production will run, not approximations of them.

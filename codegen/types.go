@@ -3,7 +3,7 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // kind is the shape of a column's Go representation, which decides both the
@@ -172,7 +172,7 @@ func checkNumeric(table string, c *schema.Column) error {
 	}
 	if c.Type.Precision > MaxNumericPrecision {
 		return fmt.Errorf(
-			"codegen: table %s column %s is numeric(%d,%d), but raorm.Decimal holds %d "+
+			"codegen: table %s column %s is numeric(%d,%d), but storm.Decimal holds %d "+
 				"significant digits — narrow the precision, or declare the column as text "+
 				"if it genuinely needs more",
 			table, c.Name, c.Type.Precision, c.Type.Scale, MaxNumericPrecision)

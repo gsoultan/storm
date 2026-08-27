@@ -1,14 +1,14 @@
 ---
-tags: [raorm, deployment, pgbouncer]
+tags: [storm, deployment, pgbouncer]
 updated: 2026-08-26
 ---
 
-# Deploying raorm
+# Deploying storm
 
-Short, because raorm is a library and most of this is pgx's story. The part
-that is raorm's own is the first section, and it is the one that will bite.
+Short, because storm is a library and most of this is pgx's story. The part
+that is storm's own is the first section, and it is the one that will bite.
 
-## raorm requires the binary wire format
+## storm requires the binary wire format
 
 Generated scanners decode the raw bytes Postgres sends. Postgres can send each
 column as **binary** or as **text**, and the two are nothing alike for most
@@ -33,10 +33,10 @@ same is true of `jsonb`, whose binary form is the same document behind one
 version byte that `runtime.JSONB` already strips, and of **enums**, whose
 label on the wire *is* the value you scan into a string.
 
-So raorm refuses the exact, closed set it decodes from a fixed binary layout
+So storm refuses the exact, closed set it decodes from a fixed binary layout
 — `bool`, the integers and floats, `bytea`, `uuid`, the temporal types,
 `numeric`, `inet`/`cidr` and the arrays — and passes everything else through.
-A user-defined type you add tomorrow does not need raorm to be taught about
+A user-defined type you add tomorrow does not need storm to be taught about
 it. Domains get no free pass either way: PostgreSQL reports the base type's
 OID in the row description, so a domain over `int8` is checked as `int8`.
 
@@ -50,7 +50,7 @@ names the two fixes: declare the column `text[]`, or cast it in the query with
 parser with its own quoting rules to keep faithful to the first, for a case
 with two better answers. A plain `text[]` is unaffected: pgx sends it binary.
 
-raorm enforces this in two places, so neither an application's own pool nor a
+storm enforces this in two places, so neither an application's own pool nor a
 per-connection override can slip past:
 
 - `pgxdrv.NewPool` / `NewPoolConfig` **refuse** a config in
@@ -68,7 +68,7 @@ what it saved you from.
 
 PgBouncer is why anyone sets those modes, so state the combinations plainly:
 
-| pooling mode | works with raorm | how |
+| pooling mode | works with storm | how |
 |---|---|---|
 | **session** | yes | nothing to do; prepared statements are per-session and stay valid |
 | **transaction** | yes | keep pgx's default exec mode. pgx names its prepared statements per connection and re-prepares when PgBouncer hands it a different server connection, which is what `QueryExecModeCacheStatement` and `CacheDescribe` are for |
@@ -76,26 +76,26 @@ PgBouncer is why anyone sets those modes, so state the combinations plainly:
 
 The advice you will find elsewhere — "set `simple_protocol` / prefer simple
 protocol behind PgBouncer" — predates pgx v5's statement-cache handling and is
-what raorm refuses. If transaction pooling misbehaves, the fix is
+what storm refuses. If transaction pooling misbehaves, the fix is
 `QueryExecModeCacheDescribe` or `DescribeExec` (both still binary), never
 simple protocol.
 
 ## Pools
 
-`pgxdrv.NewPool` is a thin wrapper that installs raorm's fast parameter
+`pgxdrv.NewPool` is a thin wrapper that installs storm's fast parameter
 encoders (`RegisterFastArrays`) and applies the check above. An application
 that builds its own `pgxpool.Config` should call `RegisterFastArrays` from
 `AfterConnect` and is otherwise free to tune everything; wrapping it in
 `pgxdrv.Pool{P: pool}` still gets the per-statement guard.
 
 Sizing, timeouts, health checks and TLS are pgx's and your platform's
-business: raorm holds no connection state of its own, and a transaction is
+business: storm holds no connection state of its own, and a transaction is
 just an `Executor` you were handed (`pgxdrv.Tx{T: tx}`).
 
 ## Observability
 
 Every round trip goes through the `Executor` and therefore through pgx, so
-pgx's tracers see all of it and raorm needs no tracing API of its own.
+pgx's tracers see all of it and storm needs no tracing API of its own.
 
 **Implement all three interfaces on one type.** pgx splits tracing up, and a
 `QueryTracer` alone is blind to batches — which is where a named plan's
@@ -104,7 +104,7 @@ query you wrote while never seeing the four the plan issued, which reads
 exactly like an ORM hiding work. (This is not a hypothetical: the test below
 was written asserting `QueryTracer` saw everything, and failed.)
 
-| raorm calls | pgx interface | method carrying the SQL |
+| storm calls | pgx interface | method carrying the SQL |
 |---|---|---|
 | `Query`, `Exec` | `pgx.QueryTracer` | `TraceQueryStart` → `data.SQL` |
 | `Batch` (plans, units) | `pgx.BatchTracer` | `TraceBatchQuery` → `data.SQL`, once per statement |
@@ -127,11 +127,11 @@ cfg.ConnConfig.Tracer = &tracer{}          // then pgxdrv.NewPoolConfig(ctx, cfg
 The executable version, asserting the tracer sees a query, an exec and both
 statements inside a batch, is `runtime/pgxdrv/tracing_test.go`.
 
-Two raorm-side signals are worth exporting as gauges next to it:
+Two storm-side signals are worth exporting as gauges next to it:
 
 - `<table>.ShapeFlushes()` — nonzero means a call site is minting query
   structures from request data rather than from code (see `docs/PRODUCTION-READINESS.md`
   P1.1). Zero is the expected value forever.
 - `runtime.CountingExecutor` wraps any executor and counts round trips. It is
-  how raorm asserts its own N+1 guarantees, and it works the same way in your
+  how storm asserts its own N+1 guarantees, and it works the same way in your
   tests: load a plan, assert the count is what the plan promised.

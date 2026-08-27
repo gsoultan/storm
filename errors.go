@@ -1,4 +1,4 @@
-package raorm
+package storm
 
 import (
 	"errors"
@@ -26,7 +26,7 @@ func (l *errorList) err() error {
 		msgs[i] = "  " + e.Error()
 	}
 	sort.Strings(msgs)
-	return errors.New("raorm: " + plural(len(msgs)) + " in model declarations:\n" + strings.Join(msgs, "\n"))
+	return errors.New("storm: " + plural(len(msgs)) + " in model declarations:\n" + strings.Join(msgs, "\n"))
 }
 
 func plural(n int) string {

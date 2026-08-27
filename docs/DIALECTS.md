@@ -1,5 +1,5 @@
 ---
-tags: [raorm, dialects, portability]
+tags: [storm, dialects, portability]
 updated: 2026-08-23
 status: proposed
 ---
@@ -15,12 +15,12 @@ GORM, Ent, and Bun branch on dialect **per query, at runtime**, because they
 build SQL per query at runtime. That branch sits on the hot path forever, and it
 is a large part of why their builders allocate.
 
-raorm knows the target at `raorm generate` time. Generated code contains SQL
+storm knows the target at `storm generate` time. Generated code contains SQL
 text for exactly one dialect, already lowered, already interned. **There is no
 dialect branch at runtime, because there is no dialect decision at runtime.**
 
 Adding MySQL, SQL Server, and Oracle therefore costs a generator back end and a
-test matrix — and costs the hot path nothing at all. Multi-dialect makes raorm's
+test matrix — and costs the hot path nothing at all. Multi-dialect makes storm's
 advantage over the interpreters *larger*, not smaller.
 
 **One binary, several engines** — the on-prem case where a customer brings their
@@ -81,7 +81,7 @@ feature, the target, and the source line. It never fails on a customer's install
 list expands to `IN (?,?,?)` and **arity becomes part of the shape**. Left alone,
 a 500-element list would mint 500 statements. So arity is bucketed to powers of
 two (1, 2, 4, 8, 16, 32, …) and padded with repeats of the last value. Bounded
-shape count, still one prepared statement per bucket. `raorm lint` reports
+shape count, still one prepared statement per bucket. `storm lint` reports
 bucket spread.
 
 **No `RETURNING` → batched round trip.** On MySQL, `INSERT` plus
@@ -105,7 +105,7 @@ result set.
 
 This is the honest part.
 
-raorm's IR is a **logical query plan** (relational algebra), not a SQL AST. SQL
+storm's IR is a **logical query plan** (relational algebra), not a SQL AST. SQL
 dialects lower the plan to SQL text; Mongo lowers it to an aggregation pipeline.
 The runtime executes an opaque compiled artifact and does not care which.
 
@@ -118,14 +118,14 @@ arbitrary CTEs, and full transactional semantics outside a replica set.
 
 **The modelling difference is the real one.** A document schema embeds where a
 relational schema joins, and that is a design decision no translator can make
-for you. Hence `OnDocument(raorm.Embed(...))` in [[API]] §1 — required, not
+for you. Hence `OnDocument(storm.Embed(...))` in [[API]] §1 — required, not
 defaulted. A relation with no document directive fails generation for a Mongo
 target.
 
 Consequence worth stating plainly: **do not expect one model to run unchanged on
-Postgres and Mongo and be well-designed on both.** raorm's contribution is
+Postgres and Mongo and be well-designed on both.** storm's contribution is
 making the difference *visible at build time* and letting one model serve both
-where that genuinely makes sense. `raorm lint --portable` prints the intersection
+where that genuinely makes sense. `storm lint --portable` prints the intersection
 of your configured targets, so "what will not port" is a command, not a wiki page.
 
 ## Sequencing

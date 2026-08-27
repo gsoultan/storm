@@ -1,5 +1,5 @@
 ---
-tags: [raorm, api, dx]
+tags: [storm, api, dx]
 updated: 2026-08-23
 status: proposed — illustrative, not implemented
 ---
@@ -52,13 +52,13 @@ per-entity files.
 package model
 
 type Org struct {
-    raorm.Model                 // ID uuid.UUID, CreatedAt, UpdatedAt
+    storm.Model                 // ID uuid.UUID, CreatedAt, UpdatedAt
     Name  string
     Users []User                // has-many
 }
 
 type User struct {
-    raorm.Model
+    storm.Model
 
     Email string
     Name  string
@@ -82,12 +82,12 @@ column `user.OrgID`, and `user.New(email, name, orgID)`.
 Everything else goes in one optional method, and **there are no strings in it**:
 
 ```go
-func (u *User) Schema(t *raorm.Table) {
+func (u *User) Schema(t *storm.Table) {
     t.Col(&u.Email).Unique().Size(320)          // per-column settings
-    t.Col(&u.Org).OnDelete(raorm.Restrict)
+    t.Col(&u.Org).OnDelete(storm.Restrict)
 
-    t.Index(&u.Org, raorm.Desc(&u.CreatedAt))   // table-level constraints
-    t.Check(raorm.Between(&u.Age, 0, 150))
+    t.Index(&u.Org, storm.Desc(&u.CreatedAt))   // table-level constraints
+    t.Check(storm.Between(&u.Age, 0, 150))
 }
 ```
 
@@ -109,7 +109,7 @@ self-referential hierarchies and polymorphic associations: [[REFERENCE]] §1.
 ## 2. Generate
 
 ```yaml
-# raorm.yaml
+# storm.yaml
 version: 1
 model: ./internal/model
 targets:
@@ -122,17 +122,17 @@ portability:
 ```
 
 ```console
-$ raorm generate
+$ storm generate
   users  → internal/store/user   (12 columns, 3 relations, 4 plans)
   posts  → internal/store/post   (9 columns, 2 relations, 2 plans)
   ✓ 21 tables, 0 unsupported types, deterministic output
 
-$ raorm migrate diff add_user_status
+$ storm migrate diff add_user_status
   → db/migrations/0007_add_user_status.up.sql   (2 statements, non-destructive)
-  review and commit — raorm never applies a migration
+  review and commit — storm never applies a migration
 ```
 
-Adopting an existing database instead? `raorm import` writes the model **from**
+Adopting an existing database instead? `storm import` writes the model **from**
 the live schema, once, and you own it from there. Database-first is the on-ramp,
 not the steady state.
 
@@ -145,14 +145,14 @@ For table `users`, the generator emits typed handles:
 package user // internal/store/user — generated
 
 var (
-    ID        = raorm.OrdCol[uuid.UUID]{...}
-    Email     = raorm.TextCol{...}
-    Age       = raorm.OrdCol[int32]{...}
-    Status    = raorm.Col[Status]{...}     // enum → generated Go type
-    Metadata  = raorm.JSONCol{...}
-    Tags      = raorm.ArrayCol[string]{...}
-    CreatedAt = raorm.OrdCol[time.Time]{...}
-    DeletedAt = raorm.OrdCol[*time.Time]{...}
+    ID        = storm.OrdCol[uuid.UUID]{...}
+    Email     = storm.TextCol{...}
+    Age       = storm.OrdCol[int32]{...}
+    Status    = storm.Col[Status]{...}     // enum → generated Go type
+    Metadata  = storm.JSONCol{...}
+    Tags      = storm.ArrayCol[string]{...}
+    CreatedAt = storm.OrdCol[time.Time]{...}
+    DeletedAt = storm.OrdCol[*time.Time]{...}
 )
 ```
 
@@ -218,11 +218,11 @@ live in your domain layer where they belong:
 
 ```go
 // internal/authz/spec.go
-var Active = raorm.And(user.DeletedAt.IsNull(), user.Status.Eq(user.StatusActive))
-func InTenant(t uuid.UUID) raorm.Pred { return user.TenantID.Eq(t) }
+var Active = storm.And(user.DeletedAt.IsNull(), user.Status.Eq(user.StatusActive))
+func InTenant(t uuid.UUID) storm.Pred { return user.TenantID.Eq(t) }
 
 // call site
-user.Query().Where(Active, InTenant(tid), raorm.Or(
+user.Query().Where(Active, InTenant(tid), storm.Or(
     user.Age.Gte(18),
     user.Metadata.HasKey("guardian"),
 ))
@@ -308,7 +308,7 @@ var (
 )
 ```
 
-`raorm generate` emits one type per plan. The plan is the **entry point**, and
+`storm generate` emits one type per plan. The plan is the **entry point**, and
 it lives in the package that owns `plans.go` — not on `user.Query`:
 
 ```go
@@ -336,7 +336,7 @@ wrong:
   reviewer can see every load pattern in the system, and CI can cost them:
 
 ```console
-$ raorm lint --plans
+$ storm lint --plans
   UserFeed      3 round trips   users → posts (LATERAL) → comments (= ANY)
   UserSummary   1 round trip    users ⋈ orgs (JOIN)
   ✓ no plan exceeds the configured limit of 4 round trips
@@ -371,7 +371,7 @@ Update is a statement, not a load-mutate-flush cycle:
 
 ```go
 n, err := user.Update(ctx, db,
-    raorm.Where(user.ID.Eq(id)),
+    storm.Where(user.ID.Eq(id)),
     user.Email.Set("new@b.com"),
     user.LoginCount.Inc(1),
     user.Tags.Append("verified"),
@@ -382,14 +382,14 @@ Upsert:
 
 ```go
 err := user.Upsert(ctx, db, row,
-    raorm.OnConflict(user.Email).DoUpdate(user.Age.SetFromExcluded()))
+    storm.OnConflict(user.Email).DoUpdate(user.Age.SetFromExcluded()))
 ```
 
 Optimistic locking, if a `version` column is declared in the schema:
 
 ```go
-n, err := user.Update(ctx, db, raorm.Where(user.ID.Eq(id)).At(v), ...)
-if n == 0 { return raorm.ErrStaleWrite }   // version moved under you
+n, err := user.Update(ctx, db, storm.Where(user.ID.Eq(id)).At(v), ...)
+if n == 0 { return storm.ErrStaleWrite }   // version moved under you
 ```
 
 ## 9. Unit of work — explicit, batched, FK-ordered
@@ -397,11 +397,11 @@ if n == 0 { return raorm.ErrStaleWrite }   // version moved under you
 Only for graph writes. Everything above works without it.
 
 ```go
-err := db.Unit(ctx, func(u *raorm.Unit) error {
+err := db.Unit(ctx, func(u *storm.Unit) error {
     uid := u.Insert(user.Row{Email: "a@b.com"})       // deferred handle
     oid := u.Insert(org.Row{Name: "Acme"})
     u.Insert(member.Row{UserID: uid, OrgID: oid})     // depends on both
-    u.Update(counter.Total.Inc(1), raorm.Where(counter.Key.Eq("users")))
+    u.Update(counter.Total.Inc(1), storm.Where(counter.Key.Eq("users")))
     return nil
 })
 ```
@@ -418,7 +418,7 @@ No dirty checking of everything you ever loaded. No flush-order surprises. No
 ## 10. The escape hatch loses nothing
 
 ```go
-var TopEarners = raorm.SQL[EarnerRow](`
+var TopEarners = storm.SQL[EarnerRow](`
     WITH ranked AS (
         SELECT id, dept, salary,
                row_number() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn
@@ -438,7 +438,7 @@ checked-in schema snapshot, so CI needs no live Postgres). If `EarnerRow` does
 not match the result descriptor, generation fails:
 
 ```
-raorm: internal/store/reports.go:14  raorm.SQL[EarnerRow]
+storm: internal/store/reports.go:14  storm.SQL[EarnerRow]
   result column 4 "headcount" (int8) has no field in EarnerRow
   → add `Headcount int64` or alias the column away
 ```
@@ -451,7 +451,7 @@ silent drop of a result set the server actually sent. (A void function call
 wraps as `SELECT (fn($1) IS NULL) AS done` and stays `SQL[T]`.)
 
 ```go
-var DeleteRoleParents = raorm.SQLExec(`DELETE FROM role_parents WHERE role_id = $1`)
+var DeleteRoleParents = storm.SQLExec(`DELETE FROM role_parents WHERE role_id = $1`)
 
 n, err := DeleteRoleParents.Exec(ctx, db, roleID)   // rows affected
 ```
@@ -460,7 +460,7 @@ And raw fragments compose *into* typed queries as join sources:
 
 ```go
 user.Query().
-    Join(TopEarners.As("te"), raorm.On(user.ID.EqCol(TopEarners.Col.ID))).
+    Join(TopEarners.As("te"), storm.On(user.ID.EqCol(TopEarners.Col.ID))).
     Where(user.TenantID.Eq(tid)).
     All(ctx, db)
 ```
@@ -471,13 +471,13 @@ scanning. This does not. **Escaping is a supported path, not a failure.**
 ## 11. When something goes wrong
 
 ```
-raorm: query failed — user.Query (plan UserFeed)
+storm: query failed — user.Query (plan UserFeed)
   at      internal/api/users.go:88
   shape   0x2c  [tenant_id=, age>=, created_at>]
   sql     SELECT u.id, u.email, u.age FROM users u
           WHERE u.tenant_id = $1 AND u.age >= $2 AND u.created_at > $3
           ORDER BY u.created_at DESC LIMIT 50
-  args    3 bound (values hidden; set RAORM_LOG=debug to include)
+  args    3 bound (values hidden; set STORM_LOG=debug to include)
   pg      42703  column u.created_at does not exist
 ```
 
@@ -489,7 +489,7 @@ values are never logged above debug level (**sec** veto).
 
 ```go
 func TestFeed(t *testing.T) {
-    db := raormtest.New(t)               // transaction per test, auto rollback
+    db := stormtest.New(t)               // transaction per test, auto rollback
     seed(t, db)
 
     got, err := user.Query().Load(UserFeed).All(ctx, db)
@@ -499,7 +499,7 @@ func TestFeed(t *testing.T) {
 }
 ```
 
-The round-trip counter that proves raorm's own gates is exported for **your**
+The round-trip counter that proves storm's own gates is exported for **your**
 tests. An N+1 introduced by a plan change fails your suite, not production.
 
 ---
@@ -508,18 +508,18 @@ tests. An N+1 introduced by a plan change fails your suite, not production.
 
 Honest list, so the tradeoff is visible:
 
-- **A generate step.** `raorm generate` must run when migrations change.
-  `raorm verify` fails CI if generated code is stale.
+- **A generate step.** `storm generate` must run when migrations change.
+  `storm verify` fails CI if generated code is stale.
 - **Declaring load patterns up front.** A plan must be named before it is used.
   This is the price of N+1 being impossible, and it is the right price.
 - **Generic code over "a user, loaded or not"** needs an interface or a type
   parameter. Rarer than it sounds; awkward when it happens.
-- **A schema-diff engine you now depend on.** raorm emits migrations from the
+- **A schema-diff engine you now depend on.** storm emits migrations from the
   model, so a bad diff can emit a bad migration. Mitigated by review (they are
   ordinary committed files), `--allow-destructive` gating, and golden tests —
   but it is real scope, and ADR-0001 says so.
 - **Postgres first.** Other targets are sequenced in [[DIALECTS]]; the
   capability model tells you at build time what will not port.
-- **`raorm verify` in CI is not optional.** Model, generated code, migrations
+- **`storm verify` in CI is not optional.** Model, generated code, migrations
   and the live schema are four artifacts that must agree. Three verify modes
   keep them honest; skipping them reintroduces the drift ADR-0001 feared.

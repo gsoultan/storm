@@ -81,7 +81,7 @@ func IntervalErr(b []byte) (Interval, error) {
 		return Interval{}, nil
 	}
 	if len(b) < 16 {
-		return Interval{}, errors.New("raorm: interval wire value is too short")
+		return Interval{}, errors.New("storm: interval wire value is too short")
 	}
 	return Interval{
 		Micros: int64(binary.BigEndian.Uint64(b[0:8])),
@@ -187,7 +187,7 @@ func TimeOfDayErr(b []byte) (TimeOfDay, error) {
 		return 0, nil
 	}
 	if len(b) < 8 {
-		return 0, errors.New("raorm: time wire value is too short")
+		return 0, errors.New("storm: time wire value is too short")
 	}
 	return TimeOfDay(int64(binary.BigEndian.Uint64(b))), nil
 }

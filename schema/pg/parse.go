@@ -3,12 +3,12 @@ package pg
 import (
 	"strings"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Postgres hands constraint and index definitions back as normalised SQL text.
 // These parsers pull the structure back out. They are deliberately small and
-// only handle what raorm emits; anything unrecognised is preserved verbatim so
+// only handle what storm emits; anything unrecognised is preserved verbatim so
 // a diff reports it rather than silently dropping it.
 
 // stripCheck turns "CHECK ((age > 0))" into "age > 0".

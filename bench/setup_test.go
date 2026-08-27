@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -24,9 +24,9 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	dsn := os.Getenv("RAORM_DSN")
+	dsn := os.Getenv("STORM_DSN")
 	if dsn == "" {
-		fmt.Println("RAORM_DSN unset; skipping")
+		fmt.Println("STORM_DSN unset; skipping")
 		os.Exit(0)
 	}
 	ctx := context.Background()
@@ -36,9 +36,9 @@ func TestMain(m *testing.M) {
 	// One pool, shared by every implementation under test: a benchmark
 	// comparison must match capacity on both sides.
 	cfg.MinConns, cfg.MaxConns = 8, 8
-	// Through raorm's constructor, so the fast parameter encoders are
+	// Through storm's constructor, so the fast parameter encoders are
 	// installed — otherwise the = ANY numbers below measure pgx's generic
-	// array codec and say nothing about raorm.
+	// array codec and say nothing about storm.
 	pool, err = pgxdrv.NewPoolConfig(ctx, cfg)
 	must(err)
 	defer pool.Close()

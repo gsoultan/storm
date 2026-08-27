@@ -6,7 +6,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Generated scanners decode the RAW wire bytes, which means raorm has a wire
+// Generated scanners decode the RAW wire bytes, which means storm has a wire
 // FORMAT requirement that nothing used to state or check.
 //
 // Postgres can send every column as binary or as text, and pgx chooses per
@@ -28,11 +28,11 @@ import (
 // binaryFormat is the pgx/pgconn format code for binary; text is 0.
 const binaryFormat int16 = 1
 
-// formatOK reports whether raorm can decode this column in the format the
+// formatOK reports whether storm can decode this column in the format the
 // server chose.
 //
 // Binary is always fine. The interesting question is which types are BROKEN
-// by text, and the answer is an exact, closed list: the built-in types raorm
+// by text, and the answer is an exact, closed list: the built-in types storm
 // has a binary-only decoder for. Naming those rather than naming the safe
 // ones is deliberate, because the safe set is open-ended and a check that
 // rejects what it does not recognise rejects working schemas:
@@ -43,7 +43,7 @@ const binaryFormat int16 = 1
 //   - jsonb's binary form is the same document behind one version byte, which
 //     runtime.JSONB already strips; pgx sends it as text by default.
 //   - **enums and other user-defined types** send their label as text, and
-//     that label IS the value raorm scans into a string. The fixture's
+//     that label IS the value storm scans into a string. The fixture's
 //     `status` enum is exactly this, and an "everything must be binary" rule
 //     failed four tests on it before this was written that way round.
 //   - domains are transparent on the wire: PostgreSQL reports the BASE type's
@@ -74,7 +74,7 @@ func formatOK(oid uint32, format int16) bool {
 	return true
 }
 
-// checkFormats fails a result whose columns raorm cannot decode, naming the
+// checkFormats fails a result whose columns storm cannot decode, naming the
 // first offending column and the fix.
 //
 // It runs once per result, not once per row: field descriptors arrive with
@@ -86,7 +86,7 @@ func checkFormats(r pgx.Rows) error {
 			continue
 		}
 		return fmt.Errorf(
-			"raorm: column %d %q (oid %d) arrived in text format and raorm decodes binary — "+
+			"storm: column %d %q (oid %d) arrived in text format and storm decodes binary — "+
 				"this connection is in QueryExecModeSimpleProtocol or QueryExecModeExec, "+
 				"often set for PgBouncer transaction pooling. Use pgx's default "+
 				"QueryExecModeCacheStatement (or CacheDescribe/DescribeExec); see docs/DEPLOYMENT.md",
@@ -116,8 +116,8 @@ func refuseTextModes(mode pgx.QueryExecMode) error {
 	switch mode {
 	case pgx.QueryExecModeSimpleProtocol, pgx.QueryExecModeExec:
 		return fmt.Errorf(
-			"raorm: this pool is configured with %v, which sends every value as text; "+
-				"raorm's generated scanners decode binary, so booleans would invert silently. "+
+			"storm: this pool is configured with %v, which sends every value as text; "+
+				"storm's generated scanners decode binary, so booleans would invert silently. "+
 				"If this was set for PgBouncer, use transaction pooling with pgx's default "+
 				"QueryExecModeCacheStatement instead; see docs/DEPLOYMENT.md", mode)
 	}

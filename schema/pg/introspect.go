@@ -1,7 +1,7 @@
-// Package pg reads a live PostgreSQL database into raorm's schema IR.
+// Package pg reads a live PostgreSQL database into storm's schema IR.
 //
-// It is the front end behind `raorm import` (adopting an existing database) and
-// `raorm verify --drift` (catching a production schema that no longer matches
+// It is the front end behind `storm import` (adopting an existing database) and
+// `storm verify --drift` (catching a production schema that no longer matches
 // the model).
 package pg
 
@@ -9,7 +9,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/schema"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -34,8 +34,8 @@ func Introspect(ctx context.Context, c Conn, namespace string) (_ *schema.Schema
 	// comparison — which is the whole reason migrate normalises through a
 	// scratch schema — only works if BOTH sides were rendered the same way.
 	//
-	// Without this, any enum outside `public` makes `raorm verify` report drift
-	// forever and `raorm diff` emit a migration that changes nothing. Found by
+	// Without this, any enum outside `public` makes `storm verify` report drift
+	// forever and `storm diff` emit a migration that changes nothing. Found by
 	// diffing a namespace that was not public.
 	if sp, ok := c.(searchPather); ok {
 		restore, err := setSearchPath(ctx, sp, namespace)
@@ -104,7 +104,7 @@ func loadTables(ctx context.Context, c Conn, ns string, s *schema.Schema) error 
 		FROM pg_class cl
 		JOIN pg_namespace n ON n.oid = cl.relnamespace
 		WHERE n.nspname = $1 AND cl.relkind = 'r'
-		  AND cl.relname NOT LIKE 'raorm\_%'
+		  AND cl.relname NOT LIKE 'storm\_%'
 		ORDER BY cl.relname`, ns)
 	if err != nil {
 		return err
@@ -140,7 +140,7 @@ func loadColumns(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		LEFT JOIN pg_attrdef d ON d.adrelid = cl.oid AND d.adnum = a.attnum AND a.attgenerated = ''
 		LEFT JOIN pg_attrdef gd ON gd.adrelid = cl.oid AND gd.adnum = a.attnum AND a.attgenerated <> ''
 		WHERE n.nspname = $1 AND cl.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped
-		  AND cl.relname NOT LIKE 'raorm\_%'
+		  AND cl.relname NOT LIKE 'storm\_%'
 		ORDER BY cl.relname, a.attnum`, ns)
 	if err != nil {
 		return err
@@ -210,7 +210,7 @@ func loadConstraints(ctx context.Context, c Conn, ns string, s *schema.Schema) e
 		LEFT JOIN LATERAL unnest(co.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
 		LEFT JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = k.attnum
 		WHERE n.nspname = $1 AND cl.relkind = 'r'
-		  AND cl.relname NOT LIKE 'raorm\_%'
+		  AND cl.relname NOT LIKE 'storm\_%'
 		GROUP BY cl.relname, co.conname, co.contype, co.oid, rf.relname,
 		         co.confdeltype, co.confupdtype, co.condeferrable
 		ORDER BY cl.relname, co.conname`, ns)
@@ -291,7 +291,7 @@ func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		JOIN pg_am am ON am.oid = ic.relam
 		JOIN pg_namespace n ON n.oid = cl.relnamespace
 		WHERE n.nspname = $1 AND cl.relkind = 'r'
-		  AND cl.relname NOT LIKE 'raorm\_%'
+		  AND cl.relname NOT LIKE 'storm\_%'
 		  AND NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = i.indexrelid)
 		ORDER BY cl.relname, ic.relname`, ns)
 	if err != nil {

@@ -1,5 +1,5 @@
 ---
-tags: [raorm, example, quickstart]
+tags: [storm, example, quickstart]
 updated: 2026-08-23
 status: proposed — illustrative design, not implemented
 ---
@@ -18,18 +18,18 @@ package model
 
 import (
     "time"
-    "github.com/gsoultan/raorm"
+    "github.com/gsoultan/storm"
 )
 
 type Org struct {
-    raorm.Model                 // ID uuid.UUID, CreatedAt, UpdatedAt
+    storm.Model                 // ID uuid.UUID, CreatedAt, UpdatedAt
 
     Name  string
     Users []User                // has-many — declare only if you traverse this way
 }
 
 type User struct {
-    raorm.Model
+    storm.Model
 
     Email string
     Name  string
@@ -40,7 +40,7 @@ type User struct {
 }
 
 type Post struct {
-    raorm.Model
+    storm.Model
 
     Title       string
     Body        string
@@ -59,7 +59,7 @@ That is the entire schema. No DSL, no `Schema()` method, no per-entity files.
 | field name `PublishedAt` | column `published_at` |
 | `string`, `int`, `time.Time`, `uuid.UUID` … | the column type |
 | `*T` | nullable; a value type is `NOT NULL` |
-| embedded `raorm.Model` | `id uuid PRIMARY KEY DEFAULT uuidv7()`, `created_at`, `updated_at` |
+| embedded `storm.Model` | `id uuid PRIMARY KEY DEFAULT uuidv7()`, `created_at`, `updated_at` |
 | `Org Org` | FK column `org_id → orgs.id`, `NOT NULL` |
 | `Org *Org` | the same FK, nullable |
 | `Posts []Post` | has-many; the FK is found on `Post` |
@@ -86,12 +86,12 @@ Anything the type cannot say goes in one optional method, and **it is objects
 all the way down**:
 
 ```go
-func (u *User) Schema(t *raorm.Table) {
+func (u *User) Schema(t *storm.Table) {
     t.Col(&u.Email).Unique().Size(320)          // per-column settings
-    t.Col(&u.Org).OnDelete(raorm.Restrict)
+    t.Col(&u.Org).OnDelete(storm.Restrict)
 
-    t.Index(&u.Org, raorm.Desc(&u.CreatedAt))   // table-level constraints
-    t.Check(raorm.Between(&u.Age, 0, 150))
+    t.Index(&u.Org, storm.Desc(&u.CreatedAt))   // table-level constraints
+    t.Check(storm.Between(&u.Age, 0, 150))
 }
 ```
 
@@ -108,42 +108,42 @@ The struct holds your domain; the method holds the database's opinions about it.
 
 ## 2. Generate
 
-The tool needs to see your models, and a binary installed from raorm's
+The tool needs to see your models, and a binary installed from storm's
 repository cannot. So the tool is a **library**, and you give it a `main` —
 five lines, once:
 
 ```go
-// cmd/raorm/main.go
+// cmd/storm/main.go
 package main
 
 import (
-	"github.com/gsoultan/raorm/tool"
+	"github.com/gsoultan/storm/tool"
 	"example.com/app/model"
 )
 
 func main() { tool.Main(model.All(), nil) }
 ```
 
-The second argument is your `raorm.SQL[T]` / `raorm.SQLExec` declarations, if
+The second argument is your `storm.SQL[T]` / `storm.SQLExec` declarations, if
 you have any; `nil` until you do. Then every command works against *your*
 schema:
 
 ```console
-$ go run ./cmd/raorm generate internal/store
+$ go run ./cmd/storm generate internal/store
   → internal/store/org/org.gen.go (45981 bytes)
   → internal/store/store.gen.go (13658 bytes)
   → internal/store/user/user.gen.go (58057 bytes)
   3 package(s) from 2 table(s)
 
-$ go run ./cmd/raorm ddl              # CREATE statements; raorm never applies them
-$ go run ./cmd/raorm diff init        # a reviewable migration
-$ go run ./cmd/raorm verify -stale    # generated code vs model, no database
-$ go run ./cmd/raorm verify -pending  # "changed the model, forgot the migration"
-$ go run ./cmd/raorm lint             # every named plan costed in round trips
+$ go run ./cmd/storm ddl              # CREATE statements; storm never applies them
+$ go run ./cmd/storm diff init        # a reviewable migration
+$ go run ./cmd/storm verify -stale    # generated code vs model, no database
+$ go run ./cmd/storm verify -pending  # "changed the model, forgot the migration"
+$ go run ./cmd/storm lint             # every named plan costed in round trips
 ```
 
 Add `tool` to your `go.mod` tool directives if you want the shorter
-`go tool raorm generate` form. Generated code is `// Code generated` — commit
+`go tool storm generate` form. Generated code is `// Code generated` — commit
 it or gitignore it, your call; `verify -stale` fails CI if it is stale.
 
 ## 3. Query
@@ -231,7 +231,7 @@ first post instead; `.LatestN(3, ...)` gives the newest three per user.
 Plans are the one file listing every load pattern in the app, so CI can cost them:
 
 ```console
-$ raorm lint --plans
+$ storm lint --plans
   UserWithPosts       2 round trips   users ⋈ orgs → posts
   UserWithLatestPost  2 round trips   users → posts (DISTINCT ON)
 ```
@@ -242,11 +242,11 @@ $ raorm lint --plans
 u, err := user.Insert(ctx, db, user.New("ada@corp.com", "Ada", orgID))
 
 n, err := user.Update(ctx, db,
-    raorm.Where(user.ID.Eq(id)),
+    storm.Where(user.ID.Eq(id)),
     user.Name.Set("Ada Lovelace"),
 )
 
-n, err := user.Delete(ctx, db, raorm.Where(user.ID.Eq(id)))
+n, err := user.Delete(ctx, db, storm.Where(user.ID.Eq(id)))
 ```
 
 `user.New` takes the `NOT NULL` fields that have no default, positionally —
@@ -256,7 +256,7 @@ forget one and it does not compile. Everything else is an option:
 ## 6. Transactions
 
 ```go
-err := db.Tx(ctx, func(tx raorm.Tx) error {
+err := db.Tx(ctx, func(tx storm.Tx) error {
     u, err := user.Get(ctx, tx, id)          // tx works anywhere db works
     if err != nil { return err }
 
@@ -271,7 +271,7 @@ no `WithTx(...)` plumbing.
 ## 7. When you need real SQL
 
 ```go
-var TopAuthors = raorm.SQL[AuthorRow](`
+var TopAuthors = storm.SQL[AuthorRow](`
     SELECT u.id, u.name, count(p.id) AS posts
     FROM users u JOIN posts p ON p.author_id = u.id
     WHERE u.org_id = $1
@@ -298,7 +298,7 @@ no reflection.
 One thing worth knowing now: you declare `model.User`, and queries return
 `user.Row`. The rule is mechanical — **`user.Row` is your struct with each
 relation replaced by its scalar foreign key, and `*T` rewritten to
-`raorm.Null[T]`**. So `Org Org` becomes `OrgID uuid.UUID`: you keep the id
+`storm.Null[T]`**. So `Org Org` becomes `OrgID uuid.UUID`: you keep the id
 without loading anything, and `u.Org` stays a compile error until a plan loads
 it.
 

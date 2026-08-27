@@ -4,7 +4,7 @@
 // qualify row types by the DECLARED name while importing the directory path.
 package aliasrowx
 
-import "github.com/gsoultan/raorm/runtime"
+import "github.com/gsoultan/storm/runtime"
 
 // Row is a raw-query row type for codegen's alias regression test. Note is
 // Null[T] because reflect names a generic instantiation "Null[string]", not

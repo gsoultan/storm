@@ -1,6 +1,6 @@
 // Package migrate diffs two schemas and emits a reviewable migration.
 //
-// raorm never applies DDL (ADR-0001). It writes a numbered, forward-only file
+// storm never applies DDL (ADR-0001). It writes a numbered, forward-only file
 // for your migration runner, and marks every step that could lose data so a
 // destructive change cannot arrive unannounced.
 package migrate
@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/raorm/compile/pgddl"
-	"github.com/gsoultan/raorm/schema"
+	"github.com/gsoultan/storm/compile/pgddl"
+	"github.com/gsoultan/storm/schema"
 )
 
 // Change is one migration step.
@@ -47,7 +47,7 @@ func (p Plan) SQL() string {
 	var b strings.Builder
 	for _, c := range p.Changes {
 		if c.Destructive {
-			b.WriteString("-- raorm:destructive " + c.Why + "\n")
+			b.WriteString("-- storm:destructive " + c.Why + "\n")
 		}
 		b.WriteString(c.SQL + "\n")
 	}

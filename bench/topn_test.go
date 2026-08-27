@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gsoultan/raorm/bench/genuser"
-	"github.com/gsoultan/raorm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/bench/genuser"
+	"github.com/gsoultan/storm/runtime/pgxdrv"
 )
 
 // Greatest-n-per-group: which lowering is the default is decided here, not in
