@@ -306,6 +306,16 @@ is worth nothing if the only thing observed is "no crash". Record, weekly:
 | RSS after N days | the running process | the shape cache and binder pools are ceilings, not ramps |
 | `raorm verify -stale` in CI | already gated | generated code never silently diverged |
 
+**Status 2026-08-27: the soak now measures a live process, and its first real
+run is clean for the request path.** Until `anubis/scripts/soak-load.sh`
+existed, every reading recorded "not running" — the recorder measured a test
+loop that exits, so two of the four signals had no source and the soak was
+really proving that the test suite passes. Under ~12,200 authorize decisions
+per second, live heap stayed flat (271–353 MB across four rounds) while RSS
+tripled, shapes stayed at 1 and flushes at 0. Nothing accumulates per request;
+the RSS climb is pages Go has not returned. Absolute memory numbers need a
+longer, quieter run before they mean much — the comparison is the signal.
+
 **The tag went out first (2026-08-26), so the remedy changed.** `v0.1.0` was
 cut on the day the four P0/P1/P2 gates closed rather than at the end of the
 soak window. That is the owner's call and it is defensible — the gates that
