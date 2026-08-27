@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
+	"github.com/gsoultan/raorm/runtime"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -126,4 +127,37 @@ func registerScalarArrays(m *pgtype.Map) {
 	if t, ok := m.TypeForOID(pgtype.TextArrayOID); ok {
 		m.RegisterType(&pgtype.Type{Name: t.Name, OID: t.OID, Codec: textArrayCodec{Codec: t.Codec}})
 	}
+	if t, ok := m.TypeForOID(pgtype.NumericArrayOID); ok {
+		m.RegisterType(&pgtype.Type{Name: t.Name, OID: t.OID, Codec: decimalArrayCodec{Codec: t.Codec}})
+	}
+}
+
+// decimalArrayCodec overrides only the binary encoding of []runtime.Decimal.
+//
+// pgx has never heard of runtime.Decimal, so without this a numeric[] column
+// cannot be written at all — the scalar codec covers one value, not a slice
+// of them. Unlike the int8[] and text[] plans above this is not about speed:
+// it is the difference between the type working and not.
+type decimalArrayCodec struct{ pgtype.Codec }
+
+func (c decimalArrayCodec) PlanEncode(m *pgtype.Map, oid uint32, format int16, value any) pgtype.EncodePlan {
+	if format == pgtype.BinaryFormatCode {
+		if _, ok := value.([]runtime.Decimal); ok {
+			return decimalArrayPlan{}
+		}
+	}
+	return c.Codec.PlanEncode(m, oid, format, value)
+}
+
+type decimalArrayPlan struct{}
+
+func (decimalArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
+	vs, ok := value.([]runtime.Decimal)
+	if !ok {
+		return nil, fmt.Errorf("pgxdrv: numeric[] plan got %T", value)
+	}
+	if vs == nil {
+		return nil, nil
+	}
+	return runtime.EncodeArray(vs, pgtype.NumericOID, buf, runtime.EncodeNumeric), nil
 }

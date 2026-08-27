@@ -8,6 +8,7 @@ import (
 
 	"github.com/gsoultan/raorm"
 	"github.com/gsoultan/raorm/internal/planspike/store/event"
+	"github.com/gsoultan/raorm/internal/planspike/store/user"
 )
 
 // A calendar date survives the trip exactly, and compares as one.
@@ -268,5 +269,77 @@ func TestTimeOfDay_RoundTripOrderingAndComparison(t *testing.T) {
 	}
 	if _, ok := raorm.NewTimeOfDay(25, 0, 0, 0); ok {
 		t.Fatal("25:00 must be rejected, not normalised to 01:00 the next day")
+	}
+}
+
+// numeric[] round-trips exactly, including values a float64 cannot hold —
+// which is the whole reason Decimal exists, and it has to survive being
+// inside an array.
+func TestDecimalArray_RoundTripIsExact(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	want := []raorm.Decimal{}
+	for _, s := range []string{"0.10", "0.20", "12345.6789", "-0.01", "0"} {
+		d, err := raorm.ParseDecimal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, d)
+	}
+
+	n := user.Create()
+	n.SetEmail("splits@example.com")
+	n.SetName("splits")
+	n.SetStatus("active")
+	n.SetOrgID(anOrg(t))
+	n.SetPrefs(emptyJSON)
+	n.SetScopes([]string{})
+	n.SetSplits(want)
+	r, err := n.Insert(ctx, ex)
+	if err != nil {
+		t.Fatalf("insert numeric[]: %v", err)
+	}
+	t.Cleanup(func() { _ = user.Delete(ctx, ex, r.ID) })
+
+	got, ok, err := user.New().Where(user.ID.Eq(r.ID)).One(ctx, ex)
+	if err != nil || !ok {
+		t.Fatalf("read back: ok=%v err=%v", ok, err)
+	}
+	if len(got.Splits) != len(want) {
+		t.Fatalf("round-tripped %d values, sent %d", len(got.Splits), len(want))
+	}
+	for i := range want {
+		if got.Splits[i].String() != want[i].String() {
+			t.Fatalf("element %d: sent %s, got %s", i, want[i], got.Splits[i])
+		}
+	}
+	// The property float64 would break: 0.10 + 0.20 is exactly 0.30 here.
+	if got.Splits[0].String() != "0.10" || got.Splits[1].String() != "0.20" {
+		t.Fatalf("the two values a float64 cannot hold came back as %s and %s",
+			got.Splits[0], got.Splits[1])
+	}
+
+	// nil is SQL NULL, an empty slice is '{}' — the same distinction every
+	// other array keeps.
+	n2 := user.Create()
+	n2.SetEmail("nosplits@example.com")
+	n2.SetName("nosplits")
+	n2.SetStatus("active")
+	n2.SetOrgID(got.OrgID)
+	n2.SetPrefs(emptyJSON)
+	n2.SetScopes([]string{})
+	n2.SetSplits([]raorm.Decimal{})
+	r2, err := n2.Insert(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = user.Delete(ctx, ex, r2.ID) })
+	got2, _, err := user.New().Where(user.ID.Eq(r2.ID)).One(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2.Splits == nil || len(got2.Splits) != 0 {
+		t.Fatalf("an empty numeric[] came back as %#v — '{}' and NULL are different facts", got2.Splits)
 	}
 }

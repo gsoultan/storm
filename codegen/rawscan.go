@@ -192,6 +192,8 @@ func oidKind(oid uint32) (kind, string) {
 		return kindUUIDArray, "uuid[]"
 	case 1016:
 		return kindInt8Array, "int8[]"
+	case 1231:
+		return kindDecimalArray, "numeric[]"
 	}
 	return kindUnsupported, fmt.Sprintf("oid %d", oid)
 }
@@ -240,6 +242,8 @@ func oidGoType(oid uint32) string {
 		c.Type.Name, c.Type.Array = schema.TypeUUID, true
 	case kindInt8Array:
 		c.Type.Name, c.Type.Array = schema.TypeInt8, true
+	case kindDecimalArray:
+		c.Type.Name, c.Type.Array = schema.TypeNumeric, true
 	default:
 		return "?"
 	}
@@ -334,6 +338,8 @@ func oidSchemaType(k kind) schema.Type {
 		return schema.Type{Name: schema.TypeUUID, Array: true}
 	case kindInt8Array:
 		return schema.Type{Name: schema.TypeInt8, Array: true}
+	case kindDecimalArray:
+		return schema.Type{Name: schema.TypeNumeric, Array: true}
 	}
 	return schema.Type{}
 }

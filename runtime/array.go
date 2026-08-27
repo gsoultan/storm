@@ -104,6 +104,19 @@ func arrayHeader(b []byte) (n, off int, err error) {
 // different facts and a caller checking `len(x) == 0` conflates them, so the
 // distinction is preserved rather than smoothed over.
 func Array[T any](b []byte, dec func([]byte) T) ([]T, error) {
+	return ArrayErr(b, func(e []byte) (T, error) { return dec(e), nil })
+}
+
+// ArrayErr is Array for element decoders that can fail — numeric is one, and
+// a numeric[] whose third element is corrupt must say so rather than decode
+// to a zero.
+//
+// It is the single implementation, with Array wrapping it, because the bounds
+// arithmetic below is the part a fuzzer already found a hole in once: a count
+// field claiming 800 million elements made the decoder allocate gigabytes
+// before reading a byte. Two copies of that logic would eventually disagree,
+// and the cheaper copy is not worth the risk.
+func ArrayErr[T any](b []byte, dec func([]byte) (T, error)) ([]T, error) {
 	n, off, err := arrayHeader(b)
 	if err != nil || off == 0 {
 		return nil, err
@@ -121,7 +134,11 @@ func Array[T any](b []byte, dec func([]byte) T) ([]T, error) {
 		if off+size > len(b) {
 			return nil, errors.New("raorm: array element runs past the value")
 		}
-		out = append(out, dec(b[off:off+size]))
+		v, err := dec(b[off : off+size])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
 		off += size
 	}
 	return out, nil
@@ -130,16 +147,27 @@ func Array[T any](b []byte, dec func([]byte) T) ([]T, error) {
 // TextArray decodes a text[] into the arena, so a row of strings costs one
 // allocation for the slice rather than one per element.
 func TextArray(b []byte, s *Slab) ([]string, error) {
-	return Array(b, func(e []byte) string { return s.Str(e) })
+	// ArrayErr directly, not through Array: going via the wrapper costs a
+	// SECOND call per element (wrapper then dec), which measured 45% on a
+	// 500-element decode. One indirection is the price of a generic
+	// decoder; two is an accident.
+	return ArrayErr(b, func(e []byte) (string, error) { return s.Str(e), nil })
 }
 
 // UUIDArray decodes a uuid[].
 func UUIDArray(b []byte) ([][16]byte, error) {
-	return Array(b, func(e []byte) [16]byte {
+	return ArrayErr(b, func(e []byte) ([16]byte, error) {
 		var v [16]byte
 		copy(v[:], e)
-		return v
+		return v, nil
 	})
+}
+
+// DecimalArray decodes a numeric[]. Element decoding is fallible — a numeric
+// past the 18 significant digits a Decimal holds is an error rather than a
+// wrong number, and that has to survive being inside an array.
+func DecimalArray(b []byte) ([]Decimal, error) {
+	return ArrayErr(b, DecodeNumeric)
 }
 
 // EncodeArray writes a one-dimensional array. enc appends one element's bytes.

@@ -726,7 +726,7 @@ func (g *gen) colIndex(name string) int {
 func fallibleColumn(c *schema.Column) bool {
 	switch goKind(c) {
 	case kindNumeric, kindTextArray, kindUUIDArray, kindInt8Array,
-		kindInterval, kindInet, kindTimeOfDay:
+		kindDecimalArray, kindInterval, kindInet, kindTimeOfDay:
 		return true
 	}
 	return false

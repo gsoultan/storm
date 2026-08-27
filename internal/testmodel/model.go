@@ -83,6 +83,7 @@ type User struct {
 	// accounting system that rounds is a defect, not a tolerance.
 	Balance raorm.Decimal
 	Credit  *raorm.Decimal
+	Splits  []raorm.Decimal // numeric[]: exact values, in an array
 
 	Org     Org
 	Posts   []Post
@@ -90,6 +91,10 @@ type User struct {
 }
 
 func (u *User) Schema(t *raorm.Table) {
+	// Nullable on purpose: every other array column in this fixture is NOT
+	// NULL, so nothing exercised the nil-is-SQL-NULL path that arrays are
+	// careful to keep distinct from an empty array.
+	t.Col(&u.Splits).Nullable()
 	t.Col(&u.Email).Size(320)
 	t.Col(&u.Name).Size(120)
 	t.Col(&u.Status).Default("'pending'")

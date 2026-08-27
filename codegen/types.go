@@ -31,13 +31,14 @@ const (
 	kindTimeOfDay
 	kindInet
 	kindInt8Array
+	kindDecimalArray
 )
 
 func goKind(c *schema.Column) kind {
 	if c.Type.Array {
 		// Only the element types whose decoder is allocation-shaped like the
-		// scalar one. An int8[] or a numeric[] is the same shape of work and
-		// is simply not written yet; a jsonb[] is a different question.
+		// scalar one. A jsonb[] is a different question and stays unsupported
+		// rather than half-supported.
 		switch c.Type.Name {
 		case schema.TypeText, schema.TypeVarchar:
 			return kindTextArray
@@ -45,6 +46,8 @@ func goKind(c *schema.Column) kind {
 			return kindUUIDArray
 		case schema.TypeInt8:
 			return kindInt8Array
+		case schema.TypeNumeric:
+			return kindDecimalArray
 		}
 		return kindUnsupported
 	}
@@ -105,6 +108,8 @@ func baseGoType(c *schema.Column) string {
 		return "netip.Prefix"
 	case kindInt8Array:
 		return "[]int64"
+	case kindDecimalArray:
+		return "[]runtime.Decimal"
 	case kindNumeric:
 		return "runtime.Decimal"
 	case kindJSONB:
@@ -182,7 +187,7 @@ func checkNumeric(table string, c *schema.Column) error {
 // the wrong one.
 func isNullable(c *schema.Column) bool {
 	switch goKind(c) {
-	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array:
+	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array, kindDecimalArray:
 		return false
 	}
 	return !c.NotNull
@@ -204,6 +209,9 @@ func decodeExpr(c *schema.Column, i int) string {
 	}
 	if k == kindInt8Array {
 		return fmt.Sprintf("r.%s, decErr = runtime.Int8Array(rv[%d])", f, i)
+	}
+	if k == kindDecimalArray {
+		return fmt.Sprintf("r.%s, decErr = runtime.DecimalArray(rv[%d])", f, i)
 	}
 	if k == kindInterval {
 		if c.NotNull {
@@ -310,7 +318,8 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		// need @> and &&, which the operator set does not have, and equality
 		// on an array is order-sensitive in a way almost nobody means.
 		switch k {
-		case kindBytes, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array:
+		case kindBytes, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array,
+			kindDecimalArray:
 			return false
 		case kindInterval:
 			// Interval equality compares normalised values ('24:00' = '1 day'),

@@ -16,6 +16,12 @@ a release note that cannot be checked is marketing.
 
 ### Added
 
+- **`numeric[]`** decodes to `[]raorm.Decimal` and encodes back, which closes
+  type coverage: every type the model DSL can declare now round-trips.
+  Element decoding is fallible — a numeric past the 18 significant digits a
+  Decimal holds is an error rather than a wrong number — so `runtime.ArrayErr`
+  joins `Array` as the single implementation of the bounds arithmetic a fuzzer
+  once found a hole in.
 - **`raorm.TimeOfDay`** — PostgreSQL `time` (without time zone), microseconds
   since midnight. Its own type rather than a `time.Time`, for the reason
   `Interval` is not a `Duration`: an instant is a point on a calendar in a

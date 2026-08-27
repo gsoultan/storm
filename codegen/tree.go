@@ -86,7 +86,8 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		// int8, which is the wrong wire type for a `time` column. Its own
 		// arena keeps the Go type intact all the way to the codec.
 		return "tods", "nto"
-	case kindJSONB, kindBytes, kindTextArray, kindUUIDArray, kindInt8Array, kindInterval:
+	case kindJSONB, kindBytes, kindTextArray, kindUUIDArray, kindInt8Array,
+		kindDecimalArray, kindInterval:
 		// No arena. Neither is a value a predicate binds or an ordering
 		// compares — jsonb offers only IS [NOT] NULL, and bytea offers
 		// nothing — so there is nothing to store.

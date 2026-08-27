@@ -185,26 +185,35 @@ func predArraySlot(c colInfo) string {
 // IsNull is only offered where it is meaningful.
 func handleType(c colInfo) string {
 	base := map[kind]string{
-		kindBool:        "BoolCol",
-		kindInt2:        "Int16Col",
-		kindInt4:        "Int32Col",
-		kindInt8:        "Int64Col",
-		kindFloat4:      "Float32Col",
-		kindFloat8:      "Float64Col",
-		kindText:        "TextCol",
-		kindBytes:       "BytesCol",
-		kindUUID:        "UUIDCol",
-		kindTimestamptz: "TimeCol",
-		kindDate:        "DateCol",
-		kindInterval:    "IntervalCol",
-		kindTimeOfDay:   "TimeOfDayCol",
-		kindInet:        "InetCol",
-		kindInt8Array:   "Int64ArrayCol",
-		kindNumeric:     "DecimalCol",
-		kindJSONB:       "JSONCol",
-		kindTextArray:   "TextArrayCol",
-		kindUUIDArray:   "UUIDArrayCol",
+		kindBool:         "BoolCol",
+		kindInt2:         "Int16Col",
+		kindInt4:         "Int32Col",
+		kindInt8:         "Int64Col",
+		kindFloat4:       "Float32Col",
+		kindFloat8:       "Float64Col",
+		kindText:         "TextCol",
+		kindBytes:        "BytesCol",
+		kindUUID:         "UUIDCol",
+		kindTimestamptz:  "TimeCol",
+		kindDate:         "DateCol",
+		kindInterval:     "IntervalCol",
+		kindTimeOfDay:    "TimeOfDayCol",
+		kindInet:         "InetCol",
+		kindInt8Array:    "Int64ArrayCol",
+		kindNumeric:      "DecimalCol",
+		kindJSONB:        "JSONCol",
+		kindTextArray:    "TextArrayCol",
+		kindUUIDArray:    "UUIDArrayCol",
+		kindDecimalArray: "DecimalArrayCol",
 	}[c.kind]
+	// Every supported kind MUST appear above. A missing entry emitted
+	// `Splits = {14}` — a column handle with no type — which the Go parser
+	// caught, but only after the generator had already written the file. This
+	// is the third per-kind map to be missed while adding a type; each one
+	// now says so in its own terms rather than producing nonsense.
+	if base == "" {
+		panic(fmt.Sprintf("codegen: kind %d has no column-handle type name — add it to the map in colHandleType", c.kind))
+	}
 	if !c.col.NotNull {
 		return "Null" + base
 	}

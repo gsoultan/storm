@@ -791,8 +791,10 @@ Written as a checklist because "production ready" is not one property.
    before 17:00. 24:00:00 is legal and is the boundary the range check
    respects.
 
-   **Still missing:** the remaining array element types (`numeric[]`), which
-   does not block a typical schema.
+   **`numeric[]` shipped 2026-08-27**, which closes type coverage: every
+   type the model DSL can declare now round-trips. `jsonb[]` stays
+   unsupported rather than half-supported — it is a different question, not
+   the same shape of work.
 2. **No adopter has run it.** M6 exists because the first adopter finds what
    benchmarks miss — and testing the CLI in one sitting found three defects,
    two able to lose data. That is the rate to expect, and it does not fall
