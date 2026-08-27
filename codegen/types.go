@@ -28,6 +28,7 @@ const (
 	kindUUIDArray
 	kindDate
 	kindInterval
+	kindTimeOfDay
 	kindInet
 	kindInt8Array
 )
@@ -76,6 +77,8 @@ func goKind(c *schema.Column) kind {
 		return kindDate
 	case schema.TypeInterval:
 		return kindInterval
+	case schema.TypeTime:
+		return kindTimeOfDay
 	case schema.TypeInet, schema.TypeCIDR:
 		return kindInet
 	}
@@ -96,6 +99,8 @@ func baseGoType(c *schema.Column) string {
 		return "time.Time"
 	case kindInterval:
 		return "runtime.Interval"
+	case kindTimeOfDay:
+		return "runtime.TimeOfDay"
 	case kindInet:
 		return "netip.Prefix"
 	case kindInt8Array:
@@ -206,6 +211,12 @@ func decodeExpr(c *schema.Column, i int) string {
 		}
 		return fmt.Sprintf("r.%s, decErr = runtime.NullInterval(rv[%d])", f, i)
 	}
+	if k == kindTimeOfDay {
+		if c.NotNull {
+			return fmt.Sprintf("r.%s, decErr = runtime.TimeOfDayErr(rv[%d])", f, i)
+		}
+		return fmt.Sprintf("r.%s, decErr = runtime.NullTimeOfDay(rv[%d])", f, i)
+	}
 	if k == kindInet {
 		if c.NotNull {
 			return fmt.Sprintf("r.%s, decErr = runtime.InetErr(rv[%d])", f, i)
@@ -281,7 +292,10 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 	case "Gt", "Gte", "Lt", "Lte":
 		switch k {
 		case kindInt2, kindInt4, kindInt8, kindFloat4, kindFloat8, kindText,
-			kindTimestamptz, kindNumeric, kindDate:
+			kindTimestamptz, kindNumeric, kindDate, kindTimeOfDay:
+			// A time of day has an unambiguous total order — 09:00 really is
+			// before 17:00 — which is exactly what a schedule query asks for,
+			// and is why it gets the comparisons an interval cannot have.
 			return true
 		}
 		return false

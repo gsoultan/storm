@@ -12,6 +12,28 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Added
+
+- **`raorm.TimeOfDay`** — PostgreSQL `time` (without time zone), microseconds
+  since midnight. Its own type rather than a `time.Time`, for the reason
+  `Interval` is not a `Duration`: an instant is a point on a calendar in a
+  zone, a SQL `time` is none of those, and decoding one into the other forces
+  a date to be invented. It gets `Eq`/`Gt`/`Gte`/`Lt`/`Lte` and ordering,
+  which an interval cannot have, because 09:00 really is before 17:00.
+  24:00:00 is accepted, as PostgreSQL accepts it.
+
+### Fixed
+
+- Adding a type surfaced three latent codegen faults, each of which would
+  have hit the next type added: an arena missing from the capacity map read
+  as capacity zero and failed the FIRST predicate as "too complex" (now a
+  generation error naming the arena); two cursor-name maps produced
+  `b.tods[] = q.tods[]`, caught by the parser; and the column handle wrote
+  its value to the shared `int64` field while the arena read a different one
+  — which compiled, bound zero, and matched every row.
+
 ## v0.1.1 — 2026-08-26
 
 The release that makes the tool usable by someone who is not its author.

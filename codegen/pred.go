@@ -28,6 +28,7 @@ func (g *gen) predType() {
 		{"num", "num int64"}, {"str", "str string"}, {"raw", "raw [16]byte"},
 		{"tim", "tim time.Time"}, {"f64", "f64 float64"},
 		{"dec", "dec runtime.Decimal"}, {"pfx", "pfx netip.Prefix"},
+		{"tod", "tod runtime.TimeOfDay"},
 	} {
 		if ts.preds[sl.name] {
 			g.p("\t%s", sl.decl)
@@ -57,6 +58,14 @@ func predCtor(c colInfo, op string, i int) string {
 		set = "pfx: v"
 	case kindNumeric:
 		set = "dec: v"
+	case kindTimeOfDay:
+		// Its own field, NOT the shared int64 one it would otherwise land in.
+		// A TimeOfDay converts to int64 silently, so the default branch below
+		// compiled fine and wrote the value where the arena never looks —
+		// every comparison then bound a zero and matched every row. The
+		// Pred field, the arena and the slot reader have to name the same
+		// place, and nothing but a test against a real database says so.
+		set = "tod: v"
 	case kindBool:
 		set = "num: b2i(v)"
 	case kindFloat4, kindFloat8:
@@ -188,6 +197,7 @@ func handleType(c colInfo) string {
 		kindTimestamptz: "TimeCol",
 		kindDate:        "DateCol",
 		kindInterval:    "IntervalCol",
+		kindTimeOfDay:   "TimeOfDayCol",
 		kindInet:        "InetCol",
 		kindInt8Array:   "Int64ArrayCol",
 		kindNumeric:     "DecimalCol",

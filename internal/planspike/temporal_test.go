@@ -173,3 +173,100 @@ func TestInt8Array_RoundTrip(t *testing.T) {
 		t.Errorf("tags = %v — int64 range must survive", r.Tags)
 	}
 }
+
+// A time of day survives the trip exactly, orders correctly, and can be
+// compared against a bound value — the last part is the one that would break
+// silently, because TimeOfDay's underlying kind is int64 and a bound value
+// that reached pgx as one would be encoded as int8 against a `time` column.
+func TestTimeOfDay_RoundTripOrderingAndComparison(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	mk := func(h, m, s, us int) raorm.TimeOfDay {
+		v, ok := raorm.NewTimeOfDay(h, m, s, us)
+		if !ok {
+			t.Fatalf("NewTimeOfDay(%d,%d,%d,%d) rejected a legal time", h, m, s, us)
+		}
+		return v
+	}
+
+	// Midnight, a fractional second, and 24:00:00 — which PostgreSQL accepts
+	// and which is the boundary an int64 range check gets wrong.
+	opens := []raorm.TimeOfDay{
+		mk(0, 0, 0, 0),
+		mk(9, 30, 0, 0),
+		mk(23, 59, 59, 999999),
+		raorm.MaxTimeOfDay,
+	}
+	var ids [][16]byte
+	for i, o := range opens {
+		n := event.Create()
+		n.SetOn(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+		n.SetOpens(o)
+		if i == 0 {
+			n.SetClosesNull() // nullable stays distinguishable from midnight
+		} else {
+			c := mk(17, 0, 0, 0)
+			n.SetCloses(c)
+		}
+		n.SetAddr(netip.MustParsePrefix("10.0.0.1/32"))
+		n.SetNet(netip.MustParsePrefix("10.0.0.0/24"))
+		n.SetTags([]int64{})
+		r, err := n.Insert(ctx, ex)
+		if err != nil {
+			t.Fatalf("insert %s: %v", o, err)
+		}
+		ids = append(ids, r.ID)
+	}
+	t.Cleanup(func() {
+		for _, id := range ids {
+			_ = event.Delete(ctx, ex, id)
+		}
+	})
+
+	// Exact round trip, including the two boundaries.
+	for i, id := range ids {
+		got, ok, err := event.New().Where(event.ID.Eq(id)).One(ctx, ex)
+		if err != nil || !ok {
+			t.Fatalf("read back: ok=%v err=%v", ok, err)
+		}
+		if got.Opens != opens[i] {
+			t.Fatalf("opens round-tripped %s, sent %s", got.Opens, opens[i])
+		}
+		if i == 0 && got.Closes.Valid {
+			t.Fatal("a NULL time came back as valid — midnight and NULL are different facts")
+		}
+		if i > 0 && (!got.Closes.Valid || got.Closes.V != mk(17, 0, 0, 0)) {
+			t.Fatalf("closes round-tripped %v", got.Closes)
+		}
+	}
+
+	// A bound comparison: this is the assertion that fails if the value
+	// reaches the server as an int8 rather than a time.
+	after, err := event.New().
+		Where(event.ID.In(ids...), event.Opens.Gte(mk(9, 30, 0, 0))).
+		Order(event.Opens.Asc()).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatalf("comparing against a bound time: %v", err)
+	}
+	if len(after) != 3 {
+		t.Fatalf("Opens >= 09:30 matched %d rows, want 3", len(after))
+	}
+	for i := 1; i < len(after); i++ {
+		if after[i].Opens < after[i-1].Opens {
+			t.Fatalf("ordering is wrong: %s before %s", after[i-1].Opens, after[i].Opens)
+		}
+	}
+
+	// And the database agrees about what it stored, in its own text form.
+	if s := mk(9, 30, 0, 0).String(); s != "09:30:00" {
+		t.Fatalf("String() = %q", s)
+	}
+	if s := mk(23, 59, 59, 999999).String(); s != "23:59:59.999999" {
+		t.Fatalf("String() = %q", s)
+	}
+	if _, ok := raorm.NewTimeOfDay(25, 0, 0, 0); ok {
+		t.Fatal("25:00 must be rejected, not normalised to 01:00 the next day")
+	}
+}

@@ -1,6 +1,9 @@
 package codegen
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Tree-shaped query emission.
 //
@@ -52,6 +55,7 @@ func slotsFor(cols []colInfo) tableSlots {
 	for _, pair := range [][2]string{
 		{"strs", "ns"}, {"nums", "nn"}, {"raws", "nr"},
 		{"tims", "ntm"}, {"f64s", "nf"}, {"decs", "nd"}, {"pfxs", "npf"},
+		{"tods", "nto"},
 	} {
 		if ts.arenas[pair[0]] {
 			ts.cursors = append(ts.cursors, pair[1])
@@ -76,6 +80,12 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		// Its own arena: a Decimal is two words and does not fit the int64
 		// slot every other scalar shares.
 		return "decs", "nd"
+	case kindTimeOfDay:
+		// A TimeOfDay IS an int64 and would fit the shared slot — but the
+		// value reaches pgx from the arena, and an int64 there encodes as
+		// int8, which is the wrong wire type for a `time` column. Its own
+		// arena keeps the Go type intact all the way to the codec.
+		return "tods", "nto"
 	case kindJSONB, kindBytes, kindTextArray, kindUUIDArray, kindInt8Array, kindInterval:
 		// No arena. Neither is a value a predicate binds or an ordering
 		// compares — jsonb offers only IS [NOT] NULL, and bytea offers
@@ -88,7 +98,7 @@ func arenaFor(c colInfo) (arena, cursor string) {
 
 func arenaStore(c colInfo, v string) string {
 	switch c.kind {
-	case kindText, kindUUID, kindTimestamptz, kindDate, kindNumeric, kindInet:
+	case kindText, kindUUID, kindTimestamptz, kindDate, kindNumeric, kindInet, kindTimeOfDay:
 		return v
 	case kindFloat4, kindFloat8:
 		return "float64(" + v + ")"
@@ -108,6 +118,7 @@ const (
 	maxTime  = 4
 	maxFloat = 4
 	maxDec   = 4
+	maxTod   = 4
 	maxPfx   = 4
 )
 
@@ -130,10 +141,11 @@ func (g *gen) treeQuery() {
 		{"raws", "raws [%d][16]byte"}, {"tims", "tims [%d]time.Time"},
 		{"f64s", "f64s [%d]float64"}, {"decs", "decs [%d]runtime.Decimal"},
 		{"pfxs", "pfxs [%d]netip.Prefix"},
+		{"tods", "tods [%d]runtime.TimeOfDay"},
 	} {
 		if ts.arenas[ar.name] {
 			g.p("\t"+ar.decl, map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
-				"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx}[ar.name])
+				"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx, "tods": maxTod}[ar.name])
 		}
 	}
 	g.p("\t%s uint8", strings.Join(ts.cursors, ", "))
@@ -455,8 +467,17 @@ func (g *gen) treePreds() {
 		if arena == "" {
 			continue // no value arena: this column has no value-taking operator
 		}
+		// Every arena MUST appear here. A missing entry reads as capacity
+		// zero, so the first predicate on that column overflows and the query
+		// fails as "too complex" — which is what an inet column did once, and
+		// a time column did again while this type was being added.
 		max := map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
-			"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx}[arena]
+			"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx,
+			"tods": maxTod}[arena]
+		if max == 0 {
+			g.err = fmt.Errorf("codegen: arena %q has no capacity entry — add it to the map in treePreds", arena)
+			return
+		}
 		g.p("\tcase %d:", i)
 		g.p("\t\tif int(q.%s) >= %d {", cur, max)
 		g.p("\t\t\tq.over = true")
@@ -484,6 +505,8 @@ func predSlotFor(c colInfo) string {
 		return "p.f64"
 	case kindNumeric:
 		return "p.dec"
+	case kindTimeOfDay:
+		return "p.tod"
 	case kindInet:
 		return "p.pfx"
 	default:
@@ -501,10 +524,11 @@ func (g *gen) treeBind() {
 		{"raws", "raws   [%d][16]byte"}, {"tims", "tims   [%d]time.Time"},
 		{"f64s", "f64s   [%d]float64"}, {"decs", "decs   [%d]runtime.Decimal"},
 		{"pfxs", "pfxs   [%d]netip.Prefix"},
+		{"tods", "tods   [%d]runtime.TimeOfDay"},
 	} {
 		if ts.arenas[ar.name] {
 			g.p("\t"+ar.decl, map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
-				"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx}[ar.name])
+				"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx, "tods": maxTod}[ar.name])
 		}
 	}
 	if ts.anyRaw {
@@ -559,10 +583,10 @@ func (g *gen) treeBind() {
 		if a == "" {
 			continue
 		}
-		used[map[string]string{"strs": "ns", "nums": "nn", "raws": "nr", "tims": "ntm", "f64s": "nf", "decs": "nd", "pfxs": "npf"}[a]] = true
+		used[map[string]string{"strs": "ns", "nums": "nn", "raws": "nr", "tims": "ntm", "f64s": "nf", "decs": "nd", "pfxs": "npf", "tods": "nto"}[a]] = true
 	}
 	var cursors []string
-	for _, n := range []string{"ns", "nn", "nr", "ntm", "nf", "nd", "npf"} {
+	for _, n := range []string{"ns", "nn", "nr", "ntm", "nf", "nd", "npf", "nto"} {
 		if used[n] {
 			cursors = append(cursors, n)
 		}
@@ -613,7 +637,8 @@ func (g *gen) treeBind() {
 			continue // no value arena: nothing to copy into the binder
 		}
 		short := map[string]string{"strs": "ns", "nums": "nn", "raws": "nr",
-			"tims": "ntm", "f64s": "nf", "decs": "nd", "pfxs": "npf"}[arena]
+			"tims": "ntm", "f64s": "nf", "decs": "nd", "pfxs": "npf",
+			"tods": "nto"}[arena]
 		g.p("\t\tcase %d:", i)
 		g.p("\t\t\tb.%s[%s] = q.%s[%s]", arena, short, arena, short)
 		g.p("\t\t\tv = append(v, &b.%s[%s])", arena, short)

@@ -125,3 +125,97 @@ func TestNullDecoders_NullAndValue(t *testing.T) {
 		t.Errorf("Numeric = %s", d)
 	}
 }
+
+func TestTimeOfDay_PartsAndString(t *testing.T) {
+	for _, tc := range []struct {
+		h, m, s, us int
+		want        string
+	}{
+		{0, 0, 0, 0, "00:00:00"},
+		{9, 5, 3, 0, "09:05:03"},
+		{23, 59, 59, 999999, "23:59:59.999999"},
+		{12, 0, 0, 500000, "12:00:00.5"}, // trailing zeros trimmed
+		{12, 0, 0, 1, "12:00:00.000001"}, // and not over-trimmed
+		{13, 45, 30, 120000, "13:45:30.12"},
+	} {
+		v, ok := runtime.NewTimeOfDay(tc.h, tc.m, tc.s, tc.us)
+		if !ok {
+			t.Fatalf("NewTimeOfDay(%d,%d,%d,%d) rejected a legal time", tc.h, tc.m, tc.s, tc.us)
+		}
+		if got := v.String(); got != tc.want {
+			t.Errorf("String() = %q, want %q", got, tc.want)
+		}
+		h, m, s, us := v.Parts()
+		if h != tc.h || m != tc.m || s != tc.s || us != tc.us {
+			t.Errorf("Parts() = %d,%d,%d,%d, want %d,%d,%d,%d", h, m, s, us, tc.h, tc.m, tc.s, tc.us)
+		}
+	}
+
+	// 24:00:00 is a legal PostgreSQL time and the boundary a range check gets
+	// wrong; one microsecond past it is not.
+	if got := runtime.MaxTimeOfDay.String(); got != "24:00:00" {
+		t.Errorf("MaxTimeOfDay = %q", got)
+	}
+	if _, ok := runtime.NewTimeOfDay(24, 0, 0, 0); !ok {
+		t.Error("24:00:00 must be accepted — PostgreSQL accepts it")
+	}
+	if _, ok := runtime.NewTimeOfDay(24, 0, 0, 1); ok {
+		t.Error("one microsecond past 24:00:00 must be rejected")
+	}
+}
+
+// Out-of-range parts are rejected rather than normalised: 25:00 meaning 01:00
+// tomorrow would be a different fact silently substituted for the one asked
+// for.
+func TestTimeOfDay_RejectsOutOfRangeParts(t *testing.T) {
+	for _, tc := range [][4]int{
+		{25, 0, 0, 0}, {-1, 0, 0, 0}, {0, 60, 0, 0}, {0, -1, 0, 0},
+		{0, 0, 60, 0}, {0, 0, -1, 0}, {0, 0, 0, 1000000}, {0, 0, 0, -1},
+	} {
+		if _, ok := runtime.NewTimeOfDay(tc[0], tc[1], tc[2], tc[3]); ok {
+			t.Errorf("NewTimeOfDay%v was accepted", tc)
+		}
+	}
+}
+
+func TestTimeOfDay_Duration(t *testing.T) {
+	v, _ := runtime.NewTimeOfDay(1, 30, 0, 0)
+	if got := v.Duration(); got != 90*time.Minute {
+		t.Errorf("Duration() = %v, want 90m", got)
+	}
+	if got := runtime.TimeOfDay(0).Duration(); got != 0 {
+		t.Errorf("midnight Duration() = %v", got)
+	}
+}
+
+func TestTimeOfDay_WireRoundTrip(t *testing.T) {
+	for _, v := range []runtime.TimeOfDay{0, 1, 34200000000, runtime.MaxTimeOfDay} {
+		buf := runtime.EncodeTimeOfDay(v, nil)
+		if len(buf) != 8 {
+			t.Fatalf("encoded %s to %d bytes, want 8", v, len(buf))
+		}
+		got, err := runtime.TimeOfDayErr(buf)
+		if err != nil || got != v {
+			t.Fatalf("round trip of %s gave %s (err %v)", v, got, err)
+		}
+		n, err := runtime.NullTimeOfDay(buf)
+		if err != nil || !n.Valid || n.V != v {
+			t.Fatalf("NullTimeOfDay round trip of %s gave %v (err %v)", v, n, err)
+		}
+	}
+
+	// NULL and a short value are different failures: one is a fact, the other
+	// is a corrupt wire value.
+	if v, err := runtime.TimeOfDayErr(nil); err != nil || v != 0 {
+		t.Errorf("NULL should decode as the zero value without error, got %s / %v", v, err)
+	}
+	if n, err := runtime.NullTimeOfDay(nil); err != nil || n.Valid {
+		t.Errorf("NULL should decode as invalid without error, got %v / %v", n, err)
+	}
+	if _, err := runtime.TimeOfDayErr([]byte{1, 2, 3}); err == nil {
+		t.Error("a short wire value must be an error, not a truncated time")
+	}
+	if _, err := runtime.NullTimeOfDay([]byte{1, 2, 3}); err == nil {
+		t.Error("a short wire value must be an error through the nullable path too")
+	}
+}

@@ -132,3 +132,17 @@ func GenRandomUUID() Expr { return "gen_random_uuid()" }
 // hours. An alias for the same reason Decimal is — the model's type and the
 // generated code's type must be one type.
 type Interval = runtime.Interval
+
+// TimeOfDay is a PostgreSQL `time` — microseconds since midnight, no date and
+// no zone. See runtime.TimeOfDay for why it is not a time.Time.
+type TimeOfDay = runtime.TimeOfDay
+
+// MaxTimeOfDay is 24:00:00, which PostgreSQL accepts as a `time`.
+const MaxTimeOfDay = runtime.MaxTimeOfDay
+
+// NewTimeOfDay builds a time of day from its parts, reporting false for parts
+// out of range rather than normalising them — 25:00 is a mistake, not 01:00
+// tomorrow.
+func NewTimeOfDay(hour, min, sec, micro int) (TimeOfDay, bool) {
+	return runtime.NewTimeOfDay(hour, min, sec, micro)
+}

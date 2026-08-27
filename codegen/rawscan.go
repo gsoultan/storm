@@ -178,6 +178,8 @@ func oidKind(oid uint32) (kind, string) {
 		return kindDate, "date"
 	case 1186:
 		return kindInterval, "interval"
+	case 1083:
+		return kindTimeOfDay, "time"
 	case 1700:
 		return kindNumeric, "numeric"
 	case 3802:
@@ -224,6 +226,8 @@ func oidGoType(oid uint32) string {
 		c.Type.Name = schema.TypeDate
 	case kindInterval:
 		c.Type.Name = schema.TypeInterval
+	case kindTimeOfDay:
+		c.Type.Name = schema.TypeTime
 	case kindNumeric:
 		c.Type.Name = schema.TypeNumeric
 	case kindJSONB:
@@ -316,6 +320,8 @@ func oidSchemaType(k kind) schema.Type {
 		return schema.Type{Name: schema.TypeDate}
 	case kindInterval:
 		return schema.Type{Name: schema.TypeInterval}
+	case kindTimeOfDay:
+		return schema.Type{Name: schema.TypeTime}
 	case kindNumeric:
 		return schema.Type{Name: schema.TypeNumeric}
 	case kindJSONB:

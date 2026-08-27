@@ -24,6 +24,8 @@ type Row struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	On        time.Time
+	Opens     runtime.TimeOfDay
+	Closes    runtime.Null[runtime.TimeOfDay]
 	Window    runtime.Null[runtime.Interval]
 	Addr      netip.Prefix
 	Net       netip.Prefix
@@ -51,7 +53,7 @@ const (
 	opNotExists runtime.Op = 12
 )
 
-const nCols = 8
+const nCols = 10
 
 // Query is a value type: composing one allocates nothing. Predicates
 // are a postfix token stream, so disjunction and negation are
@@ -61,10 +63,11 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	raws         [4][16]byte
-	tims         [4]time.Time
-	pfxs         [4]netip.Prefix
-	nr, ntm, npf uint8
+	raws              [4][16]byte
+	tims              [4]time.Time
+	pfxs              [4]netip.Prefix
+	tods              [4]runtime.TimeOfDay
+	nr, ntm, npf, nto uint8
 
 	anyRaw [][16]byte
 	hasAny bool
@@ -185,14 +188,28 @@ func (q *Query) cursor(col uint32, r Row) {
 		}
 		q.tims[q.ntm] = r.On
 		q.ntm++
+	case 4:
+		if int(q.nto) >= len(q.tods) {
+			q.over = true
+			return
+		}
+		q.tods[q.nto] = r.Opens
+		q.nto++
 	case 5:
+		if int(q.nto) >= len(q.tods) {
+			q.over = true
+			return
+		}
+		q.tods[q.nto] = r.Closes.V
+		q.nto++
+	case 7:
 		if int(q.npf) >= len(q.pfxs) {
 			q.over = true
 			return
 		}
 		q.pfxs[q.npf] = r.Addr
 		q.npf++
-	case 6:
+	case 8:
 		if int(q.npf) >= len(q.pfxs) {
 			q.over = true
 			return
@@ -309,6 +326,7 @@ type Pred struct {
 	raw    [16]byte
 	tim    time.Time
 	pfx    netip.Prefix
+	tod    runtime.TimeOfDay
 	anyRaw [][16]byte
 }
 
@@ -319,10 +337,12 @@ var (
 	CreatedAt = TimeCol{1}
 	UpdatedAt = TimeCol{2}
 	On        = DateCol{3}
-	Window    = NullIntervalCol{4}
-	Addr      = InetCol{5}
-	Net       = InetCol{6}
-	Tags      = Int64ArrayCol{7}
+	Opens     = TimeOfDayCol{4}
+	Closes    = NullTimeOfDayCol{5}
+	Window    = NullIntervalCol{6}
+	Addr      = InetCol{7}
+	Net       = InetCol{8}
+	Tags      = Int64ArrayCol{9}
 )
 
 // UUIDCol addresses a uuid column.
@@ -378,6 +398,46 @@ func (h DateCol) Gt(v time.Time) Pred    { return Pred{col: h.c, op: opGt, tim: 
 func (h DateCol) Gte(v time.Time) Pred   { return Pred{col: h.c, op: opGte, tim: v} }
 func (h DateCol) Lt(v time.Time) Pred    { return Pred{col: h.c, op: opLt, tim: v} }
 func (h DateCol) Lte(v time.Time) Pred   { return Pred{col: h.c, op: opLte, tim: v} }
+
+// TimeOfDayCol addresses a time column.
+type TimeOfDayCol struct{ c uint8 }
+
+func (h TimeOfDayCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h TimeOfDayCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h TimeOfDayCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h TimeOfDayCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
+func (h TimeOfDayCol) Eq(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opEq, tod: v} }
+func (h TimeOfDayCol) NotEq(v runtime.TimeOfDay) Pred { return Pred{col: h.c, op: opNotEq, tod: v} }
+func (h TimeOfDayCol) Gt(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opGt, tod: v} }
+func (h TimeOfDayCol) Gte(v runtime.TimeOfDay) Pred   { return Pred{col: h.c, op: opGte, tod: v} }
+func (h TimeOfDayCol) Lt(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opLt, tod: v} }
+func (h TimeOfDayCol) Lte(v runtime.TimeOfDay) Pred   { return Pred{col: h.c, op: opLte, tod: v} }
+
+// NullTimeOfDayCol addresses a time column.
+type NullTimeOfDayCol struct{ c uint8 }
+
+func (h NullTimeOfDayCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h NullTimeOfDayCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h NullTimeOfDayCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h NullTimeOfDayCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
+func (h NullTimeOfDayCol) Eq(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opEq, tod: v} }
+func (h NullTimeOfDayCol) NotEq(v runtime.TimeOfDay) Pred { return Pred{col: h.c, op: opNotEq, tod: v} }
+func (h NullTimeOfDayCol) Gt(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opGt, tod: v} }
+func (h NullTimeOfDayCol) Gte(v runtime.TimeOfDay) Pred   { return Pred{col: h.c, op: opGte, tod: v} }
+func (h NullTimeOfDayCol) Lt(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opLt, tod: v} }
+func (h NullTimeOfDayCol) Lte(v runtime.TimeOfDay) Pred   { return Pred{col: h.c, op: opLte, tod: v} }
+func (h NullTimeOfDayCol) IsNull() Pred                   { return Pred{col: h.c, op: opIsNull} }
+func (h NullTimeOfDayCol) IsNotNull() Pred                { return Pred{col: h.c, op: opIsNotNull} }
 
 // NullIntervalCol addresses a interval column.
 type NullIntervalCol struct{ c uint8 }
@@ -511,14 +571,28 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.tims[q.ntm] = p.tim
 		q.ntm++
+	case 4:
+		if int(q.nto) >= 4 {
+			q.over = true
+			return
+		}
+		q.tods[q.nto] = p.tod
+		q.nto++
 	case 5:
+		if int(q.nto) >= 4 {
+			q.over = true
+			return
+		}
+		q.tods[q.nto] = p.tod
+		q.nto++
+	case 7:
 		if int(q.npf) >= 4 {
 			q.over = true
 			return
 		}
 		q.pfxs[q.npf] = p.pfx
 		q.npf++
-	case 6:
+	case 8:
 		if int(q.npf) >= 4 {
 			q.over = true
 			return
@@ -530,35 +604,49 @@ func (q *Query) leaf(p Pred) {
 }
 
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
-func (q Query) IDEq(v [16]byte) Query            { return q.Where(ID.Eq(v)) }
-func (q Query) IDNotEq(v [16]byte) Query         { return q.Where(ID.NotEq(v)) }
-func (q Query) IDIn(v ...[16]byte) Query         { return q.Where(ID.In(v...)) }
-func (q Query) CreatedAtEq(v time.Time) Query    { return q.Where(CreatedAt.Eq(v)) }
-func (q Query) CreatedAtNotEq(v time.Time) Query { return q.Where(CreatedAt.NotEq(v)) }
-func (q Query) CreatedAtGt(v time.Time) Query    { return q.Where(CreatedAt.Gt(v)) }
-func (q Query) CreatedAtGte(v time.Time) Query   { return q.Where(CreatedAt.Gte(v)) }
-func (q Query) CreatedAtLt(v time.Time) Query    { return q.Where(CreatedAt.Lt(v)) }
-func (q Query) CreatedAtLte(v time.Time) Query   { return q.Where(CreatedAt.Lte(v)) }
-func (q Query) UpdatedAtEq(v time.Time) Query    { return q.Where(UpdatedAt.Eq(v)) }
-func (q Query) UpdatedAtNotEq(v time.Time) Query { return q.Where(UpdatedAt.NotEq(v)) }
-func (q Query) UpdatedAtGt(v time.Time) Query    { return q.Where(UpdatedAt.Gt(v)) }
-func (q Query) UpdatedAtGte(v time.Time) Query   { return q.Where(UpdatedAt.Gte(v)) }
-func (q Query) UpdatedAtLt(v time.Time) Query    { return q.Where(UpdatedAt.Lt(v)) }
-func (q Query) UpdatedAtLte(v time.Time) Query   { return q.Where(UpdatedAt.Lte(v)) }
-func (q Query) OnEq(v time.Time) Query           { return q.Where(On.Eq(v)) }
-func (q Query) OnNotEq(v time.Time) Query        { return q.Where(On.NotEq(v)) }
-func (q Query) OnGt(v time.Time) Query           { return q.Where(On.Gt(v)) }
-func (q Query) OnGte(v time.Time) Query          { return q.Where(On.Gte(v)) }
-func (q Query) OnLt(v time.Time) Query           { return q.Where(On.Lt(v)) }
-func (q Query) OnLte(v time.Time) Query          { return q.Where(On.Lte(v)) }
-func (q Query) WindowIsNull() Query              { return q.Where(Window.IsNull()) }
-func (q Query) WindowIsNotNull() Query           { return q.Where(Window.IsNotNull()) }
-func (q Query) AddrEq(v netip.Prefix) Query      { return q.Where(Addr.Eq(v)) }
-func (q Query) AddrNotEq(v netip.Prefix) Query   { return q.Where(Addr.NotEq(v)) }
-func (q Query) NetEq(v netip.Prefix) Query       { return q.Where(Net.Eq(v)) }
-func (q Query) NetNotEq(v netip.Prefix) Query    { return q.Where(Net.NotEq(v)) }
+func (q Query) IDEq(v [16]byte) Query                 { return q.Where(ID.Eq(v)) }
+func (q Query) IDNotEq(v [16]byte) Query              { return q.Where(ID.NotEq(v)) }
+func (q Query) IDIn(v ...[16]byte) Query              { return q.Where(ID.In(v...)) }
+func (q Query) CreatedAtEq(v time.Time) Query         { return q.Where(CreatedAt.Eq(v)) }
+func (q Query) CreatedAtNotEq(v time.Time) Query      { return q.Where(CreatedAt.NotEq(v)) }
+func (q Query) CreatedAtGt(v time.Time) Query         { return q.Where(CreatedAt.Gt(v)) }
+func (q Query) CreatedAtGte(v time.Time) Query        { return q.Where(CreatedAt.Gte(v)) }
+func (q Query) CreatedAtLt(v time.Time) Query         { return q.Where(CreatedAt.Lt(v)) }
+func (q Query) CreatedAtLte(v time.Time) Query        { return q.Where(CreatedAt.Lte(v)) }
+func (q Query) UpdatedAtEq(v time.Time) Query         { return q.Where(UpdatedAt.Eq(v)) }
+func (q Query) UpdatedAtNotEq(v time.Time) Query      { return q.Where(UpdatedAt.NotEq(v)) }
+func (q Query) UpdatedAtGt(v time.Time) Query         { return q.Where(UpdatedAt.Gt(v)) }
+func (q Query) UpdatedAtGte(v time.Time) Query        { return q.Where(UpdatedAt.Gte(v)) }
+func (q Query) UpdatedAtLt(v time.Time) Query         { return q.Where(UpdatedAt.Lt(v)) }
+func (q Query) UpdatedAtLte(v time.Time) Query        { return q.Where(UpdatedAt.Lte(v)) }
+func (q Query) OnEq(v time.Time) Query                { return q.Where(On.Eq(v)) }
+func (q Query) OnNotEq(v time.Time) Query             { return q.Where(On.NotEq(v)) }
+func (q Query) OnGt(v time.Time) Query                { return q.Where(On.Gt(v)) }
+func (q Query) OnGte(v time.Time) Query               { return q.Where(On.Gte(v)) }
+func (q Query) OnLt(v time.Time) Query                { return q.Where(On.Lt(v)) }
+func (q Query) OnLte(v time.Time) Query               { return q.Where(On.Lte(v)) }
+func (q Query) OpensEq(v runtime.TimeOfDay) Query     { return q.Where(Opens.Eq(v)) }
+func (q Query) OpensNotEq(v runtime.TimeOfDay) Query  { return q.Where(Opens.NotEq(v)) }
+func (q Query) OpensGt(v runtime.TimeOfDay) Query     { return q.Where(Opens.Gt(v)) }
+func (q Query) OpensGte(v runtime.TimeOfDay) Query    { return q.Where(Opens.Gte(v)) }
+func (q Query) OpensLt(v runtime.TimeOfDay) Query     { return q.Where(Opens.Lt(v)) }
+func (q Query) OpensLte(v runtime.TimeOfDay) Query    { return q.Where(Opens.Lte(v)) }
+func (q Query) ClosesEq(v runtime.TimeOfDay) Query    { return q.Where(Closes.Eq(v)) }
+func (q Query) ClosesNotEq(v runtime.TimeOfDay) Query { return q.Where(Closes.NotEq(v)) }
+func (q Query) ClosesGt(v runtime.TimeOfDay) Query    { return q.Where(Closes.Gt(v)) }
+func (q Query) ClosesGte(v runtime.TimeOfDay) Query   { return q.Where(Closes.Gte(v)) }
+func (q Query) ClosesLt(v runtime.TimeOfDay) Query    { return q.Where(Closes.Lt(v)) }
+func (q Query) ClosesLte(v runtime.TimeOfDay) Query   { return q.Where(Closes.Lte(v)) }
+func (q Query) ClosesIsNull() Query                   { return q.Where(Closes.IsNull()) }
+func (q Query) ClosesIsNotNull() Query                { return q.Where(Closes.IsNotNull()) }
+func (q Query) WindowIsNull() Query                   { return q.Where(Window.IsNull()) }
+func (q Query) WindowIsNotNull() Query                { return q.Where(Window.IsNotNull()) }
+func (q Query) AddrEq(v netip.Prefix) Query           { return q.Where(Addr.Eq(v)) }
+func (q Query) AddrNotEq(v netip.Prefix) Query        { return q.Where(Addr.NotEq(v)) }
+func (q Query) NetEq(v netip.Prefix) Query            { return q.Where(Net.Eq(v)) }
+func (q Query) NetNotEq(v netip.Prefix) Query         { return q.Where(Net.NotEq(v)) }
 
-const selectPrefix = `SELECT "id", "created_at", "updated_at", "on", "window", "addr", "net", "tags" FROM "events"`
+const selectPrefix = `SELECT "id", "created_at", "updated_at", "on", "opens", "closes", "window", "addr", "net", "tags" FROM "events"`
 const countPrefix = `SELECT count(*) FROM "events"`
 const existsPrefix = `SELECT 1 FROM "events"`
 const existsSuffix = ` LIMIT 1`
@@ -593,6 +681,18 @@ var orderTable = [nCols][4]string{
 		"\"on\" ASC NULLS FIRST",
 		"\"on\" DESC NULLS LAST",
 	},
+	{ // opens
+		"\"opens\"",
+		"\"opens\" DESC",
+		"\"opens\" ASC NULLS FIRST",
+		"\"opens\" DESC NULLS LAST",
+	},
+	{ // closes
+		"\"closes\"",
+		"\"closes\" DESC",
+		"\"closes\" ASC NULLS FIRST",
+		"\"closes\" DESC NULLS LAST",
+	},
 	{ // window
 		"\"window\"",
 		"\"window\" DESC",
@@ -626,6 +726,8 @@ var identTable = [nCols]string{
 	"\"created_at\"",
 	"\"updated_at\"",
 	"\"on\"",
+	"\"opens\"",
+	"\"closes\"",
 	"\"window\"",
 	"\"addr\"",
 	"\"net\"",
@@ -662,7 +764,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [8][13]runtime.Frag{
+var fragTable = [10][13]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -720,6 +822,36 @@ var fragTable = [8][13]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+	},
+	{ // opens
+		{}, // opNone
+		{A: "\"opens\" = $", B: ""},
+		{A: "\"opens\" <> $", B: ""},
+		{A: "\"opens\" > $", B: ""},
+		{A: "\"opens\" >= $", B: ""},
+		{A: "\"opens\" < $", B: ""},
+		{A: "\"opens\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // closes
+		{}, // opNone
+		{A: "\"closes\" = $", B: ""},
+		{A: "\"closes\" <> $", B: ""},
+		{A: "\"closes\" > $", B: ""},
+		{A: "\"closes\" >= $", B: ""},
+		{A: "\"closes\" < $", B: ""},
+		{A: "\"closes\" <= $", B: ""},
+		{},
+		{},
+		{A: "\"closes\" IS NULL", B: ""},
+		{A: "\"closes\" IS NOT NULL", B: ""},
 		{},
 		{},
 	},
@@ -941,19 +1073,27 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	r.CreatedAt = runtime.Timestamptz(rv[1])
 	r.UpdatedAt = runtime.Timestamptz(rv[2])
 	r.On = runtime.Date(rv[3])
-	r.Window, decErr = runtime.NullInterval(rv[4])
+	r.Opens, decErr = runtime.TimeOfDayErr(rv[4])
 	if decErr != nil {
 		return decErr
 	}
-	r.Addr, decErr = runtime.InetErr(rv[5])
+	r.Closes, decErr = runtime.NullTimeOfDay(rv[5])
 	if decErr != nil {
 		return decErr
 	}
-	r.Net, decErr = runtime.InetErr(rv[6])
+	r.Window, decErr = runtime.NullInterval(rv[6])
 	if decErr != nil {
 		return decErr
 	}
-	r.Tags, decErr = runtime.Int8Array(rv[7])
+	r.Addr, decErr = runtime.InetErr(rv[7])
+	if decErr != nil {
+		return decErr
+	}
+	r.Net, decErr = runtime.InetErr(rv[8])
+	if decErr != nil {
+		return decErr
+	}
+	r.Tags, decErr = runtime.Int8Array(rv[9])
 	if decErr != nil {
 		return decErr
 	}
@@ -965,6 +1105,7 @@ type binder struct {
 	raws   [4][16]byte
 	tims   [4]time.Time
 	pfxs   [4]netip.Prefix
+	tods   [4]runtime.TimeOfDay
 	anyRaw [][16]byte
 	limit  int64
 	offset int64
@@ -996,7 +1137,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var nr, ntm, npf uint8
+	var nr, ntm, npf, nto uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1032,11 +1173,19 @@ func (q Query) bindPreds(b *binder) []any {
 			b.tims[ntm] = q.tims[ntm]
 			v = append(v, &b.tims[ntm])
 			ntm++
+		case 4:
+			b.tods[nto] = q.tods[nto]
+			v = append(v, &b.tods[nto])
+			nto++
 		case 5:
+			b.tods[nto] = q.tods[nto]
+			v = append(v, &b.tods[nto])
+			nto++
+		case 7:
 			b.pfxs[npf] = q.pfxs[npf]
 			v = append(v, &b.pfxs[npf])
 			npf++
-		case 6:
+		case 8:
 			b.pfxs[npf] = q.pfxs[npf]
 			v = append(v, &b.pfxs[npf])
 			npf++
@@ -1171,7 +1320,7 @@ func (q Query) Prepare(b *Binder) (string, []any) {
 
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
-const insertSQL = `INSERT INTO "events" ("id", "created_at", "updated_at", "on", "window", "addr", "net", "tags") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING "id", "created_at", "updated_at", "on", "window", "addr", "net", "tags"`
+const insertSQL = `INSERT INTO "events" ("id", "created_at", "updated_at", "on", "opens", "closes", "window", "addr", "net", "tags") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING "id", "created_at", "updated_at", "on", "opens", "closes", "window", "addr", "net", "tags"`
 
 const updatePrefix = `UPDATE "events" SET `
 const deletePrefix = `DELETE FROM "events"`
@@ -1181,18 +1330,22 @@ const deletePrefix = `DELETE FROM "events"`
 const (
 	dUpdatedAt uint64 = 1 << 0
 	dOn        uint64 = 1 << 1
-	dWindow    uint64 = 1 << 2
-	dAddr      uint64 = 1 << 3
-	dNet       uint64 = 1 << 4
-	dTags      uint64 = 1 << 5
+	dOpens     uint64 = 1 << 2
+	dCloses    uint64 = 1 << 3
+	dWindow    uint64 = 1 << 4
+	dAddr      uint64 = 1 << 5
+	dNet       uint64 = 1 << 6
+	dTags      uint64 = 1 << 7
 )
 
-const nUpdatable = 6
+const nUpdatable = 8
 
 // setFrags is every assignment this table can make, lowered at build time.
 var setFrags = [nUpdatable]runtime.Frag{
 	{A: "\"updated_at\" = $", B: ""}, // updated_at
 	{A: "\"on\" = $", B: ""},         // on
+	{A: "\"opens\" = $", B: ""},      // opens
+	{A: "\"closes\" = $", B: ""},     // closes
 	{A: "\"window\" = $", B: ""},     // window
 	{A: "\"addr\" = $", B: ""},       // addr
 	{A: "\"net\" = $", B: ""},        // net
@@ -1212,13 +1365,15 @@ const (
 	iCreatedAt uint64 = 1 << 1
 	iUpdatedAt uint64 = 1 << 2
 	iOn        uint64 = 1 << 3
-	iWindow    uint64 = 1 << 4
-	iAddr      uint64 = 1 << 5
-	iNet       uint64 = 1 << 6
-	iTags      uint64 = 1 << 7
+	iOpens     uint64 = 1 << 4
+	iCloses    uint64 = 1 << 5
+	iWindow    uint64 = 1 << 6
+	iAddr      uint64 = 1 << 7
+	iNet       uint64 = 1 << 8
+	iTags      uint64 = 1 << 9
 )
 
-const nInsertable = 8
+const nInsertable = 10
 
 // insCols is the quoted column name for each insert bit.
 var insCols = [nInsertable]string{
@@ -1226,6 +1381,8 @@ var insCols = [nInsertable]string{
 	"\"created_at\"",
 	"\"updated_at\"",
 	"\"on\"",
+	"\"opens\"",
+	"\"closes\"",
 	"\"window\"",
 	"\"addr\"",
 	"\"net\"",
@@ -1238,7 +1395,7 @@ var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Clo
 
 const insPlaceholder = "$"
 const insPrefix = "INSERT INTO \"events\""
-const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"on\", \"window\", \"addr\", \"net\", \"tags\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"on\", \"opens\", \"closes\", \"window\", \"addr\", \"net\", \"tags\""
 
 var insCache = runtime.NewMaskCache()
 var updCache = runtime.NewMaskCache()
@@ -1274,6 +1431,23 @@ func (m *Mut) SetUpdatedAt(v time.Time) {
 func (m *Mut) SetOn(v time.Time) {
 	m.row.On = v
 	m.dirty |= dOn
+}
+
+func (m *Mut) SetOpens(v runtime.TimeOfDay) {
+	m.row.Opens = v
+	m.dirty |= dOpens
+}
+
+func (m *Mut) SetCloses(v runtime.TimeOfDay) {
+	m.row.Closes = runtime.Null[runtime.TimeOfDay]{V: v, Valid: true}
+	m.dirty |= dCloses
+}
+
+// SetClosesNull writes SQL NULL. It is a separate method because a
+// zero value and an absent value are different facts.
+func (m *Mut) SetClosesNull() {
+	m.row.Closes = runtime.Null[runtime.TimeOfDay]{}
+	m.dirty |= dCloses
 }
 
 func (m *Mut) SetWindow(v runtime.Interval) {
@@ -1348,6 +1522,23 @@ func (n *Ins) SetOn(v time.Time) {
 	n.set |= iOn
 }
 
+func (n *Ins) SetOpens(v runtime.TimeOfDay) {
+	n.row.Opens = v
+	n.set |= iOpens
+}
+
+func (n *Ins) SetCloses(v runtime.TimeOfDay) {
+	n.row.Closes = runtime.Null[runtime.TimeOfDay]{V: v, Valid: true}
+	n.set |= iCloses
+}
+
+// SetClosesNull writes SQL NULL explicitly, which is not the same as
+// leaving the column unset and taking its default.
+func (n *Ins) SetClosesNull() {
+	n.row.Closes = runtime.Null[runtime.TimeOfDay]{}
+	n.set |= iCloses
+}
+
 func (n *Ins) SetWindow(v runtime.Interval) {
 	n.row.Window = runtime.Null[runtime.Interval]{V: v, Valid: true}
 	n.set |= iWindow
@@ -1380,7 +1571,7 @@ func (n *Ins) SetTags(v []int64) {
 // assigned, or it silently reverts every column it did not.
 var upsertTails = []func(uint64) string{
 	func(mask uint64) string {
-		set := make([]string, 0, 6)
+		set := make([]string, 0, 8)
 		if mask&(1<<2) != 0 {
 			set = append(set, "updated_at")
 		}
@@ -1388,15 +1579,21 @@ var upsertTails = []func(uint64) string{
 			set = append(set, "on")
 		}
 		if mask&(1<<4) != 0 {
-			set = append(set, "window")
+			set = append(set, "opens")
 		}
 		if mask&(1<<5) != 0 {
-			set = append(set, "addr")
+			set = append(set, "closes")
 		}
 		if mask&(1<<6) != 0 {
-			set = append(set, "net")
+			set = append(set, "window")
 		}
 		if mask&(1<<7) != 0 {
+			set = append(set, "addr")
+		}
+		if mask&(1<<8) != 0 {
+			set = append(set, "net")
+		}
+		if mask&(1<<9) != 0 {
 			set = append(set, "tags")
 		}
 		return onConflictID(set)
@@ -1433,6 +1630,8 @@ func joinAssign(set []string) string {
 var assignFor = map[string]string{
 	"updated_at": "\"updated_at\" = EXCLUDED.\"updated_at\"",
 	"on":         "\"on\" = EXCLUDED.\"on\"",
+	"opens":      "\"opens\" = EXCLUDED.\"opens\"",
+	"closes":     "\"closes\" = EXCLUDED.\"closes\"",
 	"window":     "\"window\" = EXCLUDED.\"window\"",
 	"addr":       "\"addr\" = EXCLUDED.\"addr\"",
 	"net":        "\"net\" = EXCLUDED.\"net\"",
@@ -1489,12 +1688,16 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		case 3:
 			args = append(args, n.row.On)
 		case 4:
-			args = append(args, n.row.Window.Arg())
+			args = append(args, n.row.Opens)
 		case 5:
-			args = append(args, n.row.Addr)
+			args = append(args, n.row.Closes.Arg())
 		case 6:
-			args = append(args, n.row.Net)
+			args = append(args, n.row.Window.Arg())
 		case 7:
+			args = append(args, n.row.Addr)
+		case 8:
+			args = append(args, n.row.Net)
+		case 9:
 			args = append(args, n.row.Tags)
 		}
 	}
@@ -1528,11 +1731,13 @@ func Inserts() int { return insCache.Masks() }
 // not treat a zero as 'unset': that guess is why other ORMs cannot insert
 // a false, a 0 or an empty string into a column with a default.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
-	args := make([]any, 0, 8)
+	args := make([]any, 0, 10)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
 	args = append(args, r.On)
+	args = append(args, r.Opens)
+	args = append(args, r.Closes.Arg())
 	args = append(args, r.Window.Arg())
 	args = append(args, r.Addr)
 	args = append(args, r.Net)
@@ -1567,6 +1772,8 @@ var copyCols = []string{
 	"created_at",
 	"updated_at",
 	"on",
+	"opens",
+	"closes",
 	"window",
 	"addr",
 	"net",
@@ -1577,7 +1784,7 @@ var copyCols = []string{
 type rowSource struct {
 	rows []Row
 	i    int
-	buf  [8]any
+	buf  [10]any
 }
 
 func (s *rowSource) Next() bool {
@@ -1599,10 +1806,12 @@ func (s *rowSource) Values() []any {
 	s.buf[1] = &r.CreatedAt
 	s.buf[2] = &r.UpdatedAt
 	s.buf[3] = &r.On
-	s.buf[4] = r.Window.Ptr()
-	s.buf[5] = &r.Addr
-	s.buf[6] = &r.Net
-	s.buf[7] = &r.Tags
+	s.buf[4] = &r.Opens
+	s.buf[5] = r.Closes.Ptr()
+	s.buf[6] = r.Window.Ptr()
+	s.buf[7] = &r.Addr
+	s.buf[8] = &r.Net
+	s.buf[9] = &r.Tags
 	return s.buf[:]
 }
 
@@ -1641,12 +1850,16 @@ func InsertOp(r Row) runtime.BatchOp {
 	mask |= 1 << 5
 	mask |= 1 << 6
 	mask |= 1 << 7
+	mask |= 1 << 8
+	mask |= 1 << 9
 	st := stmtForInsert(mask, 0)
-	args := make([]any, 0, 8)
+	args := make([]any, 0, 10)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
 	args = append(args, r.On)
+	args = append(args, r.Opens)
+	args = append(args, r.Closes.Arg())
 	args = append(args, r.Window.Arg())
 	args = append(args, r.Addr)
 	args = append(args, r.Net)
@@ -1675,12 +1888,16 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 		case 1:
 			args = append(args, m.row.On)
 		case 2:
-			args = append(args, m.row.Window.Arg())
+			args = append(args, m.row.Opens)
 		case 3:
-			args = append(args, m.row.Addr)
+			args = append(args, m.row.Closes.Arg())
 		case 4:
-			args = append(args, m.row.Net)
+			args = append(args, m.row.Window.Arg())
 		case 5:
+			args = append(args, m.row.Addr)
+		case 6:
+			args = append(args, m.row.Net)
+		case 7:
 			args = append(args, m.row.Tags)
 		}
 	}
@@ -1742,12 +1959,16 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		case 1:
 			args = append(args, m.row.On)
 		case 2:
-			args = append(args, m.row.Window.Arg())
+			args = append(args, m.row.Opens)
 		case 3:
-			args = append(args, m.row.Addr)
+			args = append(args, m.row.Closes.Arg())
 		case 4:
-			args = append(args, m.row.Net)
+			args = append(args, m.row.Window.Arg())
 		case 5:
+			args = append(args, m.row.Addr)
+		case 6:
+			args = append(args, m.row.Net)
+		case 7:
 			args = append(args, m.row.Tags)
 		}
 	}

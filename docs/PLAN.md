@@ -783,9 +783,16 @@ Written as a checklist because "production ready" is not one property.
    polices the host-bits distinction; interval offers no equality because
    `'24:00' = '1 day'` surprises in both directions.
 
-   **Still missing:** time-of-day (needs a pgx binding decision) and the
-   remaining array element types (`numeric[]`). Neither blocks a typical
-   schema.
+   **`time` (time-of-day) shipped 2026-08-27** as `raorm.TimeOfDay`:
+   microseconds since midnight, its own type rather than a `time.Time`,
+   because an instant is a point on a calendar in a zone and a SQL `time` is
+   none of those — decoding one into the other forces a date to be invented.
+   It gets the comparisons an interval cannot have, since 09:00 really is
+   before 17:00. 24:00:00 is legal and is the boundary the range check
+   respects.
+
+   **Still missing:** the remaining array element types (`numeric[]`), which
+   does not block a typical schema.
 2. **No adopter has run it.** M6 exists because the first adopter finds what
    benchmarks miss — and testing the CLI in one sitting found three defects,
    two able to lose data. That is the rate to expect, and it does not fall
