@@ -14,6 +14,20 @@ a release note that cannot be checked is marketing.
 
 ## v0.3.0 — 2026-08-28
 
+### Benchmarks need re-running before the tag
+
+`bench/RESULTS.md` was measured on Go 1.26.6 and the module now builds on 1.27.
+A spot check found the **allocation counts unchanged** — which are the claims
+that file says are the honest ones — but `DecodeRow_Offline`, which needs no
+database and touches nothing v0.3.0 changed, moved from 31 ns / 48 B / 3 allocs
+to ~48 ns / 128 B / 1 alloc. A toolchain difference in `internal/spike`, not a
+regression, and exactly what a re-run is for.
+
+The wall-clock table was deliberately NOT rewritten: the spot check ran against
+a different container and every figure including the floor was ~1.7× higher, so
+a mixed-environment table would be worse than a stale one. `make results` on
+the recorded environment closes this.
+
 ### CI now runs everything
 
 Three gates existed only when somebody ran them by hand, which means they were

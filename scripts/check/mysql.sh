@@ -20,6 +20,14 @@ cd "$(dirname "$0")/../.."
 # through `sh -c`, which silently mangles anything with a space in it and hands
 # mysql its own --help.
 if [ -n "${STORM_MYSQL_DSN:-}" ]; then
+  # FAIL rather than skip. A gate that quietly disappears when a tool is
+  # missing is the "documentation, not a gate" problem — the caller asked for
+  # this check by setting the variable, so not being able to run it is an
+  # error, not a pass.
+  if ! command -v mysql >/dev/null 2>&1; then
+    echo "STORM_MYSQL_DSN is set but the mysql client is not installed" >&2
+    exit 1
+  fi
   mysql_run() { mysql --protocol=TCP -h127.0.0.1 -ustorm -pstorm storm; }
 elif [ -n "${STORM_MYSQL:-}" ]; then
   mysql_run() { container exec -i "$STORM_MYSQL" sh -c 'mysql -ustorm -pstorm storm'; }
@@ -30,6 +38,20 @@ fi
 
 fail=0
 note() { echo "  $*" >&2; fail=1; }
+
+# A container's health check can pass before its init scripts have created the
+# database and the user, so "the server answers" is not "the server is usable".
+# Wait for the thing this check actually needs.
+echo "== waiting for MySQL to be usable =="
+ready=0
+for _ in $(seq 1 30); do
+  if echo 'SELECT 1' | mysql_run >/dev/null 2>&1; then ready=1; break; fi
+  sleep 2
+done
+if [ "$ready" -ne 1 ]; then
+  echo "MySQL never became usable as storm@storm" >&2
+  exit 1
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

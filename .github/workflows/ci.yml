@@ -91,7 +91,14 @@ jobs:
       - name: mysql ddl and portability
         env:
           STORM_MYSQL_DSN: "storm:storm@tcp(127.0.0.1:3306)/storm"
-        run: ./scripts/check/mysql.sh
+        # The client is installed explicitly rather than assumed: the check
+        # FAILS when it is missing (a gate that skips itself is not a gate), so
+        # relying on whatever the runner image happens to ship would make this
+        # step's outcome depend on an image update nobody here controls.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mysql-client
+          ./scripts/check/mysql.sh
 
       - name: benchmarks compile and run
         run: go test -run XXX -bench . -benchtime=1x ./bench/
