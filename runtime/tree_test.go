@@ -267,3 +267,32 @@ func TestSpliceTree_ExistsWrapsAndNumbersAcross(t *testing.T) {
 		t.Errorf("bare exists:\ngot  %s\nwant %s", st.SQL, want)
 	}
 }
+
+// A declared predicate is ANDed with the call-site ones, never replaced: a
+// join that declares "not cancelled" cannot be widened by a caller.
+func TestSpliceTreeWhereComposes(t *testing.T) {
+	l := lw(frag)
+
+	// No call-site predicates: the declared one still applies.
+	st := runtime.SpliceTreeWhere("SELECT 1 FROM t", "x <> 'a'", nil, l, "")
+	if want := `SELECT 1 FROM t WHERE x <> 'a'`; st.SQL != want {
+		t.Errorf("\n got: %s\nwant: %s", st.SQL, want)
+	}
+
+	// With one: ANDed, and the caller's side parenthesised so a disjunction
+	// cannot escape what the declaration narrowed.
+	toks := []runtime.Tok{leaf(1, 0)}
+	st = runtime.SpliceTreeWhere("SELECT 1 FROM t", "x <> 'a'", toks, l, "")
+	if !strings.Contains(st.SQL, "WHERE x <> 'a' AND (") {
+		t.Errorf("declared predicate not ANDed: %s", st.SQL)
+	}
+	if st.NArg != 1 {
+		t.Errorf("NArg = %d, want 1 — the declared side binds nothing", st.NArg)
+	}
+
+	// SpliceTree, with no declaration, is unchanged.
+	st = runtime.SpliceTree("SELECT 1 FROM t", toks, l, "")
+	if strings.Contains(st.SQL, "x <> 'a'") {
+		t.Errorf("SpliceTree gained a declared predicate: %s", st.SQL)
+	}
+}

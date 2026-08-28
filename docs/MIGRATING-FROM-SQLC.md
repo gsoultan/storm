@@ -1,6 +1,6 @@
 ---
 tags: [storm, migration, sqlc]
-updated: 2026-08-25
+updated: 2026-08-27
 ---
 
 # Migrating from sqlc
@@ -28,6 +28,12 @@ repeat.
 | `db.WithTx(tx)` | `pgxdrv.Tx{T: tx}` — same idea, four-method port |
 
 ## The steps
+
+0. **Install the tool**: `go install github.com/gsoultan/storm/cmd/storm@latest`,
+   then `go get github.com/gsoultan/storm/tool` once in your module. There is
+   no `storm.yaml` and no equivalent of sqlc's `queries:`/`schema:` paths —
+   storm finds your models by parsing ([ADR-0006](adr/0006-discovery-replaces-the-bootstrap.md)),
+   and `storm models` shows you what it found before you generate anything.
 
 1. **Adopt the schema**: `storm import -dsn $DEV > model/model.go`. The draft
    lists everything it could not express as a comment block — re-declare those

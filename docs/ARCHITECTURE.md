@@ -1,6 +1,6 @@
 ---
 tags: [storm, architecture, design-patterns]
-updated: 2026-08-23
+updated: 2026-08-27
 status: proposed
 ---
 
@@ -52,24 +52,30 @@ Folder names state the layer. Core packages import **stdlib only**; the single
 third-party dependency lives in exactly one adapter package.
 
 ```
-storm/
-  cmd/storm/          CLI: generate · explain · lint · verify
-  schema/             schema IR: tables, columns, types, FKs, indexes   [stdlib]
+storm/                as built
+  .                   public surface: model types, Build, storm.SQL[T]   [stdlib]
+  schema/             schema IR: tables, columns, types, FKs, indexes    [stdlib]
   schema/pg/          Postgres introspection front end
-  schema/sqlfile/     migration-file front end
-  query/              typed query IR + builder (relational algebra)     [stdlib]
-  model/              schema declaration DSL (s.Text, s.HasMany, …)     [stdlib]
-  compile/            plan lowering, shape enumeration, capabilities    [stdlib]
-  compile/sql/{pg,mysql,mssql,oracle}    SQL back ends
-  compile/mongo/      aggregation-pipeline back end (v2.0, ADR-0004)
-  migrate/            model ↔ schema diff → reviewable migration files  [stdlib]
-  codegen/            Go emission, deterministic output                 [stdlib]
-  runtime/            executor port, shape cache, buffer pool, binder   [stdlib]
+  compile/pgsql/      query lowering → SQL                               [stdlib]
+  compile/pgddl/      schema → DDL                                       [stdlib]
+  migrate/            model ↔ schema diff → reviewable migration files   [stdlib]
+  codegen/            Go emission, deterministic output                  [stdlib]
+  runtime/            executor port, shape cache, buffer pool, binder    [stdlib]
   runtime/pgxdrv/     pgx/v5 adapter — the ONLY third-party import
-  internal/cost/      relation-loading strategy cost model
-  internal/scan/      call-site scanner (go/ast, no type-check needed)
+  tool/               the commands, as an importable library
+  tool/discover/      finds the adopter's models by parsing (ADR-0006)   [stdlib]
+  tool/bootstrap/     synthesizes and runs the registering main          [stdlib]
+  cmd/storm/          the installed binary: discover → bootstrap → run
   bench/              harness + benchstat baselines + rival suites
 ```
+
+Planned, and named here so the seams they need stay visible — none of these
+exist yet: `query/` (a typed query IR separable from the builder), `model/` (a
+declaration DSL distinct from the public surface), `compile/{mysql,mssql,oracle}/`
+([DIALECTS](DIALECTS.md)), `compile/mongo/` (v2.0, [ADR-0004](adr/0004-mongodb-as-backend.md)),
+`schema/sqlfile/` (a migration-file front end) and `internal/cost/` (a
+relation-loading cost model). Today their work is done inline by the packages
+above.
 
 Conventions carried over from `anubis`: ≤ 10 Go files per folder, ≤ 15 methods
 per interface, one interface per file, one struct per file, package clauses

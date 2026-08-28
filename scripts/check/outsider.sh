@@ -25,7 +25,7 @@ mkdir -p model cmd/storm
 cat > go.mod <<EOF
 module example.com/outsider
 
-go 1.26
+go 1.27
 EOF
 
 # A model with a relation and a nullable column: enough shape that the
@@ -224,6 +224,121 @@ GOEOF
     fi
   fi
 fi
+
+# ---------------------------------------------------------------------------
+# The stranger who writes NOTHING but models.
+#
+# Everything above still hands storm a five-line main, which means everything
+# above would keep passing if discovery were broken — the tool it exercises is
+# one the test wrote. This module has no cmd/ directory, no All(), no
+# bootstrap: only a model package, which is the whole point. It needs no
+# database.
+echo "== a stranger with no bootstrap at all =="
+TMP2="$(mktemp -d)"
+STORM_BIN="$TMP2/storm"
+( cd "$REPO" && go build -o "$STORM_BIN" ./cmd/storm ) || note "cmd/storm does not build"
+
+mkdir -p "$TMP2/m/model"
+cd "$TMP2/m"
+cat > go.mod <<EOF
+module example.com/nobootstrap
+
+go 1.27
+EOF
+
+# The same shapes as the module above, plus a MIXIN — exported, with its own
+# Schema method, and not a table. Nothing about its declaration distinguishes
+# it from a model; only the fact that Team embeds it does.
+cat > model/model.go <<'EOF'
+package model
+
+import "github.com/gsoultan/storm"
+
+type Auditable struct {
+	Version int32
+}
+
+func (a *Auditable) Schema(t *storm.Table) { t.Col(&a.Version).Version() }
+
+type Team struct {
+	storm.Model
+	Auditable
+
+	Name    string
+	Members []Member
+}
+
+func (t *Team) Schema(s *storm.Table) { s.Unique(&t.Name) }
+func (t *Team) Plans(p *storm.Plans)  { p.Named("Roster").With(&t.Members) }
+
+type Member struct {
+	storm.Model
+	Team     Team
+	Email    string
+	Nickname *string
+}
+
+func (m *Member) Schema(s *storm.Table) { s.Unique(&m.Email) }
+EOF
+
+go mod edit -replace "github.com/gsoultan/storm=$REPO"
+GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
+# Nothing in this module imports storm/tool, so `go mod tidy` cannot know about
+# it. storm says so by name on the first run; this is that one-time step.
+GOFLAGS=-mod=mod go get github.com/gsoultan/storm/tool >/dev/null 2>&1
+
+if ! "$STORM_BIN" ddl > ddl2.sql 2>ddl2.err; then
+  note "ddl failed with no bootstrap:"; sed 's/^/    /' ddl2.err | head -6 >&2
+elif ! grep -q 'CREATE TABLE "teams"' ddl2.sql; then
+  note "discovery did not find the models"
+elif grep -q 'CREATE TABLE "auditables"' ddl2.sql; then
+  note "the mixin Auditable was generated as a table — mixins are not models"
+fi
+
+if ! "$STORM_BIN" generate internal/store >gen2.out 2>gen2.err; then
+  note "generate failed with no bootstrap:"; sed 's/^/    /' gen2.err | head -6 >&2
+else
+  if ! grep -q '"example.com/nobootstrap/internal/store/' internal/store/store.gen.go; then
+    note "generated code does not import the host module"
+  fi
+  if ! GOFLAGS=-mod=mod go build ./... >build2.err 2>&1; then
+    note "code generated without a bootstrap does not compile:"
+    sed 's/^/    /' build2.err | head -6 >&2
+  fi
+fi
+
+# The synthesized bootstrap must not survive the command that wrote it.
+if [ -n "$(find . -name '.storm-bootstrap*' 2>/dev/null)" ]; then
+  note "the synthesized bootstrap was left behind"
+fi
+
+# The load-bearing claim: discovery and a hand-written bootstrap are the same
+# input to the generator, so they must produce the same bytes. If they diverge,
+# one of the two paths is wrong and adopters cannot migrate between them.
+echo "== discovery and a hand-written bootstrap agree, byte for byte =="
+mv internal/store "$TMP2/store-discovered"
+rm -rf internal
+mkdir -p cmd/storm
+cat > cmd/storm/main.go <<'EOF'
+package main
+
+import (
+	"example.com/nobootstrap/model"
+	"github.com/gsoultan/storm/tool"
+)
+
+func main() { tool.Main([]any{&model.Member{}, &model.Team{}}, nil) }
+EOF
+GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
+if ! GOFLAGS=-mod=mod go run ./cmd/storm generate internal/store >gen3.out 2>gen3.err; then
+  note "the hand-written bootstrap stopped working:"; sed 's/^/    /' gen3.err | head -6 >&2
+elif ! diff -r "$TMP2/store-discovered" internal/store >diff2.out 2>&1; then
+  note "discovery and the bootstrap generate DIFFERENT code:"
+  sed 's/^/    /' diff2.out | head -10 >&2
+fi
+
+cd "$REPO"
+rm -rf "$TMP2"
 
 if [ "$fail" -eq 0 ]; then
   if [ -n "${STORM_DSN:-}" ]; then

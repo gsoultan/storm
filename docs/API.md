@@ -1,6 +1,6 @@
 ---
 tags: [storm, api, dx]
-updated: 2026-08-23
+updated: 2026-08-27
 status: proposed — illustrative, not implemented
 ---
 
@@ -120,6 +120,12 @@ targets:
 portability:
   assert: [postgres]      # add mysql8 / oracle19 / mongo7 to check at build time
 ```
+
+The `model:` path above is a **sketch, and now a redundant one**: storm finds
+the models by parsing the module, so there is nothing to point it at
+([ADR-0006](adr/0006-discovery-replaces-the-bootstrap.md)). What a config file
+would still buy is the *target* block — dialect, version, output and migration
+directories — which are flags today.
 
 ```console
 $ storm generate

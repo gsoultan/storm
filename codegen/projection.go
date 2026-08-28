@@ -72,7 +72,7 @@ func (g *gen) projection(name string, columns []string) {
 
 	fallible := false
 	for _, c := range cols {
-		if fallibleColumn(c.col) {
+		if fallibleIn(c.col, g.dec) {
 			fallible = true
 		}
 	}
@@ -81,8 +81,8 @@ func (g *gen) projection(name string, columns []string) {
 		g.p("\tvar decErr error")
 	}
 	for i, c := range cols {
-		g.p("\t%s", decodeExpr(c.col, i))
-		if fallibleColumn(c.col) {
+		g.p("\t%s", decodeExprIn(c.col, i, g.dec))
+		if fallibleIn(c.col, g.dec) {
 			g.p("\tif decErr != nil {")
 			g.p("\t\treturn decErr")
 			g.p("\t}")

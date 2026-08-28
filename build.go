@@ -20,6 +20,8 @@ var (
 	uuidType      = reflect.TypeOf(UUID{})
 	bytesType     = reflect.TypeOf([]byte(nil))
 	decimalType   = reflect.TypeOf(Decimal{})
+	tsvectorType  = reflect.TypeOf(TSVector{})
+	tstzRangeType = reflect.TypeOf(TstzRange{})
 	enumerType    = reflect.TypeOf((*Enumer)(nil)).Elem()
 	schemerTyp    = reflect.TypeOf((*Schemer)(nil)).Elem()
 )
@@ -74,6 +76,12 @@ func Build(models ...any) (*schema.Schema, error) {
 	// has already been validated to have a key on the other side.
 	for _, mi := range b.ordered {
 		b.callPlans(mi)
+		b.callAggregates(mi)
+	}
+	// Joins last: they reference other tables' columns and other tables'
+	// declared aggregations, so every table has to be complete first.
+	for _, mi := range b.ordered {
+		b.callJoins(mi)
 	}
 	// Pass 5: index every foreign key nothing already covers. Last, so a user
 	// index leading with the same column suppresses the redundant one.
@@ -512,6 +520,49 @@ func quoteIdent(s string) string { return `"` + s + `"` }
 // Optional by design: a model with no plans still gets the one-plan-per-
 // relation tier, which is finite by construction. Declaring plans is how you
 // ask for combinations, and only combinations can explode.
+// callAggregates collects declared aggregations. Same pass as plans: both are
+// declarations over a table whose columns are already resolved.
+func (b *builder) callAggregates(mi *modelInfo) {
+	a, ok := mi.ptr.Interface().(Aggregator)
+	if !ok {
+		return
+	}
+	a.Aggregates(&Aggregates{t: mi.tbl, out: &mi.tbl.out.Aggregates})
+
+	// Validated after the whole declaration is read, because "is this column
+	// grouped?" cannot be answered until every By has been seen — a chain
+	// declares its outputs before its grouping just as often as after.
+	for _, agg := range mi.tbl.out.Aggregates {
+		if err := validateAggregate(mi.tbl.out, agg); err != nil {
+			b.errs.add(err)
+		}
+	}
+}
+
+// infoFor finds the registered model a value belongs to.
+func (b *builder) infoFor(model any) *modelInfo {
+	t := reflect.TypeOf(model)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil {
+		return nil
+	}
+	return b.byType[t]
+}
+
+// callJoins collects declared joins.
+//
+// A separate pass from plans and aggregates because a join names OTHER tables,
+// and those tables' columns are only resolved once every model has been walked.
+func (b *builder) callJoins(mi *modelInfo) {
+	j, ok := mi.ptr.Interface().(Joiner)
+	if !ok {
+		return
+	}
+	j.Joins(&Joins{t: mi.tbl, b: b})
+}
+
 func (b *builder) callPlans(mi *modelInfo) {
 	p, ok := mi.ptr.Interface().(Planner)
 	if !ok {
@@ -598,6 +649,13 @@ func (b *builder) inferType(t reflect.Type) (schema.Type, bool) {
 		}
 	}
 	switch t {
+	case tstzRangeType:
+		return schema.Type{Name: schema.TypeTstzRange}, true
+	case tsvectorType:
+		// Matched before the Kind() switch: TSVector is an empty struct, and
+		// a struct with no fields would otherwise fall through to
+		// "unsupported" rather than to the search column it is.
+		return schema.Type{Name: schema.TypeTSVector}, true
 	case timeType:
 		return schema.Type{Name: schema.TypeTimestamptz}, true
 	case uuidType:

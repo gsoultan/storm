@@ -265,3 +265,108 @@ func TestExplainQueries(t *testing.T) {
 		t.Errorf("the nested member does not filter on its own key:\n%s", sql)
 	}
 }
+
+// A declared plan and the automatic per-relation tier both derive their type
+// name from the parent, so `p.Named("WithLines")` on a model that has a Lines
+// relation produces OrderWithLines twice — in one package. Before this check,
+// generation succeeded and the ADOPTER's build failed, in a file they did not
+// write, naming a type they never typed.
+//
+// Found by examples/orders, which is the first thing outside this repository to
+// declare a plan over a relation of the same name.
+func TestPackage_DeclaredPlanCollidingWithRelationTier(t *testing.T) {
+	s := &schema.Schema{Tables: []*schema.Table{
+		{
+			Name: "orders", GoName: "Order",
+			Columns:    []*schema.Column{{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true}},
+			PrimaryKey: []string{"id"},
+			Relations:  []*schema.Relation{{Field: "Lines", Target: "order_lines", TargetGo: "OrderLine", Column: "order_id", ToMany: true}},
+			Plans:      []*schema.Plan{{Name: "WithLines", Fields: []schema.PlanField{{Field: "Lines"}}}},
+		},
+		{
+			Name: "order_lines", GoName: "OrderLine",
+			Columns: []*schema.Column{
+				{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+				{Name: "order_id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+			},
+			PrimaryKey:  []string{"id"},
+			ForeignKeys: []*schema.ForeignKey{{Columns: []string{"order_id"}, RefTable: "orders", RefColumns: []string{"id"}}},
+		},
+	}}
+
+	_, err := codegen.Package(s, codegen.PackageOptions{
+		Dir:           "gen",
+		Import:        "github.com/gsoultan/storm",
+		Package:       "store",
+		PackageImport: "example.com/app/store",
+	})
+	if err == nil {
+		t.Fatal("a declared plan collided with the relation tier and generation succeeded; " +
+			"the adopter's build would have failed instead")
+	}
+	// The message has to name the plan, the relation, and what to do.
+	for _, want := range []string{"WithLines", "OrderWithLines", "Lines", "delete the declaration"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// The compile-time staleness check. A stale store used to COMPILE — the column
+// was simply absent from the API, and you found out when you finally used it.
+// The assertion turns that silence into a build error naming the field.
+func TestShapesOf(t *testing.T) {
+	shapes := codegen.ShapesOf([]any{&testmodel.User{}, &testmodel.Org{}})
+	if len(shapes) != 2 {
+		t.Fatalf("got %d shapes, want 2", len(shapes))
+	}
+	byName := map[string]codegen.ModelShape{}
+	for _, s := range shapes {
+		byName[s.TypeName] = s
+	}
+	u := byName["User"]
+	if u.ImportPath != "github.com/gsoultan/storm/internal/testmodel" {
+		t.Errorf("import path = %q", u.ImportPath)
+	}
+	// Embedded fields appear under their TYPE name, which is also how they are
+	// selected — m.Model, not m.storm_Model.
+	want := map[string]bool{"Model": false, "Auditable": false, "SoftDelete": false, "Email": false, "Active": false}
+	for _, f := range u.Fields {
+		if _, ok := want[f]; ok {
+			want[f] = true
+		}
+	}
+	for f, seen := range want {
+		if !seen {
+			t.Errorf("field %q missing from the shape", f)
+		}
+	}
+	// Declaration order, because the assertion is an UNKEYED literal and
+	// unkeyed means positional.
+	if u.Fields[0] != "Model" {
+		t.Errorf("first field = %q, want the embedded Model", u.Fields[0])
+	}
+}
+
+// A struct with an unexported field cannot be written as an unkeyed literal
+// from another package at all, so the assertion must be skipped rather than
+// emitted and left not to compile.
+func TestShapesOfSkipsUnexportedFields(t *testing.T) {
+	type hasHidden struct {
+		Name   string
+		secret string
+	}
+	shapes := codegen.ShapesOf([]any{&hasHidden{}})
+	if len(shapes) != 1 {
+		t.Fatalf("got %d shapes", len(shapes))
+	}
+	if shapes[0].Skip == "" {
+		t.Fatal("a struct with an unexported field produced an assertion; it cannot compile")
+	}
+	if len(shapes[0].Fields) != 0 {
+		t.Errorf("fields = %v, want none", shapes[0].Fields)
+	}
+	if !strings.Contains(shapes[0].Skip, "secret") {
+		t.Errorf("skip reason does not name the field: %q", shapes[0].Skip)
+	}
+}

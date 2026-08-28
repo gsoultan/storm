@@ -69,6 +69,12 @@ type Table struct {
 	// of the relations you have.
 	Plans []*Plan
 
+	// Aggregates are the named grouped reads declared on this table.
+	Aggregates []*Aggregate
+
+	// Joins are the named cross-table reads declared on this table.
+	Joins []*Join
+
 	PrimaryKey  []string
 	Uniques     []*Unique
 	Indexes     []*Index

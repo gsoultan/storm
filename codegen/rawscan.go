@@ -267,14 +267,14 @@ func (g *gen) emitRawScanners(scanners []RawScanner) {
 	g.p("")
 	for _, rs := range scanners {
 		g.p("func scan%s(rv [][]byte, r *%s.%s, sl *runtime.Slab) error {", rs.TypeName, rs.TypePkg, rs.TypeName)
-		if rawHasFallible(rs) {
+		if rawHasFallible(rs, g.dec) {
 			g.p("\tvar decErr error")
 		}
 		for i, c := range rs.cols {
 			col := &schema.Column{Name: c.field, NotNull: !c.nullable}
 			col.Type = oidSchemaType(c.kind)
-			g.p("\t%s", decodeExpr(col, i))
-			if fallibleColumn(col) {
+			g.p("\t%s", decodeExprIn(col, i, g.dec))
+			if fallibleIn(col, g.dec) {
 				g.p("\tif decErr != nil {")
 				g.p("\t\treturn decErr")
 				g.p("\t}")
@@ -286,10 +286,10 @@ func (g *gen) emitRawScanners(scanners []RawScanner) {
 	}
 }
 
-func rawHasFallible(rs RawScanner) bool {
+func rawHasFallible(rs RawScanner, d decoders) bool {
 	for _, c := range rs.cols {
 		col := &schema.Column{NotNull: !c.nullable, Type: oidSchemaType(c.kind)}
-		if fallibleColumn(col) {
+		if fallibleIn(col, d) {
 			return true
 		}
 	}

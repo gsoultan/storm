@@ -21,13 +21,29 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # MySQL is not a runtime target yet — storm cannot execute a query
+      # against it. It is here for the DDL and portability gate, which is what
+      # `compile/myddl` and `storm portable mysql` promise (ADR-0007).
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: storm
+          MYSQL_DATABASE: storm
+          MYSQL_USER: storm
+          MYSQL_PASSWORD: storm
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h127.0.0.1 -ustorm -pstorm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       STORM_DSN: postgres://storm:storm@localhost:5432/storm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: '1.27'
           cache: true
 
       - name: vet
@@ -57,6 +73,26 @@ jobs:
 
       # Not a perf gate: it fails only if a benchmark stops compiling or
       # errors, which is how benchmark rot usually starts.
+      # The worked service: a SEPARATE module, so `go test ./...` above cannot
+      # reach it. It is the only end-to-end proof of aggregations, joins, CTEs,
+      # full-text search, ranges and the typed constraint errors — 34 tests
+      # against a real server. Left out of CI it would rot within a release.
+      - name: the orders example
+        working-directory: examples/orders
+        run: |
+          go mod tidy
+          go run ../../cmd/storm generate store
+          go test -race ./orders/
+
+      # storm emits MySQL DDL and reports what does not port. A golden test
+      # proves the generator is consistent with itself; it cannot prove the SQL
+      # is valid — which is how `DEFAULT  NOT NULL` shipped past every unit
+      # test and failed on MySQL's first line. This applies it.
+      - name: mysql ddl and portability
+        env:
+          STORM_MYSQL_DSN: "storm:storm@tcp(127.0.0.1:3306)/storm"
+        run: ./scripts/check/mysql.sh
+
       - name: benchmarks compile and run
         run: go test -run XXX -bench . -benchtime=1x ./bench/
 

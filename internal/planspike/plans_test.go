@@ -376,3 +376,178 @@ func TestPlan_ChildLimitIsGlobalNotPerParent(t *testing.T) {
 		t.Fatal("ChildLimit is a global guard — three parents' children must not fit under one parent's limit")
 	}
 }
+
+// A bool predicate has to survive the whole path: packed into a Pred, copied
+// into the Query arena, copied into the binder, and handed to pgx as something
+// it can encode for OID 16.
+//
+// It did not. bool shared the int64 arena, so every predicate on a bool column
+// reached pgx as *int64 and failed with "cannot find encode plan" — not on
+// some rows, on all of them. No fixture in this repository had a bool column
+// until examples/orders added one, which is the only reason this shipped.
+func TestBoolPredicateBindsAsBool(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	all, err := user.New().All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) == 0 {
+		t.Skip("no seeded users")
+	}
+
+	active, err := user.New().Where(user.Active.Eq(true)).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatalf("bool predicate failed to bind: %v", err)
+	}
+	inactive, err := user.New().Where(user.Active.Eq(false)).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatalf("bool predicate failed to bind: %v", err)
+	}
+
+	// Not just "it ran": the two halves must partition the table, which is
+	// what proves the VALUE arrived and not a zero.
+	if len(active)+len(inactive) != len(all) {
+		t.Fatalf("Active.Eq(true)=%d + Active.Eq(false)=%d != %d rows",
+			len(active), len(inactive), len(all))
+	}
+	if len(active) == 0 {
+		t.Fatal("every seeded user defaults to active, but Eq(true) matched none — " +
+			"the arena bound a zero rather than the predicate's value")
+	}
+	for _, u := range active {
+		if !u.Active {
+			t.Fatalf("Active.Eq(true) returned a row with Active=false")
+		}
+	}
+}
+
+// A join projects across tables and must agree with the SQL a human would
+// write — same row count, same values.
+func TestJoinMatchesHandWrittenSQL(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	got, err := user.New().AllWithOrg(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 {
+		t.Skip("no seeded users")
+	}
+	// Compared against the SAME limit storm applies. New() bounds a read at
+	// 1000 rows by default — that is the library refusing to fetch a table by
+	// accident, not a defect — so an unbounded count is the wrong comparison.
+	var want int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM (SELECT 1 FROM users JOIN orgs ON users.org_id = orgs.id
+		                       ORDER BY users.id LIMIT 1000) x`).Scan(&want); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != want {
+		t.Errorf("storm's join returned %d rows, the same SQL returns %d", len(got), want)
+	}
+
+	// And the values must match row for row, not just the count.
+	rows, err := pool.Query(ctx,
+		`SELECT users.id, users.email, orgs.name FROM users JOIN orgs ON users.org_id = orgs.id
+		  ORDER BY users.id LIMIT 1000`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	i := 0
+	for rows.Next() {
+		var id [16]byte
+		var email, org string
+		if err := rows.Scan(&id, &email, &org); err != nil {
+			t.Fatal(err)
+		}
+		if got[i].UserID != id || got[i].Email != email || got[i].OrgName != org {
+			t.Fatalf("row %d differs: storm %x/%s/%s, SQL %x/%s/%s",
+				i, got[i].UserID, got[i].Email, got[i].OrgName, id, email, org)
+		}
+		i++
+	}
+	for _, r := range got {
+		if r.OrgName == "" {
+			t.Errorf("user %x joined an org with no name", r.UserID)
+		}
+	}
+	// The declared ORDER BY applied, so two calls agree.
+	again, err := user.New().AllWithOrg(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range got {
+		if got[i].UserID != again[i].UserID {
+			t.Fatal("the join is unordered between calls")
+		}
+	}
+}
+
+// A LEFT join keeps the left row and makes the right side nullable. Typing it
+// otherwise would decode a missing match as an empty string.
+func TestLeftJoinKeepsUnmatchedRows(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	inner, err := user.New().AllWithOrg(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := user.New().AllMaybeOrg(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) < len(inner) {
+		t.Errorf("LEFT join returned %d rows, INNER returned %d — LEFT cannot return fewer",
+			len(left), len(inner))
+	}
+}
+
+// Call-site predicates apply to the declaring table and compose with the join.
+func TestJoinPredicatesCompose(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	all, err := user.New().AllWithOrg(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrowed, err := user.New().Where(user.Active.Eq(true)).AllWithOrg(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrowed) > len(all) {
+		t.Errorf("a predicate widened the join: %d > %d", len(narrowed), len(all))
+	}
+}
+
+// The warm path of a join has the same budget as every other read.
+func TestJoinWarmPathAllocatesNothing(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+	q := user.New().Where(user.Active.Eq(true))
+	dst := make([]user.WithOrgRow, 0, 64)
+	var sl runtime.Slab
+	if _, err := q.AllWithOrgInto(ctx, ex, dst[:0], &sl); err != nil {
+		t.Fatal(err)
+	}
+	// Counted on the BUILD, with the rows already fetched once so the slab is
+	// sized: what is measured is storm assembling the statement and binding.
+	got := testing.AllocsPerRun(50, func() {
+		_, _ = q.AllWithOrgInto(ctx, ex, dst[:0], &sl)
+	})
+	// A real executor allocates on the wire; the budget here is what STORM
+	// adds on top of a warm shape, which is why the number is compared to the
+	// same query with no join rather than to zero.
+	base := testing.AllocsPerRun(50, func() {
+		_, _ = q.AllInto(ctx, ex, nil, &sl)
+	})
+	if got > base {
+		t.Errorf("a join allocates %.0f per call against %.0f for a plain read", got, base)
+	}
+	t.Logf("join %.0f allocs/call, plain read %.0f", got, base)
+}

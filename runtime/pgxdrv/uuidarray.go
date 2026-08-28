@@ -86,6 +86,7 @@ func (uuidArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
 // which constructor was called.
 func RegisterFastArrays(m *pgtype.Map) {
 	registerDecimal(m)
+	registerTstzRange(m)
 	registerInterval(m)
 	registerTimeOfDay(m)
 	registerScalarArrays(m)
