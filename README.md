@@ -20,10 +20,13 @@ migrations and **never applies DDL**.
 
 ## Status
 
-**v0.1.0 is tagged, and M0–M8 have passed.** The read path, migrations,
-relations, writes, the typed escape hatch and the tooling gate are built,
-benchmarked and hardened; the first adopter migrated a whole bounded context
-(M6) and runs on the published module. The milestone log with every exit gate
+**v0.3.0 is tagged.** The read path, migrations, relations, writes, the typed
+escape hatch and the tooling gate are built, benchmarked and hardened; the first
+adopter migrated a whole bounded context (M6) and runs on the published module.
+v0.3.0 adds model discovery, declared aggregations and joins, full-text search,
+range types and typed constraint errors — and a MySQL DDL back end that is
+**not** a runtime target
+([ADR-0007](docs/adr/0007-mysql-runtime-needs-a-second-decoder-family.md)). The milestone log with every exit gate
 is [docs/PLAN.md](docs/PLAN.md), and what would still stop a team adopting
 this is written down, with gates, in
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md).
@@ -102,6 +105,11 @@ Measured, never quoted from memory — the methodology and every caveat live in
 | storm | raw pgx | sqlc | Bun | Ent | GORM |
 |---|---|---|---|---|---|
 | **6** | 5,012 | 5,022 | 13,899 | 23,016 | 23,934 |
+
+> **Measured on Go 1.26.6.** The allocation counts above were re-checked on 1.27
+> and are unchanged — they are what this table is about. The wall-clock figures
+> have not been, and one offline benchmark did move; the note at the top of
+> [`bench/RESULTS.md`](bench/RESULTS.md) has the detail.
 
 Wall clock is round-trip-dominated for every ORM — the honest claims are
 allocations, GC pressure (storm 21 GCs vs pgx's 102 on the 2M-row workload),
