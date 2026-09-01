@@ -103,6 +103,11 @@ Measured, never quoted from memory — the methodology and every caveat live in
 |---|---|---|---|---|---|
 | **6** | 5,012 | 5,022 | 13,899 | 23,016 | 23,934 |
 
+> **Measured on Go 1.26.6.** The allocation counts below were re-checked on 1.27
+> and are unchanged, which is what this table is really about. The wall-clock
+> figures have not been re-measured on 1.27 — see the note at the top of
+> [`bench/RESULTS.md`](bench/RESULTS.md).
+
 Wall clock is round-trip-dominated for every ORM — the honest claims are
 allocations, GC pressure (storm 21 GCs vs pgx's 102 on the 2M-row workload),
 and the plans: `Exists()` is a `LIMIT 1` probe, relation loads carry no
