@@ -12,7 +12,7 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## v0.3.0 — 2026-08-28
+## v0.3.0 — 2026-09-01
 
 ### Benchmarks need re-running before the tag
 
@@ -48,7 +48,7 @@ documentation rather than gates:
   against a live server, `Retryable`, and the join and aggregate emitters'
   refusals.
 
-## v0.3.0 — 2026-08-27 (development)
+
 
 ### The bootstrap main is gone
 
