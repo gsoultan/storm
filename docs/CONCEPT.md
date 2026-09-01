@@ -1,6 +1,6 @@
 ---
 tags: [storm, concept, thesis]
-updated: 2026-08-23
+updated: 2026-08-27
 status: proposed
 ---
 
@@ -10,7 +10,7 @@ status: proposed
 > including the dynamic queries.**
 
 An embeddable Postgres ORM for Go. Generated, not reflected. Compiled, not
-interpreted. Module `github.com/gsoultan/storm`, Go 1.26.
+interpreted. Module `github.com/gsoultan/storm`, Go 1.27.
 
 Read [[COMPARISON]] first — this document only makes sense as a response to it.
 
@@ -191,5 +191,11 @@ storm is a **library**, imported, not deployed. No daemon, no UI, no applied
 DDL, no lazy loading, no runtime dialect branch. Driver dependencies are
 isolated behind a five-method port, one adapter package each (`pgx/v5` today).
 Everything else is stdlib.
+
+There is one binary — `storm`, the developer tool — and it is on the same side
+of the line: it runs at your keyboard and in CI, never in your process and
+never in production. What it does is find your models and hand them to the
+generator ([ADR-0006](adr/0006-discovery-replaces-the-bootstrap.md)); the
+library your application imports does not know it exists.
 
 Each "no" above is a year of maintenance not spent.

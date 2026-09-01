@@ -146,3 +146,36 @@ const MaxTimeOfDay = runtime.MaxTimeOfDay
 func NewTimeOfDay(hour, min, sec, micro int) (TimeOfDay, bool) {
 	return runtime.NewTimeOfDay(hour, min, sec, micro)
 }
+
+// TSVector is a full-text search column.
+//
+// Declare one and PostgreSQL gets a `tsvector`; the generated query API gets
+// Matches and WebSearch on it. It is deliberately an EMPTY struct: a tsvector
+// is index support, not data, so it never appears in a Row, never travels on a
+// read, and cannot be written from Go. The usual declaration makes the database
+// maintain it:
+//
+//	Search storm.TSVector
+//
+//	t.Col(&p.Search).
+//	    Generated(storm.Expr(`to_tsvector('english', coalesce(name,''))`)).
+//	    Index()
+//
+// Nothing else in storm has this shape, and that is the point: a column you can
+// only ask questions of.
+type TSVector struct{}
+
+// TstzRange is a PostgreSQL tstzrange: an interval of time with explicit
+// bounds, so "do these two bookings overlap" is a question the database answers
+// with an index rather than four comparisons in Go that get the boundary cases
+// wrong.
+//
+// An alias, not a wrapper, for the same reason Decimal is: the model declares
+// storm.TstzRange and generated code reads runtime.TstzRange, and those must be
+// the same type or every value would need converting at the boundary storm
+// exists to remove.
+type TstzRange = runtime.TstzRange
+
+// NewTstzRange builds the half-open range [lower, upper) — the one scheduling
+// wants, because adjacent slots then do not collide on the instant they touch.
+func NewTstzRange(lower, upper time.Time) TstzRange { return runtime.NewTstzRange(lower, upper) }

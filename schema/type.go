@@ -38,6 +38,7 @@ const (
 	TypeCIDR        = "cidr"
 	TypeMacaddr     = "macaddr"
 	TypeTSVector    = "tsvector"
+	TypeTstzRange   = "tstzrange"
 	TypeHstore      = "hstore"
 )
 

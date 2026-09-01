@@ -12,6 +12,14 @@ type kind int
 
 const (
 	kindUnsupported kind = iota
+	// kindTSVector is a full-text search column: FILTERABLE but not readable.
+	// A tsvector is index support, not data — nobody wants one in a Go struct,
+	// and decoding one on every read would be pure cost. It gets a column
+	// handle with the match operators and is excluded from Row and from writes.
+	kindTSVector
+	// kindTstzRange is a tstzrange: readable, writable, and the only kind with
+	// the range operators.
+	kindTstzRange
 	kindBool
 	kindInt2
 	kindInt4
@@ -52,6 +60,10 @@ func goKind(c *schema.Column) kind {
 		return kindUnsupported
 	}
 	switch c.Type.Name {
+	case schema.TypeTSVector:
+		return kindTSVector
+	case schema.TypeTstzRange:
+		return kindTstzRange
 	case schema.TypeBool:
 		return kindBool
 	case schema.TypeInt2:
@@ -94,6 +106,13 @@ func goKind(c *schema.Column) kind {
 // baseGoType is the non-nullable Go type: what a predicate takes.
 func baseGoType(c *schema.Column) string {
 	switch goKind(c) {
+	case kindTSVector:
+		// The Go type of a tsvector PREDICATE's argument, which is the search
+		// term — a string. The column itself has no Go type because it never
+		// travels in a Row.
+		return "string"
+	case kindTstzRange:
+		return "runtime.TstzRange"
 	case kindTextArray:
 		return "[]string"
 	case kindUUIDArray:
@@ -194,54 +213,72 @@ func isNullable(c *schema.Column) bool {
 }
 
 // decodeExpr renders one column's decode line.
+// decodeExpr emits the scan for one column, using the PostgreSQL family.
 func decodeExpr(c *schema.Column, i int) string {
+	return decodeExprIn(c, i, decodersFor(DialectPostgres, ""))
+}
+
+// decodeExprIn emits the scan for one column against a decoder family.
+//
+// Which family is a GENERATE-time choice, so the emitted call names its package
+// outright and no dialect test survives into the running program. The two
+// families share no bytes — MySQL is little-endian and packs its temporal types
+// component-wise — so this routes every name through d.q rather than spelling
+// one package (ADR-0007).
+func decodeExprIn(c *schema.Column, i int, d decoders) string {
 	f := exportName(c.Name)
 	k := goKind(c)
 
 	if k == kindBytes {
-		return fmt.Sprintf("r.%s = runtime.Bytes(rv[%d])", f, i)
+		return fmt.Sprintf("r.%s = "+d.q("Bytes")+"(rv[%d])", f, i)
 	}
 	if k == kindDate {
 		if c.NotNull {
-			return fmt.Sprintf("r.%s = runtime.Date(rv[%d])", f, i)
+			return fmt.Sprintf("r.%s = "+d.q("Date")+"(rv[%d])", f, i)
 		}
-		return fmt.Sprintf("r.%s = runtime.Nullable(rv[%d], runtime.Date)", f, i)
+		return fmt.Sprintf("r.%s = "+d.q("Nullable")+"(rv[%d], "+d.q("Date")+")", f, i)
 	}
 	if k == kindInt8Array {
-		return fmt.Sprintf("r.%s, decErr = runtime.Int8Array(rv[%d])", f, i)
+		return fmt.Sprintf("r.%s, decErr = "+d.q("Int8Array")+"(rv[%d])", f, i)
 	}
 	if k == kindDecimalArray {
-		return fmt.Sprintf("r.%s, decErr = runtime.DecimalArray(rv[%d])", f, i)
+		return fmt.Sprintf("r.%s, decErr = "+d.q("DecimalArray")+"(rv[%d])", f, i)
 	}
 	if k == kindInterval {
 		if c.NotNull {
-			return fmt.Sprintf("r.%s, decErr = runtime.IntervalErr(rv[%d])", f, i)
+			return fmt.Sprintf("r.%s, decErr = "+d.q("IntervalErr")+"(rv[%d])", f, i)
 		}
-		return fmt.Sprintf("r.%s, decErr = runtime.NullInterval(rv[%d])", f, i)
+		return fmt.Sprintf("r.%s, decErr = "+d.q("NullInterval")+"(rv[%d])", f, i)
 	}
 	if k == kindTimeOfDay {
 		if c.NotNull {
-			return fmt.Sprintf("r.%s, decErr = runtime.TimeOfDayErr(rv[%d])", f, i)
+			return fmt.Sprintf("r.%s, decErr = "+d.q("TimeOfDayErr")+"(rv[%d])", f, i)
 		}
-		return fmt.Sprintf("r.%s, decErr = runtime.NullTimeOfDay(rv[%d])", f, i)
+		return fmt.Sprintf("r.%s, decErr = "+d.q("NullTimeOfDay")+"(rv[%d])", f, i)
+	}
+	if k == kindTstzRange {
+		if c.NotNull {
+			return fmt.Sprintf("r.%s, decErr = "+d.q("TstzRangeErr")+"(rv[%d])", f, i)
+		}
+		return fmt.Sprintf("r.%s, decErr = "+d.q("NullTstzRange")+"(rv[%d])", f, i)
 	}
 	if k == kindInet {
 		if c.NotNull {
-			return fmt.Sprintf("r.%s, decErr = runtime.InetErr(rv[%d])", f, i)
+			return fmt.Sprintf("r.%s, decErr = "+d.q("InetErr")+"(rv[%d])", f, i)
 		}
-		return fmt.Sprintf("r.%s, decErr = runtime.NullInet(rv[%d])", f, i)
+		return fmt.Sprintf("r.%s, decErr = "+d.q("NullInet")+"(rv[%d])", f, i)
 	}
 	if k == kindTextArray {
-		return fmt.Sprintf("r.%s, decErr = runtime.TextArray(rv[%d], sl)", f, i)
+		return fmt.Sprintf("r.%s, decErr = "+d.q("TextArray")+"(rv[%d], sl)", f, i)
 	}
 	if k == kindUUIDArray {
-		return fmt.Sprintf("r.%s, decErr = runtime.UUIDArray(rv[%d])", f, i)
+		return fmt.Sprintf("r.%s, decErr = "+d.q("UUIDArray")+"(rv[%d])", f, i)
 	}
 	if k == kindJSONB {
 		if c.NotNull {
-			return fmt.Sprintf("r.%s = runtime.JSON(runtime.JSONB(rv[%d], sl))", f, i)
+			return fmt.Sprintf("r.%s = "+d.q("JSON")+"("+d.q("JSONB")+"(rv[%d], sl))", f, i)
 		}
-		return fmt.Sprintf("r.%s = runtime.NullJSON(rv[%d], sl)", f, i)
+		return fmt.Sprintf("r.%s = "+d.q("NullJSON")+"(rv[%d], sl)", f, i)
 	}
 	if k == kindNumeric {
 		// The error is recorded on the row rather than returned, because a
@@ -249,26 +286,26 @@ func decodeExpr(c *schema.Column, i int) string {
 		// terminal checks it before handing the rows back, so a value a
 		// Decimal cannot carry never escapes as a plausible zero.
 		if c.NotNull {
-			return fmt.Sprintf("r.%s, decErr = runtime.NumericErr(rv[%d])", f, i)
+			return fmt.Sprintf("r.%s, decErr = "+d.q("NumericErr")+"(rv[%d])", f, i)
 		}
-		return fmt.Sprintf("r.%s, decErr = runtime.NullNumeric(rv[%d])", f, i)
+		return fmt.Sprintf("r.%s, decErr = "+d.q("NullNumeric")+"(rv[%d])", f, i)
 	}
 	if k == kindText {
 		if c.NotNull {
 			return fmt.Sprintf("r.%s = sl.Str(rv[%d])", f, i)
 		}
-		return fmt.Sprintf("r.%s = runtime.NullText(rv[%d], sl)", f, i)
+		return fmt.Sprintf("r.%s = "+d.q("NullText")+"(rv[%d], sl)", f, i)
 	}
 
 	dec := map[kind]string{
-		kindBool:        "runtime.Bool",
-		kindInt2:        "runtime.Int2",
-		kindInt4:        "runtime.Int4",
-		kindInt8:        "runtime.Int8",
-		kindFloat4:      "runtime.Float4",
-		kindFloat8:      "runtime.Float8",
-		kindUUID:        "runtime.UUID",
-		kindTimestamptz: "runtime.Timestamptz",
+		kindBool:        d.q("Bool"),
+		kindInt2:        d.q("Int2"),
+		kindInt4:        d.q("Int4"),
+		kindInt8:        d.q("Int8"),
+		kindFloat4:      d.q("Float4"),
+		kindFloat8:      d.q("Float8"),
+		kindUUID:        d.q("UUID"),
+		kindTimestamptz: d.q("Timestamptz"),
 	}[k]
 
 	if c.NotNull {
@@ -277,7 +314,7 @@ func decodeExpr(c *schema.Column, i int) string {
 		}
 		return fmt.Sprintf("r.%s = %s(rv[%d])", f, dec, i)
 	}
-	return fmt.Sprintf("r.%s = runtime.Nullable(rv[%d], %s)", f, i, dec)
+	return fmt.Sprintf("r.%s = "+d.q("Nullable")+"(rv[%d], %s)", f, i, dec)
 }
 
 // opApplies decides whether an operator is legal on a column, so the generated
@@ -295,9 +332,15 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		return false
 	case "IsNull", "IsNotNull":
 		return !c.NotNull
+	case "Matches", "WebSearch":
+		return k == kindTSVector
+	case "Overlaps", "ContainsRange", "ContainedBy":
+		return k == kindTstzRange
 	case "Like":
 		return k == kindText
 	case "Gt", "Gte", "Lt", "Lte":
+		// A range has no useful < or >: PostgreSQL defines one for sorting, and
+		// almost every caller who reaches for it means Overlaps.
 		switch k {
 		case kindInt2, kindInt4, kindInt8, kindFloat4, kindFloat8, kindText,
 			kindTimestamptz, kindNumeric, kindDate, kindTimeOfDay:
@@ -317,8 +360,11 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		// An array offers no value predicates either: containment and overlap
 		// need @> and &&, which the operator set does not have, and equality
 		// on an array is order-sensitive in a way almost nobody means.
+		// Comparing a tsvector for equality asks whether two documents have
+		// identical lexeme vectors, which nobody means; the match operators
+		// are the whole reason the column exists.
 		switch k {
-		case kindBytes, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array,
+		case kindTSVector, kindBytes, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array,
 			kindDecimalArray:
 			return false
 		case kindInterval:
@@ -330,4 +376,15 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		return true
 	}
 	return false
+}
+
+// readable reports whether a column travels in a Row.
+//
+// A tsvector does not: it is index support, and decoding one on every read
+// would be pure cost for a value nobody wants in a Go struct. It is still
+// FILTERABLE — that is the whole point of having it — which is why this is a
+// separate question from goKind.
+func readable(c *schema.Column) bool {
+	k := goKind(c)
+	return k != kindUnsupported && k != kindTSVector
 }

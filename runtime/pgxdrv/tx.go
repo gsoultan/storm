@@ -28,7 +28,7 @@ type Tx struct{ T pgx.Tx }
 func (e Tx) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
 	r, err := e.T.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, err
+		return nil, classify(err)
 	}
 	return newRows(r)
 }
@@ -36,13 +36,14 @@ func (e Tx) Query(ctx context.Context, sql string, args []any) (runtime.Rows, er
 func (e Tx) Exec(ctx context.Context, sql string, args []any) (int64, error) {
 	tag, err := e.T.Exec(ctx, sql, args...)
 	if err != nil {
-		return 0, err
+		return 0, classify(err)
 	}
 	return tag.RowsAffected(), nil
 }
 
 func (e Tx) CopyFrom(ctx context.Context, table string, cols []string, src runtime.CopySource) (int64, error) {
-	return e.T.CopyFrom(ctx, pgx.Identifier{table}, cols, copySrc{src})
+	n, err := e.T.CopyFrom(ctx, pgx.Identifier{table}, cols, copySrc{src})
+	return n, classify(err)
 }
 
 func (e Tx) Batch(ctx context.Context, ops []runtime.BatchOp, each func(int, runtime.Rows, int64, error) error) error {

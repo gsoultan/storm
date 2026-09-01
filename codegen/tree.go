@@ -12,6 +12,43 @@ import (
 // Values live in small per-kind arenas indexed in leaf order; bind walks the
 // same order, so no index has to be stored in the token.
 
+// arenaTable is the ONE definition of a value arena: its field name, its
+// cursor variable, its declaration and its capacity.
+//
+// It exists because this used to be four hand-written lists — the binder
+// fields, the Query fields, the cursor declarations and the bind switch — that
+// had to agree. Adding `bools` meant editing all four, missing one produced a
+// generated file referencing an undeclared cursor, and the version of this bug
+// that shipped bound every bool predicate as *int64. One list cannot disagree
+// with itself.
+var arenaTable = []struct {
+	name   string // arena field: "strs"
+	cursor string // cursor variable: "ns"
+	decl   string // field declaration, with a %d for the capacity
+	max    int
+}{
+	{"strs", "ns", "strs [%d]string", maxStr},
+	{"nums", "nn", "nums [%d]int64", maxNum},
+	{"raws", "nr", "raws [%d][16]byte", maxRaw},
+	{"tims", "ntm", "tims [%d]time.Time", maxTime},
+	{"f64s", "nf", "f64s [%d]float64", maxFloat},
+	{"decs", "nd", "decs [%d]runtime.Decimal", maxDec},
+	{"pfxs", "npf", "pfxs [%d]netip.Prefix", maxPfx},
+	{"tods", "nto", "tods [%d]runtime.TimeOfDay", maxTod},
+	{"bools", "nbo", "bools [%d]bool", maxBool},
+	{"rngs", "nrg", "rngs [%d]runtime.TstzRange", maxRng},
+}
+
+// cursorFor is the cursor variable for an arena field name.
+func cursorFor(arena string) string {
+	for _, a := range arenaTable {
+		if a.name == arena {
+			return a.cursor
+		}
+	}
+	return ""
+}
+
 // arenaFor names the value arena a column's values live in.
 // tableSlots is which value-carrying machinery this table's columns can ever
 // touch. Everything downstream — the Query arenas, the binder, the Pred union
@@ -52,13 +89,9 @@ func slotsFor(cols []colInfo) tableSlots {
 			ts.hasBool = true
 		}
 	}
-	for _, pair := range [][2]string{
-		{"strs", "ns"}, {"nums", "nn"}, {"raws", "nr"},
-		{"tims", "ntm"}, {"f64s", "nf"}, {"decs", "nd"}, {"pfxs", "npf"},
-		{"tods", "nto"},
-	} {
-		if ts.arenas[pair[0]] {
-			ts.cursors = append(ts.cursors, pair[1])
+	for _, a := range arenaTable {
+		if ts.arenas[a.name] {
+			ts.cursors = append(ts.cursors, a.cursor)
 		}
 	}
 	return ts
@@ -66,7 +99,7 @@ func slotsFor(cols []colInfo) tableSlots {
 
 func arenaFor(c colInfo) (arena, cursor string) {
 	switch c.kind {
-	case kindText:
+	case kindText, kindTSVector:
 		return "strs", "ns"
 	case kindUUID:
 		return "raws", "nr"
@@ -86,6 +119,17 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		// int8, which is the wrong wire type for a `time` column. Its own
 		// arena keeps the Go type intact all the way to the codec.
 		return "tods", "nto"
+	case kindTstzRange:
+		// Its own arena for the Decimal reason: a range is six fields and does
+		// not fit the int64 slot every other scalar shares.
+		return "rngs", "nrg"
+	case kindBool:
+		// Exactly the TimeOfDay problem, one type over. A bool packed into the
+		// shared int64 arena reaches pgx as *int64, which has no encode plan
+		// for OID 16, so EVERY predicate on a bool column failed at execution:
+		// "cannot find encode plan". Nothing caught it because no fixture in
+		// this repository had a bool column until examples/orders.
+		return "bools", "nbo"
 	case kindJSONB, kindBytes, kindTextArray, kindUUIDArray, kindInt8Array,
 		kindDecimalArray, kindInterval:
 		// No arena. Neither is a value a predicate binds or an ordering
@@ -99,12 +143,11 @@ func arenaFor(c colInfo) (arena, cursor string) {
 
 func arenaStore(c colInfo, v string) string {
 	switch c.kind {
-	case kindText, kindUUID, kindTimestamptz, kindDate, kindNumeric, kindInet, kindTimeOfDay:
+	case kindText, kindTSVector, kindUUID, kindTimestamptz, kindDate, kindNumeric,
+		kindInet, kindTimeOfDay, kindBool, kindTstzRange:
 		return v
 	case kindFloat4, kindFloat8:
 		return "float64(" + v + ")"
-	case kindBool:
-		return "b2i(" + v + ")"
 	default:
 		return "int64(" + v + ")"
 	}
@@ -120,6 +163,8 @@ const (
 	maxFloat = 4
 	maxDec   = 4
 	maxTod   = 4
+	maxBool  = 4
+	maxRng   = 4
 	maxPfx   = 4
 )
 
@@ -137,16 +182,9 @@ func (g *gen) treeQuery() {
 	// value type's size is part of its API: every builder call copies Query,
 	// and a table with no inet column must not carry four netip.Prefix slots
 	// on every copy. Measured, not aesthetic — see slotsFor.
-	for _, ar := range []struct{ name, decl string }{
-		{"strs", "strs [%d]string"}, {"nums", "nums [%d]int64"},
-		{"raws", "raws [%d][16]byte"}, {"tims", "tims [%d]time.Time"},
-		{"f64s", "f64s [%d]float64"}, {"decs", "decs [%d]runtime.Decimal"},
-		{"pfxs", "pfxs [%d]netip.Prefix"},
-		{"tods", "tods [%d]runtime.TimeOfDay"},
-	} {
+	for _, ar := range arenaTable {
 		if ts.arenas[ar.name] {
-			g.p("\t"+ar.decl, map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
-				"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx, "tods": maxTod}[ar.name])
+			g.p("\t"+ar.decl, ar.max)
 		}
 	}
 	g.p("\t%s uint8", strings.Join(ts.cursors, ", "))
@@ -252,6 +290,13 @@ func (g *gen) treeQuery() {
 		if arena == "" {
 			// Not orderable, so it can never be a cursor column. Emitting a
 			// case would try to store it in an arena that does not exist.
+			continue
+		}
+		if !readable(c.col) {
+			// A keyset cursor reads its value off a Row, and a tsvector is not
+			// in one. Emitting a case would reference a field that does not
+			// exist — and paging by a search vector is not a thing anyone
+			// means anyway.
 			continue
 		}
 		field := exportName(c.Name())
@@ -386,6 +431,25 @@ func (g *gen) treePreds() {
 	g.p("\treturn q")
 	g.p("}")
 	g.p("")
+	g.p("// WhenSet applies f(*v) only when v is non-nil — the optional-filter")
+	g.p("// idiom without an if, and without the nil dereference WhereIf invites.")
+	g.p("//")
+	g.p("//\tq = user.WhenSet(q, f.MinAge, user.Age.Gte)")
+	g.p("//")
+	g.p("// WhereIf takes an already-built Pred, so the caller has to evaluate")
+	g.p("// user.Age.Gte(*f.MinAge) BEFORE the condition is tested — which panics")
+	g.p("// on exactly the nil the condition was checking for. This takes the")
+	g.p("// constructor instead, so nothing is dereferenced unless it is there.")
+	g.p("//")
+	g.p("// It still sets exactly one bit in the shape mask: a filter that is")
+	g.p("// absent is a different SHAPE, compiled once, not a different value.")
+	g.p("func WhenSet[T any](q Query, v *T, f func(T) Pred) Query {")
+	g.p("\tif v == nil {")
+	g.p("\t\treturn q")
+	g.p("\t}")
+	g.p("\treturn q.Where(f(*v))")
+	g.p("}")
+	g.p("")
 	g.p("// WhereIf applies a predicate only when cond holds.")
 	g.p("func (q Query) WhereIf(cond bool, p Pred) Query {")
 	g.p("\tif !cond {")
@@ -472,9 +536,12 @@ func (g *gen) treePreds() {
 		// zero, so the first predicate on that column overflows and the query
 		// fails as "too complex" — which is what an inet column did once, and
 		// a time column did again while this type was being added.
-		max := map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
-			"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx,
-			"tods": maxTod}[arena]
+		max := 0
+		for _, a := range arenaTable {
+			if a.name == arena {
+				max = a.max
+			}
+		}
 		if max == 0 {
 			g.err = fmt.Errorf("codegen: arena %q has no capacity entry — add it to the map in treePreds", arena)
 			return
@@ -496,7 +563,7 @@ func (g *gen) treePreds() {
 // predSlotFor reads a Pred's payload into the arena's element type.
 func predSlotFor(c colInfo) string {
 	switch c.kind {
-	case kindText:
+	case kindText, kindTSVector:
 		return "p.str"
 	case kindUUID:
 		return "p.raw"
@@ -508,6 +575,10 @@ func predSlotFor(c colInfo) string {
 		return "p.dec"
 	case kindTimeOfDay:
 		return "p.tod"
+	case kindTstzRange:
+		return "p.rng"
+	case kindBool:
+		return "p.bol"
 	case kindInet:
 		return "p.pfx"
 	default:
@@ -520,16 +591,9 @@ func (g *gen) treeBind() {
 	ts := slotsFor(g.cols)
 	g.p("type binder struct {")
 	g.p("\tvals   []any")
-	for _, ar := range []struct{ name, decl string }{
-		{"strs", "strs   [%d]string"}, {"nums", "nums   [%d]int64"},
-		{"raws", "raws   [%d][16]byte"}, {"tims", "tims   [%d]time.Time"},
-		{"f64s", "f64s   [%d]float64"}, {"decs", "decs   [%d]runtime.Decimal"},
-		{"pfxs", "pfxs   [%d]netip.Prefix"},
-		{"tods", "tods   [%d]runtime.TimeOfDay"},
-	} {
+	for _, ar := range arenaTable {
 		if ts.arenas[ar.name] {
-			g.p("\t"+ar.decl, map[string]int{"strs": maxStr, "nums": maxNum, "raws": maxRaw,
-				"tims": maxTime, "f64s": maxFloat, "decs": maxDec, "pfxs": maxPfx, "tods": maxTod}[ar.name])
+			g.p("\t"+ar.decl, ar.max)
 		}
 	}
 	if ts.anyRaw {
@@ -584,12 +648,12 @@ func (g *gen) treeBind() {
 		if a == "" {
 			continue
 		}
-		used[map[string]string{"strs": "ns", "nums": "nn", "raws": "nr", "tims": "ntm", "f64s": "nf", "decs": "nd", "pfxs": "npf", "tods": "nto"}[a]] = true
+		used[cursorFor(a)] = true
 	}
 	var cursors []string
-	for _, n := range []string{"ns", "nn", "nr", "ntm", "nf", "nd", "npf", "nto"} {
-		if used[n] {
-			cursors = append(cursors, n)
+	for _, a := range arenaTable {
+		if used[a.cursor] {
+			cursors = append(cursors, a.cursor)
 		}
 	}
 	if len(cursors) > 0 {
@@ -637,9 +701,7 @@ func (g *gen) treeBind() {
 		if arena == "" {
 			continue // no value arena: nothing to copy into the binder
 		}
-		short := map[string]string{"strs": "ns", "nums": "nn", "raws": "nr",
-			"tims": "ntm", "f64s": "nf", "decs": "nd", "pfxs": "npf",
-			"tods": "nto"}[arena]
+		short := cursorFor(arena)
 		g.p("\t\tcase %d:", i)
 		g.p("\t\t\tb.%s[%s] = q.%s[%s]", arena, short, arena, short)
 		g.p("\t\t\tv = append(v, &b.%s[%s])", arena, short)

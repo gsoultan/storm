@@ -151,7 +151,7 @@ func (g *gen) emitHaving(np havingSpec) {
 	g.p("\tif !rows.Next() {")
 	g.p("\t\treturn 0, rows.Err()")
 	g.p("\t}")
-	g.p("\treturn runtime.Int8(rows.RawValues()[0]), rows.Err()")
+	g.p("\treturn %s(rows.RawValues()[0]), rows.Err()", g.dec.q("Int8"))
 	g.p("}")
 	g.p("")
 }
