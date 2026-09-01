@@ -2,9 +2,10 @@
 //
 //	go run ./examples/blog/gen
 //
-// A real module uses the storm CLI template instead (`storm generate`, with
-// the model registered in the bootstrap); this small main is the same call the
-// CLI makes, kept local so the example is self-contained.
+// A real module just runs `storm generate` — the installed binary discovers the
+// models and writes its own bootstrap (ADR-0006). This small main is the same
+// call that bootstrap makes, kept local so the example generates itself in CI
+// without depending on an installed binary.
 package main
 
 import (

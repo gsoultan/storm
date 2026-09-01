@@ -19,9 +19,14 @@ echo "== driver confined to its adapter =="
 # type to an application. tool/ is on the list because the commands moved
 # there from cmd/ when they became importable; that changed who can call them,
 # not when they run. Nothing an application links at runtime is exempt.
+#
+# examples/ is exempt for a different reason: it is ADOPTER code, and an
+# adopter importing pgx to build a pool is the documented way to get one — not
+# a boundary violation. examples/orders is its own module and does exactly
+# that. The rule is about what STORM links, and a separate module is not that.
 for f in $(git ls-files '*.go' 2>/dev/null | grep -v '_test.go' | grep -v '^bench/' | grep -v '^cmd/'); do
   case "$f" in
-    runtime/pgxdrv/*|schema/pg/*|migrate/*|internal/spike/*|tool/*) continue ;;
+    runtime/pgxdrv/*|schema/pg/*|migrate/*|internal/spike/*|tool/*|examples/*) continue ;;
   esac
   if grep -q 'jackc/pgx' "$f"; then note "pgx imported outside its adapter: $f"; fi
 done

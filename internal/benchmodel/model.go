@@ -21,6 +21,16 @@ type User struct {
 
 // Projections gives the benchmark a narrow read to measure against the full
 // one on identical predicates.
+// Aggregates: the grouped read the benchmark measures. Its warm path has the
+// same budget as every other read — zero allocations to build and bind.
+func (u *User) Aggregates(a *storm.Aggregates) {
+	a.Named("ByStatus").
+		By(&u.Status).
+		Count("Users").
+		Avg(&u.Age, "AvgAge").
+		Max(&u.CreatedAt, "Newest")
+}
+
 func (u *User) Projections(p *storm.Projections) {
 	p.Named("Contact", &u.Email, &u.Name)
 }

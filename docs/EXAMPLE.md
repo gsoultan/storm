@@ -1,6 +1,6 @@
 ---
 tags: [storm, example, quickstart]
-updated: 2026-08-23
+updated: 2026-08-27
 status: proposed — illustrative design, not implemented
 ---
 
@@ -108,43 +108,102 @@ The struct holds your domain; the method holds the database's opinions about it.
 
 ## 2. Generate
 
-The tool needs to see your models, and a binary installed from storm's
-repository cannot. So the tool is a **library**, and you give it a `main` —
-five lines, once:
+Install the tool once and run it. There is nothing to write and no registry to
+maintain — storm finds the models by parsing your module:
+
+```console
+$ go install github.com/gsoultan/storm/cmd/storm@latest
+$ go get github.com/gsoultan/storm/tool   # once per module, see below
+```
+
+A type is a model when it **embeds `storm.Model`**, or declares a **`Schema`,
+`Plans` or `Projections`** method, or carries **`//storm:model`**. A type
+**embedded in another struct is a mixin** — it contributes columns and gets no
+table. `//storm:ignore` excludes a type outright. Ask what storm concluded:
+
+```console
+$ storm models
+module example.com/app
+
+3 model(s):
+  example.com/app/model.Org
+      embeds storm.Model
+      /src/app/model/model.go:12:6
+  ...
+
+1 skipped:
+  example.com/app/model.Auditable
+      embedded in another struct, so it is a mixin rather than a table
+```
+
+Then every command works against *your* schema:
+
+```console
+$ storm generate internal/store
+  → internal/store/org/org.gen.go (45981 bytes)
+  → internal/store/store.gen.go (13658 bytes)
+  → internal/store/user/user.gen.go (58057 bytes)
+  3 package(s) from 2 table(s)
+
+$ storm ddl              # CREATE statements; storm never applies them
+$ storm diff init        # a reviewable migration
+$ storm verify -stale    # generated code vs model; needs no database
+$ storm verify -pending  # "changed the model, forgot the migration"
+$ storm lint             # every named plan costed in round trips
+```
+
+**Never think about regenerating.** Leave the watcher running while you work —
+edit a model, save, and the store is current before you have switched windows:
+
+```console
+$ storm watch store
+storm: watching example.com/app → store
+storm: ctrl-c to stop
+storm: 5 model(s) → store (1.3s)
+storm: 5 model(s) → store (871ms)     ← you saved model.go
+```
+
+And if you were not running it, a stale store **stops the build** rather than
+compiling with the column missing:
+
+```
+store/shape.gen.go:57:2: too few values in struct literal of type model.Product
+```
+
+That assertion covers the struct: a field added, removed, renamed or reordered.
+A change inside `Schema`, `Plans` or `Projections` is a method body the type
+system cannot see, so `verify -stale` remains the check for those.
+
+**`verify -stale` and databases.** It compares generated code to the model, so
+it needs no server — *unless* you declare `storm.SQL[T]` or `storm.SQLExec`.
+Those are PREPAREd against a real one, so a project with raw queries needs
+`-dsn` (a server, not an existing schema) even for the stale check.
+
+**The one-time `go get`.** Nothing in your source imports `storm/tool`, so
+`go mod tidy` cannot know it is needed and the first run fails with go's
+`updates to go.mod needed`. storm detects that and names the command; you run
+it once per module.
+
+**Keeping the old way.** The hand-written bootstrap still works and is still
+supported — if you already have one, or you want models storm's rules would not
+find, keep it:
 
 ```go
 // cmd/storm/main.go
 package main
 
 import (
-	"github.com/gsoultan/storm/tool"
 	"example.com/app/model"
+	"github.com/gsoultan/storm/tool"
 )
 
-func main() { tool.Main(model.All(), nil) }
+func main() { tool.Main(model.All(), model.Queries()) }
 ```
 
-The second argument is your `storm.SQL[T]` / `storm.SQLExec` declarations, if
-you have any; `nil` until you do. Then every command works against *your*
-schema:
+Both paths generate byte-identical code; `scripts/check/outsider.sh` asserts it.
 
-```console
-$ go run ./cmd/storm generate internal/store
-  → internal/store/org/org.gen.go (45981 bytes)
-  → internal/store/store.gen.go (13658 bytes)
-  → internal/store/user/user.gen.go (58057 bytes)
-  3 package(s) from 2 table(s)
-
-$ go run ./cmd/storm ddl              # CREATE statements; storm never applies them
-$ go run ./cmd/storm diff init        # a reviewable migration
-$ go run ./cmd/storm verify -stale    # generated code vs model, no database
-$ go run ./cmd/storm verify -pending  # "changed the model, forgot the migration"
-$ go run ./cmd/storm lint             # every named plan costed in round trips
-```
-
-Add `tool` to your `go.mod` tool directives if you want the shorter
-`go tool storm generate` form. Generated code is `// Code generated` — commit
-it or gitignore it, your call; `verify -stale` fails CI if it is stale.
+Generated code is `// Code generated` — commit it or gitignore it, your call;
+`verify -stale` fails CI if it is stale.
 
 ## 3. Query
 

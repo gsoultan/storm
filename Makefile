@@ -27,6 +27,11 @@ generate:      ## regenerate code from the model
 test: vet
 	STORM_DSN='$(DSN)' go test -race -shuffle=on ./...
 
+example:       ## the Go kit example: its own module, generated and tested
+	cd examples/orders && \
+	  STORM_DSN='$(DSN)' go run ../../cmd/storm generate store && \
+	  STORM_DSN='$(DSN)' go test ./orders/
+
 bench:
 	STORM_DSN='$(DSN)' go test -run XXX -bench . -benchmem -count=10 ./bench/ \
 	  | tee bench/last.txt

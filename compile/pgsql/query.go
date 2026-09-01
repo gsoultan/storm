@@ -83,16 +83,30 @@ func DefaultOrderBy(primaryKey []string, fallback string) string {
 // the shape key would stop being value-independent. Do not assume the split
 // below carries over.
 var frags = map[string]struct{ a, b string }{
-	"Eq":        {" = " + Placeholder, ""},
-	"NotEq":     {" <> " + Placeholder, ""},
-	"Gt":        {" > " + Placeholder, ""},
-	"Gte":       {" >= " + Placeholder, ""},
-	"Lt":        {" < " + Placeholder, ""},
-	"Lte":       {" <= " + Placeholder, ""},
-	"Like":      {" LIKE " + Placeholder, ""},
-	"In":        {" = ANY(" + Placeholder, ")"},
-	"IsNull":    {" IS NULL", ""},
-	"IsNotNull": {" IS NOT NULL", ""},
+	"Eq":    {" = " + Placeholder, ""},
+	"NotEq": {" <> " + Placeholder, ""},
+	"Gt":    {" > " + Placeholder, ""},
+	"Gte":   {" >= " + Placeholder, ""},
+	"Lt":    {" < " + Placeholder, ""},
+	"Lte":   {" <= " + Placeholder, ""},
+	"Like":  {" LIKE " + Placeholder, ""},
+	// Full-text search. plainto_tsquery ANDs the terms and ignores syntax —
+	// the safe default for a value that came from a user. websearch_to_tsquery
+	// understands quoted phrases, OR and leading `-`, which is what a search
+	// box is expected to do. Both take the server's default_text_search_config,
+	// so the language is a database setting rather than a constant compiled
+	// into every query.
+	// Range operators. && is the one that matters: "do these overlap" answered
+	// by a GiST index rather than by four comparisons in Go that get the
+	// boundary cases wrong.
+	"Overlaps":      {" && " + Placeholder, ""},
+	"ContainsRange": {" @> " + Placeholder, ""},
+	"ContainedBy":   {" <@ " + Placeholder, ""},
+	"Matches":       {" @@ plainto_tsquery(" + Placeholder, ")"},
+	"WebSearch":     {" @@ websearch_to_tsquery(" + Placeholder, ")"},
+	"In":            {" = ANY(" + Placeholder, ")"},
+	"IsNull":        {" IS NULL", ""},
+	"IsNotNull":     {" IS NOT NULL", ""},
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is

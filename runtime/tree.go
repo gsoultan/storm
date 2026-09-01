@@ -307,6 +307,21 @@ type Lowering struct {
 // are part of the key: two queries differing only in ordering are different
 // statements, and sharing one would serve the wrong rows in the wrong order.
 func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
+	return spliceTree(prefix, "", toks, lw, suffix)
+}
+
+// SpliceTreeWhere is SpliceTree with a DECLARED predicate ANDed in front of the
+// dynamic ones.
+//
+// A join can declare a filter — "only fulfilled orders" — and a caller's own
+// predicates compose with it rather than replacing it. ANDed rather than
+// merged, so no call site can widen what the declaration narrowed; that is the
+// whole reason to declare it there instead of at every call site.
+func SpliceTreeWhere(prefix, declared string, toks []Tok, lw Lowering, suffix string) *Stmt {
+	return spliceTree(prefix, declared, toks, lw, suffix)
+}
+
+func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string) *Stmt {
 	frag, ord2, ob := lw.Frag, lw.Order, lw.OB
 	var stack []string
 	ord := 0
@@ -405,10 +420,21 @@ func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
 	var streamErr error
 	switch {
 	case len(stack) == 0:
-		// No predicates at all. Ordinary: an unfiltered read.
+		// No call-site predicates. The declared one, if any, still applies.
+		if declared != "" {
+			sql += " WHERE " + declared
+		}
 	case len(stack) == 1:
 		if stack[0] != "" {
-			sql += " WHERE " + unwrapOuter(stack[0])
+			w := unwrapOuter(stack[0])
+			if declared != "" {
+				// Parenthesised: the caller's predicate may be a disjunction,
+				// and `declared AND a OR b` is not what either party meant.
+				w = declared + " AND (" + w + ")"
+			}
+			sql += " WHERE " + w
+		} else if declared != "" {
+			sql += " WHERE " + declared
 		}
 	default:
 		// The stream did not reduce. Every entry is kept, ANDed, so the
@@ -416,7 +442,11 @@ func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
 		// but the statement is marked, because the old behaviour was to drop
 		// the WHERE clause entirely and return every row. A filter must never
 		// fail open.
-		sql += " WHERE " + join(stack, " AND ")
+		w := join(stack, " AND ")
+		if declared != "" {
+			w = declared + " AND " + w
+		}
+		sql += " WHERE " + w
 		streamErr = ErrMalformedStream
 	}
 	for i, t := range orderToks {

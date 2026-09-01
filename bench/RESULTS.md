@@ -13,6 +13,21 @@ generated: 2026-08-23
 min=max=8, shared by every implementation under test · 50,000 users across 100
 orgs, ~14% of `age` NULL · median of `-count=10`.
 
+> **Stale on Go 1.27 — re-run before tagging (2026-08-28).** Every number below
+> was measured on **Go 1.26.6**; the module now builds on 1.27. Spot-checking
+> found the allocation counts unchanged — `Get_Pgx` 18, `Dynamic6_Pgx` 23,
+> `Floor_Ping` 5, `Prepare_Warm` 0 — which are the claims this file says are the
+> honest ones. But `DecodeRow_Offline`, which needs no database and touches no
+> code changed in v0.3.0, moved from **31 ns / 48 B / 3 allocs** to
+> **~48 ns / 128 B / 1 alloc**: fewer allocations, more bytes, slower. That is a
+> toolchain difference in `internal/spike`, not a regression in storm, and it is
+> exactly the kind of drift a re-run exists to catch.
+>
+> The wall-clock figures were NOT re-measured here, deliberately: the spot check
+> ran against a different container and every number including the floor was
+> ~1.7× higher, so publishing a mixed-environment table would be worse than
+> publishing a stale one. Run `make results` on the environment named below.
+
 ## Numbers
 
 | Benchmark | ns/op | B/op | allocs/op |

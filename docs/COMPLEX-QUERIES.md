@@ -1,7 +1,7 @@
 ---
 tags: [storm, queries, complex]
-updated: 2026-08-23
-status: proposed — illustrative design, not implemented
+updated: 2026-08-27
+status: partly implemented — single-table aggregation is built (see below)
 ---
 
 # Complex queries, as objects
@@ -10,10 +10,22 @@ Eight queries a backend engineer actually gets asked for, none of them
 expressible in GORM or Ent without dropping to raw SQL. All string-free, all
 composable, all compiled at build time.
 
-The argument for objects is not aesthetics. **A string cannot be composed,
-reused, unit-tested, or checked.** An object can be returned from a function,
-stored in a variable, passed across a package boundary, and reused in five
-queries that stay correct when the column is renamed.
+> **What is built, as of v0.3.0 — all of it.** Single-table aggregation;
+> grouping by an expression (`date_trunc`, `coalesce`, `nullif`, `abs`);
+> `FILTER`; `HAVING`; `GROUPING SETS` / `ROLLUP` / `CUBE` with `GROUPING()`;
+> window functions (`row_number`, `rank`, `dense_rank`, `lag`, `lead`,
+> `first_value`, and any aggregate over a window); **joins projecting across
+> tables**, inner and left; and **CTEs** that materialise a declared aggregation
+> once and join against it.
+>
+> They are **declared** — in `Aggregates` and `Joins` methods on the model — not
+> composed at the call site as sketched below. The difference is deliberate: a
+> chain assembled at run time has an unbounded set of result shapes, and a shape
+> the generator never saw can have neither a scanner nor a compiled statement.
+> Call-site predicates stay dynamic because those *are* bounded.
+>
+> Still `storm.SQL[T]`: recursive CTEs, and anything outside the scalar-function
+> allow-list. Both are validated against the model at generate time.
 
 ---
 

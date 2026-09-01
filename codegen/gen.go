@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"go/format"
 	"sort"
-	"strings"
 
 	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/runtime"
@@ -22,6 +21,11 @@ type Options struct {
 	Package string // package name for the generated file
 	Import  string // module path of the runtime, e.g. "github.com/gsoultan/storm"
 	Table   string // which table to emit
+
+	// Dialect selects the back end. The zero value is PostgreSQL, so every
+	// existing caller keeps the target it already had and its generated output
+	// is byte-identical.
+	Dialect Dialect
 
 	// BatchTopColumns are the columns this table is batch-loaded by — the
 	// foreign keys of has-many relations pointing at it. Each one gets a
@@ -73,7 +77,18 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 		}
 	}
 
-	g := &gen{s: s, t: t, o: o, cols: cols}
+	// Refused before a line is emitted. compile/myddl already turns these away
+	// in DDL; a read path that accepted them would let the two halves disagree
+	// about what the target supports.
+	for _, c := range t.Columns {
+		if !o.Dialect.supports(c) {
+			return nil, fmt.Errorf(
+				"codegen: table %s column %s is %s, which %s cannot decode — "+
+					"`storm portable %s` lists every such column and what to use instead",
+				t.Name, c.Name, c.Type.SQL(), o.Dialect, o.Dialect)
+		}
+	}
+	g := &gen{s: s, t: t, o: o, cols: cols, dec: decodersFor(o.Dialect, o.Import)}
 	g.header()
 	g.rowType()
 	g.opConstants()
@@ -89,6 +104,8 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	g.terminals()
 	g.batchTop()
 	g.projections()
+	g.aggregates()
+	g.joins()
 	g.arcs()
 	g.recursive()
 	g.writes()
@@ -110,6 +127,9 @@ type gen struct {
 	t    *schema.Table
 	o    Options
 	cols []colInfo
+	// dec is the decoder family this file targets, resolved once from
+	// o.Dialect so no emitter has to ask again.
+	dec decoders
 
 	// err is the first construct the target cannot express. Emitters set it
 	// and return; File reports it instead of writing a file that is quietly
@@ -173,8 +193,7 @@ func (g *gen) rowType() {
 	g.p("// replaced by their scalar foreign keys and *T rewritten to Null[T].")
 	g.p("type Row struct {")
 	for _, c := range g.t.Columns {
-		k := goKind(c)
-		if k == kindUnsupported {
+		if !readable(c) {
 			continue
 		}
 		g.p("\t%s %s", exportName(c.Name), goType(c))
@@ -202,6 +221,11 @@ var ops = []struct {
 	{"Lt", 1},
 	{"Lte", 1},
 	{"Like", 1},
+	{"Matches", 1},
+	{"WebSearch", 1},
+	{"Overlaps", 1},
+	{"ContainsRange", 1},
+	{"ContainedBy", 1},
 	{"In", 1},
 	{"IsNull", 0},
 	{"IsNotNull", 0},
@@ -497,11 +521,14 @@ func (g *gen) scanner() {
 	}
 	i := 0
 	for _, c := range g.t.Columns {
-		if goKind(c) == kindUnsupported {
+		// Must match allReadable exactly: the scanner reads result columns
+		// positionally, so one extra or one missing here shifts every value
+		// after it into the wrong field.
+		if !readable(c) {
 			continue
 		}
-		g.p("\t%s", decodeExpr(c, i))
-		if fallibleColumn(c) {
+		g.p("\t%s", decodeExprIn(c, i, g.dec))
+		if fallibleIn(c, g.dec) {
 			// Return on the FIRST failure rather than letting the next
 			// column's assignment overwrite decErr. The row is partly decoded
 			// at that point and the caller discards it, which is the right
@@ -596,7 +623,7 @@ func (g *gen) terminals() {
 	g.p("\tdefer rows.Close()")
 	g.p("\tvar n int64")
 	g.p("\tif rows.Next() {")
-	g.p("\t\tn = runtime.Int8(rows.RawValues()[0])")
+	g.p("\t\tn = %s(rows.RawValues()[0])", g.dec.q("Int8"))
 	g.p("\t}")
 	g.p("\treturn n, rows.Err()")
 	g.p("}")
@@ -640,29 +667,14 @@ func (g *gen) terminals() {
 func readableCols(t *schema.Table) []string {
 	var out []string
 	for _, c := range t.Columns {
-		if goKind(c) != kindUnsupported {
+		if readable(c) {
 			out = append(out, c.Name)
 		}
 	}
 	return out
 }
 
-func exportName(col string) string {
-	parts := strings.Split(col, "_")
-	for i, p := range parts {
-		switch p {
-		case "id":
-			parts[i] = "ID"
-		case "url", "uri", "ip", "api":
-			parts[i] = strings.ToUpper(p)
-		default:
-			if p != "" {
-				parts[i] = strings.ToUpper(p[:1]) + p[1:]
-			}
-		}
-	}
-	return strings.Join(parts, "")
-}
+func exportName(col string) string { return schema.GoName(col) }
 
 var _ = sort.Strings
 
@@ -724,19 +736,26 @@ func (g *gen) colIndex(name string) int {
 
 // fallibleColumn reports whether one column's decoder can fail.
 func fallibleColumn(c *schema.Column) bool {
-	switch goKind(c) {
-	case kindNumeric, kindTextArray, kindUUIDArray, kindInt8Array,
-		kindDecimalArray, kindInterval, kindInet, kindTimeOfDay:
-		return true
-	}
-	return false
+	return fallibleIn(c, decodersFor(DialectPostgres, ""))
+}
+
+// fallibleIn asks the DIALECT whether this column's decode can fail.
+//
+// Not a property of the type alone. MySQL packs a DATETIME component-wise
+// behind a leading length, so it can be handed one that does not match and its
+// decoder returns an error; PostgreSQL reads a fixed-width epoch offset and
+// cannot. Emitting the wrong answer produces a scanner that either drops an
+// error or assigns two values to one variable — both compile failures in
+// somebody else's tree.
+func fallibleIn(c *schema.Column, d decoders) bool {
+	return d.fallible[goKind(c)]
 }
 
 // hasFallibleDecode reports whether any column can fail to decode. Only
 // numeric can: everything else has a Go type that carries every wire value.
 func (g *gen) hasFallibleDecode() bool {
 	for _, c := range g.t.Columns {
-		if fallibleColumn(c) {
+		if fallibleIn(c, g.dec) {
 			return true
 		}
 	}

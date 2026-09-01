@@ -272,7 +272,7 @@ func TestGenerate_ImportsTheHostModuleNotStorm(t *testing.T) {
 
 	tmp := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmp, "go.mod"),
-		[]byte("module example.com/someoneelse\n\ngo 1.26\n"), 0o644); err != nil {
+		[]byte("module example.com/someoneelse\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cwd, err := os.Getwd()

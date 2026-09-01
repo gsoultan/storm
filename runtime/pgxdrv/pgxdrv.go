@@ -16,7 +16,7 @@ type Pool struct{ P *pgxpool.Pool }
 func (e Pool) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
 	r, err := e.P.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, err
+		return nil, classify(err)
 	}
 	return newRows(r)
 }
@@ -24,7 +24,7 @@ func (e Pool) Query(ctx context.Context, sql string, args []any) (runtime.Rows, 
 func (e Pool) Exec(ctx context.Context, sql string, args []any) (int64, error) {
 	tag, err := e.P.Exec(ctx, sql, args...)
 	if err != nil {
-		return 0, err
+		return 0, classify(err)
 	}
 	return tag.RowsAffected(), nil
 }
@@ -33,11 +33,18 @@ type rows struct{ pgx.Rows }
 
 func (r rows) Close() { r.Rows.Close() }
 
+// Err classifies too. pgx DEFERS a statement's error to here — a constraint
+// violation on a RETURNING insert arrives when the rows are drained, not when
+// Query is called — so classifying only the immediate return would miss the
+// write path entirely, which is the path constraints are on.
+func (r rows) Err() error { return classify(r.Rows.Err()) }
+
 // CopyFrom uses the real COPY protocol, which is the point: it skips statement
 // parsing and per-row protocol overhead entirely, so a bulk load is one
 // conversation with the server rather than one per row.
 func (e Pool) CopyFrom(ctx context.Context, table string, cols []string, src runtime.CopySource) (int64, error) {
-	return e.P.CopyFrom(ctx, pgx.Identifier{table}, cols, copySrc{src})
+	n, err := e.P.CopyFrom(ctx, pgx.Identifier{table}, cols, copySrc{src})
+	return n, classify(err)
 }
 
 // copySrc adapts storm's driver-free CopySource to pgx's. The two have the same
@@ -77,14 +84,14 @@ func drainBatch(br pgx.BatchResults, ops []runtime.BatchOp, each func(int, runti
 	for i, op := range ops {
 		if !op.WantRows {
 			tag, err := br.Exec()
-			if cbErr := each(i, nil, tag.RowsAffected(), err); cbErr != nil {
+			if cbErr := each(i, nil, tag.RowsAffected(), classify(err)); cbErr != nil {
 				return cbErr
 			}
 			continue
 		}
 		r, err := br.Query()
 		if err != nil {
-			if cbErr := each(i, nil, 0, err); cbErr != nil {
+			if cbErr := each(i, nil, 0, classify(err)); cbErr != nil {
 				return cbErr
 			}
 			continue
@@ -102,7 +109,7 @@ func drainBatch(br pgx.BatchResults, ops []runtime.BatchOp, each func(int, runti
 		if cbErr != nil {
 			return cbErr
 		}
-		if err := r.Err(); err != nil {
+		if err := classify(r.Err()); err != nil {
 			if cbErr := each(i, nil, 0, err); cbErr != nil {
 				return cbErr
 			}

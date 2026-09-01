@@ -71,6 +71,23 @@ feed, err := store.AuthorFeed().Limit(10).All(ctx, ex)
 n := author.Create(); n.SetName("Ada"); n.SetEmail("ada@example.com")
 ada, err := n.Insert(ctx, ex)
 
+// Declared aggregations: GROUP BY without dropping to SQL. The result types
+// are PostgreSQL's, not the input's — count is int64, sum(numeric) is a
+// NULLABLE Decimal, because over zero rows it IS null.
+func (o *Order) Aggregates(a *storm.Aggregates) {
+    a.Named("ByStatus").By(&o.Status).Count("Orders").Sum(&o.Total, "Revenue")
+}
+rows, err := order.New().Where(order.PlacedAt.Gte(t)).AllByStatus(ctx, ex)
+
+// Joins project ACROSS tables, declared with field pointers into a local var.
+// LEFT is in the type: anything from the right side is Null[T].
+func (o *Order) Joins(j *storm.Joins) {
+    var c Customer
+    j.Named("WithCustomer").Inner(&c, &o.Customer).
+        Take(&o.ID, "OrderID").Take(&c.Email, "Email").OrderDesc(&o.PlacedAt)
+}
+rows, err := order.New().Where(order.Status.Eq("paid")).AllWithCustomer(ctx, ex)
+
 // Anything PostgreSQL can run, typed, validated against the model at
 // generate time — mismatches fail the build naming the column and the fix.
 var Top = storm.SQL[TopRow](`WITH ranked AS (...) SELECT ... LIMIT $1`)
@@ -95,23 +112,59 @@ possible.
 
 ## Tooling
 
-The tool is a library you give a five-line `main`, because the commands need
-your models and an installed binary cannot see them
-([EXAMPLE §2](docs/EXAMPLE.md)):
-
-```go
-func main() { tool.Main(model.All(), nil) }   // cmd/storm/main.go
-```
+Install it, run it, write no bootstrap. There is no registry to maintain and
+no `main` to keep in step with your models — storm finds them by parsing
+([ADR-0006](docs/adr/0006-discovery-replaces-the-bootstrap.md)):
 
 ```console
-go run ./cmd/storm generate [dir]   # one package per table + the context package
-                     diff <name>    # a reviewable migration; never applied by storm
-                     verify         # drift: model vs database
-                     verify -stale  # generated code vs model (CI, no database)
-                     verify -pending# model vs migrations — "forgot to diff" fails CI
-                     lint           # every named plan costed in round trips, budgeted
-                     explain        # every statement planned; large seq scans flagged
-                     import         # an existing database, written back as a model draft
+go install github.com/gsoultan/storm/cmd/storm@latest
+go get github.com/gsoultan/storm/tool     # once per module
+
+storm generate [dir]    # one package per table + the context package
+      watch <dir>       # regenerate on save; leave it running while you edit
+      models            # what discovery found, and which rule matched
+      diff <name>       # a reviewable migration; never applied by storm
+      verify            # drift: model vs database
+      verify -stale     # generated code vs model (no database, unless you declare storm.SQL)
+      verify -pending   # model vs migrations — "forgot to diff" fails CI
+      lint              # every named plan costed in round trips, budgeted
+      explain           # every statement planned; large seq scans flagged
+      import            # an existing database, written back as a model draft
+      portable <engine> # what in this model does NOT cross to another engine
+```
+
+A type is a model when it embeds `storm.Model`, or declares a `Schema`, `Plans`
+or `Projections` method, or carries `//storm:model`; `//storm:ignore` opts out.
+A type embedded in another struct is a **mixin**, not a table. `storm models`
+prints the verdict and the rule behind it.
+
+Field pointers still resolve at runtime — storm writes the bootstrap it used to
+ask you for, runs it, and removes it. The hand-written
+`tool.Main(model.All(), model.Queries())` is still supported and generates
+byte-identical code ([EXAMPLE §2](docs/EXAMPLE.md)).
+
+**You do not have to remember to regenerate.** The step cannot be removed — Go
+has no build hook — but two things remove the remembering. `storm watch` keeps
+the tree current as you save. And generated code carries a **shape assertion**,
+so a model that gained, lost, renamed or reordered a field stops the build
+naming that field, instead of silently missing it:
+
+```
+store/shape.gen.go:57:2: too few values in struct literal of type model.Product
+```
+
+Changes inside `Schema`, `Plans` or `Projections` are method bodies the type
+system cannot see; `storm verify -stale` is still the check for those.
+
+## A worked service
+
+[`examples/orders`](examples/orders) is a Go kit microservice on storm, in its
+own module: catalogue, checkout that reserves stock under concurrency, order
+retrieval, and a finance report. Its concurrency test puts 12 goroutines
+against a stock of 20 and asserts nothing is oversold.
+
+```console
+$ cd examples/orders && storm generate store && go test ./orders/
 ```
 
 ## Design documents
@@ -122,6 +175,55 @@ go run ./cmd/storm generate [dir]   # one package per table + the context packag
 [docs/adr](docs/adr). Some API sketches in the design docs describe planned
 surface (joins with cross-table rows, aggregate projections); the example and
 the generated code are the as-built truth.
+
+## Scheduling without a race
+
+```go
+During storm.TstzRange                       // in the model
+t.Exclude(storm.With(&b.Room, storm.OpEq),
+          storm.With(&b.During, storm.OpOverlaps))
+
+booking.New().Where(booking.During.Overlaps(window)).All(ctx, ex, nil)
+```
+
+Half-open by default, so `[09:00, 11:00)` and `[11:00, 12:00)` abut rather than
+clash. The overlap is enforced by a GiST exclusion constraint — two concurrent
+bookings for one room cannot both commit — and the loser gets
+`runtime.ErrExclusionViolation`. **No other Go ORM models exclusion
+constraints**, and they are the correct answer to booking, scheduling and
+rate-plan overlap.
+
+## Full-text search
+
+```go
+Search storm.TSVector          // in the model
+t.Col(&p.Search).Generated(storm.Expr(`to_tsvector('english', name)`)).Index()
+
+product.New().Where(product.Search.WebSearch(q)).All(ctx, ex, nil)
+```
+
+Filterable, never readable: a tsvector is index support, so it is absent from
+`Row` and from writes. The term is bound, so a search for `'); DROP TABLE --`
+is a search for those words. Optional filters compose without a nil check:
+`q = product.WhenSet(q, f.MinPrice, product.Price.Gte)`.
+
+## Errors you can switch on
+
+Constraint violations are typed at the driver boundary, so a handler never
+decodes a SQLSTATE:
+
+```go
+_, err := n.Insert(ctx, ex)
+switch {
+case errors.Is(err, runtime.ErrUniqueViolation):     // 409, and ce.Constraint says which
+case errors.Is(err, runtime.ErrForeignKeyViolation): // 400
+case runtime.Retryable(err):                          // 40001/40P01 — run it again
+}
+```
+
+`ConstraintError` names the constraint, table and column and carries **no bound
+value**; PostgreSQL's own diagnostic does, and it stays reachable through
+`Unwrap`. Anything storm has no opinion about comes back unchanged.
 
 ## Boundaries
 

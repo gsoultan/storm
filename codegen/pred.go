@@ -28,7 +28,8 @@ func (g *gen) predType() {
 		{"num", "num int64"}, {"str", "str string"}, {"raw", "raw [16]byte"},
 		{"tim", "tim time.Time"}, {"f64", "f64 float64"},
 		{"dec", "dec runtime.Decimal"}, {"pfx", "pfx netip.Prefix"},
-		{"tod", "tod runtime.TimeOfDay"},
+		{"tod", "tod runtime.TimeOfDay"}, {"bol", "bol bool"},
+		{"rng", "rng runtime.TstzRange"},
 	} {
 		if ts.preds[sl.name] {
 			g.p("\t%s", sl.decl)
@@ -66,8 +67,14 @@ func predCtor(c colInfo, op string, i int) string {
 		// Pred field, the arena and the slot reader have to name the same
 		// place, and nothing but a test against a real database says so.
 		set = "tod: v"
+	case kindTstzRange:
+		set = "rng: v"
+	case kindTSVector:
+		// The search TERM is a string and rides the text arena; the column it
+		// is matched against is the tsvector.
+		set = "str: v"
 	case kindBool:
-		set = "num: b2i(v)"
+		set = "bol: v"
 	case kindFloat4, kindFloat8:
 		set = "f64: float64(v)"
 	default:
@@ -192,6 +199,8 @@ func handleType(c colInfo) string {
 		kindFloat4:       "Float32Col",
 		kindFloat8:       "Float64Col",
 		kindText:         "TextCol",
+		kindTSVector:     "TSVectorCol",
+		kindTstzRange:    "TstzRangeCol",
 		kindBytes:        "BytesCol",
 		kindUUID:         "UUIDCol",
 		kindTimestamptz:  "TimeCol",

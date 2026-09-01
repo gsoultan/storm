@@ -49,7 +49,7 @@ func updatable(t *schema.Table) []colInfo {
 	}
 	var out []colInfo
 	for _, c := range t.Columns {
-		if c.Generated != "" || c.Immutable || c.Version || pk[c.Name] || goKind(c) == kindUnsupported {
+		if c.Generated != "" || c.Immutable || c.Version || pk[c.Name] || !readable(c) {
 			continue
 		}
 		out = append(out, colInfo{col: c, kind: goKind(c), goBase: baseGoType(c)})

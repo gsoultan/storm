@@ -1,6 +1,6 @@
 # storm — core
 
-Embeddable ORM library for Go. `github.com/gsoultan/storm`, Go 1.26. Imported,
+Embeddable ORM library for Go. `github.com/gsoultan/storm`, Go 1.27. Imported,
 not deployed. Zero CGO. Driver deps isolated one-per-adapter (`pgx/v5` in
 `runtime/pgxdrv`).
 
@@ -77,6 +77,10 @@ nothing generated) so adopters got no verify/lint/explain at all — now the
 importable `storm/tool` with `tool.Main(model.All(), nil)`; and a symlinked
 output path was refused. `scripts/check/outsider.sh` makes it a permanent CI
 gate, verified to trip both ways.
+
+**Closed at the cause, 2026-08-27 (v0.3.0).** Five lines is still five lines
+you have to know to write. `cmd/storm` now discovers models by parsing and
+writes the bootstrap itself — see [[discovery]].
 
 See [[m6_first_adopter]] for how the adopter surfaced the reading that found
 all of these.

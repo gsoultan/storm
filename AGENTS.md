@@ -1,7 +1,7 @@
 # storm — engineering conventions & developer profile roster
 
 An embeddable ORM library for Go. Imported, not deployed. Compiled, not
-interpreted. Module `github.com/gsoultan/storm` · Go 1.26.
+interpreted. Module `github.com/gsoultan/storm` · Go 1.27.
 
 **Postgres first**, then MySQL/MariaDB, SQL Server, Oracle, MongoDB — the
 dialect is a compile-time parameter, never a runtime branch ([[docs/DIALECTS]]).
@@ -16,6 +16,12 @@ a reason attached.
 
 Compiler shape: **front end → IR → back end**, plus a thin runtime.
 `schema/` · `query/` · `compile/` · `codegen/` · `runtime/` · `cmd/storm/`.
+
+The tool has a source-analysis front end as well: `tool/discover` parses the
+adopter's module to find their models and `tool/bootstrap` synthesizes the
+`main` that registers them (ADR-0006). It is stdlib-only, answers exactly one
+static question, and **nothing under `schema/`, `query/`, `compile/`,
+`codegen/` or `runtime/` may import it**.
 
 Hard rules, all CI-enforced (`scripts/check/*.sh`):
 

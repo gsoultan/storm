@@ -3,8 +3,18 @@
 // migrations and the live database all still agree — as a LIBRARY.
 //
 // It is a library because the commands need your models, and a binary
-// installed from this repository cannot see them. So the binary in cmd/storm
-// is a stub, and the real tool is five lines in your own module:
+// installed from this repository cannot see them: storm resolves field
+// pointers by offset, so the tool has to LINK against your models rather than
+// read them.
+//
+// That requirement is unchanged, but it is no longer yours to satisfy. The
+// storm binary discovers your models by parsing (tool/discover), synthesizes
+// the main below itself, runs it, and removes it (tool/bootstrap) — so
+// `storm generate`, `storm verify -pending` and `storm lint` work against YOUR
+// schema with nothing to write. See ADR-0006.
+//
+// Calling Main yourself is still supported, and is the answer when discovery's
+// rules would not find your models:
 //
 //	package main
 //
@@ -15,9 +25,7 @@
 //
 //	func main() { tool.Main(model.All(), model.Queries()) }
 //
-// Then `go run ./cmd/storm generate`, `... verify -pending`, `... lint` and
-// the rest work against YOUR schema, and `go tool` can install it into your
-// module if you want the short form.
+// Both paths generate byte-identical code.
 //
 // storm never applies DDL. Every command either prints SQL or exits non-zero.
 package tool
@@ -36,6 +44,7 @@ import (
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/compile/myddl"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/schema"
@@ -96,7 +105,8 @@ usage:
   storm ddl                       print CREATE statements for the model
   storm diff   <name>             write a migration from the live schema to the model
   storm verify                    fail if the database has drifted from the model
-  storm verify -stale [dir]       fail if generated code is stale (no database needed)
+  storm verify -stale [dir]       fail if generated code is stale
+                                  (needs no database unless you declare storm.SQL)
   storm verify -pending           fail if the model has changes no migration carries
   storm import                    print the model implied by an existing database
   storm generate [dir]            emit one Go package per table (default internal/store)
@@ -104,6 +114,9 @@ usage:
                                   connected database rather than a scratch apply
                                   of the model, for schemas whose truth is
                                   migrations (functions, views the model omits)
+  storm watch <dir>               regenerate on save; leave it running while you edit
+  storm models                    what discovery found, and which rule matched
+  storm portable <dialect>        fail if the model does not port (mysql)
   storm lint                      cost every named plan in round trips; fail over the budget
   storm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
@@ -213,6 +226,12 @@ func run(args []string) error {
 			return err
 		}
 		return generate(dir, model, *dsn, against)
+
+	case "portable":
+		if nargs == 0 {
+			return errors.New("portable needs a dialect: storm portable mysql")
+		}
+		return portable(arg(0), model)
 
 	case "verify":
 		if *pending {
@@ -515,6 +534,10 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema) e
 		Package:       filepath.Base(dir),
 		PackageImport: hostMod + "/" + filepath.ToSlash(rel),
 		RawScanners:   scanners,
+		// The models as Go types, not as schema: the staleness check asserts
+		// the STRUCT, which the schema no longer describes once relations have
+		// become foreign keys and mixins have been flattened.
+		Shapes: codegen.ShapesOf(Models),
 	})
 	if err != nil {
 		return err
@@ -757,3 +780,25 @@ func nextSeq(dir string) (int, error) {
 }
 
 var _ = strings.TrimSpace
+
+// portable reports whether the model can be generated for another dialect.
+//
+// The whole value of knowing the target at generate time is that a type with no
+// equivalent becomes a sentence now instead of a CREATE TABLE that fails on a
+// customer's server. This is that sentence, on demand, before anyone commits to
+// supporting an engine.
+func portable(dialect string, model *schema.Schema) error {
+	switch dialect {
+	case "postgres", "postgresql", "pg":
+		// The native target. Nothing to check: the model IS the Postgres schema.
+		fmt.Printf("✓ %d table(s) port to postgres — it is the native target\n", len(model.Tables))
+		return nil
+	case "mysql":
+		if err := myddl.Check(model); err != nil {
+			return err
+		}
+		fmt.Printf("✓ %d table(s) port to mysql\n", len(model.Tables))
+		return nil
+	}
+	return fmt.Errorf("unknown dialect %q — storm knows postgres and mysql", dialect)
+}

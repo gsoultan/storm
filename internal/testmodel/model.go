@@ -79,6 +79,12 @@ type User struct {
 	Age    *int16
 	LastIP *string
 
+	// bool. Its absence from this fixture is why every predicate on a bool
+	// column shipped broken: the value was packed into the shared int64 arena
+	// and reached pgx as *int64, which has no encode plan for OID 16. Nothing
+	// in this repository had a bool column until examples/orders.
+	Active bool
+
 	// Money. numeric, not float: a float64 cannot represent 0.10 and an
 	// accounting system that rounds is a defect, not a tolerance.
 	Balance storm.Decimal
@@ -90,11 +96,31 @@ type User struct {
 	Profile *Profile
 }
 
+// Joins: cross-table projections. A join answers a question and returns a flat
+// row; a Plan is what loads the entities.
+func (u *User) Joins(j *storm.Joins) {
+	var o Org
+	j.Named("WithOrg").
+		Inner(&o, &u.Org).
+		Take(&u.ID, "UserID").
+		Take(&u.Email, "Email").
+		Take(&o.Name, "OrgName").
+		OrderAsc(&u.ID)
+
+	// LEFT: a user whose org row is missing still appears, with a NULL name.
+	j.Named("MaybeOrg").
+		Left(&o, &u.Org).
+		Take(&u.ID, "UserID").
+		Take(&o.Name, "OrgName").
+		OrderAsc(&u.ID)
+}
+
 func (u *User) Schema(t *storm.Table) {
 	// Nullable on purpose: every other array column in this fixture is NOT
 	// NULL, so nothing exercised the nil-is-SQL-NULL path that arrays are
 	// careful to keep distinct from an empty array.
 	t.Col(&u.Splits).Nullable()
+	t.Col(&u.Active).Default("true")
 	t.Col(&u.Email).Size(320)
 	t.Col(&u.Name).Size(120)
 	t.Col(&u.Status).Default("'pending'")

@@ -32,22 +32,27 @@ type Row struct {
 // Operator ids. Argument-taking operators are numbered first, so the
 // bind loop tests `op-1 < opsWithArg` with one unsigned compare.
 const (
-	opEq        runtime.Op = 1
-	opNotEq     runtime.Op = 2
-	opGt        runtime.Op = 3
-	opGte       runtime.Op = 4
-	opLt        runtime.Op = 5
-	opLte       runtime.Op = 6
-	opLike      runtime.Op = 7
-	opIn        runtime.Op = 8
-	opIsNull    runtime.Op = 9
-	opIsNotNull runtime.Op = 10
+	opEq            runtime.Op = 1
+	opNotEq         runtime.Op = 2
+	opGt            runtime.Op = 3
+	opGte           runtime.Op = 4
+	opLt            runtime.Op = 5
+	opLte           runtime.Op = 6
+	opLike          runtime.Op = 7
+	opMatches       runtime.Op = 8
+	opWebSearch     runtime.Op = 9
+	opOverlaps      runtime.Op = 10
+	opContainsRange runtime.Op = 11
+	opContainedBy   runtime.Op = 12
+	opIn            runtime.Op = 13
+	opIsNull        runtime.Op = 14
+	opIsNotNull     runtime.Op = 15
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 11
-	opNotExists runtime.Op = 12
+	opExists    runtime.Op = 16
+	opNotExists runtime.Op = 17
 )
 
 const nCols = 7
@@ -417,6 +422,25 @@ func (q Query) Where(ps ...Pred) Query {
 	return q
 }
 
+// WhenSet applies f(*v) only when v is non-nil — the optional-filter
+// idiom without an if, and without the nil dereference WhereIf invites.
+//
+//	q = user.WhenSet(q, f.MinAge, user.Age.Gte)
+//
+// WhereIf takes an already-built Pred, so the caller has to evaluate
+// user.Age.Gte(*f.MinAge) BEFORE the condition is tested — which panics
+// on exactly the nil the condition was checking for. This takes the
+// constructor instead, so nothing is dereferenced unless it is there.
+//
+// It still sets exactly one bit in the shape mask: a filter that is
+// absent is a different SHAPE, compiled once, not a different value.
+func WhenSet[T any](q Query, v *T, f func(T) Pred) Query {
+	if v == nil {
+		return q
+	}
+	return q.Where(f(*v))
+}
+
 // WhereIf applies a predicate only when cond holds.
 func (q Query) WhereIf(cond bool, p Pred) Query {
 	if !cond {
@@ -669,11 +693,16 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [7][13]runtime.Frag{
+var fragTable = [7][18]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
 		{A: "\"id\" <> $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -699,6 +728,11 @@ var fragTable = [7][13]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // updated_at
 		{}, // opNone
@@ -708,6 +742,11 @@ var fragTable = [7][13]runtime.Frag{
 		{A: "\"updated_at\" >= $", B: ""},
 		{A: "\"updated_at\" < $", B: ""},
 		{A: "\"updated_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -724,6 +763,11 @@ var fragTable = [7][13]runtime.Frag{
 		{A: "\"title\" < $", B: ""},
 		{A: "\"title\" <= $", B: ""},
 		{A: "\"title\" LIKE $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{A: "\"title\" = ANY($", B: ")"},
 		{},
 		{},
@@ -739,6 +783,11 @@ var fragTable = [7][13]runtime.Frag{
 		{A: "\"body\" < $", B: ""},
 		{A: "\"body\" <= $", B: ""},
 		{A: "\"body\" LIKE $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{A: "\"body\" = ANY($", B: ")"},
 		{},
 		{},
@@ -755,6 +804,11 @@ var fragTable = [7][13]runtime.Frag{
 		{A: "\"published_at\" <= $", B: ""},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{A: "\"published_at\" IS NULL", B: ""},
 		{A: "\"published_at\" IS NOT NULL", B: ""},
 		{},
@@ -764,6 +818,11 @@ var fragTable = [7][13]runtime.Frag{
 		{}, // opNone
 		{A: "\"author_id\" = $", B: ""},
 		{A: "\"author_id\" <> $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},

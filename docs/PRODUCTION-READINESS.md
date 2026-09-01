@@ -1,6 +1,6 @@
 ---
 tags: [storm, production, gates]
-updated: 2026-08-26
+updated: 2026-08-27
 ---
 
 # The road to production-grade
@@ -220,6 +220,27 @@ the server, and storm must not rewrite it.
 
 **Driver: sec · Challenger: dx.**
 
+### P2.4 Constraint violations were unclassified — **CLOSED 2026-08-27**
+
+Every violation — duplicate key, missing parent, failed CHECK, exclusion
+overlap, serialization failure — arrived as an opaque driver error. Telling a
+409 from a 500 meant type-asserting `*pgconn.PgError` and comparing SQLSTATE
+strings in a handler, which is the driver knowledge the `Executor` port exists
+to contain.
+
+`runtime` now defines the sentinels and `ConstraintError`; `runtime/pgxdrv`
+maps SQLSTATE at the boundary, the only place one is read. Every exit path is
+covered including `rows.Err()`, because pgx defers a statement's error to the
+drain and that is where a `RETURNING` insert's violation surfaces.
+
+`ConstraintError` carries schema metadata and no bound value, keeping P2.3's
+property: the server's own diagnostic does carry values, belongs to the server,
+and stays reachable through `Unwrap` rather than being folded into storm's text.
+
+**Gate — met.** Each of the five violation kinds is asserted against a live
+server, an unrelated error is asserted to pass through unchanged, and the
+example maps them to 409 with a `retryable` flag.
+
 ---
 
 ## P4 — The first-run path was broken, and only an outsider could see it
@@ -254,6 +275,15 @@ Three defects in the first five minutes, all invisible from inside:
    the importable package `storm/tool`, and a user's whole tool is
    `func main() { tool.Main(model.All(), nil) }`.
 
+   **Closed at the cause in v0.3.0.** Five lines is still five lines the
+   adopter has to know to write, and one they only write if they read the
+   right section first — so the tool stayed reachable-in-principle. It now
+   discovers the models by parsing and writes that bootstrap itself
+   ([ADR-0006](adr/0006-discovery-replaces-the-bootstrap.md)), which means
+   `verify`, `lint` and `explain` are reachable by default rather than by
+   diligence. `scripts/check/outsider.sh` grew a second stranger who writes
+   no bootstrap at all, and asserts the two paths generate the same bytes.
+
 3. **An output path through a symlink was refused.** On macOS `/tmp` is a
    symlink, so an absolute output directory under it compared as "outside
    this module". Now the deepest existing ancestor is resolved on both
@@ -263,6 +293,11 @@ Three defects in the first five minutes, all invisible from inside:
 `ddl` → `generate` → compiling generated code → insert and query against
 PostgreSQL, with `Shapes() == 1` after the query. That is the whole adopter
 path, walked by something that shares no assumptions with this repository.
+
+Since v0.3.0 the same gate is walked a second time by a module with **no
+bootstrap and no registry** — only a model package — because everything the
+first stranger exercises would keep passing if discovery were broken: the tool
+it uses is one the test itself wrote.
 
 **The lesson, which is the reusable part:** every check that runs inside your
 own repository shares your repository's assumptions. The bug here was not
