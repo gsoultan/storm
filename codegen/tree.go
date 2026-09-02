@@ -65,9 +65,38 @@ type tableSlots struct {
 	arenas  map[string]bool // "strs", "nums", ...
 	cursors []string        // "ns", "nn", ... in canonical order
 	preds   map[string]bool // "str", "num", ... Pred union members
-	anyStr  bool            // a text column offers In
-	anyRaw  bool            // a uuid column offers In
-	hasBool bool            // b2i is only needed if a bool column exists
+	// anyList is the list slots this table's columns need, in anySlotTable
+	// order. A list rather than one bool per slot: the leaf and bind switches
+	// used to hand-enumerate the COMBINATIONS present, which is 2^n cases and
+	// was already wrong for a third slot before one existed.
+	anyList []string
+	hasBool bool // b2i is only needed if a bool column exists
+}
+
+// anySlotTable is every list slot a Pred can carry, in a fixed order so
+// generated code is byte-identical across runs.
+//
+// One slot per element type rather than one widened []int64 for all three
+// integer widths. Converting int16 to int64 to bind it would allocate a second
+// slice per call, and would hand PostgreSQL an int8[] to compare against an
+// int2 column — a cast the planner has to undo before it can use an index,
+// which is the opposite of what `= ANY` is for.
+var anySlotTable = []struct{ name, decl, elem string }{
+	{"anyRaw", "anyRaw [][16]byte", "[16]byte"},
+	{"anyStr", "anyStr []string", "string"},
+	{"anyI16", "anyI16 []int16", "int16"},
+	{"anyI32", "anyI32 []int32", "int32"},
+	{"anyI64", "anyI64 []int64", "int64"},
+}
+
+// has reports whether this table needs the named list slot.
+func (ts tableSlots) has(slot string) bool {
+	for _, s := range ts.anyList {
+		if s == slot {
+			return true
+		}
+	}
+	return false
 }
 
 func slotsFor(cols []colInfo) tableSlots {
@@ -79,11 +108,8 @@ func slotsFor(cols []colInfo) tableSlots {
 		if p := predSlotFor(c); p != "" {
 			ts.preds[strings.TrimPrefix(p, "p.")] = true
 		}
-		switch predArraySlot(c) {
-		case "anyStr":
-			ts.anyStr = true
-		case "anyRaw":
-			ts.anyRaw = true
+		if slot := predArraySlot(c); slot != "" && !ts.has(slot) {
+			ts.anyList = append(ts.anyList, slot)
 		}
 		if c.kind == kindBool {
 			ts.hasBool = true
@@ -94,7 +120,26 @@ func slotsFor(cols []colInfo) tableSlots {
 			ts.cursors = append(ts.cursors, a.cursor)
 		}
 	}
+	// Re-ordered into anySlotTable order: the loop above walks columns, whose
+	// order is the model's, and generated output must not depend on it.
+	var ordered []string
+	for _, sl := range anySlotTable {
+		if ts.has(sl.name) {
+			ordered = append(ordered, sl.name)
+		}
+	}
+	ts.anyList = ordered
 	return ts
+}
+
+// anyDecl is a list slot's field declaration.
+func anyDecl(slot string) string {
+	for _, sl := range anySlotTable {
+		if sl.name == slot {
+			return sl.decl
+		}
+	}
+	return ""
 }
 
 func arenaFor(c colInfo) (arena, cursor string) {
@@ -189,11 +234,8 @@ func (g *gen) treeQuery() {
 	}
 	g.p("\t%s uint8", strings.Join(ts.cursors, ", "))
 	g.p("")
-	if ts.anyRaw {
-		g.p("\tanyRaw [][16]byte")
-	}
-	if ts.anyStr {
-		g.p("\tanyStr []string")
+	for _, slot := range ts.anyList {
+		g.p("\t%s", anyDecl(slot))
 	}
 	g.p("\thasAny bool")
 	g.p("")
@@ -501,27 +543,20 @@ func (g *gen) treePreds() {
 	g.p("func (q *Query) leaf(p Pred) {")
 	// Only the list branches this table's columns can produce. The generic
 	// two-branch switch referenced slots the trimmed Pred no longer carries.
-	switch {
-	case ts.anyRaw && ts.anyStr:
-		g.p("\tif p.op == opIn {")
-		g.p("\t\tswitch {")
-		g.p("\t\tcase p.anyRaw != nil:")
-		g.p("\t\t\tq.anyRaw, q.hasAny = p.anyRaw, true")
-		g.p("\t\tcase p.anyStr != nil:")
-		g.p("\t\t\tq.anyStr, q.hasAny = p.anyStr, true")
-		g.p("\t\t}")
-		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
-		g.p("\t\treturn")
-		g.p("\t}")
-	case ts.anyRaw:
-		g.p("\tif p.op == opIn {")
-		g.p("\t\tq.anyRaw, q.hasAny = p.anyRaw, true")
-		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
-		g.p("\t\treturn")
-		g.p("\t}")
-	case ts.anyStr:
-		g.p("\tif p.op == opIn {")
-		g.p("\t\tq.anyStr, q.hasAny = p.anyStr, true")
+	// In and NotIn share every branch: both bind ONE list to ONE placeholder,
+	// and only the operator text between them differs.
+	if n := len(ts.anyList); n > 0 {
+		g.p("\tif p.op == opIn || p.op == opNotIn {")
+		if n == 1 {
+			g.p("\t\tq.%s, q.hasAny = p.%s, true", ts.anyList[0], ts.anyList[0])
+		} else {
+			g.p("\t\tswitch {")
+			for _, slot := range ts.anyList {
+				g.p("\t\tcase p.%s != nil:", slot)
+				g.p("\t\t\tq.%s, q.hasAny = p.%s, true", slot, slot)
+			}
+			g.p("\t\t}")
+		}
 		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
 		g.p("\t\treturn")
 		g.p("\t}")
@@ -596,11 +631,8 @@ func (g *gen) treeBind() {
 			g.p("\t"+ar.decl, ar.max)
 		}
 	}
-	if ts.anyRaw {
-		g.p("\tanyRaw [][16]byte")
-	}
-	if ts.anyStr {
-		g.p("\tanyStr []string")
+	for _, slot := range ts.anyList {
+		g.p("\t%s", anyDecl(slot))
 	}
 	g.p("\tlimit  int64")
 	g.p("\toffset int64")
@@ -628,11 +660,8 @@ func (g *gen) treeBind() {
 		g.p("\t\tb.strs[i] = \"\"")
 		g.p("\t}")
 	}
-	if ts.anyRaw {
-		g.p("\tb.anyRaw = nil")
-	}
-	if ts.anyStr {
-		g.p("\tb.anyStr = nil")
+	for _, slot := range ts.anyList {
+		g.p("\tb.%s = nil", slot)
 	}
 	g.p("\tbinders.Put(b)")
 	g.p("}")
@@ -672,26 +701,28 @@ func (g *gen) treeBind() {
 	g.p("\t\tswitch runtime.Op(t.Op()) {")
 	g.p("\t\tcase opIsNull, opIsNotNull:")
 	g.p("\t\t\tcontinue")
-	switch {
-	case ts.anyRaw && ts.anyStr:
-		g.p("\t\tcase opIn:")
-		g.p("\t\t\tif q.anyRaw != nil {")
-		g.p("\t\t\t\tb.anyRaw = q.anyRaw")
-		g.p("\t\t\t\tv = append(v, &b.anyRaw)")
-		g.p("\t\t\t} else {")
-		g.p("\t\t\t\tb.anyStr = q.anyStr")
-		g.p("\t\t\t\tv = append(v, &b.anyStr)")
-		g.p("\t\t\t}")
-		g.p("\t\t\tcontinue")
-	case ts.anyRaw:
-		g.p("\t\tcase opIn:")
-		g.p("\t\t\tb.anyRaw = q.anyRaw")
-		g.p("\t\t\tv = append(v, &b.anyRaw)")
-		g.p("\t\t\tcontinue")
-	case ts.anyStr:
-		g.p("\t\tcase opIn:")
-		g.p("\t\t\tb.anyStr = q.anyStr")
-		g.p("\t\t\tv = append(v, &b.anyStr)")
+	if n := len(ts.anyList); n > 0 {
+		g.p("\t\tcase opIn, opNotIn:")
+		if n == 1 {
+			g.p("\t\t\tb.%s = q.%s", ts.anyList[0], ts.anyList[0])
+			g.p("\t\t\tv = append(v, &b.%s)", ts.anyList[0])
+		} else {
+			// The LAST slot is the else: exactly one is non-nil, so testing
+			// n-1 of them is enough and the final branch needs no condition.
+			for i, slot := range ts.anyList {
+				switch {
+				case i == 0:
+					g.p("\t\t\tif q.%s != nil {", slot)
+				case i == n-1:
+					g.p("\t\t\t} else {")
+				default:
+					g.p("\t\t\t} else if q.%s != nil {", slot)
+				}
+				g.p("\t\t\t\tb.%s = q.%s", slot, slot)
+				g.p("\t\t\t\tv = append(v, &b.%s)", slot)
+			}
+			g.p("\t\t\t}")
+		}
 		g.p("\t\t\tcontinue")
 	}
 	g.p("\t\t}")

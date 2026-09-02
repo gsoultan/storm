@@ -40,20 +40,22 @@ const (
 	opLt            runtime.Op = 5
 	opLte           runtime.Op = 6
 	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opILike         runtime.Op = 8
+	opMatches       runtime.Op = 9
+	opWebSearch     runtime.Op = 10
+	opOverlaps      runtime.Op = 11
+	opContainsRange runtime.Op = 12
+	opContainedBy   runtime.Op = 13
+	opIn            runtime.Op = 14
+	opNotIn         runtime.Op = 15
+	opIsNull        runtime.Op = 16
+	opIsNotNull     runtime.Op = 17
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 18
+	opNotExists runtime.Op = 19
 )
 
 const nCols = 8
@@ -74,6 +76,7 @@ type Query struct {
 
 	anyRaw [][16]byte
 	anyStr []string
+	anyI32 []int32
 	hasAny bool
 
 	// Order terms live in their own buffer and are appended to the stream
@@ -332,6 +335,7 @@ type Pred struct {
 	tim    time.Time
 	anyRaw [][16]byte
 	anyStr []string
+	anyI32 []int32
 }
 
 // Typed column handles. The type of the handle is what makes
@@ -362,6 +366,11 @@ func (h UUIDCol) DescNullsLast() Sort {
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
@@ -401,7 +410,13 @@ func (h TextCol) Gte(v string) Pred   { return Pred{col: h.c, op: opGte, str: v}
 func (h TextCol) Lt(v string) Pred    { return Pred{col: h.c, op: opLt, str: v} }
 func (h TextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v} }
 func (h TextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
+func (h TextCol) ILike(v string) Pred { return Pred{col: h.c, op: opILike, str: v} }
 func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
 
 // Int32Col addresses a int4 column.
 type Int32Col struct{ c uint8 }
@@ -421,6 +436,12 @@ func (h Int32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int
 func (h Int32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h Int32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h Int32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
+func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: v} }
 
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
@@ -497,12 +518,14 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
+	if p.op == opIn || p.op == opNotIn {
 		switch {
 		case p.anyRaw != nil:
 			q.anyRaw, q.hasAny = p.anyRaw, true
 		case p.anyStr != nil:
 			q.anyStr, q.hasAny = p.anyStr, true
+		case p.anyI32 != nil:
+			q.anyI32, q.hasAny = p.anyI32, true
 		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
@@ -569,50 +592,60 @@ func (q *Query) leaf(p Pred) {
 }
 
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
-func (q Query) IDEq(v [16]byte) Query            { return q.Where(ID.Eq(v)) }
-func (q Query) IDNotEq(v [16]byte) Query         { return q.Where(ID.NotEq(v)) }
-func (q Query) IDIn(v ...[16]byte) Query         { return q.Where(ID.In(v...)) }
-func (q Query) CreatedAtEq(v time.Time) Query    { return q.Where(CreatedAt.Eq(v)) }
-func (q Query) CreatedAtNotEq(v time.Time) Query { return q.Where(CreatedAt.NotEq(v)) }
-func (q Query) CreatedAtGt(v time.Time) Query    { return q.Where(CreatedAt.Gt(v)) }
-func (q Query) CreatedAtGte(v time.Time) Query   { return q.Where(CreatedAt.Gte(v)) }
-func (q Query) CreatedAtLt(v time.Time) Query    { return q.Where(CreatedAt.Lt(v)) }
-func (q Query) CreatedAtLte(v time.Time) Query   { return q.Where(CreatedAt.Lte(v)) }
-func (q Query) UpdatedAtEq(v time.Time) Query    { return q.Where(UpdatedAt.Eq(v)) }
-func (q Query) UpdatedAtNotEq(v time.Time) Query { return q.Where(UpdatedAt.NotEq(v)) }
-func (q Query) UpdatedAtGt(v time.Time) Query    { return q.Where(UpdatedAt.Gt(v)) }
-func (q Query) UpdatedAtGte(v time.Time) Query   { return q.Where(UpdatedAt.Gte(v)) }
-func (q Query) UpdatedAtLt(v time.Time) Query    { return q.Where(UpdatedAt.Lt(v)) }
-func (q Query) UpdatedAtLte(v time.Time) Query   { return q.Where(UpdatedAt.Lte(v)) }
-func (q Query) UpdatedByEq(v string) Query       { return q.Where(UpdatedBy.Eq(v)) }
-func (q Query) UpdatedByNotEq(v string) Query    { return q.Where(UpdatedBy.NotEq(v)) }
-func (q Query) UpdatedByGt(v string) Query       { return q.Where(UpdatedBy.Gt(v)) }
-func (q Query) UpdatedByGte(v string) Query      { return q.Where(UpdatedBy.Gte(v)) }
-func (q Query) UpdatedByLt(v string) Query       { return q.Where(UpdatedBy.Lt(v)) }
-func (q Query) UpdatedByLte(v string) Query      { return q.Where(UpdatedBy.Lte(v)) }
-func (q Query) UpdatedByLike(v string) Query     { return q.Where(UpdatedBy.Like(v)) }
-func (q Query) UpdatedByIn(v ...string) Query    { return q.Where(UpdatedBy.In(v...)) }
-func (q Query) ProductIDEq(v [16]byte) Query     { return q.Where(ProductID.Eq(v)) }
-func (q Query) ProductIDNotEq(v [16]byte) Query  { return q.Where(ProductID.NotEq(v)) }
-func (q Query) ProductIDIn(v ...[16]byte) Query  { return q.Where(ProductID.In(v...)) }
-func (q Query) OnHandEq(v int32) Query           { return q.Where(OnHand.Eq(v)) }
-func (q Query) OnHandNotEq(v int32) Query        { return q.Where(OnHand.NotEq(v)) }
-func (q Query) OnHandGt(v int32) Query           { return q.Where(OnHand.Gt(v)) }
-func (q Query) OnHandGte(v int32) Query          { return q.Where(OnHand.Gte(v)) }
-func (q Query) OnHandLt(v int32) Query           { return q.Where(OnHand.Lt(v)) }
-func (q Query) OnHandLte(v int32) Query          { return q.Where(OnHand.Lte(v)) }
-func (q Query) ReservedEq(v int32) Query         { return q.Where(Reserved.Eq(v)) }
-func (q Query) ReservedNotEq(v int32) Query      { return q.Where(Reserved.NotEq(v)) }
-func (q Query) ReservedGt(v int32) Query         { return q.Where(Reserved.Gt(v)) }
-func (q Query) ReservedGte(v int32) Query        { return q.Where(Reserved.Gte(v)) }
-func (q Query) ReservedLt(v int32) Query         { return q.Where(Reserved.Lt(v)) }
-func (q Query) ReservedLte(v int32) Query        { return q.Where(Reserved.Lte(v)) }
-func (q Query) VersionEq(v int32) Query          { return q.Where(Version.Eq(v)) }
-func (q Query) VersionNotEq(v int32) Query       { return q.Where(Version.NotEq(v)) }
-func (q Query) VersionGt(v int32) Query          { return q.Where(Version.Gt(v)) }
-func (q Query) VersionGte(v int32) Query         { return q.Where(Version.Gte(v)) }
-func (q Query) VersionLt(v int32) Query          { return q.Where(Version.Lt(v)) }
-func (q Query) VersionLte(v int32) Query         { return q.Where(Version.Lte(v)) }
+func (q Query) IDEq(v [16]byte) Query              { return q.Where(ID.Eq(v)) }
+func (q Query) IDNotEq(v [16]byte) Query           { return q.Where(ID.NotEq(v)) }
+func (q Query) IDIn(v ...[16]byte) Query           { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query        { return q.Where(ID.NotIn(v...)) }
+func (q Query) CreatedAtEq(v time.Time) Query      { return q.Where(CreatedAt.Eq(v)) }
+func (q Query) CreatedAtNotEq(v time.Time) Query   { return q.Where(CreatedAt.NotEq(v)) }
+func (q Query) CreatedAtGt(v time.Time) Query      { return q.Where(CreatedAt.Gt(v)) }
+func (q Query) CreatedAtGte(v time.Time) Query     { return q.Where(CreatedAt.Gte(v)) }
+func (q Query) CreatedAtLt(v time.Time) Query      { return q.Where(CreatedAt.Lt(v)) }
+func (q Query) CreatedAtLte(v time.Time) Query     { return q.Where(CreatedAt.Lte(v)) }
+func (q Query) UpdatedAtEq(v time.Time) Query      { return q.Where(UpdatedAt.Eq(v)) }
+func (q Query) UpdatedAtNotEq(v time.Time) Query   { return q.Where(UpdatedAt.NotEq(v)) }
+func (q Query) UpdatedAtGt(v time.Time) Query      { return q.Where(UpdatedAt.Gt(v)) }
+func (q Query) UpdatedAtGte(v time.Time) Query     { return q.Where(UpdatedAt.Gte(v)) }
+func (q Query) UpdatedAtLt(v time.Time) Query      { return q.Where(UpdatedAt.Lt(v)) }
+func (q Query) UpdatedAtLte(v time.Time) Query     { return q.Where(UpdatedAt.Lte(v)) }
+func (q Query) UpdatedByEq(v string) Query         { return q.Where(UpdatedBy.Eq(v)) }
+func (q Query) UpdatedByNotEq(v string) Query      { return q.Where(UpdatedBy.NotEq(v)) }
+func (q Query) UpdatedByGt(v string) Query         { return q.Where(UpdatedBy.Gt(v)) }
+func (q Query) UpdatedByGte(v string) Query        { return q.Where(UpdatedBy.Gte(v)) }
+func (q Query) UpdatedByLt(v string) Query         { return q.Where(UpdatedBy.Lt(v)) }
+func (q Query) UpdatedByLte(v string) Query        { return q.Where(UpdatedBy.Lte(v)) }
+func (q Query) UpdatedByLike(v string) Query       { return q.Where(UpdatedBy.Like(v)) }
+func (q Query) UpdatedByILike(v string) Query      { return q.Where(UpdatedBy.ILike(v)) }
+func (q Query) UpdatedByIn(v ...string) Query      { return q.Where(UpdatedBy.In(v...)) }
+func (q Query) UpdatedByNotIn(v ...string) Query   { return q.Where(UpdatedBy.NotIn(v...)) }
+func (q Query) ProductIDEq(v [16]byte) Query       { return q.Where(ProductID.Eq(v)) }
+func (q Query) ProductIDNotEq(v [16]byte) Query    { return q.Where(ProductID.NotEq(v)) }
+func (q Query) ProductIDIn(v ...[16]byte) Query    { return q.Where(ProductID.In(v...)) }
+func (q Query) ProductIDNotIn(v ...[16]byte) Query { return q.Where(ProductID.NotIn(v...)) }
+func (q Query) OnHandEq(v int32) Query             { return q.Where(OnHand.Eq(v)) }
+func (q Query) OnHandNotEq(v int32) Query          { return q.Where(OnHand.NotEq(v)) }
+func (q Query) OnHandGt(v int32) Query             { return q.Where(OnHand.Gt(v)) }
+func (q Query) OnHandGte(v int32) Query            { return q.Where(OnHand.Gte(v)) }
+func (q Query) OnHandLt(v int32) Query             { return q.Where(OnHand.Lt(v)) }
+func (q Query) OnHandLte(v int32) Query            { return q.Where(OnHand.Lte(v)) }
+func (q Query) OnHandIn(v ...int32) Query          { return q.Where(OnHand.In(v...)) }
+func (q Query) OnHandNotIn(v ...int32) Query       { return q.Where(OnHand.NotIn(v...)) }
+func (q Query) ReservedEq(v int32) Query           { return q.Where(Reserved.Eq(v)) }
+func (q Query) ReservedNotEq(v int32) Query        { return q.Where(Reserved.NotEq(v)) }
+func (q Query) ReservedGt(v int32) Query           { return q.Where(Reserved.Gt(v)) }
+func (q Query) ReservedGte(v int32) Query          { return q.Where(Reserved.Gte(v)) }
+func (q Query) ReservedLt(v int32) Query           { return q.Where(Reserved.Lt(v)) }
+func (q Query) ReservedLte(v int32) Query          { return q.Where(Reserved.Lte(v)) }
+func (q Query) ReservedIn(v ...int32) Query        { return q.Where(Reserved.In(v...)) }
+func (q Query) ReservedNotIn(v ...int32) Query     { return q.Where(Reserved.NotIn(v...)) }
+func (q Query) VersionEq(v int32) Query            { return q.Where(Version.Eq(v)) }
+func (q Query) VersionNotEq(v int32) Query         { return q.Where(Version.NotEq(v)) }
+func (q Query) VersionGt(v int32) Query            { return q.Where(Version.Gt(v)) }
+func (q Query) VersionGte(v int32) Query           { return q.Where(Version.Gte(v)) }
+func (q Query) VersionLt(v int32) Query            { return q.Where(Version.Lt(v)) }
+func (q Query) VersionLte(v int32) Query           { return q.Where(Version.Lte(v)) }
+func (q Query) VersionIn(v ...int32) Query         { return q.Where(Version.In(v...)) }
+func (q Query) VersionNotIn(v ...int32) Query      { return q.Where(Version.NotIn(v...)) }
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "updated_by", "product_id", "on_hand", "reserved", "version" FROM "stock_items"`
 const countPrefix = `SELECT count(*) FROM "stock_items"`
@@ -718,7 +751,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [8][18]runtime.Frag{
+var fragTable = [8][20]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -733,7 +766,9 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -747,6 +782,8 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -778,6 +815,8 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // updated_by
 		{}, // opNone
@@ -788,12 +827,14 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"updated_by\" < $", B: ""},
 		{A: "\"updated_by\" <= $", B: ""},
 		{A: "\"updated_by\" LIKE $", B: ""},
+		{A: "\"updated_by\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"updated_by\" = ANY($", B: ")"},
+		{A: "\"updated_by\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -813,7 +854,9 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"product_id\" = ANY($", B: ")"},
+		{A: "\"product_id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -833,7 +876,9 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"on_hand\" = ANY($", B: ")"},
+		{A: "\"on_hand\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -853,7 +898,9 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"reserved\" = ANY($", B: ")"},
+		{A: "\"reserved\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -873,7 +920,9 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"version\" = ANY($", B: ")"},
+		{A: "\"version\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -1051,6 +1100,7 @@ type binder struct {
 	tims   [4]time.Time
 	anyRaw [][16]byte
 	anyStr []string
+	anyI32 []int32
 	limit  int64
 	offset int64
 }
@@ -1077,6 +1127,7 @@ func putBinder(b *binder) {
 	}
 	b.anyRaw = nil
 	b.anyStr = nil
+	b.anyI32 = nil
 	binders.Put(b)
 }
 
@@ -1099,13 +1150,16 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
+		case opIn, opNotIn:
 			if q.anyRaw != nil {
 				b.anyRaw = q.anyRaw
 				v = append(v, &b.anyRaw)
-			} else {
+			} else if q.anyStr != nil {
 				b.anyStr = q.anyStr
 				v = append(v, &b.anyStr)
+			} else {
+				b.anyI32 = q.anyI32
+				v = append(v, &b.anyI32)
 			}
 			continue
 		}

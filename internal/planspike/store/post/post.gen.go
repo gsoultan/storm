@@ -39,20 +39,22 @@ const (
 	opLt            runtime.Op = 5
 	opLte           runtime.Op = 6
 	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opILike         runtime.Op = 8
+	opMatches       runtime.Op = 9
+	opWebSearch     runtime.Op = 10
+	opOverlaps      runtime.Op = 11
+	opContainsRange runtime.Op = 12
+	opContainedBy   runtime.Op = 13
+	opIn            runtime.Op = 14
+	opNotIn         runtime.Op = 15
+	opIsNull        runtime.Op = 16
+	opIsNotNull     runtime.Op = 17
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 18
+	opNotExists runtime.Op = 19
 )
 
 const nCols = 7
@@ -352,6 +354,11 @@ func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
 
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
@@ -390,7 +397,13 @@ func (h TextCol) Gte(v string) Pred   { return Pred{col: h.c, op: opGte, str: v}
 func (h TextCol) Lt(v string) Pred    { return Pred{col: h.c, op: opLt, str: v} }
 func (h TextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v} }
 func (h TextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
+func (h TextCol) ILike(v string) Pred { return Pred{col: h.c, op: opILike, str: v} }
 func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
 
 // NullTimeCol addresses a timestamptz column.
 type NullTimeCol struct{ c uint8 }
@@ -488,7 +501,7 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
+	if p.op == opIn || p.op == opNotIn {
 		switch {
 		case p.anyRaw != nil:
 			q.anyRaw, q.hasAny = p.anyRaw, true
@@ -563,6 +576,7 @@ func HasNoComments() Pred { return Pred{col: 7, op: opNotExists} }
 func (q Query) IDEq(v [16]byte) Query              { return q.Where(ID.Eq(v)) }
 func (q Query) IDNotEq(v [16]byte) Query           { return q.Where(ID.NotEq(v)) }
 func (q Query) IDIn(v ...[16]byte) Query           { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query        { return q.Where(ID.NotIn(v...)) }
 func (q Query) CreatedAtEq(v time.Time) Query      { return q.Where(CreatedAt.Eq(v)) }
 func (q Query) CreatedAtNotEq(v time.Time) Query   { return q.Where(CreatedAt.NotEq(v)) }
 func (q Query) CreatedAtGt(v time.Time) Query      { return q.Where(CreatedAt.Gt(v)) }
@@ -582,7 +596,9 @@ func (q Query) TitleGte(v string) Query            { return q.Where(Title.Gte(v)
 func (q Query) TitleLt(v string) Query             { return q.Where(Title.Lt(v)) }
 func (q Query) TitleLte(v string) Query            { return q.Where(Title.Lte(v)) }
 func (q Query) TitleLike(v string) Query           { return q.Where(Title.Like(v)) }
+func (q Query) TitleILike(v string) Query          { return q.Where(Title.ILike(v)) }
 func (q Query) TitleIn(v ...string) Query          { return q.Where(Title.In(v...)) }
+func (q Query) TitleNotIn(v ...string) Query       { return q.Where(Title.NotIn(v...)) }
 func (q Query) BodyEq(v string) Query              { return q.Where(Body.Eq(v)) }
 func (q Query) BodyNotEq(v string) Query           { return q.Where(Body.NotEq(v)) }
 func (q Query) BodyGt(v string) Query              { return q.Where(Body.Gt(v)) }
@@ -590,7 +606,9 @@ func (q Query) BodyGte(v string) Query             { return q.Where(Body.Gte(v))
 func (q Query) BodyLt(v string) Query              { return q.Where(Body.Lt(v)) }
 func (q Query) BodyLte(v string) Query             { return q.Where(Body.Lte(v)) }
 func (q Query) BodyLike(v string) Query            { return q.Where(Body.Like(v)) }
+func (q Query) BodyILike(v string) Query           { return q.Where(Body.ILike(v)) }
 func (q Query) BodyIn(v ...string) Query           { return q.Where(Body.In(v...)) }
+func (q Query) BodyNotIn(v ...string) Query        { return q.Where(Body.NotIn(v...)) }
 func (q Query) PublishedAtEq(v time.Time) Query    { return q.Where(PublishedAt.Eq(v)) }
 func (q Query) PublishedAtNotEq(v time.Time) Query { return q.Where(PublishedAt.NotEq(v)) }
 func (q Query) PublishedAtGt(v time.Time) Query    { return q.Where(PublishedAt.Gt(v)) }
@@ -602,6 +620,7 @@ func (q Query) PublishedAtIsNotNull() Query        { return q.Where(PublishedAt.
 func (q Query) AuthorIDEq(v [16]byte) Query        { return q.Where(AuthorID.Eq(v)) }
 func (q Query) AuthorIDNotEq(v [16]byte) Query     { return q.Where(AuthorID.NotEq(v)) }
 func (q Query) AuthorIDIn(v ...[16]byte) Query     { return q.Where(AuthorID.In(v...)) }
+func (q Query) AuthorIDNotIn(v ...[16]byte) Query  { return q.Where(AuthorID.NotIn(v...)) }
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "title", "body", "published_at", "author_id" FROM "posts"`
 const countPrefix = `SELECT count(*) FROM "posts"`
@@ -700,7 +719,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [8][18]runtime.Frag{
+var fragTable = [8][20]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -715,7 +734,9 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -729,6 +750,8 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -760,6 +783,8 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // title
 		{}, // opNone
@@ -770,12 +795,14 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"title\" < $", B: ""},
 		{A: "\"title\" <= $", B: ""},
 		{A: "\"title\" LIKE $", B: ""},
+		{A: "\"title\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"title\" = ANY($", B: ")"},
+		{A: "\"title\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -790,12 +817,14 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"body\" < $", B: ""},
 		{A: "\"body\" <= $", B: ""},
 		{A: "\"body\" LIKE $", B: ""},
+		{A: "\"body\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"body\" = ANY($", B: ")"},
+		{A: "\"body\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -809,6 +838,8 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"published_at\" >= $", B: ""},
 		{A: "\"published_at\" < $", B: ""},
 		{A: "\"published_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -835,7 +866,9 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"author_id\" = ANY($", B: ")"},
+		{A: "\"author_id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -843,6 +876,8 @@ var fragTable = [8][18]runtime.Frag{
 	},
 	{ // relation Comments (pseudo-column)
 		{}, // opNone
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1079,7 +1114,7 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
+		case opIn, opNotIn:
 			if q.anyRaw != nil {
 				b.anyRaw = q.anyRaw
 				v = append(v, &b.anyRaw)

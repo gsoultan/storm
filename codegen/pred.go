@@ -35,11 +35,8 @@ func (g *gen) predType() {
 			g.p("\t%s", sl.decl)
 		}
 	}
-	if ts.anyRaw {
-		g.p("\tanyRaw [][16]byte")
-	}
-	if ts.anyStr {
-		g.p("\tanyStr []string")
+	for _, slot := range ts.anyList {
+		g.p("\t%s", anyDecl(slot))
 	}
 	g.p("}")
 	g.p("")
@@ -139,11 +136,18 @@ func (g *gen) colHandles() {
 			if !opApplies(op.name, c.kind, c.col) {
 				continue
 			}
-			if op.name == "In" {
-				if slot := predArraySlot(c); slot != "" {
-					g.p("func (h %s) In(v ...%s) Pred { return Pred{col: h.c, op: opIn, %s: v} }",
-						ht, c.goBase, slot)
+			if op.name == "In" || op.name == "NotIn" {
+				slot := predArraySlot(c)
+				if slot == "" {
+					continue
 				}
+				if op.name == "NotIn" {
+					g.p("// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the")
+					g.p("// comparison NULL for every row and the result empty —")
+					g.p("// PostgreSQL's rule for NOT IN, not storm's.")
+				}
+				g.p("func (h %s) %s(v ...%s) Pred { return Pred{col: h.c, op: op%s, %s: v} }",
+					ht, op.name, c.goBase, op.name, slot)
 				continue
 			}
 			if op.args == 0 {
@@ -184,6 +188,12 @@ func predArraySlot(c colInfo) string {
 		return "anyRaw"
 	case kindText:
 		return "anyStr"
+	case kindInt2:
+		return "anyI16"
+	case kindInt4:
+		return "anyI32"
+	case kindInt8:
+		return "anyI64"
 	}
 	return ""
 }

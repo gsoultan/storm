@@ -42,20 +42,22 @@ const (
 	opLt            runtime.Op = 5
 	opLte           runtime.Op = 6
 	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opILike         runtime.Op = 8
+	opMatches       runtime.Op = 9
+	opWebSearch     runtime.Op = 10
+	opOverlaps      runtime.Op = 11
+	opContainsRange runtime.Op = 12
+	opContainedBy   runtime.Op = 13
+	opIn            runtime.Op = 14
+	opNotIn         runtime.Op = 15
+	opIsNull        runtime.Op = 16
+	opIsNotNull     runtime.Op = 17
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 18
+	opNotExists runtime.Op = 19
 )
 
 const nCols = 10
@@ -366,6 +368,11 @@ func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
 
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
@@ -561,7 +568,7 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
+	if p.op == opIn || p.op == opNotIn {
 		q.anyRaw, q.hasAny = p.anyRaw, true
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
@@ -631,6 +638,7 @@ func (q *Query) leaf(p Pred) {
 func (q Query) IDEq(v [16]byte) Query                 { return q.Where(ID.Eq(v)) }
 func (q Query) IDNotEq(v [16]byte) Query              { return q.Where(ID.NotEq(v)) }
 func (q Query) IDIn(v ...[16]byte) Query              { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query           { return q.Where(ID.NotIn(v...)) }
 func (q Query) CreatedAtEq(v time.Time) Query         { return q.Where(CreatedAt.Eq(v)) }
 func (q Query) CreatedAtNotEq(v time.Time) Query      { return q.Where(CreatedAt.NotEq(v)) }
 func (q Query) CreatedAtGt(v time.Time) Query         { return q.Where(CreatedAt.Gt(v)) }
@@ -788,7 +796,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [10][18]runtime.Frag{
+var fragTable = [10][20]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -803,7 +811,9 @@ var fragTable = [10][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -817,6 +827,8 @@ var fragTable = [10][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -848,6 +860,8 @@ var fragTable = [10][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // on
 		{}, // opNone
@@ -857,6 +871,8 @@ var fragTable = [10][18]runtime.Frag{
 		{A: "\"on\" >= $", B: ""},
 		{A: "\"on\" < $", B: ""},
 		{A: "\"on\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -888,6 +904,8 @@ var fragTable = [10][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // closes
 		{}, // opNone
@@ -904,6 +922,8 @@ var fragTable = [10][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 		{A: "\"closes\" IS NULL", B: ""},
 		{A: "\"closes\" IS NOT NULL", B: ""},
 		{},
@@ -911,6 +931,8 @@ var fragTable = [10][18]runtime.Frag{
 	},
 	{ // window
 		{}, // opNone
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -948,6 +970,8 @@ var fragTable = [10][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // net
 		{}, // opNone
@@ -968,9 +992,13 @@ var fragTable = [10][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // tags
 		{}, // opNone
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1225,7 +1253,7 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
+		case opIn, opNotIn:
 			b.anyRaw = q.anyRaw
 			v = append(v, &b.anyRaw)
 			continue

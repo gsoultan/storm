@@ -39,20 +39,22 @@ const (
 	opLt            runtime.Op = 5
 	opLte           runtime.Op = 6
 	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opILike         runtime.Op = 8
+	opMatches       runtime.Op = 9
+	opWebSearch     runtime.Op = 10
+	opOverlaps      runtime.Op = 11
+	opContainsRange runtime.Op = 12
+	opContainedBy   runtime.Op = 13
+	opIn            runtime.Op = 14
+	opNotIn         runtime.Op = 15
+	opIsNull        runtime.Op = 16
+	opIsNotNull     runtime.Op = 17
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 18
+	opNotExists runtime.Op = 19
 )
 
 const nCols = 7
@@ -352,6 +354,11 @@ func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
 
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
@@ -390,7 +397,13 @@ func (h TextCol) Gte(v string) Pred   { return Pred{col: h.c, op: opGte, str: v}
 func (h TextCol) Lt(v string) Pred    { return Pred{col: h.c, op: opLt, str: v} }
 func (h TextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v} }
 func (h TextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
+func (h TextCol) ILike(v string) Pred { return Pred{col: h.c, op: opILike, str: v} }
 func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
 
 // NullUUIDCol addresses a uuid column.
 type NullUUIDCol struct{ c uint8 }
@@ -407,8 +420,13 @@ func (h NullUUIDCol) DescNullsLast() Sort {
 func (h NullUUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h NullUUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h NullUUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
-func (h NullUUIDCol) IsNull() Pred          { return Pred{col: h.c, op: opIsNull} }
-func (h NullUUIDCol) IsNotNull() Pred       { return Pred{col: h.c, op: opIsNotNull} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h NullUUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+func (h NullUUIDCol) IsNull() Pred             { return Pred{col: h.c, op: opIsNull} }
+func (h NullUUIDCol) IsNotNull() Pred          { return Pred{col: h.c, op: opIsNotNull} }
 
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
@@ -485,7 +503,7 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
+	if p.op == opIn || p.op == opNotIn {
 		switch {
 		case p.anyRaw != nil:
 			q.anyRaw, q.hasAny = p.anyRaw, true
@@ -550,44 +568,50 @@ func (q *Query) leaf(p Pred) {
 }
 
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
-func (q Query) IDEq(v [16]byte) Query            { return q.Where(ID.Eq(v)) }
-func (q Query) IDNotEq(v [16]byte) Query         { return q.Where(ID.NotEq(v)) }
-func (q Query) IDIn(v ...[16]byte) Query         { return q.Where(ID.In(v...)) }
-func (q Query) CreatedAtEq(v time.Time) Query    { return q.Where(CreatedAt.Eq(v)) }
-func (q Query) CreatedAtNotEq(v time.Time) Query { return q.Where(CreatedAt.NotEq(v)) }
-func (q Query) CreatedAtGt(v time.Time) Query    { return q.Where(CreatedAt.Gt(v)) }
-func (q Query) CreatedAtGte(v time.Time) Query   { return q.Where(CreatedAt.Gte(v)) }
-func (q Query) CreatedAtLt(v time.Time) Query    { return q.Where(CreatedAt.Lt(v)) }
-func (q Query) CreatedAtLte(v time.Time) Query   { return q.Where(CreatedAt.Lte(v)) }
-func (q Query) UpdatedAtEq(v time.Time) Query    { return q.Where(UpdatedAt.Eq(v)) }
-func (q Query) UpdatedAtNotEq(v time.Time) Query { return q.Where(UpdatedAt.NotEq(v)) }
-func (q Query) UpdatedAtGt(v time.Time) Query    { return q.Where(UpdatedAt.Gt(v)) }
-func (q Query) UpdatedAtGte(v time.Time) Query   { return q.Where(UpdatedAt.Gte(v)) }
-func (q Query) UpdatedAtLt(v time.Time) Query    { return q.Where(UpdatedAt.Lt(v)) }
-func (q Query) UpdatedAtLte(v time.Time) Query   { return q.Where(UpdatedAt.Lte(v)) }
-func (q Query) FilenameEq(v string) Query        { return q.Where(Filename.Eq(v)) }
-func (q Query) FilenameNotEq(v string) Query     { return q.Where(Filename.NotEq(v)) }
-func (q Query) FilenameGt(v string) Query        { return q.Where(Filename.Gt(v)) }
-func (q Query) FilenameGte(v string) Query       { return q.Where(Filename.Gte(v)) }
-func (q Query) FilenameLt(v string) Query        { return q.Where(Filename.Lt(v)) }
-func (q Query) FilenameLte(v string) Query       { return q.Where(Filename.Lte(v)) }
-func (q Query) FilenameLike(v string) Query      { return q.Where(Filename.Like(v)) }
-func (q Query) FilenameIn(v ...string) Query     { return q.Where(Filename.In(v...)) }
-func (q Query) PostIDEq(v [16]byte) Query        { return q.Where(PostID.Eq(v)) }
-func (q Query) PostIDNotEq(v [16]byte) Query     { return q.Where(PostID.NotEq(v)) }
-func (q Query) PostIDIn(v ...[16]byte) Query     { return q.Where(PostID.In(v...)) }
-func (q Query) PostIDIsNull() Query              { return q.Where(PostID.IsNull()) }
-func (q Query) PostIDIsNotNull() Query           { return q.Where(PostID.IsNotNull()) }
-func (q Query) CommentIDEq(v [16]byte) Query     { return q.Where(CommentID.Eq(v)) }
-func (q Query) CommentIDNotEq(v [16]byte) Query  { return q.Where(CommentID.NotEq(v)) }
-func (q Query) CommentIDIn(v ...[16]byte) Query  { return q.Where(CommentID.In(v...)) }
-func (q Query) CommentIDIsNull() Query           { return q.Where(CommentID.IsNull()) }
-func (q Query) CommentIDIsNotNull() Query        { return q.Where(CommentID.IsNotNull()) }
-func (q Query) UserIDEq(v [16]byte) Query        { return q.Where(UserID.Eq(v)) }
-func (q Query) UserIDNotEq(v [16]byte) Query     { return q.Where(UserID.NotEq(v)) }
-func (q Query) UserIDIn(v ...[16]byte) Query     { return q.Where(UserID.In(v...)) }
-func (q Query) UserIDIsNull() Query              { return q.Where(UserID.IsNull()) }
-func (q Query) UserIDIsNotNull() Query           { return q.Where(UserID.IsNotNull()) }
+func (q Query) IDEq(v [16]byte) Query              { return q.Where(ID.Eq(v)) }
+func (q Query) IDNotEq(v [16]byte) Query           { return q.Where(ID.NotEq(v)) }
+func (q Query) IDIn(v ...[16]byte) Query           { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query        { return q.Where(ID.NotIn(v...)) }
+func (q Query) CreatedAtEq(v time.Time) Query      { return q.Where(CreatedAt.Eq(v)) }
+func (q Query) CreatedAtNotEq(v time.Time) Query   { return q.Where(CreatedAt.NotEq(v)) }
+func (q Query) CreatedAtGt(v time.Time) Query      { return q.Where(CreatedAt.Gt(v)) }
+func (q Query) CreatedAtGte(v time.Time) Query     { return q.Where(CreatedAt.Gte(v)) }
+func (q Query) CreatedAtLt(v time.Time) Query      { return q.Where(CreatedAt.Lt(v)) }
+func (q Query) CreatedAtLte(v time.Time) Query     { return q.Where(CreatedAt.Lte(v)) }
+func (q Query) UpdatedAtEq(v time.Time) Query      { return q.Where(UpdatedAt.Eq(v)) }
+func (q Query) UpdatedAtNotEq(v time.Time) Query   { return q.Where(UpdatedAt.NotEq(v)) }
+func (q Query) UpdatedAtGt(v time.Time) Query      { return q.Where(UpdatedAt.Gt(v)) }
+func (q Query) UpdatedAtGte(v time.Time) Query     { return q.Where(UpdatedAt.Gte(v)) }
+func (q Query) UpdatedAtLt(v time.Time) Query      { return q.Where(UpdatedAt.Lt(v)) }
+func (q Query) UpdatedAtLte(v time.Time) Query     { return q.Where(UpdatedAt.Lte(v)) }
+func (q Query) FilenameEq(v string) Query          { return q.Where(Filename.Eq(v)) }
+func (q Query) FilenameNotEq(v string) Query       { return q.Where(Filename.NotEq(v)) }
+func (q Query) FilenameGt(v string) Query          { return q.Where(Filename.Gt(v)) }
+func (q Query) FilenameGte(v string) Query         { return q.Where(Filename.Gte(v)) }
+func (q Query) FilenameLt(v string) Query          { return q.Where(Filename.Lt(v)) }
+func (q Query) FilenameLte(v string) Query         { return q.Where(Filename.Lte(v)) }
+func (q Query) FilenameLike(v string) Query        { return q.Where(Filename.Like(v)) }
+func (q Query) FilenameILike(v string) Query       { return q.Where(Filename.ILike(v)) }
+func (q Query) FilenameIn(v ...string) Query       { return q.Where(Filename.In(v...)) }
+func (q Query) FilenameNotIn(v ...string) Query    { return q.Where(Filename.NotIn(v...)) }
+func (q Query) PostIDEq(v [16]byte) Query          { return q.Where(PostID.Eq(v)) }
+func (q Query) PostIDNotEq(v [16]byte) Query       { return q.Where(PostID.NotEq(v)) }
+func (q Query) PostIDIn(v ...[16]byte) Query       { return q.Where(PostID.In(v...)) }
+func (q Query) PostIDNotIn(v ...[16]byte) Query    { return q.Where(PostID.NotIn(v...)) }
+func (q Query) PostIDIsNull() Query                { return q.Where(PostID.IsNull()) }
+func (q Query) PostIDIsNotNull() Query             { return q.Where(PostID.IsNotNull()) }
+func (q Query) CommentIDEq(v [16]byte) Query       { return q.Where(CommentID.Eq(v)) }
+func (q Query) CommentIDNotEq(v [16]byte) Query    { return q.Where(CommentID.NotEq(v)) }
+func (q Query) CommentIDIn(v ...[16]byte) Query    { return q.Where(CommentID.In(v...)) }
+func (q Query) CommentIDNotIn(v ...[16]byte) Query { return q.Where(CommentID.NotIn(v...)) }
+func (q Query) CommentIDIsNull() Query             { return q.Where(CommentID.IsNull()) }
+func (q Query) CommentIDIsNotNull() Query          { return q.Where(CommentID.IsNotNull()) }
+func (q Query) UserIDEq(v [16]byte) Query          { return q.Where(UserID.Eq(v)) }
+func (q Query) UserIDNotEq(v [16]byte) Query       { return q.Where(UserID.NotEq(v)) }
+func (q Query) UserIDIn(v ...[16]byte) Query       { return q.Where(UserID.In(v...)) }
+func (q Query) UserIDNotIn(v ...[16]byte) Query    { return q.Where(UserID.NotIn(v...)) }
+func (q Query) UserIDIsNull() Query                { return q.Where(UserID.IsNull()) }
+func (q Query) UserIDIsNotNull() Query             { return q.Where(UserID.IsNotNull()) }
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "filename", "post_id", "comment_id", "user_id" FROM "attachments"`
 const countPrefix = `SELECT count(*) FROM "attachments"`
@@ -686,7 +710,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [7][18]runtime.Frag{
+var fragTable = [7][20]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -701,7 +725,9 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -715,6 +741,8 @@ var fragTable = [7][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -746,6 +774,8 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // filename
 		{}, // opNone
@@ -756,12 +786,14 @@ var fragTable = [7][18]runtime.Frag{
 		{A: "\"filename\" < $", B: ""},
 		{A: "\"filename\" <= $", B: ""},
 		{A: "\"filename\" LIKE $", B: ""},
+		{A: "\"filename\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"filename\" = ANY($", B: ")"},
+		{A: "\"filename\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -781,7 +813,9 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"post_id\" = ANY($", B: ")"},
+		{A: "\"post_id\" <> ALL($", B: ")"},
 		{A: "\"post_id\" IS NULL", B: ""},
 		{A: "\"post_id\" IS NOT NULL", B: ""},
 		{},
@@ -801,7 +835,9 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"comment_id\" = ANY($", B: ")"},
+		{A: "\"comment_id\" <> ALL($", B: ")"},
 		{A: "\"comment_id\" IS NULL", B: ""},
 		{A: "\"comment_id\" IS NOT NULL", B: ""},
 		{},
@@ -821,7 +857,9 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"user_id\" = ANY($", B: ")"},
+		{A: "\"user_id\" <> ALL($", B: ")"},
 		{A: "\"user_id\" IS NULL", B: ""},
 		{A: "\"user_id\" IS NOT NULL", B: ""},
 		{},
@@ -1045,7 +1083,7 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
+		case opIn, opNotIn:
 			if q.anyRaw != nil {
 				b.anyRaw = q.anyRaw
 				v = append(v, &b.anyRaw)
