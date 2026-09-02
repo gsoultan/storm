@@ -541,13 +541,22 @@ func BenchmarkGenBuild_OneCall(b *testing.B) {
 // caught, because sizes had no tripwire the way allocations do. These bounds
 // are deliberately loose (they allow real growth with a real column); what
 // they catch is machinery for kinds this table does not have.
+//
+// Raised 2026-09-02 by 24 bytes — one slice header — when integer columns got
+// In and NotIn. genuser has an integer column, so this is a real capability on
+// a real column and not unconditional machinery; TestListSlotsAreConditional in
+// codegen asserts the other half. The warm path was measured across the change
+// rather than argued about: Prepare_Warm 15.7 → 15.6 ns/op and
+// BuildAndPrepare_Warm 39.2 → 39.5 ns/op, both still 0 allocs — noise, not a
+// regression, which is what makes the raise defensible rather than a floor
+// being moved to fit.
 func TestQuerySize_HasATripwire(t *testing.T) {
-	if s := unsafe.Sizeof(genuser.Query{}); s > 512 {
-		t.Errorf("genuser.Query is %d bytes (was 480 after the diet, 704 at the regression) — "+
+	if s := unsafe.Sizeof(genuser.Query{}); s > 544 {
+		t.Errorf("genuser.Query is %d bytes (480 before list slots, 504 after, 704 at the regression) — "+
 			"did an arena become unconditional again?", s)
 	}
-	if s := unsafe.Sizeof(genuser.Pred{}); s > 136 {
-		t.Errorf("genuser.Pred is %d bytes (was 120 after the diet, 176 at the regression)", s)
+	if s := unsafe.Sizeof(genuser.Pred{}); s > 160 {
+		t.Errorf("genuser.Pred is %d bytes (120 before list slots, 144 after, 176 at the regression)", s)
 	}
 }
 

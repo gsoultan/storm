@@ -39,20 +39,22 @@ const (
 	opLt            runtime.Op = 5
 	opLte           runtime.Op = 6
 	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opILike         runtime.Op = 8
+	opMatches       runtime.Op = 9
+	opWebSearch     runtime.Op = 10
+	opOverlaps      runtime.Op = 11
+	opContainsRange runtime.Op = 12
+	opContainedBy   runtime.Op = 13
+	opIn            runtime.Op = 14
+	opNotIn         runtime.Op = 15
+	opIsNull        runtime.Op = 16
+	opIsNotNull     runtime.Op = 17
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 18
+	opNotExists runtime.Op = 19
 )
 
 const nCols = 7
@@ -72,6 +74,7 @@ type Query struct {
 	nn, nr, ntm, nd uint8
 
 	anyRaw [][16]byte
+	anyI32 []int32
 	hasAny bool
 
 	// Order terms live in their own buffer and are appended to the stream
@@ -322,6 +325,7 @@ type Pred struct {
 	tim    time.Time
 	dec    runtime.Decimal
 	anyRaw [][16]byte
+	anyI32 []int32
 }
 
 // Typed column handles. The type of the handle is what makes
@@ -351,6 +355,11 @@ func (h UUIDCol) DescNullsLast() Sort {
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
@@ -389,6 +398,12 @@ func (h Int32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int
 func (h Int32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h Int32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h Int32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
+func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: v} }
 
 // DecimalCol addresses a numeric(12,2) column.
 type DecimalCol struct{ c uint8 }
@@ -484,8 +499,13 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
-		q.anyRaw, q.hasAny = p.anyRaw, true
+	if p.op == opIn || p.op == opNotIn {
+		switch {
+		case p.anyRaw != nil:
+			q.anyRaw, q.hasAny = p.anyRaw, true
+		case p.anyI32 != nil:
+			q.anyI32, q.hasAny = p.anyI32, true
+		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
@@ -547,6 +567,7 @@ func (q *Query) leaf(p Pred) {
 func (q Query) IDEq(v [16]byte) Query                  { return q.Where(ID.Eq(v)) }
 func (q Query) IDNotEq(v [16]byte) Query               { return q.Where(ID.NotEq(v)) }
 func (q Query) IDIn(v ...[16]byte) Query               { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query            { return q.Where(ID.NotIn(v...)) }
 func (q Query) CreatedAtEq(v time.Time) Query          { return q.Where(CreatedAt.Eq(v)) }
 func (q Query) CreatedAtNotEq(v time.Time) Query       { return q.Where(CreatedAt.NotEq(v)) }
 func (q Query) CreatedAtGt(v time.Time) Query          { return q.Where(CreatedAt.Gt(v)) }
@@ -562,15 +583,19 @@ func (q Query) UpdatedAtLte(v time.Time) Query         { return q.Where(UpdatedA
 func (q Query) OrderIDEq(v [16]byte) Query             { return q.Where(OrderID.Eq(v)) }
 func (q Query) OrderIDNotEq(v [16]byte) Query          { return q.Where(OrderID.NotEq(v)) }
 func (q Query) OrderIDIn(v ...[16]byte) Query          { return q.Where(OrderID.In(v...)) }
+func (q Query) OrderIDNotIn(v ...[16]byte) Query       { return q.Where(OrderID.NotIn(v...)) }
 func (q Query) ProductIDEq(v [16]byte) Query           { return q.Where(ProductID.Eq(v)) }
 func (q Query) ProductIDNotEq(v [16]byte) Query        { return q.Where(ProductID.NotEq(v)) }
 func (q Query) ProductIDIn(v ...[16]byte) Query        { return q.Where(ProductID.In(v...)) }
+func (q Query) ProductIDNotIn(v ...[16]byte) Query     { return q.Where(ProductID.NotIn(v...)) }
 func (q Query) QuantityEq(v int32) Query               { return q.Where(Quantity.Eq(v)) }
 func (q Query) QuantityNotEq(v int32) Query            { return q.Where(Quantity.NotEq(v)) }
 func (q Query) QuantityGt(v int32) Query               { return q.Where(Quantity.Gt(v)) }
 func (q Query) QuantityGte(v int32) Query              { return q.Where(Quantity.Gte(v)) }
 func (q Query) QuantityLt(v int32) Query               { return q.Where(Quantity.Lt(v)) }
 func (q Query) QuantityLte(v int32) Query              { return q.Where(Quantity.Lte(v)) }
+func (q Query) QuantityIn(v ...int32) Query            { return q.Where(Quantity.In(v...)) }
+func (q Query) QuantityNotIn(v ...int32) Query         { return q.Where(Quantity.NotIn(v...)) }
 func (q Query) UnitPriceEq(v runtime.Decimal) Query    { return q.Where(UnitPrice.Eq(v)) }
 func (q Query) UnitPriceNotEq(v runtime.Decimal) Query { return q.Where(UnitPrice.NotEq(v)) }
 func (q Query) UnitPriceGt(v runtime.Decimal) Query    { return q.Where(UnitPrice.Gt(v)) }
@@ -675,7 +700,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [7][18]runtime.Frag{
+var fragTable = [7][20]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -690,7 +715,9 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -704,6 +731,8 @@ var fragTable = [7][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -735,6 +764,8 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // order_id
 		{}, // opNone
@@ -750,7 +781,9 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"order_id\" = ANY($", B: ")"},
+		{A: "\"order_id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -770,7 +803,9 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"product_id\" = ANY($", B: ")"},
+		{A: "\"product_id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -790,7 +825,9 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"quantity\" = ANY($", B: ")"},
+		{A: "\"quantity\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -804,6 +841,8 @@ var fragTable = [7][18]runtime.Frag{
 		{A: "\"unit_price\" >= $", B: ""},
 		{A: "\"unit_price\" < $", B: ""},
 		{A: "\"unit_price\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -990,6 +1029,7 @@ type binder struct {
 	tims   [4]time.Time
 	decs   [4]runtime.Decimal
 	anyRaw [][16]byte
+	anyI32 []int32
 	limit  int64
 	offset int64
 }
@@ -1012,6 +1052,7 @@ func PutBinder(b *Binder) { putBinder(b) }
 // binder's own fields. A few nil stores against a round trip is free.
 func putBinder(b *binder) {
 	b.anyRaw = nil
+	b.anyI32 = nil
 	binders.Put(b)
 }
 
@@ -1034,9 +1075,14 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
-			b.anyRaw = q.anyRaw
-			v = append(v, &b.anyRaw)
+		case opIn, opNotIn:
+			if q.anyRaw != nil {
+				b.anyRaw = q.anyRaw
+				v = append(v, &b.anyRaw)
+			} else {
+				b.anyI32 = q.anyI32
+				v = append(v, &b.anyI32)
+			}
 			continue
 		}
 		switch t.Col() {

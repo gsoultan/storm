@@ -221,12 +221,14 @@ var ops = []struct {
 	{"Lt", 1},
 	{"Lte", 1},
 	{"Like", 1},
+	{"ILike", 1},
 	{"Matches", 1},
 	{"WebSearch", 1},
 	{"Overlaps", 1},
 	{"ContainsRange", 1},
 	{"ContainedBy", 1},
 	{"In", 1},
+	{"NotIn", 1},
 	{"IsNull", 0},
 	{"IsNotNull", 0},
 }
@@ -262,11 +264,15 @@ func (g *gen) chained() {
 			m := exportName(c.Name()) + op.name
 			h := exportName(c.Name())
 			switch {
-			case op.name == "In":
+			case op.name == "In" || op.name == "NotIn":
+				// A list operator, so the convenience form is variadic too.
+				// NotIn used to fall through to the scalar branch below and
+				// emit a call no generated method could satisfy.
 				if predArraySlot(c) == "" {
 					continue
 				}
-				g.p("func (q Query) %s(v ...%s) Query { return q.Where(%s.In(v...)) }", m, c.goBase, h)
+				g.p("func (q Query) %s(v ...%s) Query { return q.Where(%s.%s(v...)) }",
+					m, c.goBase, h, op.name)
 			case op.args == 0:
 				g.p("func (q Query) %s() Query { return q.Where(%s.%s()) }", m, h, op.name)
 			default:

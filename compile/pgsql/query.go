@@ -90,6 +90,11 @@ var frags = map[string]struct{ a, b string }{
 	"Lt":    {" < " + Placeholder, ""},
 	"Lte":   {" <= " + Placeholder, ""},
 	"Like":  {" LIKE " + Placeholder, ""},
+	// Case-insensitive LIKE. PostgreSQL-specific rather than SQL standard, and
+	// worth having as its own operator instead of leaving every caller to write
+	// lower(col) LIKE lower($1) — which is the same query with the index thrown
+	// away, since a plain btree on col cannot serve it.
+	"ILike": {" ILIKE " + Placeholder, ""},
 	// Full-text search. plainto_tsquery ANDs the terms and ignores syntax —
 	// the safe default for a value that came from a user. websearch_to_tsquery
 	// understands quoted phrases, OR and leading `-`, which is what a search
@@ -105,8 +110,17 @@ var frags = map[string]struct{ a, b string }{
 	"Matches":       {" @@ plainto_tsquery(" + Placeholder, ")"},
 	"WebSearch":     {" @@ websearch_to_tsquery(" + Placeholder, ")"},
 	"In":            {" = ANY(" + Placeholder, ")"},
-	"IsNull":        {" IS NULL", ""},
-	"IsNotNull":     {" IS NOT NULL", ""},
+	// NOT IN is `<> ALL`, not `NOT (= ANY)`. Both are correct; ALL is the form
+	// that keeps one placeholder for the whole list, which is the property In
+	// exists for — list length must never change the statement.
+	//
+	// The NULL trap is PostgreSQL's, not storm's, and it is worth knowing: if
+	// the list contains a NULL, `<> ALL` is NULL for every row and the result
+	// is empty. storm cannot fix that without changing the meaning of the
+	// operator, so it is documented on the generated method instead.
+	"NotIn":     {" <> ALL(" + Placeholder, ")"},
+	"IsNull":    {" IS NULL", ""},
+	"IsNotNull": {" IS NOT NULL", ""},
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is

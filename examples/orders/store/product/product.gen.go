@@ -39,20 +39,22 @@ const (
 	opLt            runtime.Op = 5
 	opLte           runtime.Op = 6
 	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opILike         runtime.Op = 8
+	opMatches       runtime.Op = 9
+	opWebSearch     runtime.Op = 10
+	opOverlaps      runtime.Op = 11
+	opContainsRange runtime.Op = 12
+	opContainedBy   runtime.Op = 13
+	opIn            runtime.Op = 14
+	opNotIn         runtime.Op = 15
+	opIsNull        runtime.Op = 16
+	opIsNotNull     runtime.Op = 17
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 18
+	opNotExists runtime.Op = 19
 )
 
 const nCols = 8
@@ -365,6 +367,11 @@ func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
 
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
@@ -403,7 +410,13 @@ func (h TextCol) Gte(v string) Pred   { return Pred{col: h.c, op: opGte, str: v}
 func (h TextCol) Lt(v string) Pred    { return Pred{col: h.c, op: opLt, str: v} }
 func (h TextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v} }
 func (h TextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
+func (h TextCol) ILike(v string) Pred { return Pred{col: h.c, op: opILike, str: v} }
 func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
 
 // DecimalCol addresses a numeric(12,2) column.
 type DecimalCol struct{ c uint8 }
@@ -529,7 +542,7 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
+	if p.op == opIn || p.op == opNotIn {
 		switch {
 		case p.anyRaw != nil:
 			q.anyRaw, q.hasAny = p.anyRaw, true
@@ -604,6 +617,7 @@ func (q *Query) leaf(p Pred) {
 func (q Query) IDEq(v [16]byte) Query              { return q.Where(ID.Eq(v)) }
 func (q Query) IDNotEq(v [16]byte) Query           { return q.Where(ID.NotEq(v)) }
 func (q Query) IDIn(v ...[16]byte) Query           { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query        { return q.Where(ID.NotIn(v...)) }
 func (q Query) CreatedAtEq(v time.Time) Query      { return q.Where(CreatedAt.Eq(v)) }
 func (q Query) CreatedAtNotEq(v time.Time) Query   { return q.Where(CreatedAt.NotEq(v)) }
 func (q Query) CreatedAtGt(v time.Time) Query      { return q.Where(CreatedAt.Gt(v)) }
@@ -623,7 +637,9 @@ func (q Query) SkuGte(v string) Query              { return q.Where(Sku.Gte(v)) 
 func (q Query) SkuLt(v string) Query               { return q.Where(Sku.Lt(v)) }
 func (q Query) SkuLte(v string) Query              { return q.Where(Sku.Lte(v)) }
 func (q Query) SkuLike(v string) Query             { return q.Where(Sku.Like(v)) }
+func (q Query) SkuILike(v string) Query            { return q.Where(Sku.ILike(v)) }
 func (q Query) SkuIn(v ...string) Query            { return q.Where(Sku.In(v...)) }
+func (q Query) SkuNotIn(v ...string) Query         { return q.Where(Sku.NotIn(v...)) }
 func (q Query) NameEq(v string) Query              { return q.Where(Name.Eq(v)) }
 func (q Query) NameNotEq(v string) Query           { return q.Where(Name.NotEq(v)) }
 func (q Query) NameGt(v string) Query              { return q.Where(Name.Gt(v)) }
@@ -631,7 +647,9 @@ func (q Query) NameGte(v string) Query             { return q.Where(Name.Gte(v))
 func (q Query) NameLt(v string) Query              { return q.Where(Name.Lt(v)) }
 func (q Query) NameLte(v string) Query             { return q.Where(Name.Lte(v)) }
 func (q Query) NameLike(v string) Query            { return q.Where(Name.Like(v)) }
+func (q Query) NameILike(v string) Query           { return q.Where(Name.ILike(v)) }
 func (q Query) NameIn(v ...string) Query           { return q.Where(Name.In(v...)) }
+func (q Query) NameNotIn(v ...string) Query        { return q.Where(Name.NotIn(v...)) }
 func (q Query) PriceEq(v runtime.Decimal) Query    { return q.Where(Price.Eq(v)) }
 func (q Query) PriceNotEq(v runtime.Decimal) Query { return q.Where(Price.NotEq(v)) }
 func (q Query) PriceGt(v runtime.Decimal) Query    { return q.Where(Price.Gt(v)) }
@@ -747,7 +765,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [8][18]runtime.Frag{
+var fragTable = [8][20]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -762,7 +780,9 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -776,6 +796,8 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -807,6 +829,8 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // sku
 		{}, // opNone
@@ -817,12 +841,14 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"sku\" < $", B: ""},
 		{A: "\"sku\" <= $", B: ""},
 		{A: "\"sku\" LIKE $", B: ""},
+		{A: "\"sku\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"sku\" = ANY($", B: ")"},
+		{A: "\"sku\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -837,12 +863,14 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"name\" < $", B: ""},
 		{A: "\"name\" <= $", B: ""},
 		{A: "\"name\" LIKE $", B: ""},
+		{A: "\"name\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"name\" = ANY($", B: ")"},
+		{A: "\"name\" <> ALL($", B: ")"},
 		{},
 		{},
 		{},
@@ -856,6 +884,8 @@ var fragTable = [8][18]runtime.Frag{
 		{A: "\"price\" >= $", B: ""},
 		{A: "\"price\" < $", B: ""},
 		{A: "\"price\" <= $", B: ""},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -887,6 +917,8 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
 	},
 	{ // search
 		{}, // opNone
@@ -897,8 +929,10 @@ var fragTable = [8][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"search\" @@ plainto_tsquery($", B: ")"},
 		{A: "\"search\" @@ websearch_to_tsquery($", B: ")"},
+		{},
 		{},
 		{},
 		{},
@@ -1132,7 +1166,7 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
+		case opIn, opNotIn:
 			if q.anyRaw != nil {
 				b.anyRaw = q.anyRaw
 				v = append(v, &b.anyRaw)
