@@ -14,6 +14,53 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Fixed: two list predicates in one query returned the wrong rows
+
+Present in every version through v0.3.0, silent, and a wrong answer rather than
+an error:
+
+```go
+product.New().Where(product.Sku.In("a", "b"), product.Name.In("x", "y"))
+```
+
+`Query` held ONE field per list slot, so the second `In` overwrote the first,
+and the bind loop then appended that one list for both placeholders. The query
+ran. It returned the wrong rows. Nothing reported anything.
+
+List values are an arena now — bounded, cursor-indexed in token order, exactly
+like every scalar value type, which is what makes more than one of them
+representable at all. Past the bound the query errors rather than binding
+whatever was there.
+
+Found by writing a test for a NEW feature (an array predicate beside a scalar
+one) and getting zero rows, then checking whether the same shape was already
+broken on `main`. It was.
+
+### Predicates for types that were storable but not filterable
+
+**`In` and `NotIn` on integer columns.** `opApplies` said integers supported
+`In`; `predArraySlot` had no integer slot, so the method was silently skipped.
+`WHERE code IN (1,2,3)` could not be written on any integer column, and nothing
+said so. Each width gets its own slot — binding an `int16` list as `int64`
+hands PostgreSQL an `int8[]` to compare against an `int2` column, a cast the
+planner must undo before it can use an index.
+
+**`Contains`, `ContainedBy` and `Overlaps` on array columns** (`text[]`,
+`uuid[]`, `int8[]`, `numeric[]`) — `@>`, `<@`, `&&`. An array used to
+round-trip and support only `IS NULL`: storable, not filterable, which is worse
+than an unsupported type because the column looks supported. Equality is still
+refused; `tags = '{a,b}'` is order- and duplicate-sensitive.
+
+**`NotIn`** everywhere `In` applies, as `<> ALL($1)` rather than
+`NOT (= ANY)` — one placeholder for the whole list, which is the property `In`
+exists for.
+
+**`ILike`**, so nobody writes `lower(col) LIKE lower($1)`, which is the same
+query with the index thrown away.
+
+`examples/orders` gained a `Tags []string` column with a GIN index to exercise
+them against a real server.
+
 ### API review before v1.0
 
 `STABILITY.md` binds from v1.0.0, so the surface v0.3.0 added — 154 exported
