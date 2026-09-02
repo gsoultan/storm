@@ -141,7 +141,7 @@ storm generate [dir]    # one package per table + the context package
       verify -stale     # generated code vs model (no database, unless you declare storm.SQL)
       verify -pending   # model vs migrations — "forgot to diff" fails CI
       lint              # every named plan costed in round trips, budgeted
-      explain           # every statement planned; large seq scans flagged
+      explain           # every statement planned by the server; large seq scans flagged
       import            # an existing database, written back as a model draft
       portable <engine> # what in this model does NOT cross to another engine
 ```
