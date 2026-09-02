@@ -20,15 +20,19 @@ migrations and **never applies DDL**.
 
 ## Status
 
-**v0.3.0 is tagged.** The read path, migrations, relations, writes, the typed
+**v0.4.0 is tagged.** The read path, migrations, relations, writes, the typed
 escape hatch and the tooling gate are built, benchmarked and hardened; the first
 adopter migrated a whole bounded context (M6) and runs on the published module.
-v0.3.0 adds model discovery, declared aggregations and joins, full-text search,
-range types and typed constraint errors — and a MySQL DDL back end that is
-**not** a runtime target
-([ADR-0007](docs/adr/0007-mysql-runtime-needs-a-second-decoder-family.md)). The milestone log with every exit gate
-is [docs/PLAN.md](docs/PLAN.md), and what would still stop a team adopting
-this is written down, with gates, in
+v0.3.0 added model discovery, declared aggregations and joins, full-text
+search, range types and typed constraint errors — and a MySQL DDL back end that
+is **not** a runtime target
+([ADR-0007](docs/adr/0007-mysql-runtime-needs-a-second-decoder-family.md)).
+v0.4.0 makes every supported column type **filterable** — arrays and jsonb
+round-tripped but could only be tested for NULL — and **fixes a silent wrong
+answer**: through v0.3.0, two list predicates in one query bound the same list
+twice and returned the wrong rows without erroring. The milestone log with
+every exit gate is [docs/PLAN.md](docs/PLAN.md), and what would still stop a
+team adopting this is written down, with gates, in
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md).
 
 Every claim below is a test or a benchmark in this repository. The quickstart
@@ -95,6 +99,15 @@ func (o *Order) Joins(j *storm.Joins) {
         Take(&o.ID, "OrderID").Take(&c.Email, "Email").OrderDesc(&o.PlacedAt)
 }
 rows, err := order.New().Where(order.Status.Eq("paid")).AllWithCustomer(ctx, ex)
+
+// Every supported type is filterable, and the handle's TYPE decides how:
+// Age.Like(...) does not compile. Arrays and jsonb get the operators a GIN
+// index answers — never equality, which on both is a trap dressed as a feature.
+product.New().Where(product.Tags.Overlaps("sale", "clearance"))         // &&
+product.New().Where(product.Attrs.Contains(runtime.JSON(`{"c":"red"}`))) // @>
+product.New().Where(product.Attrs.HasAllKeys("colour", "size_cm"))       // ?&
+stockitem.New().Where(stockitem.OnHand.NotIn(0, 1))                      // <> ALL
+customer.New().Where(customer.Email.ILike("ada@%"))                      // ILIKE
 
 // Anything PostgreSQL can run, typed, validated against the model at
 // generate time — mismatches fail the build naming the column and the fix.
