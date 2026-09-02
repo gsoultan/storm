@@ -2,8 +2,12 @@ package orders_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/gsoultan/storm/runtime"
+
+	"example.com/orders/model"
 	"example.com/orders/store/customer"
 	"example.com/orders/store/product"
 	"example.com/orders/store/stockitem"
@@ -294,5 +298,132 @@ func TestTooManyListPredicatesIsAnError(t *testing.T) {
 	)
 	if _, err := q.All(ctx, ex, nil); err == nil {
 		t.Error("four list predicates on a 3-slot arena were accepted silently")
+	}
+}
+
+// jsonb containment and key tests, against a real server.
+//
+// Before these a jsonb column round-tripped and supported only IS [NOT] NULL:
+// every question about the document went through raw SQL, on a column the
+// model already describes. Equality is still refused — jsonb normalises key
+// order and drops duplicates, so two documents a caller thinks differ can be
+// equal and two they think match can differ by whitespace they never wrote.
+func TestJSONBPredicates(t *testing.T) {
+	ctx := context.Background()
+	// The column is jsonb and its Go side is bytes: storm cannot know the
+	// document's shape, so the caller marshals its own type. That is the same
+	// contract on the way in as on the way out.
+	add := func(sku string, a model.ProductAttrs) {
+		t.Helper()
+		b, err := json.Marshal(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := product.Create()
+		n.SetSku(sku)
+		n.SetName("Widget " + sku)
+		n.SetPrice(mustDec(t, "1.00"))
+		n.SetTags([]string{})
+		n.SetAttrs(b)
+		if _, err := n.Insert(ctx, ex); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("SKU-J-RED", model.ProductAttrs{Colour: "red", SizeCM: 30})
+	add("SKU-J-BLUE", model.ProductAttrs{Colour: "blue", SizeCM: 30})
+	add("SKU-J-WIRE", model.ProductAttrs{Wireless: true})
+	add("SKU-J-EMPTY", model.ProductAttrs{})
+
+	skus := func(rows []product.Row) map[string]bool {
+		m := map[string]bool{}
+		for _, r := range rows {
+			m[r.Sku] = true
+		}
+		return m
+	}
+
+	// @> — the document contains this one. The reason the column is queryable
+	// at all, and what the GIN index answers.
+	red, err := product.New().
+		Where(product.Attrs.Contains(runtime.JSON(`{"colour":"red"}`))).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := skus(red)
+	if !got["SKU-J-RED"] || got["SKU-J-BLUE"] {
+		t.Errorf(`Contains({"colour":"red"}) matched %v`, got)
+	}
+
+	// Two keys at once: both must match, so neither single-colour row does.
+	pair, err := product.New().
+		Where(product.Attrs.Contains(runtime.JSON(`{"colour":"red","size_cm":30}`))).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := skus(pair); !g["SKU-J-RED"] || g["SKU-J-BLUE"] {
+		t.Errorf("two-key containment matched %v", g)
+	}
+
+	// ?| — the document has at least one of these keys. omitempty means an
+	// attribute that does not apply is ABSENT, which is what makes this ask a
+	// real question rather than always being true.
+	sized, err := product.New().
+		Where(product.Attrs.HasAnyKey("size_cm"), product.Sku.Like("SKU-J-%")).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := skus(sized)
+	if !g["SKU-J-RED"] || !g["SKU-J-BLUE"] {
+		t.Errorf(`HasAnyKey("size_cm") missed a sized product: %v`, g)
+	}
+	if g["SKU-J-WIRE"] || g["SKU-J-EMPTY"] {
+		t.Errorf(`HasAnyKey("size_cm") matched a product without the key: %v`, g)
+	}
+
+	// ?& — every key present.
+	both, err := product.New().
+		Where(product.Attrs.HasAllKeys("colour", "size_cm"), product.Sku.Like("SKU-J-%")).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g = skus(both)
+	if !g["SKU-J-RED"] || !g["SKU-J-BLUE"] || g["SKU-J-WIRE"] {
+		t.Errorf(`HasAllKeys("colour","size_cm") matched %v`, g)
+	}
+}
+
+// A jsonb column spends its arena on the @> argument and its list slot on the
+// key operators. Both in one query is where a shared cursor would show up.
+func TestJSONBArenaAndListSlotInOneQuery(t *testing.T) {
+	ctx := context.Background()
+	n := product.Create()
+	n.SetSku("SKU-J-MIX")
+	n.SetName("Widget mix")
+	n.SetPrice(mustDec(t, "1.00"))
+	n.SetTags([]string{"sale"})
+	attrs, err := json.Marshal(model.ProductAttrs{Colour: "green", SizeCM: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.SetAttrs(attrs)
+	if _, err := n.Insert(ctx, ex); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := product.New().Where(
+		product.Attrs.Contains(runtime.JSON(`{"colour":"green"}`)),
+		product.Attrs.HasAllKeys("colour", "size_cm"),
+		product.Tags.Overlaps("sale"),
+		product.Sku.In("SKU-J-MIX", "SKU-J-NOPE"),
+	).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Sku != "SKU-J-MIX" {
+		t.Fatalf("arena and list predicates together returned %d rows", len(rows))
 	}
 }

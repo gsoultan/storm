@@ -337,6 +337,17 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		return k == kindTSVector
 	case "Overlaps", "ContainsRange", "ContainedBy":
 		return k == kindTstzRange
+	case "JSONContains", "JSONContainedBy", "HasAnyKey", "HasAllKeys":
+		// What makes a jsonb column queryable. It used to offer only
+		// IS [NOT] NULL — storable, not filterable — so any question about the
+		// document went through raw SQL.
+		//
+		// Still not equality: `doc = '{"a":1}'` compares whole documents, and
+		// jsonb normalises key order and drops duplicates, so two documents a
+		// caller thinks differ can be equal and two they think match can
+		// differ by whitespace they never wrote. @> is the question people
+		// have, and it is what a GIN index answers.
+		return k == kindJSONB
 	case "ArrayContains", "ArrayContainedBy", "ArrayOverlaps":
 		// The three operators that make an array column queryable. Until they
 		// existed, an array round-tripped and could only be tested for NULL:
