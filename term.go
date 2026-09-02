@@ -34,9 +34,11 @@ type Term struct {
 // accepted directly wherever a Term is.
 func Col(fieldPtr any) Term { return Term{kind: schema.ExprCol, fp: fieldPtr} }
 
-// Star is `*`, valid ONLY as the argument of Count. Anywhere else it is
-// refused at declaration time: `HAVING * > 0` is not a query.
-func Star() Term { return Term{kind: schema.ExprStar} }
+// star is `*`. Unexported because there is no call site for it: Count already
+// means count(*), CountOf takes the column, and every other position refuses a
+// star. It was exported in v0.3.0 with a doc comment describing an argument
+// slot that does not exist.
+func star() Term { return Term{kind: schema.ExprStar} }
 
 // Out references an output this aggregation already declared, by name. It is
 // how Having talks about an aggregate:

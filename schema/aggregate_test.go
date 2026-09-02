@@ -93,3 +93,34 @@ func TestAggregateResultRejectsNonsense(t *testing.T) {
 		t.Error("an unknown aggregate was accepted")
 	}
 }
+
+// coalesce and nullif must accept a numeric column beside an integer literal.
+//
+// `nullif(amount, 0)` is the canonical division-by-zero guard and the reason
+// nullif exists at all; requiring the literal to be declared numeric would make
+// the documented use unwritable. Exact-match unification did exactly that until
+// a v1.0 API review ran the constructor for the first time.
+func TestNumericLiteralsUnifyWithNumericColumns(t *testing.T) {
+	num := schema.Type{Name: schema.TypeNumeric, Precision: 12, Scale: 2}
+	i8 := schema.Type{Name: schema.TypeInt8}
+
+	for _, fn := range []string{"nullif", "coalesce"} {
+		sig := schema.Funcs[fn]
+		got, err := sig.Result([]schema.Type{num, i8})
+		if err != nil {
+			t.Errorf("%s(numeric, int8): %v", fn, err)
+			continue
+		}
+		// Widened to the more capacious type, so a numeric column beside an int
+		// literal stays numeric rather than narrowing.
+		if got.Name != schema.TypeNumeric {
+			t.Errorf("%s(numeric, int8) = %s, want numeric", fn, got.Name)
+		}
+	}
+
+	// Across families it is still a mistake, not a cast.
+	if _, err := schema.Funcs["nullif"].Result(
+		[]schema.Type{{Name: schema.TypeText}, i8}); err == nil {
+		t.Error("nullif(text, int8) was accepted")
+	}
+}
