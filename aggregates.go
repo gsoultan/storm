@@ -28,6 +28,11 @@ import (
 // whole thing inside the compilation thesis. The call-site predicates stay
 // dynamic because those ARE bounded.
 type Aggregates struct {
+	// Exprs is the declaration-time expression vocabulary: a.Eq, a.DateTrunc,
+	// a.Over and the rest. Embedded rather than exported at package level so a
+	// declaration constructor cannot be reached from a query context.
+	Exprs
+
 	t   *Table
 	out *[]*schema.Aggregate
 }
@@ -35,6 +40,87 @@ type Aggregates struct {
 // Aggregator is implemented by models that declare aggregations. Optional.
 type Aggregator interface {
 	Aggregates(*Aggregates)
+}
+
+// Out is a reference to a declared output, returned by the method that
+// declared it.
+//
+// It replaces a string lookup. `Having(a.Gt(a.Out("Orders"), 0))` named an
+// output that storm checked at build time; a handle is checked by the Go
+// compiler, and it cannot name an output that has not been declared yet
+// because you do not have one until it has.
+type Out struct {
+	b    *AggregateBuilder
+	name string
+}
+
+// Filter restricts THIS aggregate to the rows matching cond —
+// `count(*) FILTER (WHERE status = 'paid')`, which is both clearer and faster
+// than `count(CASE WHEN ...)`.
+//
+// Attached to the output it filters rather than to "the last one declared",
+// so moving a line cannot silently move the filter with it.
+func (o Out) Filter(c Cond) Out {
+	b := o.b
+	if b == nil || b.dead {
+		return o
+	}
+	t := b.term(o.name)
+	if t == nil {
+		b.fail("filter on %q: no such output", o.name)
+		return o
+	}
+	if t.Expr.Kind != schema.ExprAgg {
+		b.fail("Filter applies to an aggregate; %q is not one", o.name)
+		return o
+	}
+	sc, err := b.resolveCond(c)
+	if err != nil {
+		b.fail("filter on %q: %w", o.name, err)
+		return o
+	}
+	t.Expr.Filter = &sc
+	return o
+}
+
+// OverWindow attaches a window to THIS aggregate — a moving total, or the
+// classic "share of the group" without a self-join.
+func (o Out) OverWindow(w *WindowSpec) Out {
+	b := o.b
+	if b == nil || b.dead {
+		return o
+	}
+	t := b.term(o.name)
+	if t == nil {
+		b.fail("window on %q: no such output", o.name)
+		return o
+	}
+	if t.Expr.Kind != schema.ExprAgg {
+		b.fail("OverWindow applies to an aggregate; %q is not one", o.name)
+		return o
+	}
+	win, err := b.resolveWindow(w)
+	if err != nil {
+		b.fail("window on %q: %w", o.name, err)
+		return o
+	}
+	t.Expr.Over = win
+	return o
+}
+
+// none is the handle a failed declaration returns: it refers to nothing and
+// every method on it is a no-op, so a chain after an error neither panics nor
+// reports the same mistake twice.
+func (b *AggregateBuilder) none() Out { return Out{b: b} }
+
+// term finds a declared output by name.
+func (b *AggregateBuilder) term(name string) *schema.AggregateTerm {
+	for i := range b.agg.Terms {
+		if b.agg.Terms[i].As == name {
+			return &b.agg.Terms[i]
+		}
+	}
+	return nil
 }
 
 // AggregateBuilder accumulates one declaration.
@@ -83,30 +169,29 @@ func (b *AggregateBuilder) By(fieldPtrs ...any) *AggregateBuilder {
 			b.fail("%w", err)
 			return b
 		}
-		b.addGroup(exportIdent(c.sc.Name), Col(fp))
+		b.addGroup(exportIdent(c.sc.Name), toTerm(fp))
 	}
 	return b
 }
 
 // ByExpr groups by an expression, which needs a name because
 // date_trunc('day', placed_at) has no obvious one.
-func (b *AggregateBuilder) ByExpr(as string, t Term) *AggregateBuilder {
+func (b *AggregateBuilder) ByExpr(as string, t Term) Out {
 	if b.dead {
-		return b
+		return b.none()
 	}
 	if !isExportedIdent(as) {
 		b.fail("grouping expression is named %q, which must be a valid exported Go identifier", as)
-		return b
+		return b.none()
 	}
-	b.addGroup(as, t)
-	return b
+	return b.addGroup(as, t)
 }
 
-func (b *AggregateBuilder) addGroup(as string, t Term) {
+func (b *AggregateBuilder) addGroup(as string, t Term) Out {
 	e, err := b.resolveTerm(t)
 	if err != nil {
 		b.fail("grouping %q: %w", as, err)
-		return
+		return b.none()
 	}
 	// Checked before the field-name clash so the message names the actual
 	// mistake. Grouping by the same thing twice also produces two fields with
@@ -115,13 +200,14 @@ func (b *AggregateBuilder) addGroup(as string, t Term) {
 	for _, ex := range b.agg.By {
 		if exprEqual(ex.Expr, e) {
 			b.fail("groups by %s twice", describeExpr(e))
-			return
+			return b.none()
 		}
 	}
 	if !b.claim(as) {
-		return
+		return b.none()
 	}
 	b.agg.By = append(b.agg.By, schema.GroupTerm{Expr: e, As: as})
+	return Out{b: b, name: as}
 }
 
 // describeExpr names an expression for an error message.
@@ -199,58 +285,59 @@ func (b *AggregateBuilder) sets(s *schema.GroupingSets) *AggregateBuilder {
 // ---- aggregates -------------------------------------------------------------
 
 // Count adds count(*): rows per group, never NULL.
-func (b *AggregateBuilder) Count(as string) *AggregateBuilder {
+func (b *AggregateBuilder) Count(as string) Out {
 	return b.agged(schema.AggCount, star(), as)
 }
 
 // CountOf adds count(col), which counts rows where the column is NOT NULL — a
 // different question from Count, and a common bug, so a different method.
-func (b *AggregateBuilder) CountOf(fieldPtr any, as string) *AggregateBuilder {
+func (b *AggregateBuilder) CountOf(fieldPtr any, as string) Out {
 	return b.agged(schema.AggCount, toTerm(fieldPtr), as)
 }
 
 // Sum, Avg, Min and Max are the ordinary aggregates. All four are NULL over
 // zero rows, so all four produce a nullable field.
-func (b *AggregateBuilder) Sum(x any, as string) *AggregateBuilder {
+func (b *AggregateBuilder) Sum(x any, as string) Out {
 	return b.agged(schema.AggSum, toTerm(x), as)
 }
-func (b *AggregateBuilder) Avg(x any, as string) *AggregateBuilder {
+func (b *AggregateBuilder) Avg(x any, as string) Out {
 	return b.agged(schema.AggAvg, toTerm(x), as)
 }
-func (b *AggregateBuilder) Min(x any, as string) *AggregateBuilder {
+func (b *AggregateBuilder) Min(x any, as string) Out {
 	return b.agged(schema.AggMin, toTerm(x), as)
 }
-func (b *AggregateBuilder) Max(x any, as string) *AggregateBuilder {
+func (b *AggregateBuilder) Max(x any, as string) Out {
 	return b.agged(schema.AggMax, toTerm(x), as)
 }
 
 // GroupingOf adds GROUPING(cols...) — 1 when the row is a subtotal over those
 // columns, 0 when the value is real.
-func (b *AggregateBuilder) GroupingOf(as string, fieldPtrs ...any) *AggregateBuilder {
+func (b *AggregateBuilder) GroupingOf(as string, fieldPtrs ...any) Out {
 	if b.dead {
-		return b
+		return b.none()
 	}
 	if b.agg.Sets == nil {
 		b.fail("declares GROUPING %q but has no grouping sets, so nothing is ever a subtotal", as)
-		return b
+		return b.none()
 	}
-	return b.output(as, Grouping(fieldPtrs...), schema.Type{Name: schema.TypeInt4}, false)
+	return b.output(as, Term{kind: schema.ExprGrouping, args: toTerms(fieldPtrs)},
+		schema.Type{Name: schema.TypeInt4}, false)
 }
 
-func (b *AggregateBuilder) agged(fn schema.AggFunc, arg Term, as string) *AggregateBuilder {
+func (b *AggregateBuilder) agged(fn schema.AggFunc, arg Term, as string) Out {
 	if b.dead {
-		return b
+		return b.none()
 	}
 	if !isExportedIdent(as) {
 		b.fail("%s(...) is named %q, which must be a valid exported Go identifier", fn, as)
-		return b
+		return b.none()
 	}
 	in := schema.Type{}
 	if arg.kind != schema.ExprStar {
 		e, err := b.resolveTerm(arg)
 		if err != nil {
 			b.fail("%s %q: %w", fn, as, err)
-			return b
+			return b.none()
 		}
 		in = e.Type
 		// Refused HERE rather than at run time. PostgreSQL has no sum(text)
@@ -261,26 +348,26 @@ func (b *AggregateBuilder) agged(fn schema.AggFunc, arg Term, as string) *Aggreg
 		case schema.AggSum, schema.AggAvg:
 			if !schema.AggregatableSumAvg(in) {
 				b.fail("%s %q: PostgreSQL has no %s() for %s", fn, as, fn, in.Name)
-				return b
+				return b.none()
 			}
 		case schema.AggMin, schema.AggMax:
 			if !schema.AggregatableMinMax(in) {
 				b.fail("%s %q: PostgreSQL has no %s() for %s", fn, as, fn, in.Name)
-				return b
+				return b.none()
 			}
 		}
 	}
 	rt, nullable, err := schema.AggregateResult(fn, in)
 	if err != nil {
 		b.fail("%s %q: %w", fn, as, err)
-		return b
+		return b.none()
 	}
 	resolved := schema.Expr{Kind: schema.ExprStar}
 	if arg.kind != schema.ExprStar {
 		var err error
 		if resolved, err = b.resolveTerm(arg); err != nil {
 			b.fail("%s %q: %w", fn, as, err)
-			return b
+			return b.none()
 		}
 	}
 	e := schema.Expr{
@@ -293,52 +380,52 @@ func (b *AggregateBuilder) agged(fn schema.AggFunc, arg Term, as string) *Aggreg
 // ---- window functions -------------------------------------------------------
 
 // RowNumber, Rank and DenseRank number rows within the window.
-func (b *AggregateBuilder) RowNumber(as string, w *WindowSpec) *AggregateBuilder {
+func (b *AggregateBuilder) RowNumber(as string, w *WindowSpec) Out {
 	return b.windowed("row_number", nil, as, w)
 }
-func (b *AggregateBuilder) Rank(as string, w *WindowSpec) *AggregateBuilder {
+func (b *AggregateBuilder) Rank(as string, w *WindowSpec) Out {
 	return b.windowed("rank", nil, as, w)
 }
-func (b *AggregateBuilder) DenseRank(as string, w *WindowSpec) *AggregateBuilder {
+func (b *AggregateBuilder) DenseRank(as string, w *WindowSpec) Out {
 	return b.windowed("dense_rank", nil, as, w)
 }
 
 // Lag and Lead read the previous or next row in the window. Both are NULL at
 // the partition edge however non-null the column is, so both produce a
 // nullable field.
-func (b *AggregateBuilder) Lag(x any, as string, w *WindowSpec) *AggregateBuilder {
+func (b *AggregateBuilder) Lag(x any, as string, w *WindowSpec) Out {
 	return b.windowed("lag", toTerm(x), as, w)
 }
-func (b *AggregateBuilder) Lead(x any, as string, w *WindowSpec) *AggregateBuilder {
+func (b *AggregateBuilder) Lead(x any, as string, w *WindowSpec) Out {
 	return b.windowed("lead", toTerm(x), as, w)
 }
 
 // FirstValue is the first row's value in the window.
-func (b *AggregateBuilder) FirstValue(x any, as string, w *WindowSpec) *AggregateBuilder {
+func (b *AggregateBuilder) FirstValue(x any, as string, w *WindowSpec) Out {
 	return b.windowed("first_value", toTerm(x), as, w)
 }
 
-func (b *AggregateBuilder) windowed(fn string, arg any, as string, w *WindowSpec) *AggregateBuilder {
+func (b *AggregateBuilder) windowed(fn string, arg any, as string, w *WindowSpec) Out {
 	if b.dead {
-		return b
+		return b.none()
 	}
 	if !isExportedIdent(as) {
 		b.fail("%s(...) is named %q, which must be a valid exported Go identifier", fn, as)
-		return b
+		return b.none()
 	}
 	sig, ok := schema.WindowFuncs[fn]
 	if !ok {
 		b.fail("unknown window function %q", fn)
-		return b
+		return b.none()
 	}
 	if w == nil {
 		b.fail("%s %q has no window — a window function without OVER has no meaning", fn, as)
-		return b
+		return b.none()
 	}
 	if sig.NeedsOrder && len(w.order) == 0 {
 		b.fail("%s %q has a window with no ordering — %s over an unordered window "+
 			"ranks by nothing and returns a different answer each run", fn, as, fn)
-		return b
+		return b.none()
 	}
 	var args []schema.Expr
 	var in []schema.Type
@@ -346,7 +433,7 @@ func (b *AggregateBuilder) windowed(fn string, arg any, as string, w *WindowSpec
 		e, err := b.resolveTerm(toTerm(arg))
 		if err != nil {
 			b.fail("%s %q: %w", fn, as, err)
-			return b
+			return b.none()
 		}
 		args = append(args, e)
 		in = append(in, e.Type)
@@ -354,12 +441,12 @@ func (b *AggregateBuilder) windowed(fn string, arg any, as string, w *WindowSpec
 	rt, err := sig.Result(in)
 	if err != nil {
 		b.fail("%s %q: %w", fn, as, err)
-		return b
+		return b.none()
 	}
 	win, err := b.resolveWindow(w)
 	if err != nil {
 		b.fail("%s %q: %w", fn, as, err)
-		return b
+		return b.none()
 	}
 	return b.push(as, schema.Expr{
 		Kind: schema.ExprWindow, Fn: fn, Args: args, Over: win,
@@ -368,60 +455,6 @@ func (b *AggregateBuilder) windowed(fn string, arg any, as string, w *WindowSpec
 }
 
 // ---- modifiers on the last term ---------------------------------------------
-
-// Filter restricts the LAST aggregate to the rows matching cond —
-// `count(*) FILTER (WHERE status = 'paid')`, which is both clearer and faster
-// than `count(CASE WHEN ...)`.
-func (b *AggregateBuilder) Filter(c Cond) *AggregateBuilder {
-	if b.dead {
-		return b
-	}
-	if len(b.agg.Terms) == 0 {
-		b.fail("has a Filter before any aggregate to filter")
-		return b
-	}
-	last := &b.agg.Terms[len(b.agg.Terms)-1]
-	if last.Expr.Kind != schema.ExprAgg {
-		b.fail("Filter applies to an aggregate; %q is not one", last.As)
-		return b
-	}
-	sc, err := b.resolveCond(c)
-	if err != nil {
-		b.fail("filter on %q: %w", last.As, err)
-		return b
-	}
-	last.Expr.Filter = &sc
-	// A FILTER can empty a group that count(*) would have reported as
-	// non-empty, so a filtered count is 0 rather than NULL — count is still
-	// count. sum/avg/min/max become NULL, which they already were.
-	return b
-}
-
-// OverWindow attaches a window to the LAST aggregate — a moving total, or the
-// classic "share of the group" without a self-join.
-func (b *AggregateBuilder) OverWindow(w *WindowSpec) *AggregateBuilder {
-	if b.dead {
-		return b
-	}
-	if len(b.agg.Terms) == 0 {
-		b.fail("has a window before any aggregate to put it over")
-		return b
-	}
-	last := &b.agg.Terms[len(b.agg.Terms)-1]
-	if last.Expr.Kind != schema.ExprAgg {
-		b.fail("OverWindow applies to an aggregate; %q is not one", last.As)
-		return b
-	}
-	win, err := b.resolveWindow(w)
-	if err != nil {
-		b.fail("window on %q: %w", last.As, err)
-		return b
-	}
-	last.Expr.Over = win
-	// An aggregate over a window is computed per row, and at the edge of a
-	// partition it can still be NULL for the same reason it was before.
-	return b
-}
 
 // Having filters the GROUPS, after aggregation. A call-site Where filters the
 // rows that go INTO the groups; these are different questions and mixing them
@@ -445,19 +478,19 @@ func (b *AggregateBuilder) Having(c Cond) *AggregateBuilder {
 
 // ---- resolution -------------------------------------------------------------
 
-func (b *AggregateBuilder) push(as string, e schema.Expr) *AggregateBuilder {
+func (b *AggregateBuilder) push(as string, e schema.Expr) Out {
 	if !b.claim(as) {
-		return b
+		return b.none()
 	}
 	b.agg.Terms = append(b.agg.Terms, schema.AggregateTerm{Expr: e, As: as})
-	return b
+	return Out{b: b, name: as}
 }
 
-func (b *AggregateBuilder) output(as string, t Term, ty schema.Type, nullable bool) *AggregateBuilder {
+func (b *AggregateBuilder) output(as string, t Term, ty schema.Type, nullable bool) Out {
 	e, err := b.resolveTerm(t)
 	if err != nil {
 		b.fail("%q: %w", as, err)
-		return b
+		return b.none()
 	}
 	e.Type, e.Nullable = ty, nullable
 	return b.push(as, e)
