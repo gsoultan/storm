@@ -1,8 +1,10 @@
 package bench
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/pgxdrv"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -73,4 +75,36 @@ func BenchmarkEncodeInt8Array(b *testing.B) {
 			}
 		}
 	})
+}
+
+// numeric[] is a different case from the three above, and measuring it is how
+// that turned out.
+//
+// docs/PLAN.md said numeric[] "still goes through pgx's generic codec". It does
+// not, and it cannot: pgx has no encode plan for []runtime.Decimal at all —
+// `cannot find encode plan` — because Decimal is storm's type, not one pgx
+// knows. decimalArrayPlan is not an optimisation over a slower path, it is the
+// only path. There is no generic arm to compare against, which is why this
+// benchmark has one arm where the others have two.
+func BenchmarkEncodeNumericArray(b *testing.B) {
+	const numericArrayOID = 1231
+
+	vals := make([]runtime.Decimal, 500)
+	for i := range vals {
+		d, err := runtime.ParseDecimal(fmt.Sprintf("%d.%02d", i*3, i%100))
+		if err != nil {
+			b.Fatal(err)
+		}
+		vals[i] = d
+	}
+
+	fm := pgtype.NewMap()
+	pgxdrv.RegisterFastArrays(fm)
+	buf := make([]byte, 0, 1<<16)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := fm.Encode(numericArrayOID, pgtype.BinaryFormatCode, vals, buf[:0]); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

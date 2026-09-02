@@ -16,6 +16,17 @@ func TestDecimal_WireRoundTrip(t *testing.T) {
 		"0", "1", "-1", "0.01", "-0.01", "12345.6789", "-12345.6789",
 		"0.1", "0.001", "1000000", "-1000000", "9999.9999",
 		"123456789012.12", "-123456789012.12", "0.000001", "10000", "99999999",
+
+		// Large unscaled values whose scale is NOT a multiple of four. These
+		// are the ones the encoder pads by multiplying, and every fixture
+		// above is small enough that the multiply never overflowed — so the
+		// round-trip test existed and proved nothing about them.
+		//
+		// At scale 9 the break starts around 9.2 million, which is an ordinary
+		// number for a rate or a token amount in a numeric(30,9) column.
+		"123456789.987654321", "-123456789.987654321",
+		"9223372.036854776", "12345678.123456789",
+		"922337203685477.6", "92233720368.5477581",
 	} {
 		want, err := runtime.ParseDecimal(s)
 		if err != nil {
