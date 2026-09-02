@@ -58,8 +58,25 @@ exists for.
 **`ILike`**, so nobody writes `lower(col) LIKE lower($1)`, which is the same
 query with the index thrown away.
 
-`examples/orders` gained a `Tags []string` column with a GIN index to exercise
-them against a real server.
+**`Contains`, `ContainedBy`, `HasAnyKey` and `HasAllKeys` on jsonb columns** —
+`@>`, `<@`, `?|`, `?&`. A jsonb column used to support only `IS [NOT] NULL`, so
+every question about the document went through raw SQL on a column the model
+already describes.
+
+Equality stays refused, and jsonb is the clearest case for it: jsonb normalises
+key order and drops duplicate keys, so two documents a caller thinks differ can
+be equal, and two they think match can differ by whitespace they never wrote.
+
+Plain `?` is absent deliberately. Its argument is a single text value, which
+would need the string arena the column already spends on the `@>` argument;
+`?|` with one key asks the same question through a storage the column is not
+otherwise using. A jsonb column therefore carries an arena for the document
+operators and a list slot for the key operators, and the leaf already
+dispatches list operators before the arena switch, so nothing new was needed to
+keep them apart.
+
+`examples/orders` gained a `Tags []string` column and an `Attrs ProductAttrs`
+jsonb column, both GIN-indexed, to exercise all of this against a real server.
 
 ### API review before v1.0
 

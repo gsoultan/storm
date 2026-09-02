@@ -35,6 +35,15 @@ type Audited struct {
 func (a *Audited) Schema(t *storm.Table) { t.Col(&a.UpdatedBy).Size(64).Default("'system'") }
 
 // Product is the catalogue.
+// ProductAttrs is the per-category attribute bag. Every field is omitempty:
+// an attribute that does not apply is ABSENT from the document rather than
+// present and zero, which is the difference `@> {"wireless": false}` turns on.
+type ProductAttrs struct {
+	Colour   string `json:"colour,omitempty"`
+	SizeCM   int    `json:"size_cm,omitempty"`
+	Wireless bool   `json:"wireless,omitempty"`
+}
+
 type Product struct {
 	storm.Model
 
@@ -48,6 +57,12 @@ type Product struct {
 	// row of its own to reference — and a GIN index answers "which products
 	// are on sale" without one.
 	Tags []string
+
+	// Per-category attributes: colour for apparel, size for hardware. A jsonb
+	// column rather than one nullable column per attribute, because most are
+	// absent for most products. A struct, so Go sees the shape; jsonb on the
+	// database side, so a GIN index answers @> without one index per key.
+	Attrs ProductAttrs
 
 	// Full-text search. A GENERATED column, so PostgreSQL keeps it in step
 	// with name and sku and nothing in Go can write it — and storm keeps it
@@ -70,6 +85,10 @@ func (p *Product) Schema(t *storm.Table) {
 	// "tags unknown" are not different facts here, and a NULL array makes
 	// every @> and && predicate return NULL instead of false.
 	t.Col(&p.Tags).Default("'{}'")
+	t.Col(&p.Attrs).Default("'{}'")
+	// GIN again: @> is the question an attribute bag is asked, and the
+	// default opclass indexes containment for every key at once.
+	t.Index(&p.Attrs).Using("gin")
 	// GIN, because @> and && are the operators a tag column is asked about and
 	// btree cannot serve either.
 	t.Index(&p.Tags).Using("gin")

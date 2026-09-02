@@ -233,7 +233,8 @@ func (o opDef) m() string {
 // one placeholder from a list slot, rather than one value from an arena.
 func (o opDef) list() bool {
 	switch o.name {
-	case "In", "NotIn", "ArrayContains", "ArrayContainedBy", "ArrayOverlaps":
+	case "In", "NotIn", "ArrayContains", "ArrayContainedBy", "ArrayOverlaps",
+		"HasAnyKey", "HasAllKeys":
 		return true
 	}
 	return false
@@ -260,6 +261,12 @@ var ops = []opDef{
 	{name: "ArrayContains", method: "Contains", args: 1},
 	{name: "ArrayContainedBy", method: "ContainedBy", args: 1},
 	{name: "ArrayOverlaps", method: "Overlaps", args: 1},
+	{name: "JSONContains", method: "Contains", args: 1},
+	{name: "JSONContainedBy", method: "ContainedBy", args: 1},
+	// Key lists: the argument is a text[], so these ride the text list slot
+	// rather than an arena, exactly like In on a text column.
+	{name: "HasAnyKey", args: 1},
+	{name: "HasAllKeys", args: 1},
 	{name: "IsNull", args: 0},
 	{name: "IsNotNull", args: 0},
 }
