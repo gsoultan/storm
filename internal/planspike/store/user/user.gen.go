@@ -42,27 +42,32 @@ type Row struct {
 // Operator ids. Argument-taking operators are numbered first, so the
 // bind loop tests `op-1 < opsWithArg` with one unsigned compare.
 const (
-	opEq            runtime.Op = 1
-	opNotEq         runtime.Op = 2
-	opGt            runtime.Op = 3
-	opGte           runtime.Op = 4
-	opLt            runtime.Op = 5
-	opLte           runtime.Op = 6
-	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opEq               runtime.Op = 1
+	opNotEq            runtime.Op = 2
+	opGt               runtime.Op = 3
+	opGte              runtime.Op = 4
+	opLt               runtime.Op = 5
+	opLte              runtime.Op = 6
+	opLike             runtime.Op = 7
+	opILike            runtime.Op = 8
+	opMatches          runtime.Op = 9
+	opWebSearch        runtime.Op = 10
+	opOverlaps         runtime.Op = 11
+	opContainsRange    runtime.Op = 12
+	opContainedBy      runtime.Op = 13
+	opIn               runtime.Op = 14
+	opNotIn            runtime.Op = 15
+	opArrayContains    runtime.Op = 16
+	opArrayContainedBy runtime.Op = 17
+	opArrayOverlaps    runtime.Op = 18
+	opIsNull           runtime.Op = 19
+	opIsNotNull        runtime.Op = 20
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 21
+	opNotExists runtime.Op = 22
 )
 
 const nCols = 17
@@ -83,9 +88,12 @@ type Query struct {
 	bools                    [4]bool
 	ns, nn, nr, ntm, nd, nbo uint8
 
-	anyRaw [][16]byte
-	anyStr []string
-	hasAny bool
+	anyRaw                        [3][][16]byte
+	anyStr                        [3][]string
+	anyI16                        [3][]int16
+	anyI32                        [3][]int32
+	anyDec                        [3][]runtime.Decimal
+	nar, nas, nai16, nai32, nadec uint8
 
 	// Order terms live in their own buffer and are appended to the stream
 	// after the predicate tree. Sharing one buffer would let a Where after
@@ -387,6 +395,9 @@ type Pred struct {
 	bol    bool
 	anyRaw [][16]byte
 	anyStr []string
+	anyI16 []int16
+	anyI32 []int32
+	anyDec []runtime.Decimal
 }
 
 // b2i lets a bool ride in the numeric slot of a Pred.
@@ -435,6 +446,11 @@ func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
 
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
@@ -472,6 +488,12 @@ func (h Int32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int
 func (h Int32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h Int32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h Int32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
+func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: v} }
 
 // NullTimeCol addresses a timestamptz column.
 type NullTimeCol struct{ c uint8 }
@@ -513,7 +535,13 @@ func (h TextCol) Gte(v string) Pred   { return Pred{col: h.c, op: opGte, str: v}
 func (h TextCol) Lt(v string) Pred    { return Pred{col: h.c, op: opLt, str: v} }
 func (h TextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v} }
 func (h TextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
+func (h TextCol) ILike(v string) Pred { return Pred{col: h.c, op: opILike, str: v} }
 func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
 
 // JSONCol addresses a jsonb column.
 type JSONCol struct{ c uint8 }
@@ -539,6 +567,23 @@ func (h TextArrayCol) DescNullsLast() Sort {
 	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
 }
 
+// Contains is `@>`: every element of v is in the column.
+// An empty v is true for every row — every array contains
+// the empty one.
+func (h TextArrayCol) Contains(v ...string) Pred {
+	return Pred{col: h.c, op: opArrayContains, anyStr: v}
+}
+
+// ContainedBy is `<@`: every element of the column is in v.
+func (h TextArrayCol) ContainedBy(v ...string) Pred {
+	return Pred{col: h.c, op: opArrayContainedBy, anyStr: v}
+}
+
+// Overlaps is `&&`: the column and v share an element.
+func (h TextArrayCol) Overlaps(v ...string) Pred {
+	return Pred{col: h.c, op: opArrayOverlaps, anyStr: v}
+}
+
 // NullInt16Col addresses a int2 column.
 type NullInt16Col struct{ c uint8 }
 
@@ -557,8 +602,14 @@ func (h NullInt16Col) Gt(v int16) Pred    { return Pred{col: h.c, op: opGt, num:
 func (h NullInt16Col) Gte(v int16) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h NullInt16Col) Lt(v int16) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h NullInt16Col) Lte(v int16) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
-func (h NullInt16Col) IsNull() Pred       { return Pred{col: h.c, op: opIsNull} }
-func (h NullInt16Col) IsNotNull() Pred    { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullInt16Col) In(v ...int16) Pred { return Pred{col: h.c, op: opIn, anyI16: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h NullInt16Col) NotIn(v ...int16) Pred { return Pred{col: h.c, op: opNotIn, anyI16: v} }
+func (h NullInt16Col) IsNull() Pred          { return Pred{col: h.c, op: opIsNull} }
+func (h NullInt16Col) IsNotNull() Pred       { return Pred{col: h.c, op: opIsNotNull} }
 
 // NullTextCol addresses a text column.
 type NullTextCol struct{ c uint8 }
@@ -579,9 +630,15 @@ func (h NullTextCol) Gte(v string) Pred   { return Pred{col: h.c, op: opGte, str
 func (h NullTextCol) Lt(v string) Pred    { return Pred{col: h.c, op: opLt, str: v} }
 func (h NullTextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v} }
 func (h NullTextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
+func (h NullTextCol) ILike(v string) Pred { return Pred{col: h.c, op: opILike, str: v} }
 func (h NullTextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
-func (h NullTextCol) IsNull() Pred        { return Pred{col: h.c, op: opIsNull} }
-func (h NullTextCol) IsNotNull() Pred     { return Pred{col: h.c, op: opIsNotNull} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h NullTextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
+func (h NullTextCol) IsNull() Pred           { return Pred{col: h.c, op: opIsNull} }
+func (h NullTextCol) IsNotNull() Pred        { return Pred{col: h.c, op: opIsNotNull} }
 
 // BoolCol addresses a bool column.
 type BoolCol struct{ c uint8 }
@@ -650,6 +707,22 @@ func (h NullDecimalArrayCol) DescNullsLast() Sort {
 	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
 }
 
+// Contains is `@>`: every element of v is in the column.
+// An empty v is true for every row — every array contains
+// the empty one.
+func (h NullDecimalArrayCol) Contains(v ...runtime.Decimal) Pred {
+	return Pred{col: h.c, op: opArrayContains, anyDec: v}
+}
+
+// ContainedBy is `<@`: every element of the column is in v.
+func (h NullDecimalArrayCol) ContainedBy(v ...runtime.Decimal) Pred {
+	return Pred{col: h.c, op: opArrayContainedBy, anyDec: v}
+}
+
+// Overlaps is `&&`: the column and v share an element.
+func (h NullDecimalArrayCol) Overlaps(v ...runtime.Decimal) Pred {
+	return Pred{col: h.c, op: opArrayOverlaps, anyDec: v}
+}
 func (h NullDecimalArrayCol) IsNull() Pred    { return Pred{col: h.c, op: opIsNull} }
 func (h NullDecimalArrayCol) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }
 
@@ -728,12 +801,78 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
-		switch {
-		case p.anyRaw != nil:
-			q.anyRaw, q.hasAny = p.anyRaw, true
-		case p.anyStr != nil:
-			q.anyStr, q.hasAny = p.anyStr, true
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps {
+		switch p.col {
+		case 0:
+			if int(q.nar) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyRaw[q.nar] = p.anyRaw
+			q.nar++
+		case 3:
+			if int(q.nai32) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyI32[q.nai32] = p.anyI32
+			q.nai32++
+		case 5:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 6:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 7:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 9:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 10:
+			if int(q.nai16) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyI16[q.nai16] = p.anyI16
+			q.nai16++
+		case 11:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 15:
+			if int(q.nadec) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyDec[q.nadec] = p.anyDec
+			q.nadec++
+		case 16:
+			if int(q.nar) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyRaw[q.nar] = p.anyRaw
+			q.nar++
 		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
@@ -849,98 +988,120 @@ func HasPosts() Pred   { return Pred{col: 17, op: opExists} }
 func HasNoPosts() Pred { return Pred{col: 17, op: opNotExists} }
 
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
-func (q Query) IDEq(v [16]byte) Query                { return q.Where(ID.Eq(v)) }
-func (q Query) IDNotEq(v [16]byte) Query             { return q.Where(ID.NotEq(v)) }
-func (q Query) IDIn(v ...[16]byte) Query             { return q.Where(ID.In(v...)) }
-func (q Query) CreatedAtEq(v time.Time) Query        { return q.Where(CreatedAt.Eq(v)) }
-func (q Query) CreatedAtNotEq(v time.Time) Query     { return q.Where(CreatedAt.NotEq(v)) }
-func (q Query) CreatedAtGt(v time.Time) Query        { return q.Where(CreatedAt.Gt(v)) }
-func (q Query) CreatedAtGte(v time.Time) Query       { return q.Where(CreatedAt.Gte(v)) }
-func (q Query) CreatedAtLt(v time.Time) Query        { return q.Where(CreatedAt.Lt(v)) }
-func (q Query) CreatedAtLte(v time.Time) Query       { return q.Where(CreatedAt.Lte(v)) }
-func (q Query) UpdatedAtEq(v time.Time) Query        { return q.Where(UpdatedAt.Eq(v)) }
-func (q Query) UpdatedAtNotEq(v time.Time) Query     { return q.Where(UpdatedAt.NotEq(v)) }
-func (q Query) UpdatedAtGt(v time.Time) Query        { return q.Where(UpdatedAt.Gt(v)) }
-func (q Query) UpdatedAtGte(v time.Time) Query       { return q.Where(UpdatedAt.Gte(v)) }
-func (q Query) UpdatedAtLt(v time.Time) Query        { return q.Where(UpdatedAt.Lt(v)) }
-func (q Query) UpdatedAtLte(v time.Time) Query       { return q.Where(UpdatedAt.Lte(v)) }
-func (q Query) VersionEq(v int32) Query              { return q.Where(Version.Eq(v)) }
-func (q Query) VersionNotEq(v int32) Query           { return q.Where(Version.NotEq(v)) }
-func (q Query) VersionGt(v int32) Query              { return q.Where(Version.Gt(v)) }
-func (q Query) VersionGte(v int32) Query             { return q.Where(Version.Gte(v)) }
-func (q Query) VersionLt(v int32) Query              { return q.Where(Version.Lt(v)) }
-func (q Query) VersionLte(v int32) Query             { return q.Where(Version.Lte(v)) }
-func (q Query) DeletedAtEq(v time.Time) Query        { return q.Where(DeletedAt.Eq(v)) }
-func (q Query) DeletedAtNotEq(v time.Time) Query     { return q.Where(DeletedAt.NotEq(v)) }
-func (q Query) DeletedAtGt(v time.Time) Query        { return q.Where(DeletedAt.Gt(v)) }
-func (q Query) DeletedAtGte(v time.Time) Query       { return q.Where(DeletedAt.Gte(v)) }
-func (q Query) DeletedAtLt(v time.Time) Query        { return q.Where(DeletedAt.Lt(v)) }
-func (q Query) DeletedAtLte(v time.Time) Query       { return q.Where(DeletedAt.Lte(v)) }
-func (q Query) DeletedAtIsNull() Query               { return q.Where(DeletedAt.IsNull()) }
-func (q Query) DeletedAtIsNotNull() Query            { return q.Where(DeletedAt.IsNotNull()) }
-func (q Query) EmailEq(v string) Query               { return q.Where(Email.Eq(v)) }
-func (q Query) EmailNotEq(v string) Query            { return q.Where(Email.NotEq(v)) }
-func (q Query) EmailGt(v string) Query               { return q.Where(Email.Gt(v)) }
-func (q Query) EmailGte(v string) Query              { return q.Where(Email.Gte(v)) }
-func (q Query) EmailLt(v string) Query               { return q.Where(Email.Lt(v)) }
-func (q Query) EmailLte(v string) Query              { return q.Where(Email.Lte(v)) }
-func (q Query) EmailLike(v string) Query             { return q.Where(Email.Like(v)) }
-func (q Query) EmailIn(v ...string) Query            { return q.Where(Email.In(v...)) }
-func (q Query) NameEq(v string) Query                { return q.Where(Name.Eq(v)) }
-func (q Query) NameNotEq(v string) Query             { return q.Where(Name.NotEq(v)) }
-func (q Query) NameGt(v string) Query                { return q.Where(Name.Gt(v)) }
-func (q Query) NameGte(v string) Query               { return q.Where(Name.Gte(v)) }
-func (q Query) NameLt(v string) Query                { return q.Where(Name.Lt(v)) }
-func (q Query) NameLte(v string) Query               { return q.Where(Name.Lte(v)) }
-func (q Query) NameLike(v string) Query              { return q.Where(Name.Like(v)) }
-func (q Query) NameIn(v ...string) Query             { return q.Where(Name.In(v...)) }
-func (q Query) StatusEq(v string) Query              { return q.Where(Status.Eq(v)) }
-func (q Query) StatusNotEq(v string) Query           { return q.Where(Status.NotEq(v)) }
-func (q Query) StatusGt(v string) Query              { return q.Where(Status.Gt(v)) }
-func (q Query) StatusGte(v string) Query             { return q.Where(Status.Gte(v)) }
-func (q Query) StatusLt(v string) Query              { return q.Where(Status.Lt(v)) }
-func (q Query) StatusLte(v string) Query             { return q.Where(Status.Lte(v)) }
-func (q Query) StatusLike(v string) Query            { return q.Where(Status.Like(v)) }
-func (q Query) StatusIn(v ...string) Query           { return q.Where(Status.In(v...)) }
-func (q Query) AgeEq(v int16) Query                  { return q.Where(Age.Eq(v)) }
-func (q Query) AgeNotEq(v int16) Query               { return q.Where(Age.NotEq(v)) }
-func (q Query) AgeGt(v int16) Query                  { return q.Where(Age.Gt(v)) }
-func (q Query) AgeGte(v int16) Query                 { return q.Where(Age.Gte(v)) }
-func (q Query) AgeLt(v int16) Query                  { return q.Where(Age.Lt(v)) }
-func (q Query) AgeLte(v int16) Query                 { return q.Where(Age.Lte(v)) }
-func (q Query) AgeIsNull() Query                     { return q.Where(Age.IsNull()) }
-func (q Query) AgeIsNotNull() Query                  { return q.Where(Age.IsNotNull()) }
-func (q Query) LastIPEq(v string) Query              { return q.Where(LastIP.Eq(v)) }
-func (q Query) LastIPNotEq(v string) Query           { return q.Where(LastIP.NotEq(v)) }
-func (q Query) LastIPGt(v string) Query              { return q.Where(LastIP.Gt(v)) }
-func (q Query) LastIPGte(v string) Query             { return q.Where(LastIP.Gte(v)) }
-func (q Query) LastIPLt(v string) Query              { return q.Where(LastIP.Lt(v)) }
-func (q Query) LastIPLte(v string) Query             { return q.Where(LastIP.Lte(v)) }
-func (q Query) LastIPLike(v string) Query            { return q.Where(LastIP.Like(v)) }
-func (q Query) LastIPIn(v ...string) Query           { return q.Where(LastIP.In(v...)) }
-func (q Query) LastIPIsNull() Query                  { return q.Where(LastIP.IsNull()) }
-func (q Query) LastIPIsNotNull() Query               { return q.Where(LastIP.IsNotNull()) }
-func (q Query) ActiveEq(v bool) Query                { return q.Where(Active.Eq(v)) }
-func (q Query) ActiveNotEq(v bool) Query             { return q.Where(Active.NotEq(v)) }
-func (q Query) BalanceEq(v runtime.Decimal) Query    { return q.Where(Balance.Eq(v)) }
-func (q Query) BalanceNotEq(v runtime.Decimal) Query { return q.Where(Balance.NotEq(v)) }
-func (q Query) BalanceGt(v runtime.Decimal) Query    { return q.Where(Balance.Gt(v)) }
-func (q Query) BalanceGte(v runtime.Decimal) Query   { return q.Where(Balance.Gte(v)) }
-func (q Query) BalanceLt(v runtime.Decimal) Query    { return q.Where(Balance.Lt(v)) }
-func (q Query) BalanceLte(v runtime.Decimal) Query   { return q.Where(Balance.Lte(v)) }
-func (q Query) CreditEq(v runtime.Decimal) Query     { return q.Where(Credit.Eq(v)) }
-func (q Query) CreditNotEq(v runtime.Decimal) Query  { return q.Where(Credit.NotEq(v)) }
-func (q Query) CreditGt(v runtime.Decimal) Query     { return q.Where(Credit.Gt(v)) }
-func (q Query) CreditGte(v runtime.Decimal) Query    { return q.Where(Credit.Gte(v)) }
-func (q Query) CreditLt(v runtime.Decimal) Query     { return q.Where(Credit.Lt(v)) }
-func (q Query) CreditLte(v runtime.Decimal) Query    { return q.Where(Credit.Lte(v)) }
-func (q Query) CreditIsNull() Query                  { return q.Where(Credit.IsNull()) }
-func (q Query) CreditIsNotNull() Query               { return q.Where(Credit.IsNotNull()) }
-func (q Query) SplitsIsNull() Query                  { return q.Where(Splits.IsNull()) }
-func (q Query) SplitsIsNotNull() Query               { return q.Where(Splits.IsNotNull()) }
-func (q Query) OrgIDEq(v [16]byte) Query             { return q.Where(OrgID.Eq(v)) }
-func (q Query) OrgIDNotEq(v [16]byte) Query          { return q.Where(OrgID.NotEq(v)) }
-func (q Query) OrgIDIn(v ...[16]byte) Query          { return q.Where(OrgID.In(v...)) }
+func (q Query) IDEq(v [16]byte) Query                     { return q.Where(ID.Eq(v)) }
+func (q Query) IDNotEq(v [16]byte) Query                  { return q.Where(ID.NotEq(v)) }
+func (q Query) IDIn(v ...[16]byte) Query                  { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query               { return q.Where(ID.NotIn(v...)) }
+func (q Query) CreatedAtEq(v time.Time) Query             { return q.Where(CreatedAt.Eq(v)) }
+func (q Query) CreatedAtNotEq(v time.Time) Query          { return q.Where(CreatedAt.NotEq(v)) }
+func (q Query) CreatedAtGt(v time.Time) Query             { return q.Where(CreatedAt.Gt(v)) }
+func (q Query) CreatedAtGte(v time.Time) Query            { return q.Where(CreatedAt.Gte(v)) }
+func (q Query) CreatedAtLt(v time.Time) Query             { return q.Where(CreatedAt.Lt(v)) }
+func (q Query) CreatedAtLte(v time.Time) Query            { return q.Where(CreatedAt.Lte(v)) }
+func (q Query) UpdatedAtEq(v time.Time) Query             { return q.Where(UpdatedAt.Eq(v)) }
+func (q Query) UpdatedAtNotEq(v time.Time) Query          { return q.Where(UpdatedAt.NotEq(v)) }
+func (q Query) UpdatedAtGt(v time.Time) Query             { return q.Where(UpdatedAt.Gt(v)) }
+func (q Query) UpdatedAtGte(v time.Time) Query            { return q.Where(UpdatedAt.Gte(v)) }
+func (q Query) UpdatedAtLt(v time.Time) Query             { return q.Where(UpdatedAt.Lt(v)) }
+func (q Query) UpdatedAtLte(v time.Time) Query            { return q.Where(UpdatedAt.Lte(v)) }
+func (q Query) VersionEq(v int32) Query                   { return q.Where(Version.Eq(v)) }
+func (q Query) VersionNotEq(v int32) Query                { return q.Where(Version.NotEq(v)) }
+func (q Query) VersionGt(v int32) Query                   { return q.Where(Version.Gt(v)) }
+func (q Query) VersionGte(v int32) Query                  { return q.Where(Version.Gte(v)) }
+func (q Query) VersionLt(v int32) Query                   { return q.Where(Version.Lt(v)) }
+func (q Query) VersionLte(v int32) Query                  { return q.Where(Version.Lte(v)) }
+func (q Query) VersionIn(v ...int32) Query                { return q.Where(Version.In(v...)) }
+func (q Query) VersionNotIn(v ...int32) Query             { return q.Where(Version.NotIn(v...)) }
+func (q Query) DeletedAtEq(v time.Time) Query             { return q.Where(DeletedAt.Eq(v)) }
+func (q Query) DeletedAtNotEq(v time.Time) Query          { return q.Where(DeletedAt.NotEq(v)) }
+func (q Query) DeletedAtGt(v time.Time) Query             { return q.Where(DeletedAt.Gt(v)) }
+func (q Query) DeletedAtGte(v time.Time) Query            { return q.Where(DeletedAt.Gte(v)) }
+func (q Query) DeletedAtLt(v time.Time) Query             { return q.Where(DeletedAt.Lt(v)) }
+func (q Query) DeletedAtLte(v time.Time) Query            { return q.Where(DeletedAt.Lte(v)) }
+func (q Query) DeletedAtIsNull() Query                    { return q.Where(DeletedAt.IsNull()) }
+func (q Query) DeletedAtIsNotNull() Query                 { return q.Where(DeletedAt.IsNotNull()) }
+func (q Query) EmailEq(v string) Query                    { return q.Where(Email.Eq(v)) }
+func (q Query) EmailNotEq(v string) Query                 { return q.Where(Email.NotEq(v)) }
+func (q Query) EmailGt(v string) Query                    { return q.Where(Email.Gt(v)) }
+func (q Query) EmailGte(v string) Query                   { return q.Where(Email.Gte(v)) }
+func (q Query) EmailLt(v string) Query                    { return q.Where(Email.Lt(v)) }
+func (q Query) EmailLte(v string) Query                   { return q.Where(Email.Lte(v)) }
+func (q Query) EmailLike(v string) Query                  { return q.Where(Email.Like(v)) }
+func (q Query) EmailILike(v string) Query                 { return q.Where(Email.ILike(v)) }
+func (q Query) EmailIn(v ...string) Query                 { return q.Where(Email.In(v...)) }
+func (q Query) EmailNotIn(v ...string) Query              { return q.Where(Email.NotIn(v...)) }
+func (q Query) NameEq(v string) Query                     { return q.Where(Name.Eq(v)) }
+func (q Query) NameNotEq(v string) Query                  { return q.Where(Name.NotEq(v)) }
+func (q Query) NameGt(v string) Query                     { return q.Where(Name.Gt(v)) }
+func (q Query) NameGte(v string) Query                    { return q.Where(Name.Gte(v)) }
+func (q Query) NameLt(v string) Query                     { return q.Where(Name.Lt(v)) }
+func (q Query) NameLte(v string) Query                    { return q.Where(Name.Lte(v)) }
+func (q Query) NameLike(v string) Query                   { return q.Where(Name.Like(v)) }
+func (q Query) NameILike(v string) Query                  { return q.Where(Name.ILike(v)) }
+func (q Query) NameIn(v ...string) Query                  { return q.Where(Name.In(v...)) }
+func (q Query) NameNotIn(v ...string) Query               { return q.Where(Name.NotIn(v...)) }
+func (q Query) StatusEq(v string) Query                   { return q.Where(Status.Eq(v)) }
+func (q Query) StatusNotEq(v string) Query                { return q.Where(Status.NotEq(v)) }
+func (q Query) StatusGt(v string) Query                   { return q.Where(Status.Gt(v)) }
+func (q Query) StatusGte(v string) Query                  { return q.Where(Status.Gte(v)) }
+func (q Query) StatusLt(v string) Query                   { return q.Where(Status.Lt(v)) }
+func (q Query) StatusLte(v string) Query                  { return q.Where(Status.Lte(v)) }
+func (q Query) StatusLike(v string) Query                 { return q.Where(Status.Like(v)) }
+func (q Query) StatusILike(v string) Query                { return q.Where(Status.ILike(v)) }
+func (q Query) StatusIn(v ...string) Query                { return q.Where(Status.In(v...)) }
+func (q Query) StatusNotIn(v ...string) Query             { return q.Where(Status.NotIn(v...)) }
+func (q Query) ScopesContains(v ...string) Query          { return q.Where(Scopes.Contains(v...)) }
+func (q Query) ScopesContainedBy(v ...string) Query       { return q.Where(Scopes.ContainedBy(v...)) }
+func (q Query) ScopesOverlaps(v ...string) Query          { return q.Where(Scopes.Overlaps(v...)) }
+func (q Query) AgeEq(v int16) Query                       { return q.Where(Age.Eq(v)) }
+func (q Query) AgeNotEq(v int16) Query                    { return q.Where(Age.NotEq(v)) }
+func (q Query) AgeGt(v int16) Query                       { return q.Where(Age.Gt(v)) }
+func (q Query) AgeGte(v int16) Query                      { return q.Where(Age.Gte(v)) }
+func (q Query) AgeLt(v int16) Query                       { return q.Where(Age.Lt(v)) }
+func (q Query) AgeLte(v int16) Query                      { return q.Where(Age.Lte(v)) }
+func (q Query) AgeIn(v ...int16) Query                    { return q.Where(Age.In(v...)) }
+func (q Query) AgeNotIn(v ...int16) Query                 { return q.Where(Age.NotIn(v...)) }
+func (q Query) AgeIsNull() Query                          { return q.Where(Age.IsNull()) }
+func (q Query) AgeIsNotNull() Query                       { return q.Where(Age.IsNotNull()) }
+func (q Query) LastIPEq(v string) Query                   { return q.Where(LastIP.Eq(v)) }
+func (q Query) LastIPNotEq(v string) Query                { return q.Where(LastIP.NotEq(v)) }
+func (q Query) LastIPGt(v string) Query                   { return q.Where(LastIP.Gt(v)) }
+func (q Query) LastIPGte(v string) Query                  { return q.Where(LastIP.Gte(v)) }
+func (q Query) LastIPLt(v string) Query                   { return q.Where(LastIP.Lt(v)) }
+func (q Query) LastIPLte(v string) Query                  { return q.Where(LastIP.Lte(v)) }
+func (q Query) LastIPLike(v string) Query                 { return q.Where(LastIP.Like(v)) }
+func (q Query) LastIPILike(v string) Query                { return q.Where(LastIP.ILike(v)) }
+func (q Query) LastIPIn(v ...string) Query                { return q.Where(LastIP.In(v...)) }
+func (q Query) LastIPNotIn(v ...string) Query             { return q.Where(LastIP.NotIn(v...)) }
+func (q Query) LastIPIsNull() Query                       { return q.Where(LastIP.IsNull()) }
+func (q Query) LastIPIsNotNull() Query                    { return q.Where(LastIP.IsNotNull()) }
+func (q Query) ActiveEq(v bool) Query                     { return q.Where(Active.Eq(v)) }
+func (q Query) ActiveNotEq(v bool) Query                  { return q.Where(Active.NotEq(v)) }
+func (q Query) BalanceEq(v runtime.Decimal) Query         { return q.Where(Balance.Eq(v)) }
+func (q Query) BalanceNotEq(v runtime.Decimal) Query      { return q.Where(Balance.NotEq(v)) }
+func (q Query) BalanceGt(v runtime.Decimal) Query         { return q.Where(Balance.Gt(v)) }
+func (q Query) BalanceGte(v runtime.Decimal) Query        { return q.Where(Balance.Gte(v)) }
+func (q Query) BalanceLt(v runtime.Decimal) Query         { return q.Where(Balance.Lt(v)) }
+func (q Query) BalanceLte(v runtime.Decimal) Query        { return q.Where(Balance.Lte(v)) }
+func (q Query) CreditEq(v runtime.Decimal) Query          { return q.Where(Credit.Eq(v)) }
+func (q Query) CreditNotEq(v runtime.Decimal) Query       { return q.Where(Credit.NotEq(v)) }
+func (q Query) CreditGt(v runtime.Decimal) Query          { return q.Where(Credit.Gt(v)) }
+func (q Query) CreditGte(v runtime.Decimal) Query         { return q.Where(Credit.Gte(v)) }
+func (q Query) CreditLt(v runtime.Decimal) Query          { return q.Where(Credit.Lt(v)) }
+func (q Query) CreditLte(v runtime.Decimal) Query         { return q.Where(Credit.Lte(v)) }
+func (q Query) CreditIsNull() Query                       { return q.Where(Credit.IsNull()) }
+func (q Query) CreditIsNotNull() Query                    { return q.Where(Credit.IsNotNull()) }
+func (q Query) SplitsContains(v ...runtime.Decimal) Query { return q.Where(Splits.Contains(v...)) }
+func (q Query) SplitsContainedBy(v ...runtime.Decimal) Query {
+	return q.Where(Splits.ContainedBy(v...))
+}
+func (q Query) SplitsOverlaps(v ...runtime.Decimal) Query { return q.Where(Splits.Overlaps(v...)) }
+func (q Query) SplitsIsNull() Query                       { return q.Where(Splits.IsNull()) }
+func (q Query) SplitsIsNotNull() Query                    { return q.Where(Splits.IsNotNull()) }
+func (q Query) OrgIDEq(v [16]byte) Query                  { return q.Where(OrgID.Eq(v)) }
+func (q Query) OrgIDNotEq(v [16]byte) Query               { return q.Where(OrgID.NotEq(v)) }
+func (q Query) OrgIDIn(v ...[16]byte) Query               { return q.Where(OrgID.In(v...)) }
+func (q Query) OrgIDNotIn(v ...[16]byte) Query            { return q.Where(OrgID.NotIn(v...)) }
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "version", "deleted_at", "email", "name", "status", "prefs", "scopes", "age", "last_ip", "active", "balance", "credit", "splits", "org_id" FROM "users"`
 const countPrefix = `SELECT count(*) FROM "users"`
@@ -1109,7 +1270,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [18][18]runtime.Frag{
+var fragTable = [18][23]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -1124,7 +1285,12 @@ var fragTable = [18][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1138,6 +1304,11 @@ var fragTable = [18][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1169,6 +1340,11 @@ var fragTable = [18][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // version
 		{}, // opNone
@@ -1184,7 +1360,12 @@ var fragTable = [18][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"version\" = ANY($", B: ")"},
+		{A: "\"version\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1198,6 +1379,11 @@ var fragTable = [18][18]runtime.Frag{
 		{A: "\"deleted_at\" >= $", B: ""},
 		{A: "\"deleted_at\" < $", B: ""},
 		{A: "\"deleted_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1219,12 +1405,17 @@ var fragTable = [18][18]runtime.Frag{
 		{A: "\"email\" < $", B: ""},
 		{A: "\"email\" <= $", B: ""},
 		{A: "\"email\" LIKE $", B: ""},
+		{A: "\"email\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"email\" = ANY($", B: ")"},
+		{A: "\"email\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1239,12 +1430,17 @@ var fragTable = [18][18]runtime.Frag{
 		{A: "\"name\" < $", B: ""},
 		{A: "\"name\" <= $", B: ""},
 		{A: "\"name\" LIKE $", B: ""},
+		{A: "\"name\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"name\" = ANY($", B: ")"},
+		{A: "\"name\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1259,12 +1455,17 @@ var fragTable = [18][18]runtime.Frag{
 		{A: "\"status\" < $", B: ""},
 		{A: "\"status\" <= $", B: ""},
 		{A: "\"status\" LIKE $", B: ""},
+		{A: "\"status\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"status\" = ANY($", B: ")"},
+		{A: "\"status\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1272,6 +1473,11 @@ var fragTable = [18][18]runtime.Frag{
 	},
 	{ // prefs
 		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1307,6 +1513,11 @@ var fragTable = [18][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"scopes\" @> $", B: ""},
+		{A: "\"scopes\" <@ $", B: ""},
+		{A: "\"scopes\" && $", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -1324,7 +1535,12 @@ var fragTable = [18][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"age\" = ANY($", B: ")"},
+		{A: "\"age\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{A: "\"age\" IS NULL", B: ""},
 		{A: "\"age\" IS NOT NULL", B: ""},
 		{},
@@ -1339,12 +1555,17 @@ var fragTable = [18][18]runtime.Frag{
 		{A: "\"last_ip\" < $", B: ""},
 		{A: "\"last_ip\" <= $", B: ""},
 		{A: "\"last_ip\" LIKE $", B: ""},
+		{A: "\"last_ip\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"last_ip\" = ANY($", B: ")"},
+		{A: "\"last_ip\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{A: "\"last_ip\" IS NULL", B: ""},
 		{A: "\"last_ip\" IS NOT NULL", B: ""},
 		{},
@@ -1354,6 +1575,11 @@ var fragTable = [18][18]runtime.Frag{
 		{}, // opNone
 		{A: "\"active\" = $", B: ""},
 		{A: "\"active\" <> $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1389,6 +1615,11 @@ var fragTable = [18][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // credit
 		{}, // opNone
@@ -1398,6 +1629,11 @@ var fragTable = [18][18]runtime.Frag{
 		{A: "\"credit\" >= $", B: ""},
 		{A: "\"credit\" < $", B: ""},
 		{A: "\"credit\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1425,6 +1661,11 @@ var fragTable = [18][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{A: "\"splits\" @> $", B: ""},
+		{A: "\"splits\" <@ $", B: ""},
+		{A: "\"splits\" && $", B: ""},
 		{A: "\"splits\" IS NULL", B: ""},
 		{A: "\"splits\" IS NOT NULL", B: ""},
 		{},
@@ -1444,7 +1685,12 @@ var fragTable = [18][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"org_id\" = ANY($", B: ")"},
+		{A: "\"org_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1452,6 +1698,11 @@ var fragTable = [18][18]runtime.Frag{
 	},
 	{ // relation Posts (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1664,8 +1915,11 @@ type binder struct {
 	tims   [4]time.Time
 	decs   [4]runtime.Decimal
 	bools  [4]bool
-	anyRaw [][16]byte
-	anyStr []string
+	anyRaw [3][][16]byte
+	anyStr [3][]string
+	anyI16 [3][]int16
+	anyI32 [3][]int32
+	anyDec [3][]runtime.Decimal
 	limit  int64
 	offset int64
 }
@@ -1690,8 +1944,21 @@ func putBinder(b *binder) {
 	for i := range b.strs {
 		b.strs[i] = ""
 	}
-	b.anyRaw = nil
-	b.anyStr = nil
+	for i := range b.anyRaw {
+		b.anyRaw[i] = nil
+	}
+	for i := range b.anyStr {
+		b.anyStr[i] = nil
+	}
+	for i := range b.anyI16 {
+		b.anyI16[i] = nil
+	}
+	for i := range b.anyI32 {
+		b.anyI32[i] = nil
+	}
+	for i := range b.anyDec {
+		b.anyDec[i] = nil
+	}
 	binders.Put(b)
 }
 
@@ -1700,7 +1967,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var ns, nn, nr, ntm, nd, nbo uint8
+	var ns, nn, nr, ntm, nd, nbo, nar, nas, nai16, nai32, nadec uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1714,13 +1981,48 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
-			if q.anyRaw != nil {
-				b.anyRaw = q.anyRaw
-				v = append(v, &b.anyRaw)
-			} else {
-				b.anyStr = q.anyStr
-				v = append(v, &b.anyStr)
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps:
+			switch t.Col() {
+			case 0:
+				b.anyRaw[nar] = q.anyRaw[nar]
+				v = append(v, &b.anyRaw[nar])
+				nar++
+			case 3:
+				b.anyI32[nai32] = q.anyI32[nai32]
+				v = append(v, &b.anyI32[nai32])
+				nai32++
+			case 5:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 6:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 7:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 9:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 10:
+				b.anyI16[nai16] = q.anyI16[nai16]
+				v = append(v, &b.anyI16[nai16])
+				nai16++
+			case 11:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 15:
+				b.anyDec[nadec] = q.anyDec[nadec]
+				v = append(v, &b.anyDec[nadec])
+				nadec++
+			case 16:
+				b.anyRaw[nar] = q.anyRaw[nar]
+				v = append(v, &b.anyRaw[nar])
+				nar++
 			}
 			continue
 		}
