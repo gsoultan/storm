@@ -210,7 +210,7 @@ rate-plan overlap.
 
 ```go
 Search storm.TSVector          // in the model
-t.Col(&p.Search).Generated(storm.Expr(`to_tsvector('english', name)`)).Index()
+t.Col(&p.Search).Generated(storm.RawSQL(`to_tsvector('english', name)`)).Index()
 
 product.New().Where(product.Search.WebSearch(q)).All(ctx, ex, nil)
 ```
