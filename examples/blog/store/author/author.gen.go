@@ -30,27 +30,32 @@ type Row struct {
 // Operator ids. Argument-taking operators are numbered first, so the
 // bind loop tests `op-1 < opsWithArg` with one unsigned compare.
 const (
-	opEq            runtime.Op = 1
-	opNotEq         runtime.Op = 2
-	opGt            runtime.Op = 3
-	opGte           runtime.Op = 4
-	opLt            runtime.Op = 5
-	opLte           runtime.Op = 6
-	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opEq               runtime.Op = 1
+	opNotEq            runtime.Op = 2
+	opGt               runtime.Op = 3
+	opGte              runtime.Op = 4
+	opLt               runtime.Op = 5
+	opLte              runtime.Op = 6
+	opLike             runtime.Op = 7
+	opILike            runtime.Op = 8
+	opMatches          runtime.Op = 9
+	opWebSearch        runtime.Op = 10
+	opOverlaps         runtime.Op = 11
+	opContainsRange    runtime.Op = 12
+	opContainedBy      runtime.Op = 13
+	opIn               runtime.Op = 14
+	opNotIn            runtime.Op = 15
+	opArrayContains    runtime.Op = 16
+	opArrayContainedBy runtime.Op = 17
+	opArrayOverlaps    runtime.Op = 18
+	opIsNull           runtime.Op = 19
+	opIsNotNull        runtime.Op = 20
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 21
+	opNotExists runtime.Op = 22
 )
 
 const nCols = 5
@@ -68,9 +73,9 @@ type Query struct {
 	tims        [4]time.Time
 	ns, nr, ntm uint8
 
-	anyRaw [][16]byte
-	anyStr []string
-	hasAny bool
+	anyRaw   [3][][16]byte
+	anyStr   [3][]string
+	nar, nas uint8
 
 	// Order terms live in their own buffer and are appended to the stream
 	// after the predicate tree. Sharing one buffer would let a Where after
@@ -334,6 +339,11 @@ func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
 
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
@@ -372,7 +382,13 @@ func (h TextCol) Gte(v string) Pred   { return Pred{col: h.c, op: opGte, str: v}
 func (h TextCol) Lt(v string) Pred    { return Pred{col: h.c, op: opLt, str: v} }
 func (h TextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v} }
 func (h TextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
+func (h TextCol) ILike(v string) Pred { return Pred{col: h.c, op: opILike, str: v} }
 func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
 
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
@@ -449,12 +465,29 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
-		switch {
-		case p.anyRaw != nil:
-			q.anyRaw, q.hasAny = p.anyRaw, true
-		case p.anyStr != nil:
-			q.anyStr, q.hasAny = p.anyStr, true
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps {
+		switch p.col {
+		case 0:
+			if int(q.nar) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyRaw[q.nar] = p.anyRaw
+			q.nar++
+		case 3:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 4:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
 		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
@@ -510,6 +543,7 @@ func HasNoArticles() Pred { return Pred{col: 5, op: opNotExists} }
 func (q Query) IDEq(v [16]byte) Query            { return q.Where(ID.Eq(v)) }
 func (q Query) IDNotEq(v [16]byte) Query         { return q.Where(ID.NotEq(v)) }
 func (q Query) IDIn(v ...[16]byte) Query         { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query      { return q.Where(ID.NotIn(v...)) }
 func (q Query) CreatedAtEq(v time.Time) Query    { return q.Where(CreatedAt.Eq(v)) }
 func (q Query) CreatedAtNotEq(v time.Time) Query { return q.Where(CreatedAt.NotEq(v)) }
 func (q Query) CreatedAtGt(v time.Time) Query    { return q.Where(CreatedAt.Gt(v)) }
@@ -529,7 +563,9 @@ func (q Query) NameGte(v string) Query           { return q.Where(Name.Gte(v)) }
 func (q Query) NameLt(v string) Query            { return q.Where(Name.Lt(v)) }
 func (q Query) NameLte(v string) Query           { return q.Where(Name.Lte(v)) }
 func (q Query) NameLike(v string) Query          { return q.Where(Name.Like(v)) }
+func (q Query) NameILike(v string) Query         { return q.Where(Name.ILike(v)) }
 func (q Query) NameIn(v ...string) Query         { return q.Where(Name.In(v...)) }
+func (q Query) NameNotIn(v ...string) Query      { return q.Where(Name.NotIn(v...)) }
 func (q Query) EmailEq(v string) Query           { return q.Where(Email.Eq(v)) }
 func (q Query) EmailNotEq(v string) Query        { return q.Where(Email.NotEq(v)) }
 func (q Query) EmailGt(v string) Query           { return q.Where(Email.Gt(v)) }
@@ -537,7 +573,9 @@ func (q Query) EmailGte(v string) Query          { return q.Where(Email.Gte(v)) 
 func (q Query) EmailLt(v string) Query           { return q.Where(Email.Lt(v)) }
 func (q Query) EmailLte(v string) Query          { return q.Where(Email.Lte(v)) }
 func (q Query) EmailLike(v string) Query         { return q.Where(Email.Like(v)) }
+func (q Query) EmailILike(v string) Query        { return q.Where(Email.ILike(v)) }
 func (q Query) EmailIn(v ...string) Query        { return q.Where(Email.In(v...)) }
+func (q Query) EmailNotIn(v ...string) Query     { return q.Where(Email.NotIn(v...)) }
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "name", "email" FROM "authors"`
 const countPrefix = `SELECT count(*) FROM "authors"`
@@ -622,7 +660,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [6][18]runtime.Frag{
+var fragTable = [6][23]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -637,7 +675,12 @@ var fragTable = [6][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -651,6 +694,11 @@ var fragTable = [6][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -682,6 +730,11 @@ var fragTable = [6][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // name
 		{}, // opNone
@@ -692,12 +745,17 @@ var fragTable = [6][18]runtime.Frag{
 		{A: "\"name\" < $", B: ""},
 		{A: "\"name\" <= $", B: ""},
 		{A: "\"name\" LIKE $", B: ""},
+		{A: "\"name\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"name\" = ANY($", B: ")"},
+		{A: "\"name\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -712,12 +770,17 @@ var fragTable = [6][18]runtime.Frag{
 		{A: "\"email\" < $", B: ""},
 		{A: "\"email\" <= $", B: ""},
 		{A: "\"email\" LIKE $", B: ""},
+		{A: "\"email\" ILIKE $", B: ""},
 		{},
 		{},
 		{},
 		{},
 		{},
 		{A: "\"email\" = ANY($", B: ")"},
+		{A: "\"email\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -725,6 +788,11 @@ var fragTable = [6][18]runtime.Frag{
 	},
 	{ // relation Articles (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -909,8 +977,8 @@ type binder struct {
 	strs   [6]string
 	raws   [4][16]byte
 	tims   [4]time.Time
-	anyRaw [][16]byte
-	anyStr []string
+	anyRaw [3][][16]byte
+	anyStr [3][]string
 	limit  int64
 	offset int64
 }
@@ -935,8 +1003,12 @@ func putBinder(b *binder) {
 	for i := range b.strs {
 		b.strs[i] = ""
 	}
-	b.anyRaw = nil
-	b.anyStr = nil
+	for i := range b.anyRaw {
+		b.anyRaw[i] = nil
+	}
+	for i := range b.anyStr {
+		b.anyStr[i] = nil
+	}
 	binders.Put(b)
 }
 
@@ -945,7 +1017,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var ns, nr, ntm uint8
+	var ns, nr, ntm, nar, nas uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -959,13 +1031,20 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
-			if q.anyRaw != nil {
-				b.anyRaw = q.anyRaw
-				v = append(v, &b.anyRaw)
-			} else {
-				b.anyStr = q.anyStr
-				v = append(v, &b.anyStr)
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps:
+			switch t.Col() {
+			case 0:
+				b.anyRaw[nar] = q.anyRaw[nar]
+				v = append(v, &b.anyRaw[nar])
+				nar++
+			case 3:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 4:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
 			}
 			continue
 		}

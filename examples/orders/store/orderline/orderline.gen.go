@@ -32,27 +32,32 @@ type Row struct {
 // Operator ids. Argument-taking operators are numbered first, so the
 // bind loop tests `op-1 < opsWithArg` with one unsigned compare.
 const (
-	opEq            runtime.Op = 1
-	opNotEq         runtime.Op = 2
-	opGt            runtime.Op = 3
-	opGte           runtime.Op = 4
-	opLt            runtime.Op = 5
-	opLte           runtime.Op = 6
-	opLike          runtime.Op = 7
-	opMatches       runtime.Op = 8
-	opWebSearch     runtime.Op = 9
-	opOverlaps      runtime.Op = 10
-	opContainsRange runtime.Op = 11
-	opContainedBy   runtime.Op = 12
-	opIn            runtime.Op = 13
-	opIsNull        runtime.Op = 14
-	opIsNotNull     runtime.Op = 15
+	opEq               runtime.Op = 1
+	opNotEq            runtime.Op = 2
+	opGt               runtime.Op = 3
+	opGte              runtime.Op = 4
+	opLt               runtime.Op = 5
+	opLte              runtime.Op = 6
+	opLike             runtime.Op = 7
+	opILike            runtime.Op = 8
+	opMatches          runtime.Op = 9
+	opWebSearch        runtime.Op = 10
+	opOverlaps         runtime.Op = 11
+	opContainsRange    runtime.Op = 12
+	opContainedBy      runtime.Op = 13
+	opIn               runtime.Op = 14
+	opNotIn            runtime.Op = 15
+	opArrayContains    runtime.Op = 16
+	opArrayContainedBy runtime.Op = 17
+	opArrayOverlaps    runtime.Op = 18
+	opIsNull           runtime.Op = 19
+	opIsNotNull        runtime.Op = 20
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 16
-	opNotExists runtime.Op = 17
+	opExists    runtime.Op = 21
+	opNotExists runtime.Op = 22
 )
 
 const nCols = 7
@@ -71,8 +76,9 @@ type Query struct {
 	decs            [4]runtime.Decimal
 	nn, nr, ntm, nd uint8
 
-	anyRaw [][16]byte
-	hasAny bool
+	anyRaw     [3][][16]byte
+	anyI32     [3][]int32
+	nar, nai32 uint8
 
 	// Order terms live in their own buffer and are appended to the stream
 	// after the predicate tree. Sharing one buffer would let a Where after
@@ -322,6 +328,7 @@ type Pred struct {
 	tim    time.Time
 	dec    runtime.Decimal
 	anyRaw [][16]byte
+	anyI32 []int32
 }
 
 // Typed column handles. The type of the handle is what makes
@@ -351,6 +358,11 @@ func (h UUIDCol) DescNullsLast() Sort {
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
 func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
@@ -389,6 +401,12 @@ func (h Int32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int
 func (h Int32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h Int32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h Int32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
+func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: v} }
 
 // DecimalCol addresses a numeric(12,2) column.
 type DecimalCol struct{ c uint8 }
@@ -484,8 +502,37 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn {
-		q.anyRaw, q.hasAny = p.anyRaw, true
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps {
+		switch p.col {
+		case 0:
+			if int(q.nar) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyRaw[q.nar] = p.anyRaw
+			q.nar++
+		case 3:
+			if int(q.nar) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyRaw[q.nar] = p.anyRaw
+			q.nar++
+		case 4:
+			if int(q.nar) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyRaw[q.nar] = p.anyRaw
+			q.nar++
+		case 5:
+			if int(q.nai32) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyI32[q.nai32] = p.anyI32
+			q.nai32++
+		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
@@ -547,6 +594,7 @@ func (q *Query) leaf(p Pred) {
 func (q Query) IDEq(v [16]byte) Query                  { return q.Where(ID.Eq(v)) }
 func (q Query) IDNotEq(v [16]byte) Query               { return q.Where(ID.NotEq(v)) }
 func (q Query) IDIn(v ...[16]byte) Query               { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query            { return q.Where(ID.NotIn(v...)) }
 func (q Query) CreatedAtEq(v time.Time) Query          { return q.Where(CreatedAt.Eq(v)) }
 func (q Query) CreatedAtNotEq(v time.Time) Query       { return q.Where(CreatedAt.NotEq(v)) }
 func (q Query) CreatedAtGt(v time.Time) Query          { return q.Where(CreatedAt.Gt(v)) }
@@ -562,15 +610,19 @@ func (q Query) UpdatedAtLte(v time.Time) Query         { return q.Where(UpdatedA
 func (q Query) OrderIDEq(v [16]byte) Query             { return q.Where(OrderID.Eq(v)) }
 func (q Query) OrderIDNotEq(v [16]byte) Query          { return q.Where(OrderID.NotEq(v)) }
 func (q Query) OrderIDIn(v ...[16]byte) Query          { return q.Where(OrderID.In(v...)) }
+func (q Query) OrderIDNotIn(v ...[16]byte) Query       { return q.Where(OrderID.NotIn(v...)) }
 func (q Query) ProductIDEq(v [16]byte) Query           { return q.Where(ProductID.Eq(v)) }
 func (q Query) ProductIDNotEq(v [16]byte) Query        { return q.Where(ProductID.NotEq(v)) }
 func (q Query) ProductIDIn(v ...[16]byte) Query        { return q.Where(ProductID.In(v...)) }
+func (q Query) ProductIDNotIn(v ...[16]byte) Query     { return q.Where(ProductID.NotIn(v...)) }
 func (q Query) QuantityEq(v int32) Query               { return q.Where(Quantity.Eq(v)) }
 func (q Query) QuantityNotEq(v int32) Query            { return q.Where(Quantity.NotEq(v)) }
 func (q Query) QuantityGt(v int32) Query               { return q.Where(Quantity.Gt(v)) }
 func (q Query) QuantityGte(v int32) Query              { return q.Where(Quantity.Gte(v)) }
 func (q Query) QuantityLt(v int32) Query               { return q.Where(Quantity.Lt(v)) }
 func (q Query) QuantityLte(v int32) Query              { return q.Where(Quantity.Lte(v)) }
+func (q Query) QuantityIn(v ...int32) Query            { return q.Where(Quantity.In(v...)) }
+func (q Query) QuantityNotIn(v ...int32) Query         { return q.Where(Quantity.NotIn(v...)) }
 func (q Query) UnitPriceEq(v runtime.Decimal) Query    { return q.Where(UnitPrice.Eq(v)) }
 func (q Query) UnitPriceNotEq(v runtime.Decimal) Query { return q.Where(UnitPrice.NotEq(v)) }
 func (q Query) UnitPriceGt(v runtime.Decimal) Query    { return q.Where(UnitPrice.Gt(v)) }
@@ -675,7 +727,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [7][18]runtime.Frag{
+var fragTable = [7][23]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -690,7 +742,12 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"id\" = ANY($", B: ")"},
+		{A: "\"id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -704,6 +761,11 @@ var fragTable = [7][18]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -735,6 +797,11 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // order_id
 		{}, // opNone
@@ -750,7 +817,12 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"order_id\" = ANY($", B: ")"},
+		{A: "\"order_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -770,7 +842,12 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"product_id\" = ANY($", B: ")"},
+		{A: "\"product_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -790,7 +867,12 @@ var fragTable = [7][18]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"quantity\" = ANY($", B: ")"},
+		{A: "\"quantity\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -804,6 +886,11 @@ var fragTable = [7][18]runtime.Frag{
 		{A: "\"unit_price\" >= $", B: ""},
 		{A: "\"unit_price\" < $", B: ""},
 		{A: "\"unit_price\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -989,7 +1076,8 @@ type binder struct {
 	raws   [4][16]byte
 	tims   [4]time.Time
 	decs   [4]runtime.Decimal
-	anyRaw [][16]byte
+	anyRaw [3][][16]byte
+	anyI32 [3][]int32
 	limit  int64
 	offset int64
 }
@@ -1011,7 +1099,12 @@ func PutBinder(b *Binder) { putBinder(b) }
 // and uuid arenas are value arrays and pin nothing; vals points at the
 // binder's own fields. A few nil stores against a round trip is free.
 func putBinder(b *binder) {
-	b.anyRaw = nil
+	for i := range b.anyRaw {
+		b.anyRaw[i] = nil
+	}
+	for i := range b.anyI32 {
+		b.anyI32[i] = nil
+	}
 	binders.Put(b)
 }
 
@@ -1020,7 +1113,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var nn, nr, ntm, nd uint8
+	var nn, nr, ntm, nd, nar, nai32 uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1034,9 +1127,25 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn:
-			b.anyRaw = q.anyRaw
-			v = append(v, &b.anyRaw)
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps:
+			switch t.Col() {
+			case 0:
+				b.anyRaw[nar] = q.anyRaw[nar]
+				v = append(v, &b.anyRaw[nar])
+				nar++
+			case 3:
+				b.anyRaw[nar] = q.anyRaw[nar]
+				v = append(v, &b.anyRaw[nar])
+				nar++
+			case 4:
+				b.anyRaw[nar] = q.anyRaw[nar]
+				v = append(v, &b.anyRaw[nar])
+				nar++
+			case 5:
+				b.anyI32[nai32] = q.anyI32[nai32]
+				v = append(v, &b.anyI32[nai32])
+				nai32++
+			}
 			continue
 		}
 		switch t.Col() {

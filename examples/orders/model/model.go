@@ -43,6 +43,12 @@ type Product struct {
 	Price  storm.Decimal
 	Active bool
 
+	// Merchandising tags: "sale", "clearance", "new". An array rather than a
+	// join table because nothing hangs off a tag — no name, no ordering, no
+	// row of its own to reference — and a GIN index answers "which products
+	// are on sale" without one.
+	Tags []string
+
 	// Full-text search. A GENERATED column, so PostgreSQL keeps it in step
 	// with name and sku and nothing in Go can write it — and storm keeps it
 	// out of Row, because a tsvector is index support, not data.
@@ -60,6 +66,13 @@ func (p *Product) Schema(t *storm.Table) {
 	t.Col(&p.Search).
 		Generated(storm.RawSQL(`to_tsvector('english', coalesce(name,'') || ' ' || coalesce(sku,''))`)).
 		Index()
+	// Defaulted to the empty array rather than left nullable. "no tags" and
+	// "tags unknown" are not different facts here, and a NULL array makes
+	// every @> and && predicate return NULL instead of false.
+	t.Col(&p.Tags).Default("'{}'")
+	// GIN, because @> and && are the operators a tag column is asked about and
+	// btree cannot serve either.
+	t.Index(&p.Tags).Using("gin")
 }
 
 // Card is the list-endpoint read: three columns instead of the row, which is a

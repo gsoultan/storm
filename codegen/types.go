@@ -322,9 +322,10 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 // LIKE on an integer are compile errors rather than runtime surprises.
 func opApplies(op string, k kind, c *schema.Column) bool {
 	switch op {
-	case "In":
+	case "In", "NotIn":
 		// `= ANY($1)` binds a whole list to ONE placeholder, so list length
 		// never changes the statement — the property relation loading needs.
+		// NotIn is `<> ALL($1)` for the same reason.
 		switch k {
 		case kindUUID, kindText, kindInt2, kindInt4, kindInt8:
 			return true
@@ -336,7 +337,21 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		return k == kindTSVector
 	case "Overlaps", "ContainsRange", "ContainedBy":
 		return k == kindTstzRange
-	case "Like":
+	case "ArrayContains", "ArrayContainedBy", "ArrayOverlaps":
+		// The three operators that make an array column queryable. Until they
+		// existed, an array round-tripped and could only be tested for NULL:
+		// storable, not filterable, which is the shape of gap that sends a
+		// caller to raw SQL for something the model already describes.
+		//
+		// Deliberately NOT equality. `tags = '{a,b}'` is order- and
+		// duplicate-sensitive, which almost nobody means; @> and && are the
+		// questions people actually have, and they are the ones GIN indexes.
+		switch k {
+		case kindTextArray, kindUUIDArray, kindInt8Array, kindDecimalArray:
+			return true
+		}
+		return false
+	case "Like", "ILike":
 		return k == kindText
 	case "Gt", "Gte", "Lt", "Lte":
 		// A range has no useful < or >: PostgreSQL defines one for sorting, and
