@@ -118,9 +118,17 @@ var frags = map[string]struct{ a, b string }{
 	// the list contains a NULL, `<> ALL` is NULL for every row and the result
 	// is empty. storm cannot fix that without changing the meaning of the
 	// operator, so it is documented on the generated method instead.
-	"NotIn":     {" <> ALL(" + Placeholder, ")"},
-	"IsNull":    {" IS NULL", ""},
-	"IsNotNull": {" IS NOT NULL", ""},
+	"NotIn": {" <> ALL(" + Placeholder, ")"},
+	// Array containment and overlap. The same three PostgreSQL operators the
+	// range forms use, kept under different names because they bind
+	// differently: an array argument is a LIST and rides a list slot, while a
+	// range is one value in an arena. Sharing an operator id would send one of
+	// them down the other's binding path.
+	"ArrayContains":    {" @> " + Placeholder, ""},
+	"ArrayContainedBy": {" <@ " + Placeholder, ""},
+	"ArrayOverlaps":    {" && " + Placeholder, ""},
+	"IsNull":           {" IS NULL", ""},
+	"IsNotNull":        {" IS NOT NULL", ""},
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is

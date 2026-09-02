@@ -27,37 +27,41 @@ type Row struct {
 	Name      string
 	Price     runtime.Decimal
 	Active    bool
+	Tags      []string
 }
 
 // Operator ids. Argument-taking operators are numbered first, so the
 // bind loop tests `op-1 < opsWithArg` with one unsigned compare.
 const (
-	opEq            runtime.Op = 1
-	opNotEq         runtime.Op = 2
-	opGt            runtime.Op = 3
-	opGte           runtime.Op = 4
-	opLt            runtime.Op = 5
-	opLte           runtime.Op = 6
-	opLike          runtime.Op = 7
-	opILike         runtime.Op = 8
-	opMatches       runtime.Op = 9
-	opWebSearch     runtime.Op = 10
-	opOverlaps      runtime.Op = 11
-	opContainsRange runtime.Op = 12
-	opContainedBy   runtime.Op = 13
-	opIn            runtime.Op = 14
-	opNotIn         runtime.Op = 15
-	opIsNull        runtime.Op = 16
-	opIsNotNull     runtime.Op = 17
+	opEq               runtime.Op = 1
+	opNotEq            runtime.Op = 2
+	opGt               runtime.Op = 3
+	opGte              runtime.Op = 4
+	opLt               runtime.Op = 5
+	opLte              runtime.Op = 6
+	opLike             runtime.Op = 7
+	opILike            runtime.Op = 8
+	opMatches          runtime.Op = 9
+	opWebSearch        runtime.Op = 10
+	opOverlaps         runtime.Op = 11
+	opContainsRange    runtime.Op = 12
+	opContainedBy      runtime.Op = 13
+	opIn               runtime.Op = 14
+	opNotIn            runtime.Op = 15
+	opArrayContains    runtime.Op = 16
+	opArrayContainedBy runtime.Op = 17
+	opArrayOverlaps    runtime.Op = 18
+	opIsNull           runtime.Op = 19
+	opIsNotNull        runtime.Op = 20
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 18
-	opNotExists runtime.Op = 19
+	opExists    runtime.Op = 21
+	opNotExists runtime.Op = 22
 )
 
-const nCols = 8
+const nCols = 9
 
 // Query is a value type: composing one allocates nothing. Predicates
 // are a postfix token stream, so disjunction and negation are
@@ -74,9 +78,9 @@ type Query struct {
 	bools                [4]bool
 	ns, nr, ntm, nd, nbo uint8
 
-	anyRaw [][16]byte
-	anyStr []string
-	hasAny bool
+	anyRaw   [3][][16]byte
+	anyStr   [3][]string
+	nar, nas uint8
 
 	// Order terms live in their own buffer and are appended to the stream
 	// after the predicate tree. Sharing one buffer would let a Where after
@@ -321,6 +325,7 @@ func (q Query) stream(buf *[21]runtime.Tok) []runtime.Tok {
 type Pred struct {
 	col    uint8
 	op     runtime.Op
+	num    int64
 	str    string
 	raw    [16]byte
 	tim    time.Time
@@ -348,7 +353,8 @@ var (
 	Name      = TextCol{4}
 	Price     = DecimalCol{5}
 	Active    = BoolCol{6}
-	Search    = TSVectorCol{7}
+	Tags      = TextArrayCol{7}
+	Search    = TSVectorCol{8}
 )
 
 // UUIDCol addresses a uuid column.
@@ -452,6 +458,35 @@ func (h BoolCol) DescNullsLast() Sort {
 func (h BoolCol) Eq(v bool) Pred    { return Pred{col: h.c, op: opEq, bol: v} }
 func (h BoolCol) NotEq(v bool) Pred { return Pred{col: h.c, op: opNotEq, bol: v} }
 
+// TextArrayCol addresses a text[] column.
+type TextArrayCol struct{ c uint8 }
+
+func (h TextArrayCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h TextArrayCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h TextArrayCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h TextArrayCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
+// Contains is `@>`: every element of v is in the column.
+// An empty v is true for every row — every array contains
+// the empty one.
+func (h TextArrayCol) Contains(v ...string) Pred {
+	return Pred{col: h.c, op: opArrayContains, anyStr: v}
+}
+
+// ContainedBy is `<@`: every element of the column is in v.
+func (h TextArrayCol) ContainedBy(v ...string) Pred {
+	return Pred{col: h.c, op: opArrayContainedBy, anyStr: v}
+}
+
+// Overlaps is `&&`: the column and v share an element.
+func (h TextArrayCol) Overlaps(v ...string) Pred {
+	return Pred{col: h.c, op: opArrayOverlaps, anyStr: v}
+}
+
 // TSVectorCol addresses a tsvector column.
 type TSVectorCol struct{ c uint8 }
 
@@ -542,12 +577,36 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn {
-		switch {
-		case p.anyRaw != nil:
-			q.anyRaw, q.hasAny = p.anyRaw, true
-		case p.anyStr != nil:
-			q.anyStr, q.hasAny = p.anyStr, true
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps {
+		switch p.col {
+		case 0:
+			if int(q.nar) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyRaw[q.nar] = p.anyRaw
+			q.nar++
+		case 3:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 4:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 7:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
 		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
@@ -602,7 +661,7 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.bools[q.nbo] = p.bol
 		q.nbo++
-	case 7:
+	case 8:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
@@ -658,10 +717,13 @@ func (q Query) PriceLt(v runtime.Decimal) Query    { return q.Where(Price.Lt(v))
 func (q Query) PriceLte(v runtime.Decimal) Query   { return q.Where(Price.Lte(v)) }
 func (q Query) ActiveEq(v bool) Query              { return q.Where(Active.Eq(v)) }
 func (q Query) ActiveNotEq(v bool) Query           { return q.Where(Active.NotEq(v)) }
+func (q Query) TagsContains(v ...string) Query     { return q.Where(Tags.Contains(v...)) }
+func (q Query) TagsContainedBy(v ...string) Query  { return q.Where(Tags.ContainedBy(v...)) }
+func (q Query) TagsOverlaps(v ...string) Query     { return q.Where(Tags.Overlaps(v...)) }
 func (q Query) SearchMatches(v string) Query       { return q.Where(Search.Matches(v)) }
 func (q Query) SearchWebSearch(v string) Query     { return q.Where(Search.WebSearch(v)) }
 
-const selectPrefix = `SELECT "id", "created_at", "updated_at", "sku", "name", "price", "active" FROM "products"`
+const selectPrefix = `SELECT "id", "created_at", "updated_at", "sku", "name", "price", "active", "tags" FROM "products"`
 const countPrefix = `SELECT count(*) FROM "products"`
 const existsPrefix = `SELECT 1 FROM "products"`
 const existsSuffix = ` LIMIT 1`
@@ -714,6 +776,12 @@ var orderTable = [nCols][4]string{
 		"\"active\" ASC NULLS FIRST",
 		"\"active\" DESC NULLS LAST",
 	},
+	{ // tags
+		"\"tags\"",
+		"\"tags\" DESC",
+		"\"tags\" ASC NULLS FIRST",
+		"\"tags\" DESC NULLS LAST",
+	},
 	{ // search
 		"\"search\"",
 		"\"search\" DESC",
@@ -732,6 +800,7 @@ var identTable = [nCols]string{
 	"\"name\"",
 	"\"price\"",
 	"\"active\"",
+	"\"tags\"",
 	"\"search\"",
 }
 
@@ -765,7 +834,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [8][20]runtime.Frag{
+var fragTable = [9][23]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -787,6 +856,9 @@ var fragTable = [8][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -796,6 +868,9 @@ var fragTable = [8][20]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -831,6 +906,9 @@ var fragTable = [8][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // sku
 		{}, // opNone
@@ -849,6 +927,9 @@ var fragTable = [8][20]runtime.Frag{
 		{},
 		{A: "\"sku\" = ANY($", B: ")"},
 		{A: "\"sku\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -875,6 +956,9 @@ var fragTable = [8][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // price
 		{}, // opNone
@@ -884,6 +968,9 @@ var fragTable = [8][20]runtime.Frag{
 		{A: "\"price\" >= $", B: ""},
 		{A: "\"price\" < $", B: ""},
 		{A: "\"price\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -919,6 +1006,34 @@ var fragTable = [8][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+	},
+	{ // tags
+		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "\"tags\" @> $", B: ""},
+		{A: "\"tags\" <@ $", B: ""},
+		{A: "\"tags\" && $", B: ""},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // search
 		{}, // opNone
@@ -932,6 +1047,9 @@ var fragTable = [8][20]runtime.Frag{
 		{},
 		{A: "\"search\" @@ plainto_tsquery($", B: ")"},
 		{A: "\"search\" @@ websearch_to_tsquery($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1106,6 +1224,10 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 		return decErr
 	}
 	r.Active = runtime.Bool(rv[6])
+	r.Tags, decErr = runtime.TextArray(rv[7], sl)
+	if decErr != nil {
+		return decErr
+	}
 	return decErr
 }
 
@@ -1116,8 +1238,8 @@ type binder struct {
 	tims   [4]time.Time
 	decs   [4]runtime.Decimal
 	bools  [4]bool
-	anyRaw [][16]byte
-	anyStr []string
+	anyRaw [3][][16]byte
+	anyStr [3][]string
 	limit  int64
 	offset int64
 }
@@ -1142,8 +1264,12 @@ func putBinder(b *binder) {
 	for i := range b.strs {
 		b.strs[i] = ""
 	}
-	b.anyRaw = nil
-	b.anyStr = nil
+	for i := range b.anyRaw {
+		b.anyRaw[i] = nil
+	}
+	for i := range b.anyStr {
+		b.anyStr[i] = nil
+	}
 	binders.Put(b)
 }
 
@@ -1152,7 +1278,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var ns, nr, ntm, nd, nbo uint8
+	var ns, nr, ntm, nd, nbo, nar, nas uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1166,13 +1292,24 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn, opNotIn:
-			if q.anyRaw != nil {
-				b.anyRaw = q.anyRaw
-				v = append(v, &b.anyRaw)
-			} else {
-				b.anyStr = q.anyStr
-				v = append(v, &b.anyStr)
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps:
+			switch t.Col() {
+			case 0:
+				b.anyRaw[nar] = q.anyRaw[nar]
+				v = append(v, &b.anyRaw[nar])
+				nar++
+			case 3:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 4:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 7:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
 			}
 			continue
 		}
@@ -1205,7 +1342,7 @@ func (q Query) bindPreds(b *binder) []any {
 			b.bools[nbo] = q.bools[nbo]
 			v = append(v, &b.bools[nbo])
 			nbo++
-		case 7:
+		case 8:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
@@ -1427,7 +1564,7 @@ func (q Query) OneCard(ctx context.Context, ex runtime.Executor) (CardRow, bool,
 
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
-const insertSQL = `INSERT INTO "products" ("id", "created_at", "updated_at", "sku", "name", "price", "active") VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING "id", "created_at", "updated_at", "sku", "name", "price", "active", "search"`
+const insertSQL = `INSERT INTO "products" ("id", "created_at", "updated_at", "sku", "name", "price", "active", "tags") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING "id", "created_at", "updated_at", "sku", "name", "price", "active", "tags", "search"`
 
 const updatePrefix = `UPDATE "products" SET `
 const deletePrefix = `DELETE FROM "products"`
@@ -1440,9 +1577,10 @@ const (
 	dName      uint64 = 1 << 2
 	dPrice     uint64 = 1 << 3
 	dActive    uint64 = 1 << 4
+	dTags      uint64 = 1 << 5
 )
 
-const nUpdatable = 5
+const nUpdatable = 6
 
 // setFrags is every assignment this table can make, lowered at build time.
 var setFrags = [nUpdatable]runtime.Frag{
@@ -1451,6 +1589,7 @@ var setFrags = [nUpdatable]runtime.Frag{
 	{A: "\"name\" = $", B: ""},       // name
 	{A: "\"price\" = $", B: ""},      // price
 	{A: "\"active\" = $", B: ""},     // active
+	{A: "\"tags\" = $", B: ""},       // tags
 }
 
 // pkFrags addresses one row.
@@ -1469,9 +1608,10 @@ const (
 	iName      uint64 = 1 << 4
 	iPrice     uint64 = 1 << 5
 	iActive    uint64 = 1 << 6
+	iTags      uint64 = 1 << 7
 )
 
-const nInsertable = 7
+const nInsertable = 8
 
 // insCols is the quoted column name for each insert bit.
 var insCols = [nInsertable]string{
@@ -1482,6 +1622,7 @@ var insCols = [nInsertable]string{
 	"\"name\"",
 	"\"price\"",
 	"\"active\"",
+	"\"tags\"",
 }
 
 // insParts and insPlaceholder come from the back end at build time; the
@@ -1490,7 +1631,7 @@ var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Clo
 
 const insPlaceholder = "$"
 const insPrefix = "INSERT INTO \"products\""
-const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"sku\", \"name\", \"price\", \"active\", \"search\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"sku\", \"name\", \"price\", \"active\", \"tags\", \"search\""
 
 var insCache = runtime.NewMaskCache()
 var updCache = runtime.NewMaskCache()
@@ -1541,6 +1682,11 @@ func (m *Mut) SetPrice(v runtime.Decimal) {
 func (m *Mut) SetActive(v bool) {
 	m.row.Active = v
 	m.dirty |= dActive
+}
+
+func (m *Mut) SetTags(v []string) {
+	m.row.Tags = v
+	m.dirty |= dTags
 }
 
 // Ins stages a new row. Unlike Mut it has a setter for every insertable
@@ -1603,12 +1749,17 @@ func (n *Ins) SetActive(v bool) {
 	n.set |= iActive
 }
 
+func (n *Ins) SetTags(v []string) {
+	n.row.Tags = v
+	n.set |= iTags
+}
+
 // upsertTails builds the ON CONFLICT tail for one target, given the
 // insert mask — an upsert must only overwrite the columns the caller
 // assigned, or it silently reverts every column it did not.
 var upsertTails = []func(uint64) string{
 	func(mask uint64) string {
-		set := make([]string, 0, 5)
+		set := make([]string, 0, 6)
 		if mask&(1<<2) != 0 {
 			set = append(set, "updated_at")
 		}
@@ -1623,11 +1774,14 @@ var upsertTails = []func(uint64) string{
 		}
 		if mask&(1<<6) != 0 {
 			set = append(set, "active")
+		}
+		if mask&(1<<7) != 0 {
+			set = append(set, "tags")
 		}
 		return onConflictID(set)
 	},
 	func(mask uint64) string {
-		set := make([]string, 0, 5)
+		set := make([]string, 0, 6)
 		if mask&(1<<2) != 0 {
 			set = append(set, "updated_at")
 		}
@@ -1642,6 +1796,9 @@ var upsertTails = []func(uint64) string{
 		}
 		if mask&(1<<6) != 0 {
 			set = append(set, "active")
+		}
+		if mask&(1<<7) != 0 {
+			set = append(set, "tags")
 		}
 		return onConflictSku(set)
 	},
@@ -1694,6 +1851,7 @@ var assignFor = map[string]string{
 	"name":       "\"name\" = EXCLUDED.\"name\"",
 	"price":      "\"price\" = EXCLUDED.\"price\"",
 	"active":     "\"active\" = EXCLUDED.\"active\"",
+	"tags":       "\"tags\" = EXCLUDED.\"tags\"",
 }
 
 func assignExcluded(c string) string { return assignFor[c] }
@@ -1751,6 +1909,8 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 			args = append(args, n.row.Price)
 		case 6:
 			args = append(args, n.row.Active)
+		case 7:
+			args = append(args, n.row.Tags)
 		}
 	}
 	var out Row
@@ -1783,7 +1943,7 @@ func Inserts() int { return insCache.Masks() }
 // not treat a zero as 'unset': that guess is why other ORMs cannot insert
 // a false, a 0 or an empty string into a column with a default.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
-	args := make([]any, 0, 7)
+	args := make([]any, 0, 8)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
@@ -1791,6 +1951,7 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args = append(args, r.Name)
 	args = append(args, r.Price)
 	args = append(args, r.Active)
+	args = append(args, r.Tags)
 	rows, err := ex.Query(ctx, insertSQL, args)
 	if err != nil {
 		return err
@@ -1824,13 +1985,14 @@ var copyCols = []string{
 	"name",
 	"price",
 	"active",
+	"tags",
 }
 
 // rowSource walks a []Row for CopyFrom without copying any of it.
 type rowSource struct {
 	rows []Row
 	i    int
-	buf  [7]any
+	buf  [8]any
 }
 
 func (s *rowSource) Next() bool {
@@ -1855,6 +2017,7 @@ func (s *rowSource) Values() []any {
 	s.buf[4] = &r.Name
 	s.buf[5] = &r.Price
 	s.buf[6] = &r.Active
+	s.buf[7] = &r.Tags
 	return s.buf[:]
 }
 
@@ -1892,8 +2055,9 @@ func InsertOp(r Row) runtime.BatchOp {
 	mask |= 1 << 4
 	mask |= 1 << 5
 	mask |= 1 << 6
+	mask |= 1 << 7
 	st := stmtForInsert(mask, 0)
-	args := make([]any, 0, 7)
+	args := make([]any, 0, 8)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
@@ -1901,6 +2065,7 @@ func InsertOp(r Row) runtime.BatchOp {
 	args = append(args, r.Name)
 	args = append(args, r.Price)
 	args = append(args, r.Active)
+	args = append(args, r.Tags)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}
 }
 
@@ -1930,6 +2095,8 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 			args = append(args, m.row.Price)
 		case 4:
 			args = append(args, m.row.Active)
+		case 5:
+			args = append(args, m.row.Tags)
 		}
 	}
 	args = append(args, m.row.ID)
@@ -1995,6 +2162,8 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 			args = append(args, m.row.Price)
 		case 4:
 			args = append(args, m.row.Active)
+		case 5:
+			args = append(args, m.row.Tags)
 		}
 	}
 	args = append(args, m.row.ID)

@@ -81,12 +81,33 @@ type tableSlots struct {
 // slice per call, and would hand PostgreSQL an int8[] to compare against an
 // int2 column — a cast the planner has to undo before it can use an index,
 // which is the opposite of what `= ANY` is for.
-var anySlotTable = []struct{ name, decl, elem string }{
-	{"anyRaw", "anyRaw [][16]byte", "[16]byte"},
-	{"anyStr", "anyStr []string", "string"},
-	{"anyI16", "anyI16 []int16", "int16"},
-	{"anyI32", "anyI32 []int32", "int32"},
-	{"anyI64", "anyI64 []int64", "int64"},
+var anySlotTable = []struct{ name, cursor, elem string }{
+	{"anyRaw", "nar", "[16]byte"},
+	{"anyStr", "nas", "string"},
+	{"anyI16", "nai16", "int16"},
+	{"anyI32", "nai32", "int32"},
+	{"anyI64", "nai64", "int64"},
+	{"anyDec", "nadec", "runtime.Decimal"},
+}
+
+// anyCursor is a list slot's cursor variable.
+func anyCursor(slot string) string {
+	for _, sl := range anySlotTable {
+		if sl.name == slot {
+			return sl.cursor
+		}
+	}
+	return ""
+}
+
+// anyCursors is the cursor variable for each list slot this table needs, in
+// anySlotTable order.
+func (ts tableSlots) anyCursors() []string {
+	var out []string
+	for _, slot := range ts.anyList {
+		out = append(out, anyCursor(slot))
+	}
+	return out
 }
 
 // has reports whether this table needs the named list slot.
@@ -132,11 +153,52 @@ func slotsFor(cols []colInfo) tableSlots {
 	return ts
 }
 
-// anyDecl is a list slot's field declaration.
+// listOpTest and listOpCases name every operator whose argument is a list, in
+// ops order. Spelling them out at each site is how In and NotIn diverged from
+// the array forms the first time.
+func listOpTest(v string) string {
+	var b strings.Builder
+	for _, op := range ops {
+		if !op.list() {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(" || ")
+		}
+		b.WriteString(v + " == op" + op.name)
+	}
+	return b.String()
+}
+
+func listOpCases() string {
+	var names []string
+	for _, op := range ops {
+		if op.list() {
+			names = append(names, "op"+op.name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// anyPredDecl is a list slot's field in a PRED, which holds exactly one
+// predicate and therefore exactly one list. Only Query and the binder are
+// arenas — a Pred that grew to [3] would pay for the arena on every predicate
+// in the program, and Pred is copied by value into every builder call.
+func anyPredDecl(slot string) string {
+	for _, sl := range anySlotTable {
+		if sl.name == slot {
+			return fmt.Sprintf("%s []%s", sl.name, sl.elem)
+		}
+	}
+	return ""
+}
+
+// anyDecl is a list slot's field declaration: an ARENA of lists, indexed by
+// the slot's cursor in token order, exactly like the scalar arenas above it.
 func anyDecl(slot string) string {
 	for _, sl := range anySlotTable {
 		if sl.name == slot {
-			return sl.decl
+			return fmt.Sprintf("%s [%d][]%s", sl.name, maxAny, sl.elem)
 		}
 	}
 	return ""
@@ -211,6 +273,16 @@ const (
 	maxBool  = 4
 	maxRng   = 4
 	maxPfx   = 4
+	// List values are an arena like every other value type, for the reason
+	// every other value type is one: a Query can carry more than one predicate
+	// on the same slot. It used to be a single field, so a second In on a text
+	// column OVERWROTE the first and the statement bound one list twice —
+	// wrong rows, no error, on every version through v0.3.0.
+	//
+	// Smaller than the scalar arenas because a list predicate is rarer, and
+	// bounded for the same reason they are: past the bound q.over is set and
+	// the query errors, which is the difference between a limit and a lie.
+	maxAny = 3
 )
 
 func (g *gen) treeQuery() {
@@ -237,7 +309,9 @@ func (g *gen) treeQuery() {
 	for _, slot := range ts.anyList {
 		g.p("\t%s", anyDecl(slot))
 	}
-	g.p("\thasAny bool")
+	if cs := ts.anyCursors(); len(cs) > 0 {
+		g.p("\t%s uint8", strings.Join(cs, ", "))
+	}
 	g.p("")
 	g.p("\t// Order terms live in their own buffer and are appended to the stream")
 	g.p("\t// after the predicate tree. Sharing one buffer would let a Where after")
@@ -545,18 +619,28 @@ func (g *gen) treePreds() {
 	// two-branch switch referenced slots the trimmed Pred no longer carries.
 	// In and NotIn share every branch: both bind ONE list to ONE placeholder,
 	// and only the operator text between them differs.
-	if n := len(ts.anyList); n > 0 {
-		g.p("\tif p.op == opIn || p.op == opNotIn {")
-		if n == 1 {
-			g.p("\t\tq.%s, q.hasAny = p.%s, true", ts.anyList[0], ts.anyList[0])
-		} else {
-			g.p("\t\tswitch {")
-			for _, slot := range ts.anyList {
-				g.p("\t\tcase p.%s != nil:", slot)
-				g.p("\t\t\tq.%s, q.hasAny = p.%s, true", slot, slot)
+	if len(ts.anyList) > 0 {
+		// Dispatch on the COLUMN, not on which Pred field is non-nil. The
+		// value goes to the arena for its type at that arena's cursor, which
+		// is what lets a query carry more than one list predicate — the single
+		// field this replaced made the second one overwrite the first.
+		g.p("\tif %s {", listOpTest("p.op"))
+		g.p("\t\tswitch p.col {")
+		for i, c := range g.cols {
+			slot := predArraySlot(c)
+			if slot == "" {
+				continue
 			}
-			g.p("\t\t}")
+			cur := anyCursor(slot)
+			g.p("\t\tcase %d:", i)
+			g.p("\t\t\tif int(q.%s) >= %d {", cur, maxAny)
+			g.p("\t\t\t\tq.over = true")
+			g.p("\t\t\t\treturn")
+			g.p("\t\t\t}")
+			g.p("\t\t\tq.%s[q.%s] = p.%s", slot, cur, slot)
+			g.p("\t\t\tq.%s++", cur)
 		}
+		g.p("\t\t}")
 		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
 		g.p("\t\treturn")
 		g.p("\t}")
@@ -661,7 +745,9 @@ func (g *gen) treeBind() {
 		g.p("\t}")
 	}
 	for _, slot := range ts.anyList {
-		g.p("\tb.%s = nil", slot)
+		g.p("\tfor i := range b.%s {", slot)
+		g.p("\t\tb.%s[i] = nil", slot)
+		g.p("\t}")
 	}
 	g.p("\tbinders.Put(b)")
 	g.p("}")
@@ -685,6 +771,7 @@ func (g *gen) treeBind() {
 			cursors = append(cursors, a.cursor)
 		}
 	}
+	cursors = append(cursors, ts.anyCursors()...)
 	if len(cursors) > 0 {
 		g.p("\tvar %s uint8", strings.Join(cursors, ", "))
 	}
@@ -701,28 +788,21 @@ func (g *gen) treeBind() {
 	g.p("\t\tswitch runtime.Op(t.Op()) {")
 	g.p("\t\tcase opIsNull, opIsNotNull:")
 	g.p("\t\t\tcontinue")
-	if n := len(ts.anyList); n > 0 {
-		g.p("\t\tcase opIn, opNotIn:")
-		if n == 1 {
-			g.p("\t\t\tb.%s = q.%s", ts.anyList[0], ts.anyList[0])
-			g.p("\t\t\tv = append(v, &b.%s)", ts.anyList[0])
-		} else {
-			// The LAST slot is the else: exactly one is non-nil, so testing
-			// n-1 of them is enough and the final branch needs no condition.
-			for i, slot := range ts.anyList {
-				switch {
-				case i == 0:
-					g.p("\t\t\tif q.%s != nil {", slot)
-				case i == n-1:
-					g.p("\t\t\t} else {")
-				default:
-					g.p("\t\t\t} else if q.%s != nil {", slot)
-				}
-				g.p("\t\t\t\tb.%s = q.%s", slot, slot)
-				g.p("\t\t\t\tv = append(v, &b.%s)", slot)
+	if len(ts.anyList) > 0 {
+		g.p("\t\tcase %s:", listOpCases())
+		g.p("\t\t\tswitch t.Col() {")
+		for i, c := range g.cols {
+			slot := predArraySlot(c)
+			if slot == "" {
+				continue
 			}
-			g.p("\t\t\t}")
+			cur := anyCursor(slot)
+			g.p("\t\t\tcase %d:", i)
+			g.p("\t\t\t\tb.%s[%s] = q.%s[%s]", slot, cur, slot, cur)
+			g.p("\t\t\t\tv = append(v, &b.%s[%s])", slot, cur)
+			g.p("\t\t\t\t%s++", cur)
 		}
+		g.p("\t\t\t}")
 		g.p("\t\t\tcontinue")
 	}
 	g.p("\t\t}")

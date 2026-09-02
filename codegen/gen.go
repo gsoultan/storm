@@ -210,27 +210,58 @@ func (g *gen) rowType() {
 // Argument-taking operators must come first: bind tests `op-1 < opsWithArg`
 // with a single unsigned compare and that range check is only valid if the
 // argument-less operators are last.
-var ops = []struct {
-	name string // method suffix
-	args int
-}{
-	{"Eq", 1},
-	{"NotEq", 1},
-	{"Gt", 1},
-	{"Gte", 1},
-	{"Lt", 1},
-	{"Lte", 1},
-	{"Like", 1},
-	{"ILike", 1},
-	{"Matches", 1},
-	{"WebSearch", 1},
-	{"Overlaps", 1},
-	{"ContainsRange", 1},
-	{"ContainedBy", 1},
-	{"In", 1},
-	{"NotIn", 1},
-	{"IsNull", 0},
-	{"IsNotNull", 0},
+type opDef struct {
+	name string // operator id: op<name>
+	// method is the generated method name when it differs from name. An array
+	// column's Contains and a range column's ContainsRange are different
+	// operators with different binding paths, and the handle types keep them
+	// apart — so the array forms can have the name that reads best without
+	// colliding with a range's.
+	method string
+	args   int
+}
+
+// m is the name the generated method carries.
+func (o opDef) m() string {
+	if o.method != "" {
+		return o.method
+	}
+	return o.name
+}
+
+// list reports whether this operator's argument is a LIST — bound whole into
+// one placeholder from a list slot, rather than one value from an arena.
+func (o opDef) list() bool {
+	switch o.name {
+	case "In", "NotIn", "ArrayContains", "ArrayContainedBy", "ArrayOverlaps":
+		return true
+	}
+	return false
+}
+
+var ops = []opDef{
+	{name: "Eq", args: 1},
+	{name: "NotEq", args: 1},
+	{name: "Gt", args: 1},
+	{name: "Gte", args: 1},
+	{name: "Lt", args: 1},
+	{name: "Lte", args: 1},
+	{name: "Like", args: 1},
+	{name: "ILike", args: 1},
+	{name: "Matches", args: 1},
+	{name: "WebSearch", args: 1},
+	{name: "Overlaps", args: 1},
+	{name: "ContainsRange", args: 1},
+	{name: "ContainedBy", args: 1},
+	{name: "In", args: 1},
+	{name: "NotIn", args: 1},
+	// Array containment and overlap. Same PostgreSQL operators as the range
+	// forms above, different ids because the argument is a list.
+	{name: "ArrayContains", method: "Contains", args: 1},
+	{name: "ArrayContainedBy", method: "ContainedBy", args: 1},
+	{name: "ArrayOverlaps", method: "Overlaps", args: 1},
+	{name: "IsNull", args: 0},
+	{name: "IsNotNull", args: 0},
 }
 
 const opNone = 0 // nibble 0 means "no predicate on this column"
@@ -261,10 +292,10 @@ func (g *gen) chained() {
 			if !opApplies(op.name, c.kind, c.col) {
 				continue
 			}
-			m := exportName(c.Name()) + op.name
+			m := exportName(c.Name()) + op.m()
 			h := exportName(c.Name())
 			switch {
-			case op.name == "In" || op.name == "NotIn":
+			case op.list():
 				// A list operator, so the convenience form is variadic too.
 				// NotIn used to fall through to the scalar branch below and
 				// emit a call no generated method could satisfy.
@@ -272,11 +303,11 @@ func (g *gen) chained() {
 					continue
 				}
 				g.p("func (q Query) %s(v ...%s) Query { return q.Where(%s.%s(v...)) }",
-					m, c.goBase, h, op.name)
+					m, listElem(c), h, op.m())
 			case op.args == 0:
-				g.p("func (q Query) %s() Query { return q.Where(%s.%s()) }", m, h, op.name)
+				g.p("func (q Query) %s() Query { return q.Where(%s.%s()) }", m, h, op.m())
 			default:
-				g.p("func (q Query) %s(v %s) Query { return q.Where(%s.%s(v)) }", m, c.goBase, h, op.name)
+				g.p("func (q Query) %s(v %s) Query { return q.Where(%s.%s(v)) }", m, c.goBase, h, op.m())
 			}
 		}
 	}

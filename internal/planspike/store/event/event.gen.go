@@ -35,29 +35,32 @@ type Row struct {
 // Operator ids. Argument-taking operators are numbered first, so the
 // bind loop tests `op-1 < opsWithArg` with one unsigned compare.
 const (
-	opEq            runtime.Op = 1
-	opNotEq         runtime.Op = 2
-	opGt            runtime.Op = 3
-	opGte           runtime.Op = 4
-	opLt            runtime.Op = 5
-	opLte           runtime.Op = 6
-	opLike          runtime.Op = 7
-	opILike         runtime.Op = 8
-	opMatches       runtime.Op = 9
-	opWebSearch     runtime.Op = 10
-	opOverlaps      runtime.Op = 11
-	opContainsRange runtime.Op = 12
-	opContainedBy   runtime.Op = 13
-	opIn            runtime.Op = 14
-	opNotIn         runtime.Op = 15
-	opIsNull        runtime.Op = 16
-	opIsNotNull     runtime.Op = 17
+	opEq               runtime.Op = 1
+	opNotEq            runtime.Op = 2
+	opGt               runtime.Op = 3
+	opGte              runtime.Op = 4
+	opLt               runtime.Op = 5
+	opLte              runtime.Op = 6
+	opLike             runtime.Op = 7
+	opILike            runtime.Op = 8
+	opMatches          runtime.Op = 9
+	opWebSearch        runtime.Op = 10
+	opOverlaps         runtime.Op = 11
+	opContainsRange    runtime.Op = 12
+	opContainedBy      runtime.Op = 13
+	opIn               runtime.Op = 14
+	opNotIn            runtime.Op = 15
+	opArrayContains    runtime.Op = 16
+	opArrayContainedBy runtime.Op = 17
+	opArrayOverlaps    runtime.Op = 18
+	opIsNull           runtime.Op = 19
+	opIsNotNull        runtime.Op = 20
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 18
-	opNotExists runtime.Op = 19
+	opExists    runtime.Op = 21
+	opNotExists runtime.Op = 22
 )
 
 const nCols = 10
@@ -76,8 +79,9 @@ type Query struct {
 	tods              [4]runtime.TimeOfDay
 	nr, ntm, npf, nto uint8
 
-	anyRaw [][16]byte
-	hasAny bool
+	anyRaw     [3][][16]byte
+	anyI64     [3][]int64
+	nar, nai64 uint8
 
 	// Order terms live in their own buffer and are appended to the stream
 	// after the predicate tree. Sharing one buffer would let a Where after
@@ -335,6 +339,7 @@ type Pred struct {
 	pfx    netip.Prefix
 	tod    runtime.TimeOfDay
 	anyRaw [][16]byte
+	anyI64 []int64
 }
 
 // Typed column handles. The type of the handle is what makes
@@ -493,6 +498,23 @@ func (h Int64ArrayCol) DescNullsLast() Sort {
 	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
 }
 
+// Contains is `@>`: every element of v is in the column.
+// An empty v is true for every row — every array contains
+// the empty one.
+func (h Int64ArrayCol) Contains(v ...int64) Pred {
+	return Pred{col: h.c, op: opArrayContains, anyI64: v}
+}
+
+// ContainedBy is `<@`: every element of the column is in v.
+func (h Int64ArrayCol) ContainedBy(v ...int64) Pred {
+	return Pred{col: h.c, op: opArrayContainedBy, anyI64: v}
+}
+
+// Overlaps is `&&`: the column and v share an element.
+func (h Int64ArrayCol) Overlaps(v ...int64) Pred {
+	return Pred{col: h.c, op: opArrayOverlaps, anyI64: v}
+}
+
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
 	for i := range ps {
@@ -568,8 +590,23 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn {
-		q.anyRaw, q.hasAny = p.anyRaw, true
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps {
+		switch p.col {
+		case 0:
+			if int(q.nar) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyRaw[q.nar] = p.anyRaw
+			q.nar++
+		case 9:
+			if int(q.nai64) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyI64[q.nai64] = p.anyI64
+			q.nai64++
+		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
@@ -677,6 +714,9 @@ func (q Query) AddrEq(v netip.Prefix) Query           { return q.Where(Addr.Eq(v
 func (q Query) AddrNotEq(v netip.Prefix) Query        { return q.Where(Addr.NotEq(v)) }
 func (q Query) NetEq(v netip.Prefix) Query            { return q.Where(Net.Eq(v)) }
 func (q Query) NetNotEq(v netip.Prefix) Query         { return q.Where(Net.NotEq(v)) }
+func (q Query) TagsContains(v ...int64) Query         { return q.Where(Tags.Contains(v...)) }
+func (q Query) TagsContainedBy(v ...int64) Query      { return q.Where(Tags.ContainedBy(v...)) }
+func (q Query) TagsOverlaps(v ...int64) Query         { return q.Where(Tags.Overlaps(v...)) }
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "on", "opens", "closes", "window", "addr", "net", "tags" FROM "events"`
 const countPrefix = `SELECT count(*) FROM "events"`
@@ -796,7 +836,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [10][20]runtime.Frag{
+var fragTable = [10][23]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -818,6 +858,9 @@ var fragTable = [10][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -827,6 +870,9 @@ var fragTable = [10][20]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -862,6 +908,9 @@ var fragTable = [10][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // on
 		{}, // opNone
@@ -871,6 +920,9 @@ var fragTable = [10][20]runtime.Frag{
 		{A: "\"on\" >= $", B: ""},
 		{A: "\"on\" < $", B: ""},
 		{A: "\"on\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -906,6 +958,9 @@ var fragTable = [10][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // closes
 		{}, // opNone
@@ -924,6 +979,9 @@ var fragTable = [10][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 		{A: "\"closes\" IS NULL", B: ""},
 		{A: "\"closes\" IS NOT NULL", B: ""},
 		{},
@@ -931,6 +989,9 @@ var fragTable = [10][20]runtime.Frag{
 	},
 	{ // window
 		{}, // opNone
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -972,11 +1033,17 @@ var fragTable = [10][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // net
 		{}, // opNone
 		{A: "\"net\" = $", B: ""},
 		{A: "\"net\" <> $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1012,6 +1079,9 @@ var fragTable = [10][20]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"tags\" @> $", B: ""},
+		{A: "\"tags\" <@ $", B: ""},
+		{A: "\"tags\" && $", B: ""},
 		{},
 		{},
 		{},
@@ -1208,7 +1278,8 @@ type binder struct {
 	tims   [4]time.Time
 	pfxs   [4]netip.Prefix
 	tods   [4]runtime.TimeOfDay
-	anyRaw [][16]byte
+	anyRaw [3][][16]byte
+	anyI64 [3][]int64
 	limit  int64
 	offset int64
 }
@@ -1230,7 +1301,12 @@ func PutBinder(b *Binder) { putBinder(b) }
 // and uuid arenas are value arrays and pin nothing; vals points at the
 // binder's own fields. A few nil stores against a round trip is free.
 func putBinder(b *binder) {
-	b.anyRaw = nil
+	for i := range b.anyRaw {
+		b.anyRaw[i] = nil
+	}
+	for i := range b.anyI64 {
+		b.anyI64[i] = nil
+	}
 	binders.Put(b)
 }
 
@@ -1239,7 +1315,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var nr, ntm, npf, nto uint8
+	var nr, ntm, npf, nto, nar, nai64 uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1253,9 +1329,17 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn, opNotIn:
-			b.anyRaw = q.anyRaw
-			v = append(v, &b.anyRaw)
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps:
+			switch t.Col() {
+			case 0:
+				b.anyRaw[nar] = q.anyRaw[nar]
+				v = append(v, &b.anyRaw[nar])
+				nar++
+			case 9:
+				b.anyI64[nai64] = q.anyI64[nai64]
+				v = append(v, &b.anyI64[nai64])
+				nai64++
+			}
 			continue
 		}
 		switch t.Col() {
