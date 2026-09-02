@@ -111,10 +111,21 @@ const (
 	BRIN  = "brin"
 )
 
-// Expr is a raw SQL fragment. It is the one deliberate escape from the typed
+// RawSQL is a raw SQL fragment. It is the one deliberate escape from the typed
 // API: conspicuous, reported by `storm lint --expr`, and validated against the
 // database at generate time.
-type Expr string
+//
+// Named for what it is. It was `Expr`, which is what someone reaching for "an
+// expression" types — and they would land on the untyped escape hatch rather
+// than on the checked expression vocabulary, which lives on the declaration
+// builder (a.DateTrunc, a.Coalesce, a.Eq).
+type RawSQL string
+
+// Expr is the former name of RawSQL.
+//
+// Deprecated: use RawSQL. Kept as an alias so models written against v0.1–v0.3
+// keep compiling; it will not be removed before v2.
+type Expr = RawSQL
 
 // Now renders the SQL now() default.
 func Now() Expr { return "now()" }

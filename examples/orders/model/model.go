@@ -154,52 +154,54 @@ func (o *Order) Schema(t *storm.Table) {
 // call site — what is fixed here is the GROUP BY and the SELECT list, which is
 // the part that cannot be enumerated if it is built at run time.
 func (o *Order) Aggregates(a *storm.Aggregates) {
-	// Plain grouping, with a FILTER and a HAVING.
-	a.Named("ByStatus").
-		By(&o.Status).
-		Count("Orders").
-		Count("BigOrders").Filter(storm.Gte(&o.Total, storm.Lit(mustDec("50.00")))).
-		Sum(&o.Total, "Revenue").
-		Avg(&o.Total, "AvgOrder").
-		Min(&o.PlacedAt, "FirstOrderAt").
-		Max(&o.PlacedAt, "LastOrderAt").
-		Having(storm.Gt(storm.Out("Orders"), 0))
+	// Plain grouping, with a FILTER and a HAVING. The handle each declaration
+	// returns is how a later clause refers to it — checked by the compiler
+	// rather than by a string lookup.
+	byStatus := a.Named("ByStatus")
+	byStatus.By(&o.Status)
+	orders := byStatus.Count("Orders")
+	byStatus.Count("BigOrders").Filter(a.Gte(&o.Total, a.Lit(mustDec("50.00"))))
+	byStatus.Sum(&o.Total, "Revenue")
+	byStatus.Avg(&o.Total, "AvgOrder")
+	byStatus.Min(&o.PlacedAt, "FirstOrderAt")
+	byStatus.Max(&o.PlacedAt, "LastOrderAt")
+	byStatus.Having(a.Gt(orders, 0))
 
 	// Grouping by an EXPRESSION: the date bucketing that used to need raw SQL.
-	// A window over the grouped rows gives each day its rank by revenue, and
-	// Lag gives the previous day's revenue — both without a self-join.
-	a.Named("Daily").
-		ByExpr("Day", storm.DateTrunc("day", &o.PlacedAt)).
-		Count("Orders").
-		Sum(&o.Total, "Revenue").
-		// Ranked by the day's REVENUE, not by placed_at: a window over grouped
-		// rows sees one row per group, so it may only name a grouping
-		// expression or an aggregate. storm refuses the other form by name.
-		RowNumber("Rank", storm.Over().OrderByDesc(storm.Out("Revenue"))).
-		Lag(storm.Out("Revenue"), "PrevRevenue", storm.Over().OrderByAsc(storm.Out("Day")))
+	// A window over the grouped rows ranks each day by revenue, and Lag gives
+	// the previous day's — both without a self-join.
+	daily := a.Named("Daily")
+	day := daily.ByExpr("Day", a.DateTrunc("day", &o.PlacedAt))
+	daily.Count("Orders")
+	revenue := daily.Sum(&o.Total, "Revenue")
+	// Ranked by the day's REVENUE, not by placed_at: a window over grouped
+	// rows sees one row per group, so it may only name a grouping expression
+	// or an aggregate. storm refuses the other form by name.
+	daily.RowNumber("Rank", a.Over().OrderByDesc(revenue))
+	daily.Lag(revenue, "PrevRevenue", a.Over().OrderByAsc(day))
 
 	// GROUPING SETS: per-status, per-day, and the grand total in ONE pass
 	// instead of three queries. Every grouping column is nullable here — a
 	// subtotal row carries NULL for what it aggregated over — and GroupingOf
 	// says which NULL is which.
-	a.Named("Facets").
-		By(&o.Status).
-		ByExpr("Day", storm.DateTrunc("day", &o.PlacedAt)).
-		Sets([]string{"Status"}, []string{"Day"}, nil).
-		Count("Orders").
-		Sum(&o.Total, "Revenue").
-		GroupingOf("StatusIsSubtotal", &o.Status)
+	facets := a.Named("Facets")
+	facets.By(&o.Status)
+	facets.ByExpr("Day", a.DateTrunc("day", &o.PlacedAt))
+	facets.Sets([]string{"Status"}, []string{"Day"}, nil)
+	facets.Count("Orders")
+	facets.Sum(&o.Total, "Revenue")
+	facets.GroupingOf("StatusIsSubtotal", &o.Status)
 
 	// Grouped by customer — the CTE the VsLifetime join materialises.
-	a.Named("ByCustomer").
-		By(&o.Customer).
-		Count("Orders").
-		Sum(&o.Total, "Lifetime")
+	byCustomer := a.Named("ByCustomer")
+	byCustomer.By(&o.Customer)
+	byCustomer.Count("Orders")
+	byCustomer.Sum(&o.Total, "Lifetime")
 
 	// No grouping: the whole table as one row.
-	a.Named("Totals").
-		Count("Orders").
-		Sum(&o.Total, "Revenue")
+	totals := a.Named("Totals")
+	totals.Count("Orders")
+	totals.Sum(&o.Total, "Revenue")
 }
 
 func mustDec(s string) storm.Decimal {
@@ -227,7 +229,7 @@ func (o *Order) Joins(j *storm.Joins) {
 		Take(&c.Name, "CustomerName").
 		// A declared filter the caller cannot widen: cancelled orders are
 		// never part of this read, whatever a call site asks for.
-		Where(storm.Ne(&o.Status, string(StatusCancelled))).
+		Where(j.Ne(&o.Status, string(StatusCancelled))).
 		OrderDesc(&o.PlacedAt)
 
 	// A CTE: each customer's lifetime spend, computed ONCE, joined against.
@@ -235,7 +237,7 @@ func (o *Order) Joins(j *storm.Joins) {
 	j.Named("VsLifetime").
 		With("spend", &Order{}, "ByCustomer").
 		Inner(&c, &o.Customer).
-		LeftWith("spend", storm.OnCols("spend", "customer_id", &c.ID)).
+		LeftWith("spend", j.OnCols("spend", "customer_id", &c.ID)).
 		Take(&o.ID, "OrderID").
 		Take(&o.Total, "Total").
 		Take(&c.Email, "CustomerEmail").

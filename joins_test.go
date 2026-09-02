@@ -21,7 +21,10 @@ type jOrder struct {
 }
 
 func (o *jOrder) Aggregates(a *storm.Aggregates) {
-	a.Named("ByCustomer").By(&o.Customer).Count("Orders").Sum(&o.Total, "Spend")
+	b := a.Named("ByCustomer")
+	b.By(&o.Customer)
+	b.Count("Orders")
+	b.Sum(&o.Total, "Spend")
 }
 
 func (o *jOrder) Joins(j *storm.Joins) {
@@ -35,7 +38,7 @@ func (o *jOrder) Joins(j *storm.Joins) {
 	j.Named("Lifetime").
 		With("spend", &jOrder{}, "ByCustomer").
 		Inner(&c, &o.Customer).
-		LeftWith("spend", storm.OnCols("spend", "customer_id", &c.ID)).
+		LeftWith("spend", j.OnCols("spend", "customer_id", &c.ID)).
 		Take(&o.ID, "OrderID").
 		TakeFrom("spend", "Spend", "Lifetime")
 }

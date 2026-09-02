@@ -32,6 +32,11 @@ import (
 // makes `&c.Email` a checked reference rather than a string, so a rename of
 // Customer.Email is a compile error here too.
 type Joins struct {
+	// Exprs is the declaration-time expression vocabulary: j.Ne, j.OnCols and
+	// the rest. Embedded for the same reason Aggregates embeds it — so a
+	// declaration constructor cannot be reached from a query context.
+	Exprs
+
 	t *Table
 	b *builder
 }
@@ -270,7 +275,7 @@ type JoinOn struct {
 
 // OnCols joins on a named column of an aliased scope — a CTE's output column,
 // or a table's column — against a field of the model being attached.
-func OnCols(alias, column string, fieldPtr any) JoinOn {
+func (Exprs) OnCols(alias, column string, fieldPtr any) JoinOn {
 	return JoinOn{leftAlias: alias, leftCol: column, rightFP: fieldPtr}
 }
 

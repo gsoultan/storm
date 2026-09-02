@@ -25,22 +25,20 @@ type unex struct {
 // not express the division-by-zero guard its own documentation gives as the
 // reason it exists.
 func (m *unex) Aggregates(a *storm.Aggregates) {
-	a.Named("Everything").
-		By(&m.Status).
-		Count("All").
-		// And / Or / Not / IsNull / IsNotNull / Lt / Lte, all unexercised.
-		Count("Complex").Filter(storm.And(
-		storm.Or(
-			storm.Lt(&m.Amount, storm.Lit(10)),
-			storm.Lte(&m.Amount, storm.Lit(20)),
+	b := a.Named("Everything")
+	b.By(&m.Status)
+	b.Count("All")
+	b.Count("Complex").Filter(a.And(
+		a.Or(
+			a.Lt(&m.Amount, a.Lit(10)),
+			a.Lte(&m.Amount, a.Lit(20)),
 		),
-		storm.Not(storm.IsNull(&m.Score)),
-		storm.IsNotNull(&m.Balance),
-	)).
-		// Coalesce / NullIf / Abs / Col, all unexercised.
-		Sum(storm.Coalesce(&m.Balance, &m.Amount), "Coalesced").
-		Sum(storm.NullIf(&m.Amount, storm.Lit(0)), "Nullified").
-		Sum(storm.Abs(storm.Col(&m.Amount)), "Absolute")
+		a.Not(a.IsNull(&m.Score)),
+		a.IsNotNull(&m.Balance),
+	))
+	b.Sum(a.Coalesce(&m.Balance, &m.Amount), "Coalesced")
+	b.Sum(a.NullIf(&m.Amount, a.Lit(0)), "Nullified")
+	b.Sum(a.Abs(a.Col(&m.Amount)), "Absolute")
 }
 
 func TestEveryExprConstructorLowers(t *testing.T) {
