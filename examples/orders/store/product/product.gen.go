@@ -28,6 +28,7 @@ type Row struct {
 	Price     runtime.Decimal
 	Active    bool
 	Tags      []string
+	Attrs     runtime.JSON
 }
 
 // Operator ids. Argument-taking operators are numbered first, so the
@@ -51,17 +52,21 @@ const (
 	opArrayContains    runtime.Op = 16
 	opArrayContainedBy runtime.Op = 17
 	opArrayOverlaps    runtime.Op = 18
-	opIsNull           runtime.Op = 19
-	opIsNotNull        runtime.Op = 20
+	opJSONContains     runtime.Op = 19
+	opJSONContainedBy  runtime.Op = 20
+	opHasAnyKey        runtime.Op = 21
+	opHasAllKeys       runtime.Op = 22
+	opIsNull           runtime.Op = 23
+	opIsNotNull        runtime.Op = 24
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 21
-	opNotExists runtime.Op = 22
+	opExists    runtime.Op = 25
+	opNotExists runtime.Op = 26
 )
 
-const nCols = 9
+const nCols = 10
 
 // Query is a value type: composing one allocates nothing. Predicates
 // are a postfix token stream, so disjunction and negation are
@@ -71,12 +76,13 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs                 [6]string
-	raws                 [4][16]byte
-	tims                 [4]time.Time
-	decs                 [4]runtime.Decimal
-	bools                [4]bool
-	ns, nr, ntm, nd, nbo uint8
+	strs                      [6]string
+	raws                      [4][16]byte
+	tims                      [4]time.Time
+	decs                      [4]runtime.Decimal
+	bools                     [4]bool
+	jsns                      [2]runtime.JSON
+	ns, nr, ntm, nd, nbo, njs uint8
 
 	anyRaw   [3][][16]byte
 	anyStr   [3][]string
@@ -331,6 +337,7 @@ type Pred struct {
 	tim    time.Time
 	dec    runtime.Decimal
 	bol    bool
+	jsn    runtime.JSON
 	anyRaw [][16]byte
 	anyStr []string
 }
@@ -354,7 +361,8 @@ var (
 	Price     = DecimalCol{5}
 	Active    = BoolCol{6}
 	Tags      = TextArrayCol{7}
-	Search    = TSVectorCol{8}
+	Attrs     = JSONCol{8}
+	Search    = TSVectorCol{9}
 )
 
 // UUIDCol addresses a uuid column.
@@ -487,6 +495,25 @@ func (h TextArrayCol) Overlaps(v ...string) Pred {
 	return Pred{col: h.c, op: opArrayOverlaps, anyStr: v}
 }
 
+// JSONCol addresses a jsonb column.
+type JSONCol struct{ c uint8 }
+
+func (h JSONCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h JSONCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h JSONCol) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h JSONCol) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
+func (h JSONCol) Contains(v runtime.JSON) Pred { return Pred{col: h.c, op: opJSONContains, jsn: v} }
+func (h JSONCol) ContainedBy(v runtime.JSON) Pred {
+	return Pred{col: h.c, op: opJSONContainedBy, jsn: v}
+}
+func (h JSONCol) HasAnyKey(v ...string) Pred  { return Pred{col: h.c, op: opHasAnyKey, anyStr: v} }
+func (h JSONCol) HasAllKeys(v ...string) Pred { return Pred{col: h.c, op: opHasAllKeys, anyStr: v} }
+
 // TSVectorCol addresses a tsvector column.
 type TSVectorCol struct{ c uint8 }
 
@@ -577,7 +604,7 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps {
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys {
 		switch p.col {
 		case 0:
 			if int(q.nar) >= 3 {
@@ -601,6 +628,13 @@ func (q *Query) leaf(p Pred) {
 			q.anyStr[q.nas] = p.anyStr
 			q.nas++
 		case 7:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 8:
 			if int(q.nas) >= 3 {
 				q.over = true
 				return
@@ -662,6 +696,13 @@ func (q *Query) leaf(p Pred) {
 		q.bools[q.nbo] = p.bol
 		q.nbo++
 	case 8:
+		if int(q.njs) >= 2 {
+			q.over = true
+			return
+		}
+		q.jsns[q.njs] = p.jsn
+		q.njs++
+	case 9:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
@@ -673,57 +714,61 @@ func (q *Query) leaf(p Pred) {
 }
 
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
-func (q Query) IDEq(v [16]byte) Query              { return q.Where(ID.Eq(v)) }
-func (q Query) IDNotEq(v [16]byte) Query           { return q.Where(ID.NotEq(v)) }
-func (q Query) IDIn(v ...[16]byte) Query           { return q.Where(ID.In(v...)) }
-func (q Query) IDNotIn(v ...[16]byte) Query        { return q.Where(ID.NotIn(v...)) }
-func (q Query) CreatedAtEq(v time.Time) Query      { return q.Where(CreatedAt.Eq(v)) }
-func (q Query) CreatedAtNotEq(v time.Time) Query   { return q.Where(CreatedAt.NotEq(v)) }
-func (q Query) CreatedAtGt(v time.Time) Query      { return q.Where(CreatedAt.Gt(v)) }
-func (q Query) CreatedAtGte(v time.Time) Query     { return q.Where(CreatedAt.Gte(v)) }
-func (q Query) CreatedAtLt(v time.Time) Query      { return q.Where(CreatedAt.Lt(v)) }
-func (q Query) CreatedAtLte(v time.Time) Query     { return q.Where(CreatedAt.Lte(v)) }
-func (q Query) UpdatedAtEq(v time.Time) Query      { return q.Where(UpdatedAt.Eq(v)) }
-func (q Query) UpdatedAtNotEq(v time.Time) Query   { return q.Where(UpdatedAt.NotEq(v)) }
-func (q Query) UpdatedAtGt(v time.Time) Query      { return q.Where(UpdatedAt.Gt(v)) }
-func (q Query) UpdatedAtGte(v time.Time) Query     { return q.Where(UpdatedAt.Gte(v)) }
-func (q Query) UpdatedAtLt(v time.Time) Query      { return q.Where(UpdatedAt.Lt(v)) }
-func (q Query) UpdatedAtLte(v time.Time) Query     { return q.Where(UpdatedAt.Lte(v)) }
-func (q Query) SkuEq(v string) Query               { return q.Where(Sku.Eq(v)) }
-func (q Query) SkuNotEq(v string) Query            { return q.Where(Sku.NotEq(v)) }
-func (q Query) SkuGt(v string) Query               { return q.Where(Sku.Gt(v)) }
-func (q Query) SkuGte(v string) Query              { return q.Where(Sku.Gte(v)) }
-func (q Query) SkuLt(v string) Query               { return q.Where(Sku.Lt(v)) }
-func (q Query) SkuLte(v string) Query              { return q.Where(Sku.Lte(v)) }
-func (q Query) SkuLike(v string) Query             { return q.Where(Sku.Like(v)) }
-func (q Query) SkuILike(v string) Query            { return q.Where(Sku.ILike(v)) }
-func (q Query) SkuIn(v ...string) Query            { return q.Where(Sku.In(v...)) }
-func (q Query) SkuNotIn(v ...string) Query         { return q.Where(Sku.NotIn(v...)) }
-func (q Query) NameEq(v string) Query              { return q.Where(Name.Eq(v)) }
-func (q Query) NameNotEq(v string) Query           { return q.Where(Name.NotEq(v)) }
-func (q Query) NameGt(v string) Query              { return q.Where(Name.Gt(v)) }
-func (q Query) NameGte(v string) Query             { return q.Where(Name.Gte(v)) }
-func (q Query) NameLt(v string) Query              { return q.Where(Name.Lt(v)) }
-func (q Query) NameLte(v string) Query             { return q.Where(Name.Lte(v)) }
-func (q Query) NameLike(v string) Query            { return q.Where(Name.Like(v)) }
-func (q Query) NameILike(v string) Query           { return q.Where(Name.ILike(v)) }
-func (q Query) NameIn(v ...string) Query           { return q.Where(Name.In(v...)) }
-func (q Query) NameNotIn(v ...string) Query        { return q.Where(Name.NotIn(v...)) }
-func (q Query) PriceEq(v runtime.Decimal) Query    { return q.Where(Price.Eq(v)) }
-func (q Query) PriceNotEq(v runtime.Decimal) Query { return q.Where(Price.NotEq(v)) }
-func (q Query) PriceGt(v runtime.Decimal) Query    { return q.Where(Price.Gt(v)) }
-func (q Query) PriceGte(v runtime.Decimal) Query   { return q.Where(Price.Gte(v)) }
-func (q Query) PriceLt(v runtime.Decimal) Query    { return q.Where(Price.Lt(v)) }
-func (q Query) PriceLte(v runtime.Decimal) Query   { return q.Where(Price.Lte(v)) }
-func (q Query) ActiveEq(v bool) Query              { return q.Where(Active.Eq(v)) }
-func (q Query) ActiveNotEq(v bool) Query           { return q.Where(Active.NotEq(v)) }
-func (q Query) TagsContains(v ...string) Query     { return q.Where(Tags.Contains(v...)) }
-func (q Query) TagsContainedBy(v ...string) Query  { return q.Where(Tags.ContainedBy(v...)) }
-func (q Query) TagsOverlaps(v ...string) Query     { return q.Where(Tags.Overlaps(v...)) }
-func (q Query) SearchMatches(v string) Query       { return q.Where(Search.Matches(v)) }
-func (q Query) SearchWebSearch(v string) Query     { return q.Where(Search.WebSearch(v)) }
+func (q Query) IDEq(v [16]byte) Query                 { return q.Where(ID.Eq(v)) }
+func (q Query) IDNotEq(v [16]byte) Query              { return q.Where(ID.NotEq(v)) }
+func (q Query) IDIn(v ...[16]byte) Query              { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query           { return q.Where(ID.NotIn(v...)) }
+func (q Query) CreatedAtEq(v time.Time) Query         { return q.Where(CreatedAt.Eq(v)) }
+func (q Query) CreatedAtNotEq(v time.Time) Query      { return q.Where(CreatedAt.NotEq(v)) }
+func (q Query) CreatedAtGt(v time.Time) Query         { return q.Where(CreatedAt.Gt(v)) }
+func (q Query) CreatedAtGte(v time.Time) Query        { return q.Where(CreatedAt.Gte(v)) }
+func (q Query) CreatedAtLt(v time.Time) Query         { return q.Where(CreatedAt.Lt(v)) }
+func (q Query) CreatedAtLte(v time.Time) Query        { return q.Where(CreatedAt.Lte(v)) }
+func (q Query) UpdatedAtEq(v time.Time) Query         { return q.Where(UpdatedAt.Eq(v)) }
+func (q Query) UpdatedAtNotEq(v time.Time) Query      { return q.Where(UpdatedAt.NotEq(v)) }
+func (q Query) UpdatedAtGt(v time.Time) Query         { return q.Where(UpdatedAt.Gt(v)) }
+func (q Query) UpdatedAtGte(v time.Time) Query        { return q.Where(UpdatedAt.Gte(v)) }
+func (q Query) UpdatedAtLt(v time.Time) Query         { return q.Where(UpdatedAt.Lt(v)) }
+func (q Query) UpdatedAtLte(v time.Time) Query        { return q.Where(UpdatedAt.Lte(v)) }
+func (q Query) SkuEq(v string) Query                  { return q.Where(Sku.Eq(v)) }
+func (q Query) SkuNotEq(v string) Query               { return q.Where(Sku.NotEq(v)) }
+func (q Query) SkuGt(v string) Query                  { return q.Where(Sku.Gt(v)) }
+func (q Query) SkuGte(v string) Query                 { return q.Where(Sku.Gte(v)) }
+func (q Query) SkuLt(v string) Query                  { return q.Where(Sku.Lt(v)) }
+func (q Query) SkuLte(v string) Query                 { return q.Where(Sku.Lte(v)) }
+func (q Query) SkuLike(v string) Query                { return q.Where(Sku.Like(v)) }
+func (q Query) SkuILike(v string) Query               { return q.Where(Sku.ILike(v)) }
+func (q Query) SkuIn(v ...string) Query               { return q.Where(Sku.In(v...)) }
+func (q Query) SkuNotIn(v ...string) Query            { return q.Where(Sku.NotIn(v...)) }
+func (q Query) NameEq(v string) Query                 { return q.Where(Name.Eq(v)) }
+func (q Query) NameNotEq(v string) Query              { return q.Where(Name.NotEq(v)) }
+func (q Query) NameGt(v string) Query                 { return q.Where(Name.Gt(v)) }
+func (q Query) NameGte(v string) Query                { return q.Where(Name.Gte(v)) }
+func (q Query) NameLt(v string) Query                 { return q.Where(Name.Lt(v)) }
+func (q Query) NameLte(v string) Query                { return q.Where(Name.Lte(v)) }
+func (q Query) NameLike(v string) Query               { return q.Where(Name.Like(v)) }
+func (q Query) NameILike(v string) Query              { return q.Where(Name.ILike(v)) }
+func (q Query) NameIn(v ...string) Query              { return q.Where(Name.In(v...)) }
+func (q Query) NameNotIn(v ...string) Query           { return q.Where(Name.NotIn(v...)) }
+func (q Query) PriceEq(v runtime.Decimal) Query       { return q.Where(Price.Eq(v)) }
+func (q Query) PriceNotEq(v runtime.Decimal) Query    { return q.Where(Price.NotEq(v)) }
+func (q Query) PriceGt(v runtime.Decimal) Query       { return q.Where(Price.Gt(v)) }
+func (q Query) PriceGte(v runtime.Decimal) Query      { return q.Where(Price.Gte(v)) }
+func (q Query) PriceLt(v runtime.Decimal) Query       { return q.Where(Price.Lt(v)) }
+func (q Query) PriceLte(v runtime.Decimal) Query      { return q.Where(Price.Lte(v)) }
+func (q Query) ActiveEq(v bool) Query                 { return q.Where(Active.Eq(v)) }
+func (q Query) ActiveNotEq(v bool) Query              { return q.Where(Active.NotEq(v)) }
+func (q Query) TagsContains(v ...string) Query        { return q.Where(Tags.Contains(v...)) }
+func (q Query) TagsContainedBy(v ...string) Query     { return q.Where(Tags.ContainedBy(v...)) }
+func (q Query) TagsOverlaps(v ...string) Query        { return q.Where(Tags.Overlaps(v...)) }
+func (q Query) AttrsContains(v runtime.JSON) Query    { return q.Where(Attrs.Contains(v)) }
+func (q Query) AttrsContainedBy(v runtime.JSON) Query { return q.Where(Attrs.ContainedBy(v)) }
+func (q Query) AttrsHasAnyKey(v ...string) Query      { return q.Where(Attrs.HasAnyKey(v...)) }
+func (q Query) AttrsHasAllKeys(v ...string) Query     { return q.Where(Attrs.HasAllKeys(v...)) }
+func (q Query) SearchMatches(v string) Query          { return q.Where(Search.Matches(v)) }
+func (q Query) SearchWebSearch(v string) Query        { return q.Where(Search.WebSearch(v)) }
 
-const selectPrefix = `SELECT "id", "created_at", "updated_at", "sku", "name", "price", "active", "tags" FROM "products"`
+const selectPrefix = `SELECT "id", "created_at", "updated_at", "sku", "name", "price", "active", "tags", "attrs" FROM "products"`
 const countPrefix = `SELECT count(*) FROM "products"`
 const existsPrefix = `SELECT 1 FROM "products"`
 const existsSuffix = ` LIMIT 1`
@@ -782,6 +827,12 @@ var orderTable = [nCols][4]string{
 		"\"tags\" ASC NULLS FIRST",
 		"\"tags\" DESC NULLS LAST",
 	},
+	{ // attrs
+		"\"attrs\"",
+		"\"attrs\" DESC",
+		"\"attrs\" ASC NULLS FIRST",
+		"\"attrs\" DESC NULLS LAST",
+	},
 	{ // search
 		"\"search\"",
 		"\"search\" DESC",
@@ -801,6 +852,7 @@ var identTable = [nCols]string{
 	"\"price\"",
 	"\"active\"",
 	"\"tags\"",
+	"\"attrs\"",
 	"\"search\"",
 }
 
@@ -834,7 +886,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [9][23]runtime.Frag{
+var fragTable = [10][27]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -859,6 +911,10 @@ var fragTable = [9][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -868,6 +924,10 @@ var fragTable = [9][23]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -909,6 +969,10 @@ var fragTable = [9][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // sku
 		{}, // opNone
@@ -927,6 +991,10 @@ var fragTable = [9][23]runtime.Frag{
 		{},
 		{A: "\"sku\" = ANY($", B: ")"},
 		{A: "\"sku\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -959,6 +1027,10 @@ var fragTable = [9][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // price
 		{}, // opNone
@@ -984,11 +1056,19 @@ var fragTable = [9][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // active
 		{}, // opNone
 		{A: "\"active\" = $", B: ""},
 		{A: "\"active\" <> $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1034,6 +1114,39 @@ var fragTable = [9][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // attrs
+		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "\"attrs\" @> $", B: ""},
+		{A: "\"attrs\" <@ $", B: ""},
+		{A: "\"attrs\" ?| $", B: ""},
+		{A: "\"attrs\" ?& $", B: ""},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // search
 		{}, // opNone
@@ -1047,6 +1160,10 @@ var fragTable = [9][23]runtime.Frag{
 		{},
 		{A: "\"search\" @@ plainto_tsquery($", B: ")"},
 		{A: "\"search\" @@ websearch_to_tsquery($", B: ")"},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1228,6 +1345,7 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	if decErr != nil {
 		return decErr
 	}
+	r.Attrs = runtime.JSON(runtime.JSONB(rv[8], sl))
 	return decErr
 }
 
@@ -1238,6 +1356,7 @@ type binder struct {
 	tims   [4]time.Time
 	decs   [4]runtime.Decimal
 	bools  [4]bool
+	jsns   [2]runtime.JSON
 	anyRaw [3][][16]byte
 	anyStr [3][]string
 	limit  int64
@@ -1278,7 +1397,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var ns, nr, ntm, nd, nbo, nar, nas uint8
+	var ns, nr, ntm, nd, nbo, njs, nar, nas uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1292,7 +1411,7 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps:
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys:
 			switch t.Col() {
 			case 0:
 				b.anyRaw[nar] = q.anyRaw[nar]
@@ -1307,6 +1426,10 @@ func (q Query) bindPreds(b *binder) []any {
 				v = append(v, &b.anyStr[nas])
 				nas++
 			case 7:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 8:
 				b.anyStr[nas] = q.anyStr[nas]
 				v = append(v, &b.anyStr[nas])
 				nas++
@@ -1343,6 +1466,10 @@ func (q Query) bindPreds(b *binder) []any {
 			v = append(v, &b.bools[nbo])
 			nbo++
 		case 8:
+			b.jsns[njs] = q.jsns[njs]
+			v = append(v, &b.jsns[njs])
+			njs++
+		case 9:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
@@ -1564,7 +1691,7 @@ func (q Query) OneCard(ctx context.Context, ex runtime.Executor) (CardRow, bool,
 
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
-const insertSQL = `INSERT INTO "products" ("id", "created_at", "updated_at", "sku", "name", "price", "active", "tags") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING "id", "created_at", "updated_at", "sku", "name", "price", "active", "tags", "search"`
+const insertSQL = `INSERT INTO "products" ("id", "created_at", "updated_at", "sku", "name", "price", "active", "tags", "attrs") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING "id", "created_at", "updated_at", "sku", "name", "price", "active", "tags", "attrs", "search"`
 
 const updatePrefix = `UPDATE "products" SET `
 const deletePrefix = `DELETE FROM "products"`
@@ -1578,9 +1705,10 @@ const (
 	dPrice     uint64 = 1 << 3
 	dActive    uint64 = 1 << 4
 	dTags      uint64 = 1 << 5
+	dAttrs     uint64 = 1 << 6
 )
 
-const nUpdatable = 6
+const nUpdatable = 7
 
 // setFrags is every assignment this table can make, lowered at build time.
 var setFrags = [nUpdatable]runtime.Frag{
@@ -1590,6 +1718,7 @@ var setFrags = [nUpdatable]runtime.Frag{
 	{A: "\"price\" = $", B: ""},      // price
 	{A: "\"active\" = $", B: ""},     // active
 	{A: "\"tags\" = $", B: ""},       // tags
+	{A: "\"attrs\" = $", B: ""},      // attrs
 }
 
 // pkFrags addresses one row.
@@ -1609,9 +1738,10 @@ const (
 	iPrice     uint64 = 1 << 5
 	iActive    uint64 = 1 << 6
 	iTags      uint64 = 1 << 7
+	iAttrs     uint64 = 1 << 8
 )
 
-const nInsertable = 8
+const nInsertable = 9
 
 // insCols is the quoted column name for each insert bit.
 var insCols = [nInsertable]string{
@@ -1623,6 +1753,7 @@ var insCols = [nInsertable]string{
 	"\"price\"",
 	"\"active\"",
 	"\"tags\"",
+	"\"attrs\"",
 }
 
 // insParts and insPlaceholder come from the back end at build time; the
@@ -1631,7 +1762,7 @@ var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Clo
 
 const insPlaceholder = "$"
 const insPrefix = "INSERT INTO \"products\""
-const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"sku\", \"name\", \"price\", \"active\", \"tags\", \"search\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"sku\", \"name\", \"price\", \"active\", \"tags\", \"attrs\", \"search\""
 
 var insCache = runtime.NewMaskCache()
 var updCache = runtime.NewMaskCache()
@@ -1687,6 +1818,11 @@ func (m *Mut) SetActive(v bool) {
 func (m *Mut) SetTags(v []string) {
 	m.row.Tags = v
 	m.dirty |= dTags
+}
+
+func (m *Mut) SetAttrs(v runtime.JSON) {
+	m.row.Attrs = v
+	m.dirty |= dAttrs
 }
 
 // Ins stages a new row. Unlike Mut it has a setter for every insertable
@@ -1754,12 +1890,17 @@ func (n *Ins) SetTags(v []string) {
 	n.set |= iTags
 }
 
+func (n *Ins) SetAttrs(v runtime.JSON) {
+	n.row.Attrs = v
+	n.set |= iAttrs
+}
+
 // upsertTails builds the ON CONFLICT tail for one target, given the
 // insert mask — an upsert must only overwrite the columns the caller
 // assigned, or it silently reverts every column it did not.
 var upsertTails = []func(uint64) string{
 	func(mask uint64) string {
-		set := make([]string, 0, 6)
+		set := make([]string, 0, 7)
 		if mask&(1<<2) != 0 {
 			set = append(set, "updated_at")
 		}
@@ -1777,11 +1918,14 @@ var upsertTails = []func(uint64) string{
 		}
 		if mask&(1<<7) != 0 {
 			set = append(set, "tags")
+		}
+		if mask&(1<<8) != 0 {
+			set = append(set, "attrs")
 		}
 		return onConflictID(set)
 	},
 	func(mask uint64) string {
-		set := make([]string, 0, 6)
+		set := make([]string, 0, 7)
 		if mask&(1<<2) != 0 {
 			set = append(set, "updated_at")
 		}
@@ -1799,6 +1943,9 @@ var upsertTails = []func(uint64) string{
 		}
 		if mask&(1<<7) != 0 {
 			set = append(set, "tags")
+		}
+		if mask&(1<<8) != 0 {
+			set = append(set, "attrs")
 		}
 		return onConflictSku(set)
 	},
@@ -1852,6 +1999,7 @@ var assignFor = map[string]string{
 	"price":      "\"price\" = EXCLUDED.\"price\"",
 	"active":     "\"active\" = EXCLUDED.\"active\"",
 	"tags":       "\"tags\" = EXCLUDED.\"tags\"",
+	"attrs":      "\"attrs\" = EXCLUDED.\"attrs\"",
 }
 
 func assignExcluded(c string) string { return assignFor[c] }
@@ -1911,6 +2059,8 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 			args = append(args, n.row.Active)
 		case 7:
 			args = append(args, n.row.Tags)
+		case 8:
+			args = append(args, n.row.Attrs)
 		}
 	}
 	var out Row
@@ -1943,7 +2093,7 @@ func Inserts() int { return insCache.Masks() }
 // not treat a zero as 'unset': that guess is why other ORMs cannot insert
 // a false, a 0 or an empty string into a column with a default.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
-	args := make([]any, 0, 8)
+	args := make([]any, 0, 9)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
@@ -1952,6 +2102,7 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args = append(args, r.Price)
 	args = append(args, r.Active)
 	args = append(args, r.Tags)
+	args = append(args, r.Attrs)
 	rows, err := ex.Query(ctx, insertSQL, args)
 	if err != nil {
 		return err
@@ -1986,13 +2137,14 @@ var copyCols = []string{
 	"price",
 	"active",
 	"tags",
+	"attrs",
 }
 
 // rowSource walks a []Row for CopyFrom without copying any of it.
 type rowSource struct {
 	rows []Row
 	i    int
-	buf  [8]any
+	buf  [9]any
 }
 
 func (s *rowSource) Next() bool {
@@ -2018,6 +2170,7 @@ func (s *rowSource) Values() []any {
 	s.buf[5] = &r.Price
 	s.buf[6] = &r.Active
 	s.buf[7] = &r.Tags
+	s.buf[8] = &r.Attrs
 	return s.buf[:]
 }
 
@@ -2056,8 +2209,9 @@ func InsertOp(r Row) runtime.BatchOp {
 	mask |= 1 << 5
 	mask |= 1 << 6
 	mask |= 1 << 7
+	mask |= 1 << 8
 	st := stmtForInsert(mask, 0)
-	args := make([]any, 0, 8)
+	args := make([]any, 0, 9)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
@@ -2066,6 +2220,7 @@ func InsertOp(r Row) runtime.BatchOp {
 	args = append(args, r.Price)
 	args = append(args, r.Active)
 	args = append(args, r.Tags)
+	args = append(args, r.Attrs)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}
 }
 
@@ -2097,6 +2252,8 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 			args = append(args, m.row.Active)
 		case 5:
 			args = append(args, m.row.Tags)
+		case 6:
+			args = append(args, m.row.Attrs)
 		}
 	}
 	args = append(args, m.row.ID)
@@ -2164,6 +2321,8 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 			args = append(args, m.row.Active)
 		case 5:
 			args = append(args, m.row.Tags)
+		case 6:
+			args = append(args, m.row.Attrs)
 		}
 	}
 	args = append(args, m.row.ID)

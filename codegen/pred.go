@@ -30,6 +30,7 @@ func (g *gen) predType() {
 		{"dec", "dec runtime.Decimal"}, {"pfx", "pfx netip.Prefix"},
 		{"tod", "tod runtime.TimeOfDay"}, {"bol", "bol bool"},
 		{"rng", "rng runtime.TstzRange"},
+		{"jsn", "jsn runtime.JSON"},
 	} {
 		if ts.preds[sl.name] {
 			g.p("\t%s", sl.decl)
@@ -66,6 +67,8 @@ func predCtor(c colInfo, op string, i int) string {
 		set = "tod: v"
 	case kindTstzRange:
 		set = "rng: v"
+	case kindJSONB:
+		set = "jsn: v"
 	case kindTSVector:
 		// The search TERM is a string and rides the text arena; the column it
 		// is matched against is the tsvector.
@@ -196,6 +199,13 @@ func predArraySlot(c colInfo) string {
 	case kindUUID, kindUUIDArray:
 		return "anyRaw"
 	case kindText, kindTextArray:
+		return "anyStr"
+	case kindJSONB:
+		// The KEY operators take a text[]. The column's other operators (@>,
+		// <@) take a jsonb and use the jsns arena instead — the two live in
+		// different storage, and the leaf already dispatches list operators
+		// before it reaches the arena switch, so nothing new is needed to keep
+		// them apart.
 		return "anyStr"
 	case kindInt2:
 		return "anyI16"
