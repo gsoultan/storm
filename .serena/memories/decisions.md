@@ -74,7 +74,7 @@ in round trips.
   **Only three strings survive**, none a Go identifier: a database column name
   you are assigning (`.Named("reviewer_id")`), a database type
   (`.Raw("geography(Point,4326)", codec)`), and prose (`.AcknowledgeNoFK(reason)`).
-  Plus `storm.Expr(...)` as a conspicuous, `PREPARE`-checked escape surfaced by
+  Plus `storm.RawSQL(...)` as a conspicuous, `PREPARE`-checked escape surfaced by
   `storm lint --expr`.
 - **Pretending Mongo and Postgres are interchangeable** — one model can serve
   both where that genuinely makes sense; storm's job is making the divergence
@@ -90,3 +90,24 @@ in round trips.
   from M2; Oracle (M11) gates Mongo (M12).
 
 See [[core]], [[boundaries]].
+
+## The declaration vocabulary is builder methods, not package functions (2026-09-02)
+
+`storm.Eq`, `storm.And`, `storm.Col` and nineteen more were package-level, in
+scope beside the generated query API where `Eq` means something else:
+`order.Status.Eq(x)` filters at run time, the package-level one described a
+filter at declaration time. They are now methods on `Exprs`, embedded in
+`*Aggregates` and `*Joins`, so a declaration constructor is unreachable from a
+query. The root package exports none of the 22.
+
+Declared aggregate outputs return an `Out` handle rather than being named by
+string, and `Filter`/`OverWindow` hang off that handle rather than off "the last
+term declared". A `Filter` with no aggregate is now unrepresentable.
+
+`storm.Expr` is `storm.RawSQL`; `Expr` survives as a deprecated ALIAS (not a
+defined type), so nothing that returns `RawSQL` breaks a v0.1-v0.3 caller. Live
+API returns `RawSQL` — returning the deprecated name would flag SA1019 at every
+call site of `storm.Now()`.
+
+Chosen by the user from an options set, all three breaking, all three cheaper
+before `STABILITY.md` binds at v1.0.0.

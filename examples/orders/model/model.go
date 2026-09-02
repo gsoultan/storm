@@ -56,9 +56,9 @@ func (p *Product) Schema(t *storm.Table) {
 	// system that rounds is a defect rather than a tolerance.
 	t.Col(&p.Price).Numeric(12, 2)
 	t.Col(&p.Active).Default("true")
-	t.Check(storm.Expr(`price >= 0`))
+	t.Check(storm.RawSQL(`price >= 0`))
 	t.Col(&p.Search).
-		Generated(storm.Expr(`to_tsvector('english', coalesce(name,'') || ' ' || coalesce(sku,''))`)).
+		Generated(storm.RawSQL(`to_tsvector('english', coalesce(name,'') || ' ' || coalesce(sku,''))`)).
 		Index()
 }
 
@@ -91,9 +91,9 @@ func (s *StockItem) Schema(t *storm.Table) {
 	t.Col(&s.Reserved).Default("0")
 	t.Col(&s.Version).Default("0").Version()
 	// The database refuses to oversell even if the application forgets to ask.
-	t.Check(storm.Expr(`on_hand >= 0`))
-	t.Check(storm.Expr(`reserved >= 0`))
-	t.Check(storm.Expr(`reserved <= on_hand`))
+	t.Check(storm.RawSQL(`on_hand >= 0`))
+	t.Check(storm.RawSQL(`reserved >= 0`))
+	t.Check(storm.RawSQL(`reserved <= on_hand`))
 }
 
 // Booking is the scheduling case: a room reserved for a period. The overlap
@@ -147,7 +147,7 @@ func (o *Order) Schema(t *storm.Table) {
 	t.Col(&o.Total).Numeric(12, 2)
 	t.Col(&o.Status).Default("'pending'")
 	t.Index(&o.Customer, storm.Desc(&o.PlacedAt))
-	t.Check(storm.Expr(`total >= 0`))
+	t.Check(storm.RawSQL(`total >= 0`))
 }
 
 // Aggregates: the reporting reads, declared. Predicates still compose at the
@@ -267,5 +267,5 @@ type OrderLine struct {
 func (l *OrderLine) Schema(t *storm.Table) {
 	t.Col(&l.Order).OnDelete(storm.Cascade)
 	t.Col(&l.UnitPrice).Numeric(12, 2)
-	t.Check(storm.Expr(`quantity > 0`))
+	t.Check(storm.RawSQL(`quantity > 0`))
 }
