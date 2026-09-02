@@ -12,7 +12,19 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.4.0 — 2026-09-02
+
+> **If you are on v0.3.0 and any query carries two list predicates, it is
+> returning the wrong rows right now.** No error, no warning. See the first
+> entry below. Upgrading is the fix; there is no workaround short of splitting
+> the query.
+>
+> **This release is breaking.** The declaration vocabulary moved off the root
+> package onto the builder (`storm.Eq(...)` → `a.Eq(...)`), and declared
+> aggregate outputs return handles instead of being named by string. Models
+> written against v0.1–v0.3 need those two edits. `storm.Expr` still compiles —
+> it is a deprecated alias for `storm.RawSQL`. `docs/STABILITY.md` binds from
+> v1.0.0, which is why these changes are being made now rather than after.
 
 ### Fixed: two list predicates in one query returned the wrong rows
 
