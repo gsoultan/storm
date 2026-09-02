@@ -364,6 +364,41 @@ traffic rather than plateauing, or RSS without a plateau — each now opens a
 **v0.1.1**, and the finding goes in this file first. The signals are
 unchanged; only the remedy is.
 
+## P5 — The only gate on emitted SQL did not look at the new features — **CLOSED 2026-09-02**
+
+`storm explain` is the one check that asserts every statement storm emits is
+one PostgreSQL accepts: it sends each through `EXPLAIN (GENERIC_PLAN)`, which
+plans a parameterised statement without inventing bind values. It is worth
+exactly what it enumerates, and it enumerated base reads and named-plan
+relation loads — the part that could hardly be wrong.
+
+Everything v0.3.0 added was invisible to it. Declared aggregations carry GROUP
+BY, HAVING, FILTER, grouping sets and window frames; declared joins carry CTEs
+and an ON clause across tables. That SQL is fixed at generate time, so it is
+either valid or it is a runtime error the first time a caller asks for it — and
+"no test calls it" is the normal state of a feature declared last week. On the
+orders model the enumeration went from 6 statements to 14.
+
+**And it was not running in CI at all**, which is v1 criterion 5 ("fails CI on a
+query that regressed its plan").
+
+**Gate.** `scripts/check/explain.sh` applies the orders model's DDL to a scratch
+namespace and plans every statement, as a CI step. Proven to have teeth rather
+than assumed: changing the HAVING lowering to emit ` HAVING WHERE ` — one
+keyword, accepted by every unit test, executed by no test — is caught with
+`syntax error at or near "WHERE"` and fails the build.
+
+`storm lint` is deliberately NOT in that script. The orders model declares no
+named plans on purpose (every relation already gets one), so lint there would
+report success without checking anything. The round-trip budget is gated by
+`TestPlanCosts`, which asserts the exact count for each of the fixture's three
+plans and fails through `go test ./...`.
+
+**Not covered, and worth saying:** the seq-scan half of explain needs statistics
+to mean anything. Against an empty CI database the planner's row estimates
+cannot reach the threshold, so this gate asserts validity, not performance. A
+stats-bearing replica is where the performance signal lives.
+
 ---
 
 ## What is already load-bearing (do not re-litigate)
