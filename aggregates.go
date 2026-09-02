@@ -200,7 +200,7 @@ func (b *AggregateBuilder) sets(s *schema.GroupingSets) *AggregateBuilder {
 
 // Count adds count(*): rows per group, never NULL.
 func (b *AggregateBuilder) Count(as string) *AggregateBuilder {
-	return b.agged(schema.AggCount, Star(), as)
+	return b.agged(schema.AggCount, star(), as)
 }
 
 // CountOf adds count(col), which counts rows where the column is NOT NULL — a
@@ -492,8 +492,8 @@ func (b *AggregateBuilder) resolveTerm(t Term) (schema.Expr, error) {
 		// Reachable only through resolveTerm's callers, all of which forbid a
 		// bare star. Count handles its own argument before getting here.
 		return schema.Expr{}, fmt.Errorf(
-			"storm.Star() is only the argument of Count — `* > 0` is not a condition; " +
-				"use storm.Out(\"...\") to compare against a declared aggregate")
+			"`*` is not a value: Count(name) already counts rows, and `* > 0` is not " +
+				"a condition — use storm.Out(\"...\") to compare against a declared aggregate")
 
 	case schema.ExprLit:
 		return schema.Expr{Kind: schema.ExprLit, Lit: t.lit,
