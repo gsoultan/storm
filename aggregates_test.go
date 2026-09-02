@@ -55,7 +55,9 @@ type dupField struct {
 }
 
 func (m *dupField) Aggregates(a *storm.Aggregates) {
-	a.Named("X").Count("N").Sum(&m.Balance, "N")
+	b := a.Named("X")
+	b.Count("N")
+	b.Sum(&m.Balance, "N")
 }
 
 type dupName struct {
@@ -92,7 +94,9 @@ type dupGroup struct {
 }
 
 func (m *dupGroup) Aggregates(a *storm.Aggregates) {
-	a.Named("X").By(&m.Name, &m.Name).Count("N")
+	b := a.Named("X")
+	b.By(&m.Name, &m.Name)
+	b.Count("N")
 }
 
 // PostgreSQL has no sum(text), no max(uuid) and no min(bool). Left to the
@@ -163,15 +167,18 @@ type validAgg struct {
 }
 
 func (m *validAgg) Aggregates(a *storm.Aggregates) {
-	a.Named("ByActive").
-		By(&m.Active).
-		Count("N").
-		CountOf(&m.Age, "WithAge").
-		Sum(&m.Balance, "Total").
-		Avg(&m.Age, "AvgAge").
-		Min(&m.Name, "FirstName").
-		Max(&m.CreatedAt, "Newest")
-	a.Named("Totals").Count("N").Sum(&m.Balance, "Total")
+	b := a.Named("ByActive")
+	b.By(&m.Active)
+	b.Count("N")
+	b.CountOf(&m.Age, "WithAge")
+	b.Sum(&m.Balance, "Total")
+	b.Avg(&m.Age, "AvgAge")
+	b.Min(&m.Name, "FirstName")
+	b.Max(&m.CreatedAt, "Newest")
+
+	t := a.Named("Totals")
+	t.Count("N")
+	t.Sum(&m.Balance, "Total")
 }
 
 // ---- the grouped-column rule ------------------------------------------------
@@ -185,8 +192,10 @@ type winUngrouped struct {
 func (m *winUngrouped) Aggregates(a *storm.Aggregates) {
 	// row_number() over an UNGROUPED column, next to GROUP BY status. Looks
 	// reasonable; PostgreSQL refuses it at execution.
-	a.Named("X").By(&m.Status).Count("N").
-		RowNumber("Rank", storm.Over().OrderByDesc(&m.Total))
+	b := a.Named("X")
+	b.By(&m.Status)
+	b.Count("N")
+	b.RowNumber("Rank", a.Over().OrderByDesc(&m.Total))
 }
 
 type selUngrouped struct {
@@ -196,8 +205,10 @@ type selUngrouped struct {
 }
 
 func (m *selUngrouped) Aggregates(a *storm.Aggregates) {
-	a.Named("X").Count("N").Max(&m.Total, "Biggest").
-		Having(storm.Gt(storm.Col(&m.Total), 1))
+	b := a.Named("X")
+	b.Count("N")
+	b.Max(&m.Total, "Biggest")
+	b.Having(a.Gt(a.Col(&m.Total), 1))
 }
 
 type noOrderRank struct {
@@ -206,8 +217,10 @@ type noOrderRank struct {
 }
 
 func (m *noOrderRank) Aggregates(a *storm.Aggregates) {
-	a.Named("X").By(&m.Status).Count("N").
-		RowNumber("Rank", storm.Over()) // a rank over nothing
+	b := a.Named("X")
+	b.By(&m.Status)
+	b.Count("N")
+	b.RowNumber("Rank", a.Over()) // a rank over nothing
 }
 
 type badFilter struct {
@@ -216,7 +229,13 @@ type badFilter struct {
 }
 
 func (m *badFilter) Aggregates(a *storm.Aggregates) {
-	a.Named("X").By(&m.Status).Filter(storm.Eq(&m.Status, "x")) // nothing to filter
+	b := a.Named("X")
+	b.By(&m.Status)
+	// Filtering a WINDOW function. "Filter before any aggregate" is no longer
+	// reachable — Filter lives on the handle a declaration returns, so there is
+	// nothing to call it on until an output exists — but filtering the wrong
+	// KIND of output still is.
+	b.RowNumber("Rank", a.Over().OrderByAsc(&m.Status)).Filter(a.Eq(&m.Status, "x"))
 }
 
 type groupingNoSets struct {
@@ -225,7 +244,10 @@ type groupingNoSets struct {
 }
 
 func (m *groupingNoSets) Aggregates(a *storm.Aggregates) {
-	a.Named("X").By(&m.Status).Count("N").GroupingOf("Sub", &m.Status)
+	b := a.Named("X")
+	b.By(&m.Status)
+	b.Count("N")
+	b.GroupingOf("Sub", &m.Status)
 }
 
 // PostgreSQL raises these at EXECUTION, from a report that may only run at
@@ -239,7 +261,7 @@ func TestGroupedColumnRuleIsCheckedAtBuildTime(t *testing.T) {
 		{"window over an ungrouped column", &winUngrouped{}, []string{"total", "grouping expressions"}},
 		{"having on an ungrouped column", &selUngrouped{}, []string{"total"}},
 		{"rank over an unordered window", &noOrderRank{}, []string{"ranks by nothing"}},
-		{"filter with no aggregate", &badFilter{}, []string{"Filter"}},
+		{"filter on a window function", &badFilter{}, []string{"Filter applies to an aggregate"}},
 		{"GROUPING without grouping sets", &groupingNoSets{}, []string{"subtotal"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -263,14 +285,14 @@ type validWindow struct {
 }
 
 func (m *validWindow) Aggregates(a *storm.Aggregates) {
-	a.Named("X").
-		ByExpr("Day", storm.DateTrunc("day", &m.CreatedAt)).
-		Count("N").
-		Sum(&m.Total, "Revenue").
-		// Over an AGGREGATE and over the grouping expression: both legal.
-		RowNumber("Rank", storm.Over().OrderByDesc(storm.Out("Revenue"))).
-		Lag(storm.Out("Revenue"), "Prev", storm.Over().OrderByAsc(storm.Out("Day"))).
-		Having(storm.Gt(storm.Out("N"), 0))
+	b := a.Named("X")
+	day := b.ByExpr("Day", a.DateTrunc("day", &m.CreatedAt))
+	n := b.Count("N")
+	revenue := b.Sum(&m.Total, "Revenue")
+	// Over an AGGREGATE and over the grouping expression: both legal.
+	b.RowNumber("Rank", a.Over().OrderByDesc(revenue))
+	b.Lag(revenue, "Prev", a.Over().OrderByAsc(day))
+	b.Having(a.Gt(n, 0))
 }
 
 // The rule must not refuse what PostgreSQL accepts: an expression that appears

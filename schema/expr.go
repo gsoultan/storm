@@ -175,14 +175,7 @@ var Funcs = map[string]FuncSig{
 			if len(in) < 2 {
 				return Type{}, fmt.Errorf("coalesce wants at least two arguments")
 			}
-			for _, t := range in[1:] {
-				if t.Name != in[0].Name {
-					return Type{}, fmt.Errorf(
-						"coalesce mixes %s and %s — every argument must be the same type",
-						in[0].Name, t.Name)
-				}
-			}
-			return in[0], nil
+			return unifyAll("coalesce", in)
 		},
 		// The point of coalesce: NOT nullable if any later argument is a
 		// non-null literal. Resolved where it is built, which knows that.
@@ -190,10 +183,11 @@ var Funcs = map[string]FuncSig{
 	"nullif": {
 		Args: 2,
 		Result: func(in []Type) (Type, error) {
-			if in[0].Name != in[1].Name {
-				return Type{}, fmt.Errorf("nullif mixes %s and %s", in[0].Name, in[1].Name)
-			}
-			return in[0], nil
+			// Deliberately NOT exact-match. `nullif(amount, 0)` is the canonical
+			// division-by-zero guard and the reason this function exists; PostgreSQL
+			// casts the literal, and requiring numeric(0) at the call site would
+			// make the documented use case unwritable.
+			return unifyAll("nullif", in)
 		},
 		// ALWAYS nullable — that is its whole job, and it is the
 		// division-by-zero guard the design doc leans on.
@@ -282,3 +276,64 @@ func (l Literal) SQL() string {
 	}
 	return "NULL"
 }
+
+// unifyAll finds one type every argument can be read as.
+//
+// Exact equality is too strict for the expressions people actually write:
+// `coalesce(balance, 0)` and `nullif(amount, 0)` mix a numeric column with an
+// integer literal, PostgreSQL casts the literal, and refusing them would make
+// the documented use of both functions unwritable. Anything outside one family
+// is still refused — mixing text with a number is a mistake, not a cast.
+func unifyAll(fn string, in []Type) (Type, error) {
+	out := in[0]
+	for _, t := range in[1:] {
+		if t.Name == out.Name {
+			continue
+		}
+		if numericFamily(out.Name) && numericFamily(t.Name) {
+			// Widen to the more capacious of the two, so a numeric column next
+			// to an int literal stays numeric rather than narrowing to int.
+			if numericRank(t.Name) > numericRank(out.Name) {
+				out = t
+			}
+			continue
+		}
+		if textFamily(out.Name) && textFamily(t.Name) {
+			out = Type{Name: TypeText}
+			continue
+		}
+		return Type{}, fmt.Errorf("%s mixes %s and %s, which PostgreSQL will not unify",
+			fn, out.Name, t.Name)
+	}
+	return out, nil
+}
+
+func numericFamily(n string) bool {
+	switch n {
+	case TypeInt2, TypeInt4, TypeInt8, TypeNumeric, TypeFloat4, TypeFloat8:
+		return true
+	}
+	return false
+}
+
+// numericRank orders the numeric types by how much they can hold, so unifying
+// picks the one that cannot lose the other.
+func numericRank(n string) int {
+	switch n {
+	case TypeInt2:
+		return 1
+	case TypeInt4:
+		return 2
+	case TypeInt8:
+		return 3
+	case TypeFloat4:
+		return 4
+	case TypeFloat8:
+		return 5
+	case TypeNumeric:
+		return 6
+	}
+	return 0
+}
+
+func textFamily(n string) bool { return n == TypeText || n == TypeVarchar }

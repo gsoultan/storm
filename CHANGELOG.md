@@ -12,6 +12,56 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### API review before v1.0
+
+`STABILITY.md` binds from v1.0.0, so the surface v0.3.0 added — 154 exported
+symbols — gets one pass while it is still free to change. The method was to ask
+what actually calls each of them.
+
+**Ten had no call site anywhere.** `Abs`, `Coalesce`, `NullIf`, `Lt`, `Lte`,
+`And`, `Or`, `IsNull`, `IsNotNull`, `Col` — not in the example, not in a test,
+not internally. Their type resolution had never run. Running it found that
+`nullif(amount, 0)` — the division-by-zero guard `NullIf`'s own doc gives as its
+reason to exist — was refused, because the literal is `int8` and the column is
+`numeric` and the two had to match exactly. PostgreSQL casts it. `coalesce` and
+`nullif` now unify within a family and widen to the more capacious type.
+
+**The declaration vocabulary moved onto the builder.** `storm.Eq`, `storm.And`,
+`storm.Col` and nineteen more sat at the top level beside the generated query
+API, meaning something different: `order.Status.Eq(x)` filters rows at run time,
+`storm.Eq(&o.Status, x)` described a filter at declaration time. Two `Eq`s in
+scope with different semantics is a question every reader has to answer once.
+They are now methods — `a.Eq(...)`, `a.DateTrunc(...)`, `j.OnCols(...)` — so a
+declaration constructor cannot be reached from a query, because the builder is
+not in scope there. The root package exports **none** of the 22.
+
+**Declared outputs return handles.** `Having(a.Gt(a.Out("Orders"), 0))` named an
+output by string, checked at build time. A declaration now returns an `Out` the
+compiler checks, and it cannot name an output that does not exist yet because
+you do not have one until it has:
+
+```go
+b := a.Named("ByStatus")
+orders := b.Count("Orders")
+b.Having(a.Gt(orders, 0))
+```
+
+`Filter` and `OverWindow` moved onto that handle too, so they attach to the
+output they name rather than to "the last one declared" — moving a line can no
+longer silently move a filter with it. One error case disappeared entirely: a
+`Filter` with no aggregate to filter is now unrepresentable.
+
+**`storm.Expr` is `storm.RawSQL`.** It is a raw SQL string, and someone reaching
+for "an expression" was landing on the escape hatch rather than on the checked
+vocabulary. `Expr` remains as a deprecated alias, so models written against
+v0.1–v0.3 keep compiling.
+
+**`Star()` is unexported.** `Count(name)` already means `count(*)`, `CountOf`
+takes the column, and every other position refused a star — there was no
+argument slot for it, and its doc described one that does not exist.
+
 ## v0.3.0 — 2026-09-01
 
 ### Benchmarks need re-running before the tag

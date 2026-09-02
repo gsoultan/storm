@@ -76,9 +76,14 @@ ada, err := n.Insert(ctx, ex)
 
 // Declared aggregations: GROUP BY without dropping to SQL. The result types
 // are PostgreSQL's, not the input's — count is int64, sum(numeric) is a
-// NULLABLE Decimal, because over zero rows it IS null.
+// NULLABLE Decimal, because over zero rows it IS null. Each declaration hands
+// back a handle, so a later clause refers to it by value, not by string.
 func (o *Order) Aggregates(a *storm.Aggregates) {
-    a.Named("ByStatus").By(&o.Status).Count("Orders").Sum(&o.Total, "Revenue")
+    b := a.Named("ByStatus")
+    b.By(&o.Status)
+    orders := b.Count("Orders")
+    b.Sum(&o.Total, "Revenue")
+    b.Having(a.Gt(orders, 0))
 }
 rows, err := order.New().Where(order.PlacedAt.Gte(t)).AllByStatus(ctx, ex)
 
@@ -205,7 +210,7 @@ rate-plan overlap.
 
 ```go
 Search storm.TSVector          // in the model
-t.Col(&p.Search).Generated(storm.Expr(`to_tsvector('english', name)`)).Index()
+t.Col(&p.Search).Generated(storm.RawSQL(`to_tsvector('english', name)`)).Index()
 
 product.New().Where(product.Search.WebSearch(q)).All(ctx, ex, nil)
 ```

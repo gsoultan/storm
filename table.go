@@ -374,4 +374,4 @@ func With(field any, op string) ExcludeSpec { return ExcludeSpec{field: field, o
 //
 //	t.Exclude(storm.With(&b.Room, storm.OpEq),
 //	          storm.WithExpr("tstzrange(starts_at, ends_at)", storm.OpOverlaps))
-func WithExpr(e Expr, op string) ExcludeSpec { return ExcludeSpec{expr: string(e), op: op} }
+func WithExpr(e RawSQL, op string) ExcludeSpec { return ExcludeSpec{expr: string(e), op: op} }

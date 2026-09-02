@@ -449,7 +449,7 @@ Three, and none of them is a Go identifier:
 | a **database type** | `t.Col(&u.Loc).Raw("geography(Point,4326)", geo.Codec)` | it is Postgres syntax, not Go |
 | **prose** | `.AcknowledgeNoFK("audit rows outlive their subjects")` | it is documentation |
 
-Plus one deliberate escape, `storm.Expr(...)`, for SQL storm does not model.
+Plus one deliberate escape, `storm.RawSQL(...)`, for SQL storm does not model.
 It is `PREPARE`-checked at generate time and listed by `storm lint --expr`, so
 every occurrence in the codebase is visible in review.
 
@@ -457,7 +457,7 @@ every occurrence in the codebase is visible in review.
 these three name things that live in the database or in English.
 
 ```go
-t.Check(storm.Expr(`tstzrange(starts_at, ends_at) <> 'empty'`))
+t.Check(storm.RawSQL(`tstzrange(starts_at, ends_at) <> 'empty'`))
 ```
 
 Every construct above exists so that you almost never reach for that one.
