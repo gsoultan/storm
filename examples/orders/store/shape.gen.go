@@ -66,6 +66,7 @@ func _assertProductShape(m m0.Product) {
 		m.Price,
 		m.Active,
 		m.Tags,
+		m.Attrs,
 		m.Search,
 	}
 }

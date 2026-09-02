@@ -60,14 +60,18 @@ const (
 	opArrayContains    runtime.Op = 16
 	opArrayContainedBy runtime.Op = 17
 	opArrayOverlaps    runtime.Op = 18
-	opIsNull           runtime.Op = 19
-	opIsNotNull        runtime.Op = 20
+	opJSONContains     runtime.Op = 19
+	opJSONContainedBy  runtime.Op = 20
+	opHasAnyKey        runtime.Op = 21
+	opHasAllKeys       runtime.Op = 22
+	opIsNull           runtime.Op = 23
+	opIsNotNull        runtime.Op = 24
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 21
-	opNotExists runtime.Op = 22
+	opExists    runtime.Op = 25
+	opNotExists runtime.Op = 26
 )
 
 const nCols = 17
@@ -80,13 +84,14 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs                     [6]string
-	nums                     [6]int64
-	raws                     [4][16]byte
-	tims                     [4]time.Time
-	decs                     [4]runtime.Decimal
-	bools                    [4]bool
-	ns, nn, nr, ntm, nd, nbo uint8
+	strs                          [6]string
+	nums                          [6]int64
+	raws                          [4][16]byte
+	tims                          [4]time.Time
+	decs                          [4]runtime.Decimal
+	bools                         [4]bool
+	jsns                          [2]runtime.JSON
+	ns, nn, nr, ntm, nd, nbo, njs uint8
 
 	anyRaw                        [3][][16]byte
 	anyStr                        [3][]string
@@ -393,6 +398,7 @@ type Pred struct {
 	tim    time.Time
 	dec    runtime.Decimal
 	bol    bool
+	jsn    runtime.JSON
 	anyRaw [][16]byte
 	anyStr []string
 	anyI16 []int16
@@ -554,6 +560,13 @@ func (h JSONCol) AscNullsFirst() Sort {
 func (h JSONCol) DescNullsLast() Sort {
 	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
 }
+
+func (h JSONCol) Contains(v runtime.JSON) Pred { return Pred{col: h.c, op: opJSONContains, jsn: v} }
+func (h JSONCol) ContainedBy(v runtime.JSON) Pred {
+	return Pred{col: h.c, op: opJSONContainedBy, jsn: v}
+}
+func (h JSONCol) HasAnyKey(v ...string) Pred  { return Pred{col: h.c, op: opHasAnyKey, anyStr: v} }
+func (h JSONCol) HasAllKeys(v ...string) Pred { return Pred{col: h.c, op: opHasAllKeys, anyStr: v} }
 
 // TextArrayCol addresses a text[] column.
 type TextArrayCol struct{ c uint8 }
@@ -801,7 +814,7 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps {
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys {
 		switch p.col {
 		case 0:
 			if int(q.nar) >= 3 {
@@ -832,6 +845,13 @@ func (q *Query) leaf(p Pred) {
 			q.anyStr[q.nas] = p.anyStr
 			q.nas++
 		case 7:
+			if int(q.nas) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyStr[q.nas] = p.anyStr
+			q.nas++
+		case 8:
 			if int(q.nas) >= 3 {
 				q.over = true
 				return
@@ -934,6 +954,13 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.strs[q.ns] = p.str
 		q.ns++
+	case 8:
+		if int(q.njs) >= 2 {
+			q.over = true
+			return
+		}
+		q.jsns[q.njs] = p.jsn
+		q.njs++
 	case 10:
 		if int(q.nn) >= 6 {
 			q.over = true
@@ -1050,6 +1077,10 @@ func (q Query) StatusLike(v string) Query                 { return q.Where(Statu
 func (q Query) StatusILike(v string) Query                { return q.Where(Status.ILike(v)) }
 func (q Query) StatusIn(v ...string) Query                { return q.Where(Status.In(v...)) }
 func (q Query) StatusNotIn(v ...string) Query             { return q.Where(Status.NotIn(v...)) }
+func (q Query) PrefsContains(v runtime.JSON) Query        { return q.Where(Prefs.Contains(v)) }
+func (q Query) PrefsContainedBy(v runtime.JSON) Query     { return q.Where(Prefs.ContainedBy(v)) }
+func (q Query) PrefsHasAnyKey(v ...string) Query          { return q.Where(Prefs.HasAnyKey(v...)) }
+func (q Query) PrefsHasAllKeys(v ...string) Query         { return q.Where(Prefs.HasAllKeys(v...)) }
 func (q Query) ScopesContains(v ...string) Query          { return q.Where(Scopes.Contains(v...)) }
 func (q Query) ScopesContainedBy(v ...string) Query       { return q.Where(Scopes.ContainedBy(v...)) }
 func (q Query) ScopesOverlaps(v ...string) Query          { return q.Where(Scopes.Overlaps(v...)) }
@@ -1270,7 +1301,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [18][23]runtime.Frag{
+var fragTable = [18][27]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -1295,6 +1326,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -1304,6 +1339,10 @@ var fragTable = [18][23]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1345,6 +1384,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // version
 		{}, // opNone
@@ -1370,6 +1413,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // deleted_at
 		{}, // opNone
@@ -1379,6 +1426,10 @@ var fragTable = [18][23]runtime.Frag{
 		{A: "\"deleted_at\" >= $", B: ""},
 		{A: "\"deleted_at\" < $", B: ""},
 		{A: "\"deleted_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1420,6 +1471,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // name
 		{}, // opNone
@@ -1438,6 +1493,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{A: "\"name\" = ANY($", B: ")"},
 		{A: "\"name\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1470,6 +1529,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // prefs
 		{}, // opNone
@@ -1491,6 +1554,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"prefs\" @> $", B: ""},
+		{A: "\"prefs\" <@ $", B: ""},
+		{A: "\"prefs\" ?| $", B: ""},
+		{A: "\"prefs\" ?& $", B: ""},
 		{},
 		{},
 		{},
@@ -1520,6 +1587,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // age
 		{}, // opNone
@@ -1538,6 +1609,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{A: "\"age\" = ANY($", B: ")"},
 		{A: "\"age\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1566,6 +1641,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 		{A: "\"last_ip\" IS NULL", B: ""},
 		{A: "\"last_ip\" IS NOT NULL", B: ""},
 		{},
@@ -1575,6 +1654,10 @@ var fragTable = [18][23]runtime.Frag{
 		{}, // opNone
 		{A: "\"active\" = $", B: ""},
 		{A: "\"active\" <> $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1620,6 +1703,10 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // credit
 		{}, // opNone
@@ -1629,6 +1716,10 @@ var fragTable = [18][23]runtime.Frag{
 		{A: "\"credit\" >= $", B: ""},
 		{A: "\"credit\" < $", B: ""},
 		{A: "\"credit\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1666,6 +1757,10 @@ var fragTable = [18][23]runtime.Frag{
 		{A: "\"splits\" @> $", B: ""},
 		{A: "\"splits\" <@ $", B: ""},
 		{A: "\"splits\" && $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{A: "\"splits\" IS NULL", B: ""},
 		{A: "\"splits\" IS NOT NULL", B: ""},
 		{},
@@ -1695,9 +1790,17 @@ var fragTable = [18][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // relation Posts (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1915,6 +2018,7 @@ type binder struct {
 	tims   [4]time.Time
 	decs   [4]runtime.Decimal
 	bools  [4]bool
+	jsns   [2]runtime.JSON
 	anyRaw [3][][16]byte
 	anyStr [3][]string
 	anyI16 [3][]int16
@@ -1967,7 +2071,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var ns, nn, nr, ntm, nd, nbo, nar, nas, nai16, nai32, nadec uint8
+	var ns, nn, nr, ntm, nd, nbo, njs, nar, nas, nai16, nai32, nadec uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1981,7 +2085,7 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps:
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys:
 			switch t.Col() {
 			case 0:
 				b.anyRaw[nar] = q.anyRaw[nar]
@@ -2000,6 +2104,10 @@ func (q Query) bindPreds(b *binder) []any {
 				v = append(v, &b.anyStr[nas])
 				nas++
 			case 7:
+				b.anyStr[nas] = q.anyStr[nas]
+				v = append(v, &b.anyStr[nas])
+				nas++
+			case 8:
 				b.anyStr[nas] = q.anyStr[nas]
 				v = append(v, &b.anyStr[nas])
 				nas++
@@ -2059,6 +2167,10 @@ func (q Query) bindPreds(b *binder) []any {
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
+		case 8:
+			b.jsns[njs] = q.jsns[njs]
+			v = append(v, &b.jsns[njs])
+			njs++
 		case 10:
 			b.nums[nn] = q.nums[nn]
 			v = append(v, &b.nums[nn])

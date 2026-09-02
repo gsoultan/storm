@@ -37,6 +37,7 @@ var arenaTable = []struct {
 	{"tods", "nto", "tods [%d]runtime.TimeOfDay", maxTod},
 	{"bools", "nbo", "bools [%d]bool", maxBool},
 	{"rngs", "nrg", "rngs [%d]runtime.TstzRange", maxRng},
+	{"jsns", "njs", "jsns [%d]runtime.JSON", maxJSON},
 }
 
 // cursorFor is the cursor variable for an arena field name.
@@ -237,11 +238,18 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		// "cannot find encode plan". Nothing caught it because no fixture in
 		// this repository had a bool column until examples/orders.
 		return "bools", "nbo"
-	case kindJSONB, kindBytes, kindTextArray, kindUUIDArray, kindInt8Array,
+	case kindJSONB:
+		// Its own arena, holding the ARGUMENT to @> and <@ — not the column's
+		// value, which is never bound. A jsonb argument is []byte and would
+		// fit nothing else: the shared int64 slot cannot hold it, and the
+		// string arena would reach pgx as text, which has no implicit cast to
+		// jsonb in an operator position.
+		return "jsns", "njs"
+	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array,
 		kindDecimalArray, kindInterval:
-		// No arena. Neither is a value a predicate binds or an ordering
-		// compares — jsonb offers only IS [NOT] NULL, and bytea offers
-		// nothing — so there is nothing to store.
+		// No arena. None is a value a predicate binds or an ordering compares
+		// — an array's operators take LISTS, which live in list slots, and
+		// bytea offers no predicates at all — so there is nothing to store.
 		return "", ""
 	default:
 		return "nums", "nn"
@@ -251,7 +259,7 @@ func arenaFor(c colInfo) (arena, cursor string) {
 func arenaStore(c colInfo, v string) string {
 	switch c.kind {
 	case kindText, kindTSVector, kindUUID, kindTimestamptz, kindDate, kindNumeric,
-		kindInet, kindTimeOfDay, kindBool, kindTstzRange:
+		kindInet, kindTimeOfDay, kindBool, kindTstzRange, kindJSONB:
 		return v
 	case kindFloat4, kindFloat8:
 		return "float64(" + v + ")"
@@ -273,6 +281,7 @@ const (
 	maxBool  = 4
 	maxRng   = 4
 	maxPfx   = 4
+	maxJSON  = 2
 	// List values are an arena like every other value type, for the reason
 	// every other value type is one: a Query can carry more than one predicate
 	// on the same slot. It used to be a single field, so a second In on a text
@@ -413,6 +422,13 @@ func (g *gen) treeQuery() {
 			// in one. Emitting a case would reference a field that does not
 			// exist — and paging by a search vector is not a thing anyone
 			// means anyway.
+			continue
+		}
+		if c.kind == kindJSONB {
+			// jsonb has an arena, but it holds the ARGUMENT to @> and <@, not
+			// a value anyone pages by. PostgreSQL does define a total order on
+			// jsonb; nobody means it, and a cursor case here would spend the
+			// argument arena on ordering.
 			continue
 		}
 		field := exportName(c.Name())
@@ -700,6 +716,8 @@ func predSlotFor(c colInfo) string {
 		return "p.bol"
 	case kindInet:
 		return "p.pfx"
+	case kindJSONB:
+		return "p.jsn"
 	default:
 		return "p.num"
 	}

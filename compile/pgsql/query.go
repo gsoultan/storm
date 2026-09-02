@@ -127,8 +127,24 @@ var frags = map[string]struct{ a, b string }{
 	"ArrayContains":    {" @> " + Placeholder, ""},
 	"ArrayContainedBy": {" <@ " + Placeholder, ""},
 	"ArrayOverlaps":    {" && " + Placeholder, ""},
-	"IsNull":           {" IS NULL", ""},
-	"IsNotNull":        {" IS NOT NULL", ""},
+	// jsonb. Containment is the operator a document column is actually asked
+	// about, and the one GIN indexes; whole-document equality is neither.
+	//
+	// The key operators are `?|` and `?&`, taking a text[]. Plain `?` is
+	// absent deliberately: its argument is one text value, which would need
+	// the string arena that this column already spends on the @> argument,
+	// and `?|` with a single key asks exactly the same question through a
+	// storage the column is not otherwise using.
+	//
+	// A literal question mark in PostgreSQL is an operator, not a placeholder
+	// — placeholders here are $n — so nothing needs escaping. A driver using ?
+	// for binding would, and that is one reason storm's placeholder is $n.
+	"JSONContains":    {" @> " + Placeholder, ""},
+	"JSONContainedBy": {" <@ " + Placeholder, ""},
+	"HasAnyKey":       {" ?| " + Placeholder, ""},
+	"HasAllKeys":      {" ?& " + Placeholder, ""},
+	"IsNull":          {" IS NULL", ""},
+	"IsNotNull":       {" IS NOT NULL", ""},
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is
