@@ -53,14 +53,18 @@ const (
 	opArrayContains    runtime.Op = 16
 	opArrayContainedBy runtime.Op = 17
 	opArrayOverlaps    runtime.Op = 18
-	opIsNull           runtime.Op = 19
-	opIsNotNull        runtime.Op = 20
+	opJSONContains     runtime.Op = 19
+	opJSONContainedBy  runtime.Op = 20
+	opHasAnyKey        runtime.Op = 21
+	opHasAllKeys       runtime.Op = 22
+	opIsNull           runtime.Op = 23
+	opIsNotNull        runtime.Op = 24
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 21
-	opNotExists runtime.Op = 22
+	opExists    runtime.Op = 25
+	opNotExists runtime.Op = 26
 )
 
 const nCols = 10
@@ -590,7 +594,7 @@ func (q Query) NotAny(ps ...Pred) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps {
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys {
 		switch p.col {
 		case 0:
 			if int(q.nar) >= 3 {
@@ -836,7 +840,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [10][23]runtime.Frag{
+var fragTable = [10][27]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -861,6 +865,10 @@ var fragTable = [10][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -870,6 +878,10 @@ var fragTable = [10][23]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -911,6 +923,10 @@ var fragTable = [10][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // on
 		{}, // opNone
@@ -920,6 +936,10 @@ var fragTable = [10][23]runtime.Frag{
 		{A: "\"on\" >= $", B: ""},
 		{A: "\"on\" < $", B: ""},
 		{A: "\"on\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -961,6 +981,10 @@ var fragTable = [10][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // closes
 		{}, // opNone
@@ -982,6 +1006,10 @@ var fragTable = [10][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 		{A: "\"closes\" IS NULL", B: ""},
 		{A: "\"closes\" IS NOT NULL", B: ""},
 		{},
@@ -989,6 +1017,10 @@ var fragTable = [10][23]runtime.Frag{
 	},
 	{ // window
 		{}, // opNone
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1036,11 +1068,19 @@ var fragTable = [10][23]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
+		{},
 	},
 	{ // net
 		{}, // opNone
 		{A: "\"net\" = $", B: ""},
 		{A: "\"net\" <> $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1082,6 +1122,10 @@ var fragTable = [10][23]runtime.Frag{
 		{A: "\"tags\" @> $", B: ""},
 		{A: "\"tags\" <@ $", B: ""},
 		{A: "\"tags\" && $", B: ""},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1329,7 +1373,7 @@ func (q Query) bindPreds(b *binder) []any {
 		switch runtime.Op(t.Op()) {
 		case opIsNull, opIsNotNull:
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps:
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys:
 			switch t.Col() {
 			case 0:
 				b.anyRaw[nar] = q.anyRaw[nar]
