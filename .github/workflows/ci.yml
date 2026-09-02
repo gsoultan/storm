@@ -84,6 +84,24 @@ jobs:
           go run ../../cmd/storm generate store
           go test -race ./orders/
 
+      # Every statement the generated code can issue, planned by the server.
+      # This is the only gate for "storm emitted SQL PostgreSQL rejects" — a
+      # declared aggregation or join nobody wrote a test for has its SQL fixed
+      # at generate time, so it is valid or it is a production error. Breaking
+      # the HAVING lowering by one keyword is caught here and nowhere else.
+      # The rest of the reasoning, including why lint is not run, is in the
+      # script.
+      #
+      # psql is installed explicitly rather than assumed, for the same reason
+      # the MySQL client below is: the script FAILS when it is missing, so
+      # relying on whatever the runner image ships would make this step's
+      # outcome depend on an image update nobody here controls.
+      - name: every statement plans
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          ./scripts/check/explain.sh
+
       # storm emits MySQL DDL and reports what does not port. A golden test
       # proves the generator is consistent with itself; it cannot prove the SQL
       # is valid — which is how `DEFAULT  NOT NULL` shipped past every unit
