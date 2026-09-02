@@ -111,21 +111,32 @@ const (
 	BRIN  = "brin"
 )
 
-// Expr is a raw SQL fragment. It is the one deliberate escape from the typed
+// RawSQL is a raw SQL fragment. It is the one deliberate escape from the typed
 // API: conspicuous, reported by `storm lint --expr`, and validated against the
 // database at generate time.
-type Expr string
+//
+// Named for what it is. It was `Expr`, which is what someone reaching for "an
+// expression" types — and they would land on the untyped escape hatch rather
+// than on the checked expression vocabulary, which lives on the declaration
+// builder (a.DateTrunc, a.Coalesce, a.Eq).
+type RawSQL string
+
+// Expr is the former name of RawSQL.
+//
+// Deprecated: use RawSQL. Kept as an alias so models written against v0.1–v0.3
+// keep compiling; it will not be removed before v2.
+type Expr = RawSQL
 
 // Now renders the SQL now() default.
-func Now() Expr { return "now()" }
+func Now() RawSQL { return "now()" }
 
 // UUIDv7 renders a uuidv7() default. Requires PostgreSQL 18+.
-func UUIDv7() Expr { return "uuidv7()" }
+func UUIDv7() RawSQL { return "uuidv7()" }
 
 // GenRandomUUID renders gen_random_uuid(), built in since PostgreSQL 13. This
 // is the default for an embedded storm.Model because it works everywhere the
 // rest of storm does.
-func GenRandomUUID() Expr { return "gen_random_uuid()" }
+func GenRandomUUID() RawSQL { return "gen_random_uuid()" }
 
 // Interval is a PostgreSQL interval: months, days and microseconds kept
 // separate, because a month has no fixed length and a day is not always 24
@@ -158,7 +169,7 @@ func NewTimeOfDay(hour, min, sec, micro int) (TimeOfDay, bool) {
 //	Search storm.TSVector
 //
 //	t.Col(&p.Search).
-//	    Generated(storm.Expr(`to_tsvector('english', coalesce(name,''))`)).
+//	    Generated(storm.RawSQL(`to_tsvector('english', coalesce(name,''))`)).
 //	    Index()
 //
 // Nothing else in storm has this shape, and that is the point: a column you can
