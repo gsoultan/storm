@@ -90,10 +90,11 @@ func TestListSlotsAreConditional(t *testing.T) {
 	}
 }
 
-// Exactly one list slot is non-nil in any Pred, so the binder tests n-1 of
-// them and lets the last be the else. A table with three slots must still
-// produce a chain that reaches all three — an off-by-one here binds the wrong
-// list and returns the wrong rows, silently.
+// A list value lands in an arena at its slot's cursor, exactly like a scalar.
+// It used to be a single field, so a second list predicate on the same slot
+// overwrote the first and the statement bound one list twice — wrong rows, no
+// error. The bind side has to walk the same cursor, so both halves are checked
+// here rather than trusting them to stay in step.
 func TestListBindReachesEverySlot(t *testing.T) {
 	s, err := storm.Build(&lsTicket{}, &lsVenue{})
 	if err != nil {
@@ -111,12 +112,24 @@ func TestListBindReachesEverySlot(t *testing.T) {
 			src = string(f)
 		}
 	}
-	for _, slot := range []string{"anyRaw", "anyStr", "anyI16", "anyI32", "anyI64"} {
-		if !strings.Contains(src, "b."+slot+" = q."+slot) {
-			t.Errorf("the bind chain never assigns %s", slot)
+	for _, sl := range []struct{ slot, cursor string }{
+		{"anyRaw", "nar"}, {"anyStr", "nas"},
+		{"anyI16", "nai16"}, {"anyI32", "nai32"}, {"anyI64", "nai64"},
+	} {
+		idx := "[" + sl.cursor + "]"
+		if !strings.Contains(src, "b."+sl.slot+idx+" = q."+sl.slot+idx) {
+			t.Errorf("the bind chain never assigns %s through its cursor", sl.slot)
 		}
-		if !strings.Contains(src, "v = append(v, &b."+slot+")") {
-			t.Errorf("the bind chain never appends %s", slot)
+		if !strings.Contains(src, "v = append(v, &b."+sl.slot+idx+")") {
+			t.Errorf("the bind chain never appends %s", sl.slot)
+		}
+		if !strings.Contains(src, sl.cursor+"++") {
+			t.Errorf("the bind chain never advances %s; every list would bind the first value", sl.cursor)
+		}
+		// The build side must bound the arena. Without this a third list
+		// predicate writes past the end.
+		if !strings.Contains(src, "if int(q."+sl.cursor+") >= 3 {") {
+			t.Errorf("%s is written without a bound check", sl.slot)
 		}
 	}
 }

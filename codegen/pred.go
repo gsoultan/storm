@@ -36,7 +36,7 @@ func (g *gen) predType() {
 		}
 	}
 	for _, slot := range ts.anyList {
-		g.p("\t%s", anyDecl(slot))
+		g.p("\t%s", anyPredDecl(slot))
 	}
 	g.p("}")
 	g.p("")
@@ -136,27 +136,36 @@ func (g *gen) colHandles() {
 			if !opApplies(op.name, c.kind, c.col) {
 				continue
 			}
-			if op.name == "In" || op.name == "NotIn" {
+			if op.list() {
 				slot := predArraySlot(c)
 				if slot == "" {
 					continue
 				}
-				if op.name == "NotIn" {
+				switch op.name {
+				case "NotIn":
 					g.p("// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the")
 					g.p("// comparison NULL for every row and the result empty —")
 					g.p("// PostgreSQL's rule for NOT IN, not storm's.")
+				case "ArrayContains":
+					g.p("// Contains is `@>`: every element of v is in the column.")
+					g.p("// An empty v is true for every row — every array contains")
+					g.p("// the empty one.")
+				case "ArrayContainedBy":
+					g.p("// ContainedBy is `<@`: every element of the column is in v.")
+				case "ArrayOverlaps":
+					g.p("// Overlaps is `&&`: the column and v share an element.")
 				}
 				g.p("func (h %s) %s(v ...%s) Pred { return Pred{col: h.c, op: op%s, %s: v} }",
-					ht, op.name, c.goBase, op.name, slot)
+					ht, op.m(), listElem(c), op.name, slot)
 				continue
 			}
 			if op.args == 0 {
-				g.p("func (h %s) %s() Pred { return Pred{col: h.c, op: op%s} }", ht, op.name, op.name)
+				g.p("func (h %s) %s() Pred { return Pred{col: h.c, op: op%s} }", ht, op.m(), op.name)
 				continue
 			}
 			ctor := predCtor(c, op.name, i)
 			ctor = replaceColField(ctor)
-			g.p("func (h %s) %s(v %s) Pred { return %s }", ht, op.name, c.goBase, ctor)
+			g.p("func (h %s) %s(v %s) Pred { return %s }", ht, op.m(), c.goBase, ctor)
 		}
 		g.p("")
 	}
@@ -184,16 +193,34 @@ func replaceColField(ctor string) string {
 // left to the chained form for now rather than carrying three more slots.
 func predArraySlot(c colInfo) string {
 	switch c.kind {
-	case kindUUID:
+	case kindUUID, kindUUIDArray:
 		return "anyRaw"
-	case kindText:
+	case kindText, kindTextArray:
 		return "anyStr"
 	case kindInt2:
 		return "anyI16"
 	case kindInt4:
 		return "anyI32"
-	case kindInt8:
+	case kindInt8, kindInt8Array:
 		return "anyI64"
+	case kindDecimalArray:
+		return "anyDec"
+	}
+	return ""
+}
+
+// listElem is the ELEMENT type a column's list operator takes.
+//
+// For a scalar column it is the column's own type: In on a text column takes
+// strings. For an array column it is the array's element type, because the
+// argument to `tags @> $1` is another text[] — so the variadic form takes
+// strings there too, and both land in the same list slot. That is why an array
+// column needs no slot of its own.
+func listElem(c colInfo) string {
+	for _, sl := range anySlotTable {
+		if sl.name == predArraySlot(c) {
+			return sl.elem
+		}
 	}
 	return ""
 }

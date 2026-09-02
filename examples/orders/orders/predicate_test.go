@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"example.com/orders/store/customer"
+	"example.com/orders/store/product"
 	"example.com/orders/store/stockitem"
 )
 
@@ -132,4 +133,166 @@ func keys(m map[int32]bool) []int32 {
 		out = append(out, k)
 	}
 	return out
+}
+
+// Array containment and overlap, against a real server.
+//
+// Before these operators an array column round-tripped and could only be
+// tested for NULL: storable, not filterable. That is the shape of gap that
+// sends a caller to raw SQL for a question the model already describes, and it
+// is worse than a missing type, because the column looks supported.
+//
+// Equality is still refused. `tags = '{a,b}'` is order- and
+// duplicate-sensitive, which almost nobody means.
+func TestArrayPredicates(t *testing.T) {
+	ctx := context.Background()
+	// tags is passed as a slice rather than variadic on purpose: an empty
+	// variadic is a NIL slice, and storm keeps nil and empty distinct — nil is
+	// SQL NULL, which this NOT NULL column refuses. `{}` is the empty array.
+	tag := func(sku string, tags []string) {
+		t.Helper()
+		n := product.Create()
+		n.SetSku(sku)
+		n.SetName("Widget " + sku)
+		n.SetPrice(mustDec(t, "1.00"))
+		n.SetTags(tags)
+		if _, err := n.Insert(ctx, ex); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tag("SKU-ARR-SALE", []string{"sale", "new"})
+	tag("SKU-ARR-CLEAR", []string{"clearance"})
+	tag("SKU-ARR-BOTH", []string{"sale", "clearance"})
+	tag("SKU-ARR-NONE", []string{})
+
+	skus := func(rows []product.Row) map[string]bool {
+		m := map[string]bool{}
+		for _, r := range rows {
+			m[r.Sku] = true
+		}
+		return m
+	}
+
+	// @> — every element of the argument is in the column. Both tags, so only
+	// the row carrying both.
+	both, err := product.New().Where(product.Tags.Contains("sale", "clearance")).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := skus(both)
+	if !got["SKU-ARR-BOTH"] || got["SKU-ARR-SALE"] || got["SKU-ARR-CLEAR"] {
+		t.Errorf(`Contains("sale","clearance") matched %v; want only SKU-ARR-BOTH`, got)
+	}
+
+	// && — shares at least one element. Three of the four.
+	any, err := product.New().Where(product.Tags.Overlaps("sale", "clearance")).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = skus(any)
+	for _, want := range []string{"SKU-ARR-SALE", "SKU-ARR-CLEAR", "SKU-ARR-BOTH"} {
+		if !got[want] {
+			t.Errorf(`Overlaps("sale","clearance") missed %s`, want)
+		}
+	}
+	if got["SKU-ARR-NONE"] {
+		t.Error(`Overlaps matched a product with no tags`)
+	}
+
+	// <@ — every element of the column is in the argument. The empty-tag row
+	// qualifies, which is the correct and easily-surprising answer.
+	sub, err := product.New().
+		Where(product.Tags.ContainedBy("sale", "clearance", "new"), product.Sku.Like("SKU-ARR-%")).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !skus(sub)["SKU-ARR-NONE"] {
+		t.Error("ContainedBy excluded the empty array; every element of {} is in any set")
+	}
+}
+
+// An array column shares the text list slot with In on a plain text column.
+// One Pred sets one slot, but the bind chain has to reach the right one — and
+// a query mixing both in a single statement is where a wrong chain shows up.
+func TestArrayAndScalarListInOneQuery(t *testing.T) {
+	ctx := context.Background()
+	n := product.Create()
+	n.SetSku("SKU-MIX-1")
+	n.SetName("Widget mix")
+	n.SetPrice(mustDec(t, "1.00"))
+	n.SetTags([]string{"sale"})
+	if _, err := n.Insert(ctx, ex); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := product.New().
+		Where(product.Sku.In("SKU-MIX-1", "SKU-MIX-2"), product.Tags.Overlaps("sale")).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Sku != "SKU-MIX-1" {
+		t.Errorf("mixed list predicates returned %d rows: %v", len(rows), rows)
+	}
+}
+
+// Two list predicates in one query.
+//
+// A regression test for a silent wrong answer present in every version through
+// v0.3.0: Query held ONE field per list slot, so a second In on the same slot
+// overwrote the first, and the bind loop then appended that one list for both
+// placeholders. The query ran, returned the wrong rows, and reported nothing.
+//
+// List values are an arena now, indexed by a cursor in token order, exactly
+// like every scalar value type — which is what makes more than one of them
+// representable at all.
+func TestTwoListPredicatesInOneQuery(t *testing.T) {
+	ctx := context.Background()
+	n := product.Create()
+	n.SetSku("SKU-TWO-1")
+	n.SetName("Widget two")
+	n.SetPrice(mustDec(t, "1.00"))
+	n.SetTags([]string{})
+	if _, err := n.Insert(ctx, ex); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both lists must reach the statement. Before the fix the second
+	// overwrote the first, so `sku IN (...)` was bound with the NAME list and
+	// matched nothing.
+	rows, err := product.New().
+		Where(product.Sku.In("SKU-TWO-1", "SKU-TWO-9"), product.Name.In("Widget two", "nope")).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Sku != "SKU-TWO-1" {
+		t.Fatalf("two In predicates returned %d rows, want 1", len(rows))
+	}
+
+	// Order must not matter, and a non-matching second list must exclude.
+	none, err := product.New().
+		Where(product.Name.In("Widget two"), product.Sku.In("SKU-TWO-9")).
+		All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("a non-matching second list returned %d rows; the lists are being crossed", len(none))
+	}
+}
+
+// The list arena is bounded, and past the bound the query must ERROR rather
+// than bind whatever was there. A limit that silently truncates is the bug
+// this replaced, one layer down.
+func TestTooManyListPredicatesIsAnError(t *testing.T) {
+	ctx := context.Background()
+	q := product.New().Where(
+		product.Sku.In("a"), product.Name.In("b"),
+		product.Sku.In("c"), product.Name.In("d"),
+	)
+	if _, err := q.All(ctx, ex, nil); err == nil {
+		t.Error("four list predicates on a 3-slot arena were accepted silently")
+	}
 }

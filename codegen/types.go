@@ -337,6 +337,20 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		return k == kindTSVector
 	case "Overlaps", "ContainsRange", "ContainedBy":
 		return k == kindTstzRange
+	case "ArrayContains", "ArrayContainedBy", "ArrayOverlaps":
+		// The three operators that make an array column queryable. Until they
+		// existed, an array round-tripped and could only be tested for NULL:
+		// storable, not filterable, which is the shape of gap that sends a
+		// caller to raw SQL for something the model already describes.
+		//
+		// Deliberately NOT equality. `tags = '{a,b}'` is order- and
+		// duplicate-sensitive, which almost nobody means; @> and && are the
+		// questions people actually have, and they are the ones GIN indexes.
+		switch k {
+		case kindTextArray, kindUUIDArray, kindInt8Array, kindDecimalArray:
+			return true
+		}
+		return false
 	case "Like", "ILike":
 		return k == kindText
 	case "Gt", "Gte", "Lt", "Lte":

@@ -538,23 +538,37 @@ func BenchmarkGenBuild_OneCall(b *testing.B) {
 // A value type's size is part of its API: Query is copied on every builder
 // call, and the type-coverage work grew it from ~330 to 704 bytes by emitting
 // every arena into every table — a −28% builder regression that no test
-// caught, because sizes had no tripwire the way allocations do. These bounds
-// are deliberately loose (they allow real growth with a real column); what
-// they catch is machinery for kinds this table does not have.
+// caught, because sizes had no tripwire the way allocations do.
 //
-// Raised 2026-09-02 by 24 bytes — one slice header — when integer columns got
-// In and NotIn. genuser has an integer column, so this is a real capability on
-// a real column and not unconditional machinery; TestListSlotsAreConditional in
-// codegen asserts the other half. The warm path was measured across the change
-// rather than argued about: Prepare_Warm 15.7 → 15.6 ns/op and
-// BuildAndPrepare_Warm 39.2 → 39.5 ns/op, both still 0 allocs — noise, not a
-// regression, which is what makes the raise defensible rather than a floor
-// being moved to fit.
+// These bounds are deliberately loose. What they were written to catch is
+// machinery for kinds a table does not have, and that property is now asserted
+// DIRECTLY by TestListSlotsAreConditional in codegen — a table with no integer
+// column carries no integer slot. This is the backstop, not the primary guard.
+//
+// Raised twice on 2026-09-02, both times against a measurement rather than an
+// argument:
+//
+//   - 480 → 504 when integer columns got In and NotIn. One slice header.
+//   - 504 → 648 when list values became an ARENA of 3 rather than one field.
+//     That was a correctness fix, not a feature: a single field meant a second
+//     In on the same slot overwrote the first and the statement bound one list
+//     twice, returning wrong rows with no error on every version through
+//     v0.3.0.
+//
+// The warm path across both: Prepare_Warm 15.7 → 15.8 ns/op,
+// BuildAndPrepare_Warm 39.2 → 37.8 ns/op, both still 0 allocs. 648 is close to
+// the 704 this test was written about, and the difference is the whole point —
+// that 704 was arenas every table paid for whether or not it had the column,
+// and cost 28%; this is arenas only the tables that need them carry, and costs
+// nothing measurable.
 func TestQuerySize_HasATripwire(t *testing.T) {
-	if s := unsafe.Sizeof(genuser.Query{}); s > 544 {
-		t.Errorf("genuser.Query is %d bytes (480 before list slots, 504 after, 704 at the regression) — "+
+	if s := unsafe.Sizeof(genuser.Query{}); s > 720 {
+		t.Errorf("genuser.Query is %d bytes (480 originally, 648 with list arenas) — "+
 			"did an arena become unconditional again?", s)
 	}
+	// Pred is unchanged by the arena work and must stay so: it holds exactly
+	// one predicate, so exactly one list, and it is copied by value into every
+	// builder call in the program.
 	if s := unsafe.Sizeof(genuser.Pred{}); s > 160 {
 		t.Errorf("genuser.Pred is %d bytes (120 before list slots, 144 after, 176 at the regression)", s)
 	}
