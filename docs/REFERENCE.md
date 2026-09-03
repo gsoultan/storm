@@ -242,12 +242,14 @@ is inferred.
 
 ## 1.6 Many-to-many
 
-Plain — declare the slice on both sides and the join table is generated:
+A slice on **both** sides. storm generates the join table; declaring it is a
+chore, not a feature.
 
 ```go
 type Post struct {
     storm.Model
-    Tags []Tag
+    Title string
+    Tags  []Tag
 }
 
 type Tag struct {
@@ -255,18 +257,62 @@ type Tag struct {
     Name  string
     Posts []Post
 }
-// → post_tags(post_id, tag_id) with a composite PK and both FKs
+// → post_tags(post_id, tag_id): composite primary key, both foreign keys
+//   ON DELETE CASCADE, and a reverse index on (tag_id, post_id)
 ```
 
-**With payload** — when the join carries its own columns, make it a model:
+The table name is derived from the two table names **sorted**, so it does not
+depend on which model storm walked first. Both sides are wired from one place,
+so they cannot disagree about a column name.
+
+`CASCADE` on both keys because the row means "these two are related", and
+deleting either end makes the statement meaningless rather than dangling. It
+never removes a row an adopter can see — the far row survives, only the
+association goes.
+
+### Loading
+
+```go
+rows, err := store.PostWithTags().Where(post.AuthorID.Eq(id)).All(ctx, ex)
+for _, r := range rows {
+    r.Tags // []tag.Row — and it does not compile unless the plan loaded it
+}
+```
+
+**Three round trips**, whatever the counts: the parents, the link rows, then the
+far side by primary key. One more than a direct has-many, and that one is what
+a join table costs. `storm lint` counts it as two for the hop and prints the
+join table in the chain.
+
+Two queries rather than one join, deliberately. A join returns the far row once
+per parent referencing it — the same tag repeated across every post carrying it
+— which is the row multiplication a batch loader exists to avoid. The second
+query is bounded by the number of *distinct* children.
+
+An empty parent set costs **one** round trip, not three; no parents means no
+links to look up.
+
+`ChildOrder` applies. `ChildTop` does **not** exist on a many-to-many plan —
+greatest-n-per-group through a join table needs a different query shape, and a
+method that cannot work is better absent than failing at run time.
+
+### Self-referential
+
+Not supported implicitly. A graph of posts related to posts would need both
+join columns named `post_id`, and storm refuses rather than emitting a table
+with a duplicate column. Declare the join model yourself and use two
+`belongs-to` fields with distinct names.
+
+### With payload
+
+When the join carries its own columns, make it a model with a composite primary
+key and traverse it as two hops:
 
 ```go
 type UserRole struct {
-    User User
-    Role Role
-
+    User      User
+    Role      Role
     GrantedAt time.Time
-    GrantedBy *User
     ExpiresAt *time.Time
 }
 
@@ -276,24 +322,13 @@ func (ur *UserRole) Schema(t *storm.Table) {
     t.Col(&ur.Role).OnDelete(storm.Restrict)
     t.Col(&ur.GrantedAt).Default(storm.Now())
 }
-
-type User struct {
-    storm.Model
-    Roles []Role
-}
-
-func (u *User) Schema(t *storm.Table) {
-    t.Through(&u.Roles, UserRole{})
-}
 ```
 
-You get both APIs: `u.Roles` (`[]role.Row`) and `u.Roles[i].Grant` carrying
-`GrantedAt` and `ExpiresAt`. The second appears only when the join table has
-columns beyond its two foreign keys.
-
-## 1.7 Polymorphic associations
-
-The type you choose **is** the strategy.
+You get `UserRole` as a table with its own columns and both foreign keys, and
+you load it as an ordinary has-many followed by a to-one. What you do **not**
+get is a `u.Roles []role.Row` that hides the join — `t.Through(...)` is not
+built. The two hops are explicit, which is more typing and exactly as many
+round trips.
 
 ### `storm.OneOf[…]` — exclusive arc (the default)
 
@@ -522,7 +557,6 @@ func (u *User) Schema(t *storm.Table) {
     t.Col(&u.DisplayName).Size(120)
     t.Col(&u.CreditBalance).Numeric(18, 4)
     t.Col(&u.Org).OnDelete(storm.Restrict)
-    t.Through(&u.Roles, UserRole{})
 }
 ```
 

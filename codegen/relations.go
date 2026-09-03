@@ -38,7 +38,22 @@ type relPlan struct {
 	// Org.Children is a plain slice, but orgs.parent_id must be nullable or the
 	// root has nowhere to point.
 	KeyNullable bool
+
+	// The many-to-many fields, all empty for every other shape.
+	//
+	// LinkPkg is the join table's generated package. LinkParentCol and
+	// LinkChildCol are its two key columns, and ChildKey is the far table's
+	// primary key that LinkChildCol points at. A link member costs TWO round
+	// trips, not one: the join rows, then the far side.
+	LinkPkg       string
+	LinkParentCol string
+	LinkChildCol  string
+	ChildKey      string
+	ChildKeyGo    string
 }
+
+// isLink reports whether this plan loads through a join table.
+func (p relPlan) isLink() bool { return p.LinkPkg != "" }
 
 // relPlansFor enumerates the plans generatable for a context.
 //
@@ -65,7 +80,7 @@ func relPlansFor(s *schema.Schema, tables []string) ([]relPlan, error) {
 			if child == nil {
 				continue
 			}
-			p, err := planFor(t, child, rel)
+			p, err := planFor(s, t, child, rel)
 			if err != nil {
 				return nil, err
 			}
@@ -79,7 +94,7 @@ func relPlansFor(s *schema.Schema, tables []string) ([]relPlan, error) {
 	return out, nil
 }
 
-func planFor(parent, child *schema.Table, rel *schema.Relation) (*relPlan, error) {
+func planFor(s *schema.Schema, parent, child *schema.Table, rel *schema.Relation) (*relPlan, error) {
 	parentPkg, err := PackageName(parent.GoName, parent.Name)
 	if err != nil {
 		return nil, err
@@ -96,6 +111,42 @@ func planFor(parent, child *schema.Table, rel *schema.Relation) (*relPlan, error
 		// plain name: store.OrgWithUsers() yields []store.OrgWithUsersRow.
 		// Pluralising the constructor instead gave OrgWithUserss().
 		ParentPkg: parentPkg, ChildPkg: childPkg,
+	}
+
+	if rel.ToMany && rel.Link != "" {
+		// Many-to-many: neither side carries a key, so the mapping is read
+		// from the join table first and the far side fetched by primary key.
+		// Two round trips for this member rather than one, which `storm lint`
+		// counts and a reviewer should be able to read off the plan.
+		if len(parent.PrimaryKey) != 1 || len(child.PrimaryKey) != 1 {
+			return nil, nil // a composite key on either end needs an explicit join
+		}
+		// Resolved from the link TABLE, through the same call that names the
+		// package when it is generated. Recomputing the name here instead is
+		// how the plan came to reference mgpostmgtag while the package was
+		// mgpostmgtags.
+		lt := s.Table(rel.Link)
+		if lt == nil {
+			return nil, fmt.Errorf(
+				"codegen: %s.%s is a many-to-many through %s, which is not in this context",
+				parent.Name, rel.Field, rel.Link)
+		}
+		linkPkg, err := PackageName(lt.GoName, lt.Name)
+		if err != nil {
+			return nil, err
+		}
+		p.ParentKey = parent.PrimaryKey[0]
+		p.ChildKey = child.PrimaryKey[0]
+		pk := parent.Column(p.ParentKey)
+		if pk == nil || child.Column(p.ChildKey) == nil {
+			return nil, nil
+		}
+		p.KeyGo = baseGoType(pk)
+		p.ChildKeyGo = baseGoType(child.Column(p.ChildKey))
+		p.LinkPkg = linkPkg
+		p.LinkParentCol = rel.LinkColumn
+		p.LinkChildCol = rel.LinkTargetColumn
+		return p, nil
 	}
 
 	if rel.ToMany {
@@ -243,7 +294,7 @@ func planMember(s *schema.Schema, in map[string]bool, parent *schema.Table,
 			parent.Name, planName, f.Field, rel.Target)
 	}
 	child := s.Table(rel.Target)
-	base, err := planFor(parent, child, rel)
+	base, err := planFor(s, parent, child, rel)
 	if err != nil {
 		return nil, err
 	}
@@ -400,6 +451,96 @@ func (g *gen) emitNamedMember(np namedPlan, m planMemberT, i int, q string) {
 	g.emitMemberLoader(q, fmt.Sprintf("load%d", i), np.Name+"Row", np.parent.Name, m)
 }
 
+// emitLinkLoader writes a MANY-TO-MANY fetch: the join rows, then the far side
+// by primary key, then the attach.
+//
+// Two queries rather than one join, and deliberately. A join would return the
+// far row once per parent that references it — the same tag repeated across
+// every post carrying it — which is the row multiplication a batch loader
+// exists to avoid. Fetching distinct far keys sends each row once, and the
+// second query is bounded by the number of DISTINCT children, not by the
+// number of links.
+//
+// Two round trips for this member, not one. That is what a join table costs,
+// it is fixed rather than per-parent, and `storm lint` counts it.
+func (g *gen) emitLinkLoader(q, fn, rowType, field string, m planMemberT) {
+	parentKey := exportName(m.ParentKey)
+	linkParent := exportName(m.LinkParentCol)
+	linkChild := exportName(m.LinkChildCol)
+	childKey := exportName(m.ChildKey)
+
+	g.p("\tids := make([]%s, len(out))", m.KeyGo)
+	g.p("\tat := make(map[%s]int, len(out))", m.KeyGo)
+	g.p("\tfor i := range out {")
+	g.p("\t\tids[i] = out[i].%s", parentKey)
+	g.p("\t\tat[out[i].%s] = i", parentKey)
+	g.p("\t}")
+
+	g.p("\tlinks, err := %s.New().Unordered().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
+		m.LinkPkg, m.LinkPkg, linkParent)
+	g.p("\tif err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tif int64(len(links)) >= p.childLimit {")
+	g.p("\t\treturn runtime.ErrChildLimit")
+	g.p("\t}")
+	// No links is not an empty second query: it is no second query at all,
+	// the same rule an empty parent set already follows.
+	g.p("\tif len(links) == 0 {")
+	g.p("\t\treturn nil")
+	g.p("\t}")
+
+	g.p("\tseen := make(map[%s]bool, len(links))", m.ChildKeyGo)
+	g.p("\tfar := make([]%s, 0, len(links))", m.ChildKeyGo)
+	g.p("\tfor _, l := range links {")
+	g.p("\t\tif !seen[l.%s] {", linkChild)
+	g.p("\t\t\tseen[l.%s] = true", linkChild)
+	g.p("\t\t\tfar = append(far, l.%s)", linkChild)
+	g.p("\t\t}")
+	g.p("\t}")
+
+	g.p("\tkids, err := %s.New().Unordered().Where(%s.%s.In(far...)).Limit(int64(len(far))).All(ctx, ex, nil)",
+		m.ChildPkg, m.ChildPkg, childKey)
+	g.p("\tif err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tbyKey := make(map[%s]%s.Row, len(kids))", m.ChildKeyGo, m.ChildPkg)
+	g.p("\tfor _, k := range kids {")
+	g.p("\t\tbyKey[k.%s] = k", childKey)
+	g.p("\t}")
+
+	// Attach in LINK order, so a parent's children come back in the order the
+	// join table returned them rather than in whatever order the second query
+	// happened to produce.
+	g.p("\tfor _, l := range links {")
+	g.p("\t\tj, ok := at[l.%s]", linkParent)
+	g.p("\t\tif !ok {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tk, ok := byKey[l.%s]", linkChild)
+	g.p("\t\tif !ok {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	if m.RowType != "" {
+		g.p("\t\tout[j].%s = append(out[j].%s, %s{Row: k})", field, field, m.RowType)
+	} else {
+		g.p("\t\tout[j].%s = append(out[j].%s, k)", field, field)
+	}
+	g.p("\t}")
+
+	for i := range m.Nested {
+		g.p("\tif err := p.%s_%d(ctx, ex, out); err != nil {", fn, i)
+		g.p("\t\treturn err")
+		g.p("\t}")
+	}
+	g.p("\treturn nil")
+	g.p("}")
+	g.p("")
+	for i, sub := range m.Nested {
+		g.emitNestedPass(q, fmt.Sprintf("%s_%d", fn, i), rowType, field, m.RowType, sub)
+	}
+}
+
 // emitMemberLoader writes one relation's fetch-and-attach over a slice of
 // rowType, then recurses for anything nested through it.
 func (g *gen) emitMemberLoader(q, fn, rowType, parentTable string, m planMemberT) {
@@ -407,6 +548,11 @@ func (g *gen) emitMemberLoader(q, fn, rowType, parentTable string, m planMemberT
 
 	g.p("// %s fetches %s.", fn, m.rel.Field)
 	g.p("func (p %s) %s(ctx context.Context, ex runtime.Executor, out []%s) error {", q, fn, rowType)
+
+	if m.isLink() {
+		g.emitLinkLoader(q, fn, rowType, field, m)
+		return
+	}
 
 	if m.rel.ToMany {
 		keyField := exportName(m.ParentKey)
@@ -601,11 +747,102 @@ func (g *gen) emitRelPlans(plans []relPlan) {
 	}
 }
 
+// emitToManyLinkAll is the many-to-many form of a plan's All: parents, link
+// rows, then the far side by primary key.
+func (g *gen) emitToManyLinkAll(q string, p relPlan) {
+	keyField := exportName(p.ParentKey)
+	linkParent := exportName(p.LinkParentCol)
+	linkChild := exportName(p.LinkChildCol)
+	childKey := exportName(p.ChildKey)
+	field := exportName(p.rel.Field)
+
+	g.p("func (p %s) All(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", q, p.Name)
+	g.p("\tparents, err := p.q.All(ctx, ex, nil)")
+	g.p("\tif err != nil {")
+	g.p("\t\treturn nil, err")
+	g.p("\t}")
+	g.p("\tif len(parents) == 0 {")
+	g.p("\t\t// No parents, no link query, no far query. An empty parent set costs")
+	g.p("\t\t// ONE round trip, not three.")
+	g.p("\t\treturn nil, nil")
+	g.p("\t}")
+	g.p("\tout := make([]%sRow, len(parents))", p.Name)
+	g.p("\tids := make([]%s, len(parents))", p.KeyGo)
+	g.p("\tat := make(map[%s]int, len(parents))", p.KeyGo)
+	g.p("\tfor i, r := range parents {")
+	g.p("\t\tout[i] = %sRow{Row: r}", p.Name)
+	g.p("\t\tids[i] = r.%s", keyField)
+	g.p("\t\tat[r.%s] = i", keyField)
+	g.p("\t}")
+
+	g.p("\tlinks, err := %s.New().Unordered().Where(%s.%s.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)",
+		p.LinkPkg, p.LinkPkg, linkParent)
+	g.p("\tif err != nil {")
+	g.p("\t\treturn nil, err")
+	g.p("\t}")
+	g.p("\t// A partial relation load is worse than a failed one: every count")
+	g.p("\t// computed from it is wrong and nothing says so. The guard is on the")
+	g.p("\t// LINK rows, which is where the fan-out actually is.")
+	g.p("\tif int64(len(links)) >= p.childLimit {")
+	g.p("\t\treturn nil, runtime.ErrChildLimit")
+	g.p("\t}")
+	g.p("\tif len(links) == 0 {")
+	g.p("\t\treturn out, nil")
+	g.p("\t}")
+
+	g.p("\tseen := make(map[%s]bool, len(links))", p.ChildKeyGo)
+	g.p("\tfar := make([]%s, 0, len(links))", p.ChildKeyGo)
+	g.p("\tfor _, l := range links {")
+	g.p("\t\tif !seen[l.%s] {", linkChild)
+	g.p("\t\t\tseen[l.%s] = true", linkChild)
+	g.p("\t\t\tfar = append(far, l.%s)", linkChild)
+	g.p("\t\t}")
+	g.p("\t}")
+
+	g.p("\tcq := %s.New().Unordered().Where(%s.%s.In(far...)).Limit(int64(len(far)))",
+		p.ChildPkg, p.ChildPkg, childKey)
+	g.p("\tif len(p.childOrder) > 0 {")
+	g.p("\t\tcq = cq.Order(p.childOrder...)")
+	g.p("\t}")
+	g.p("\tkids, err := cq.All(ctx, ex, nil)")
+	g.p("\tif err != nil {")
+	g.p("\t\treturn nil, err")
+	g.p("\t}")
+	g.p("\tbyKey := make(map[%s]%s.Row, len(kids))", p.ChildKeyGo, p.ChildPkg)
+	g.p("\tfor _, k := range kids {")
+	g.p("\t\tbyKey[k.%s] = k", childKey)
+	g.p("\t}")
+
+	g.p("\t// Attached in the order the CHILD query returned, so ChildOrder means")
+	g.p("\t// what it says: walking the link rows instead would order by the join")
+	g.p("\t// table and silently ignore it.")
+	g.p("\tfor _, k := range kids {")
+	g.p("\t\tfor _, l := range links {")
+	g.p("\t\t\tif l.%s != k.%s {", linkChild, childKey)
+	g.p("\t\t\t\tcontinue")
+	g.p("\t\t\t}")
+	g.p("\t\t\tif i, ok := at[l.%s]; ok {", linkParent)
+	g.p("\t\t\t\tout[i].%s = append(out[i].%s, k)", field, field)
+	g.p("\t\t\t}")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\treturn out, nil")
+	g.p("}")
+	g.p("")
+}
+
 func (g *gen) emitToManyPlan(p relPlan) {
 	parentField := exportName(p.parent.GoName)
 	keyField := exportName(p.ParentKey)
-	childKeyField := exportName(p.rel.Column)
-	childHandle := exportName(p.rel.Column)
+	// Meaningless for a many-to-many, where neither side carries a key. Left
+	// computed unconditionally they are "", and the emitted code reads
+	// `tag..In(...)`, which is what a generator producing unparsable Go looks
+	// like from the outside.
+	var childKeyField, childHandle string
+	if !p.isLink() {
+		childKeyField = exportName(p.rel.Column)
+		childHandle = childKeyField
+	}
 
 	g.p("// %sRow is %s with its %s loaded.", p.Name, p.parent.Name, p.rel.Field)
 	g.p("//")
@@ -670,11 +907,13 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	g.p("// three, and a different arbitrary three next call — a bug that only")
 	g.p("// appears under data the developer did not have. Add the child's primary")
 	g.p("// key as a final term if the natural ordering is not unique.")
-	g.p("func (p %s) ChildTop(n int64) %s {", q, q)
-	g.p("\tp.childTop = n")
-	g.p("\treturn p")
-	g.p("}")
-	g.p("")
+	if !p.isLink() {
+		g.p("func (p %s) ChildTop(n int64) %s {", q, q)
+		g.p("\tp.childTop = n")
+		g.p("\treturn p")
+		g.p("}")
+		g.p("")
+	}
 	g.p("// ChildOrder orders the children within each parent.")
 	g.p("//")
 	g.p("// Without it they arrive in the child table's default order, which is its")
@@ -685,12 +924,32 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	g.p("}")
 	g.p("")
 
-	g.p("// All runs the plan in exactly TWO round trips, whatever the parent count.")
-	g.p("//")
-	g.p("// The mechanism is `= ANY($1)`: one placeholder binds the whole id list, so")
-	g.p("// fifty parents and five thousand produce the same SQL and share one")
-	g.p("// compiled statement. No join is involved, which is why M3 was never")
-	g.p("// actually blocked on join support.")
+	if p.isLink() {
+		g.p("// All runs the plan in exactly THREE round trips, whatever the counts.")
+		g.p("//")
+		g.p("// One more than a direct has-many, and that one is what a join table")
+		g.p("// costs: the parents, the link rows, then the far side by primary key.")
+		g.p("// Fixed, not per parent.")
+		g.p("//")
+		g.p("// Two queries rather than one join, deliberately. A join returns the far")
+		g.p("// row once per parent referencing it — the same tag repeated across every")
+		g.p("// post carrying it — which is the row multiplication a batch loader exists")
+		g.p("// to avoid. The second query is bounded by DISTINCT children.")
+	} else {
+		g.p("// All runs the plan in exactly TWO round trips, whatever the parent count.")
+	}
+	if !p.isLink() {
+		g.p("//")
+		g.p("// The mechanism is `= ANY($1)`: one placeholder binds the whole id list, so")
+		g.p("// fifty parents and five thousand produce the same SQL and share one")
+		g.p("// compiled statement. No join is involved, which is why M3 was never")
+		g.p("// actually blocked on join support.")
+	}
+	if p.isLink() {
+		g.emitToManyLinkAll(q, p)
+		_ = parentField
+		return
+	}
 	g.p("func (p %s) All(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", q, p.Name)
 	g.p("\tparents, err := p.q.All(ctx, ex, nil)")
 	g.p("\tif err != nil {")
