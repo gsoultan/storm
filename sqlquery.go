@@ -109,9 +109,9 @@ func (q *SQLQuery[T]) One(ctx context.Context, ex runtime.Executor, args ...any)
 }
 
 // decl is what the generator reads off a registered query.
-func (q *SQLQuery[T]) decl() (reflect.Type, string) {
+func (q *SQLQuery[T]) decl() (reflect.Type, string, int) {
 	var zero T
-	return reflect.TypeOf(zero), q.sql
+	return reflect.TypeOf(zero), q.sql, q.nArg
 }
 
 // SQLStmt is the no-rows half of the escape hatch: DELETEs, junction-table
@@ -145,17 +145,27 @@ func (q *SQLStmt) Exec(ctx context.Context, ex runtime.Executor, args ...any) (i
 
 // decl reports a nil row type: the generator PREPAREs and validates the
 // statement like any other declaration, but resolves no scanner for it.
-func (q *SQLStmt) decl() (reflect.Type, string) { return nil, q.sql }
+func (q *SQLStmt) decl() (reflect.Type, string, int) { return nil, q.sql, q.nArg }
 
 // RawDecl is implemented by every SQLQuery, so a bootstrap can register them
 // as a plain []any the way it registers models.
 type RawDecl interface {
-	decl() (reflect.Type, string)
+	decl() (reflect.Type, string, int)
 }
 
 // DeclOf reads a registered query's row type and SQL; the generate command
 // uses it and nothing else should.
-func DeclOf(d RawDecl) (reflect.Type, string) { rt, s := d.decl(); return rt, s }
+func DeclOf(d RawDecl) (reflect.Type, string) { rt, s, _ := d.decl(); return rt, s }
+
+// ArgsOf reports how many arguments a declaration will demand at the call.
+//
+// The count comes from scanning the statement for the highest $n, which is a
+// guess: `$1` inside a string literal or a dollar-quoted body is text to
+// PostgreSQL and a placeholder to a scanner. The generator PREPAREs every
+// declaration and the server reports the real number, so the two are compared
+// at generate time and a disagreement fails the build — which is the whole
+// reason this is reachable from outside the package.
+func ArgsOf(d RawDecl) int { _, _, n := d.decl(); return n }
 
 func (q *SQLQuery[T]) scanner() func([][]byte, *T, *runtime.Slab) error {
 	if p := q.scan.Load(); p != nil {
@@ -279,9 +289,14 @@ func firstLine(sql string) string {
 }
 
 // maxPlaceholder finds the highest $n in the statement — the argument count a
-// call must supply. Dollar-quoted strings and casts do not produce false
-// positives worth defending against here: a wrong count fails loudly on the
-// first call, at the caller, with both numbers in the message.
+// call must supply.
+//
+// It is a scan, not a parse, so a `$1` inside a string literal or a $tag$ body
+// counts when PostgreSQL would read it as text. Teaching it to lex would be
+// the wrong repair: the generator PREPAREs every declaration and the SERVER
+// reports the real parameter count, so the two are compared at generate time
+// and a disagreement fails the build naming both numbers. A guess checked
+// against the authority beats a better guess.
 func maxPlaceholder(sql string) int {
 	max := 0
 	for i := 0; i+1 < len(sql); i++ {

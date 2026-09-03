@@ -472,3 +472,36 @@ func TestCLI_RawSchemaLiveValidatesAgainstTheDatabase(t *testing.T) {
 		t.Fatal("an unknown -raw-schema must be rejected")
 	}
 }
+
+// The placeholder count is proven against the server, not guessed off the text.
+//
+// `$1` inside a dollar-quoted body is a literal to PostgreSQL and a placeholder
+// to a scanner. The two disagreeing means every call gets "wants 2 arguments,
+// got 1" for a statement that takes one — which is a build error the moment the
+// generator PREPAREs it, since the server has just said how many it takes.
+func TestCLI_RawQueryArityIsProvenAtGenerateTime(t *testing.T) {
+	live := dsn(t)
+	withModels(t, testmodel.All())
+	prevQ := RawQueries
+	RawQueries = []storm.RawDecl{
+		storm.SQLExec(`DELETE FROM users WHERE name = $1 AND email <> $tag$ keep $2 $tag$`),
+	}
+	t.Cleanup(func() { RawQueries = prevQ })
+
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "internal", "rawarity"+strconv.Itoa(os.Getpid()))
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	err = run([]string{"generate", dir, "-dsn", live})
+	if err == nil {
+		t.Fatal("a statement whose text scans as more placeholders than it has generated cleanly")
+	}
+	for _, want := range []string{"1 parameter(s)", "scans as 2", "$tag$"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q:\n%v", want, err)
+		}
+	}
+}
