@@ -14,6 +14,52 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Many-to-many, generated
+
+A slice on **both** sides. storm generates the join table; declaring it is a
+chore, not a feature.
+
+```go
+type Post struct { storm.Model; Title string; Tags  []Tag  }
+type Tag  struct { storm.Model; Name  string; Posts []Post }
+// → post_tags(post_id, tag_id): composite primary key, both foreign keys
+//   ON DELETE CASCADE, and a reverse index on (tag_id, post_id)
+```
+
+`docs/REFERENCE.md` §1.6 has documented this since before it existed. It did
+not work — a slice on both sides failed `Build` with "no field of type Post to
+carry the foreign key" — and the section gave working-looking code with no
+"planned" marker. Found by answering a question about relation support by
+running the documented example rather than by reading the doc.
+
+**Three round trips**, whatever the counts: parents, link rows, far side by
+primary key. One more than a direct has-many, which is what a join table costs,
+and fixed rather than per parent. An empty parent set costs **one**.
+
+Two queries rather than one join, deliberately: a join returns the far row once
+per parent referencing it — the same tag repeated across every post carrying it
+— which is the row multiplication a batch loader exists to avoid. The second
+query is bounded by *distinct* children.
+
+`storm lint` counts the hop as two and names the join table in the chain. A
+budget computed from the wrong number is a check somebody trusts and should not.
+
+`ChildTop` is **not** generated for a many-to-many. Greatest-n-per-group through
+a join table needs a different query shape, and a method that cannot work is
+better absent than failing at run time.
+
+Not supported implicitly: a self-referential many-to-many, which would need both
+join columns named `post_id`. storm refuses rather than emitting a table with a
+duplicate column. `t.Through(...)` for a join with payload is also not built —
+model the join yourself and traverse two hops. §1.6 now says both of these out
+loud instead of implying otherwise.
+
+`schema.Singular` joins `schema.GoName` as a rule with exactly one
+implementation. The join table's column names and the loader's filter must
+agree exactly, and a second copy in `codegen` is how they would drift — which
+they briefly did, the plan referencing `mgpostmgtag` while the package was
+`mgpostmgtags`.
+
 ### `storm.AnyRef` — discriminator polymorphism, with the cost made explicit
 
 The Rails/GORM shape: a `(subject_type, subject_id)` pair naming a row in any
