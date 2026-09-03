@@ -14,6 +14,52 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Many-to-many: self-referential, and joins with a payload
+
+The two shapes the previous entry listed as unbuilt.
+
+**Self-referential.** One slice to your own type:
+
+```go
+type Post struct { storm.Model; Related []Post }
+// → post_related(post_id, related_id), both keys referencing posts
+```
+
+The two columns cannot both be named for the table, so the second is named for
+the **field**. The edge is directed and stored once: inserting A→B does not make
+B→A, because "related to" and "follows" are both spelled this way and only one
+is symmetric.
+
+Two self-referential slices to the same type — `Following`/`Followers` — are
+**refused**. They are one relationship seen from both ends and storm cannot tell
+that from two slices; two generated tables would mean following somebody does
+not make you their follower. That is a wrong answer, not a missing feature.
+
+**`t.Through`, with the payload.** When the join carries its own columns, write
+it as a model and name it. storm generates nothing — your model *is* the join
+table — and reads the columns rather than inventing them:
+
+```go
+for _, m := range rows[0].Members {
+    m.Email        // the far row, EMBEDDED — reads as a join with no payload
+    m.Via.Role     // the join row's own columns
+    m.Via.JoinedAt
+}
+```
+
+The far row is embedded so the common case reads unchanged; the payload is
+`Via`, named rather than embedded because both rows have an `ID` and a caller
+asking for one should not have to know which won.
+
+Exactly one foreign key to each end is required. Two to the same table is a
+direction only the adopter knows, and it is refused rather than guessed.
+
+**`validateHasMany` moved after the user declarations.** A keyless has-many is
+an error unless something claims it, and `t.Through` is one of the things that
+can — running the check first reported "no field to carry the foreign key" for a
+relation the model had already explained. The same ordering trap the `AnyRef`
+acknowledgement hit.
+
 ### Many-to-many, generated
 
 A slice on **both** sides. storm generates the join table; declaring it is a

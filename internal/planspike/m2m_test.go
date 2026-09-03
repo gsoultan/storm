@@ -4,12 +4,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/gsoultan/storm/internal/planspike/store/membership"
 	"github.com/gsoultan/storm/internal/planspike/store/org"
 	"github.com/gsoultan/storm/internal/planspike/store/user"
 	"github.com/gsoultan/storm/runtime"
 
 	"github.com/gsoultan/storm/internal/planspike/store"
 	"github.com/gsoultan/storm/internal/planspike/store/post"
+	"github.com/gsoultan/storm/internal/planspike/store/postrelated"
 	"github.com/gsoultan/storm/internal/planspike/store/posttag"
 	"github.com/gsoultan/storm/internal/planspike/store/tag"
 )
@@ -232,5 +234,141 @@ func TestManyToMany_EmptyParentSetIsOneRoundTrip(t *testing.T) {
 	}
 	if n := count.RoundTrips(); n != 1 {
 		t.Errorf("an empty parent set took %d round trips, want 1", n)
+	}
+}
+
+// A self-referential many-to-many: posts related to posts, through a join
+// table whose two columns are named for the FIELD because they cannot both be
+// named for the table.
+//
+// The edge is DIRECTED and stored once. storm does not invent the reverse —
+// "related to" and "follows" are both spelled this way and only one of them is
+// symmetric, so a model that wants both directions writes both rows.
+func TestSelfReferentialManyToMany(t *testing.T) {
+	ctx := context.Background()
+	ex, count := db(t)
+
+	author := m2mAuthor(t, ctx, ex, "self@example.com")
+	mk := func(title string) [16]byte {
+		t.Helper()
+		np := post.Create()
+		np.SetTitle(title)
+		np.SetBody("b")
+		np.SetAuthorID(author)
+		r, err := np.Insert(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keepPost(t, ctx, ex, r.ID)
+		return r.ID
+	}
+	hub := mk("hub")
+	a, b := mk("a"), mk("b")
+
+	for _, to := range [][16]byte{a, b} {
+		l := postrelated.Create()
+		l.SetPostID(hub)
+		l.SetRelatedID(to)
+		if _, err := l.Insert(ctx, ex); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	count.Reset()
+	rows, err := store.PostWithRelated().Where(post.ID.Eq(hub)).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := count.RoundTrips(); n != 3 {
+		t.Errorf("self-referential load took %d round trips, want 3", n)
+	}
+	if len(rows) != 1 || len(rows[0].Related) != 2 {
+		t.Fatalf("hub has %d related", len(rows))
+	}
+
+	// Directed: a is related FROM hub, so a's own Related is empty. storm
+	// storing the reverse here would be inventing a fact the model never
+	// stated.
+	back, err := store.PostWithRelated().Where(post.ID.Eq(a)).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != 1 {
+		t.Fatalf("got %d rows", len(back))
+	}
+	if len(back[0].Related) != 0 {
+		t.Errorf("the reverse edge was invented: %d related", len(back[0].Related))
+	}
+}
+
+// t.Through: a many-to-many over a join model the adopter wrote, because the
+// join carries columns of its own and a generated table has nowhere to put
+// them.
+//
+// The payload is the whole reason to write the join by hand, so a plan that
+// drops it has not implemented the feature — it has implemented the shape.
+func TestThroughCarriesThePayload(t *testing.T) {
+	ctx := context.Background()
+	ex, count := db(t)
+
+	no := org.Create()
+	no.SetName("through-org")
+	o, err := no.Insert(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = org.Delete(ctx, ex, o.ID) })
+
+	type want struct{ email, role string }
+	wants := []want{{"through-a@example.com", "owner"}, {"through-b@example.com", "viewer"}}
+	for _, w := range wants {
+		nu := user.Create()
+		nu.SetEmail(w.email)
+		nu.SetName("T")
+		nu.SetStatus("pending")
+		nu.SetOrgID(o.ID)
+		u, err := nu.Insert(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = user.Delete(ctx, ex, u.ID) })
+
+		nm := membership.Create()
+		nm.SetUserID(u.ID)
+		nm.SetOrgID(o.ID)
+		nm.SetRole(w.role)
+		if _, err := nm.Insert(ctx, ex); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	count.Reset()
+	rows, err := store.OrgWithMembers().Where(org.ID.Eq(o.ID)).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := count.RoundTrips(); n != 3 {
+		t.Errorf("Through load took %d round trips, want 3", n)
+	}
+	if len(rows) != 1 || len(rows[0].Members) != 2 {
+		t.Fatalf("got %d orgs with %d members", len(rows), len(rows[0].Members))
+	}
+
+	got := map[string]string{}
+	for _, m := range rows[0].Members {
+		// The far row is embedded, so it reads like a join with no payload.
+		// Via is the join row's own columns — the reason this shape exists.
+		got[m.Email] = m.Via.Role
+		if m.Via.JoinedAt.IsZero() {
+			t.Errorf("%s: the join's database default did not come back", m.Email)
+		}
+		if m.Via.UserID != m.ID {
+			t.Errorf("%s: Via names user %x but the row is %x", m.Email, m.Via.UserID, m.ID)
+		}
+	}
+	for _, w := range wants {
+		if got[w.email] != w.role {
+			t.Errorf("%s has role %q, want %q", w.email, got[w.email], w.role)
+		}
 	}
 }

@@ -54,11 +54,7 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.resolveRelations(mi)
 	}
-	// Pass 3b: validate has-many only after every table's keys exist —
-	// the key that answers orgs.Users lives on users, built later than orgs.
-	for _, mi := range b.ordered {
-		b.validateHasMany(mi)
-	}
+
 	// Pass 4: user declarations last, so OnDelete has a foreign key to attach
 	// to and an explicit setting always wins over an inferred one.
 	for _, mi := range b.ordered {
@@ -68,6 +64,20 @@ func Build(models ...any) (*schema.Schema, error) {
 	// cannot be checked before they have run.
 	for _, mi := range b.ordered {
 		b.checkAnyRefsAcknowledged(mi)
+	}
+	// Pass 4b: t.Through, which is also a user declaration and needs the join
+	// model's own foreign keys — built in pass 3, named here.
+	for _, mi := range b.ordered {
+		b.resolveThrough(mi)
+	}
+	// Pass 4c: validate has-many, and recognise implicit many-to-many.
+	//
+	// AFTER the user declarations, not before. A has-many with no key on the
+	// far side is an error unless something claims it, and t.Through is one of
+	// the things that can — running this first reported "no field to carry the
+	// foreign key" for a relation the model had already explained.
+	for _, mi := range b.ordered {
+		b.validateHasMany(mi)
 	}
 	// Pass 4b': projections ride the same window as plans, for the same
 	// reasons.
@@ -119,8 +129,11 @@ type modelInfo struct {
 	ptr     reflect.Value // pointer to an allocated zero value
 	tbl     *Table
 	pending []*relation
-	fkCols  []string
-	arcCols []arcCol
+	// selfLink is the field of the one self-referential many-to-many this
+	// model is allowed. A second is ambiguous rather than unsupported.
+	selfLink string
+	fkCols   []string
+	arcCols  []arcCol
 }
 
 // relation is a to-one or to-many link discovered during the column walk and
@@ -674,16 +687,21 @@ func (b *builder) linkFor(mi *modelInfo, tgt *modelInfo, rel *relation) bool {
 	hereCol := singular(here.Name) + "_id"
 	thereCol := singular(there.Name) + "_id"
 
-	// A self-referential many-to-many would name both columns the same thing.
-	// It is a real shape (a graph of posts related to posts) and it needs two
-	// distinct names, which the model has not given — so say so rather than
-	// emit a table with a duplicate column.
+	// A self-referential many-to-many — a graph of posts related to posts —
+	// would name both columns the same thing if they came from the table. They
+	// come from the FIELD instead: Post.Related gives post_related(post_id,
+	// related_id), where the second column is named for the role it plays.
+	//
+	// The edge is DIRECTED and stored once. storm does not invent the reverse:
+	// inserting A→B does not make B→A, because "related to" and "follows" are
+	// both spelled this way and only one of them is symmetric. A model that
+	// wants both directions writes both rows.
 	if here.Name == there.Name {
-		b.errs.add(fmt.Errorf(
-			"%s.%s: a self-referential many-to-many needs its own join model — "+
-				"storm cannot name both columns %s",
-			here.Name, rel.fieldName, hereCol))
-		return true
+		if !b.claimSelfLink(mi, rel) {
+			return true
+		}
+		link = singular(here.Name) + "_" + snake(rel.fieldName)
+		thereCol = snake(rel.fieldName) + "_id"
 	}
 
 	if b.outSch.Table(link) == nil {
@@ -703,10 +721,135 @@ func (b *builder) linkFor(mi *modelInfo, tgt *modelInfo, rel *relation) bool {
 		})
 	}
 	add(here, rel, there, hereCol, thereCol)
+	if back == rel {
+		// Self-referential: the scan for the far side found THIS relation,
+		// because the far model is this model. Wiring it again would put two
+		// `Related` fields on one table pointing opposite ways down the same
+		// join — a duplicate the generator then emits twice.
+		return true
+	}
 	add(there, back, here, thereCol, hereCol)
 	// The far side is wired now; leaving it pending would report it as an
 	// error when its own table is validated.
 	back.toMany = false
+	return true
+}
+
+// resolveThrough wires a t.Through declaration: a many-to-many over a join
+// model the adopter wrote, whose columns storm reads rather than invents.
+//
+// The join model must carry exactly one foreign key to each end. That is the
+// whole disambiguation: with one key to each, "which column points at me" has
+// one answer, and storm needs no further declaration. With two to the same
+// table it does not, and says so.
+func (b *builder) resolveThrough(mi *modelInfo) {
+	for _, d := range mi.tbl.through {
+		var rel *relation
+		for _, r := range mi.pending {
+			if r.fieldName == d.field {
+				rel = r
+				break
+			}
+		}
+		if rel == nil {
+			b.errs.add(fmt.Errorf("%s.%s: Through names a field that is not a relation",
+				mi.tbl.out.Name, d.field))
+			continue
+		}
+		jm := b.byType[d.join]
+		if jm == nil || jm.tbl == nil {
+			b.errs.add(fmt.Errorf(
+				"%s.%s: the join model %s is not registered — pass it to Build",
+				mi.tbl.out.Name, d.field, d.join.Name()))
+			continue
+		}
+		tgt := b.byType[rel.target]
+		if tgt == nil || tgt.tbl == nil {
+			continue // already reported
+		}
+
+		join, here, there := jm.tbl.out, mi.tbl.out, tgt.tbl.out
+		own, err := soleFKTo(join, here.Name)
+		if err != nil {
+			b.errs.add(fmt.Errorf("%s.%s: %s %w", here.Name, d.field, join.Name, err))
+			continue
+		}
+		far, err := soleFKTo(join, there.Name)
+		if err != nil {
+			b.errs.add(fmt.Errorf("%s.%s: %s %w", here.Name, d.field, join.Name, err))
+			continue
+		}
+
+		// Payload is what makes this shape worth writing by hand: the join
+		// carries columns beyond its two keys, and the plan row exposes them.
+		payload := false
+		for _, c := range join.Columns {
+			if c.Name != own && c.Name != far {
+				payload = true
+				break
+			}
+		}
+
+		here.Relations = append(here.Relations, &schema.Relation{
+			Field:            rel.fieldName,
+			Target:           there.Name,
+			TargetGo:         there.GoName,
+			ToMany:           true,
+			Owner:            false,
+			Link:             join.Name,
+			LinkColumn:       own,
+			LinkTargetColumn: far,
+			LinkPayload:      payload,
+		})
+		// Wired here, so validateHasMany must not report it as keyless.
+		rel.toMany = false
+	}
+}
+
+// soleFKTo is the join model's one foreign key to table.
+//
+// Exactly one, deliberately. Two keys to the same table is a self-referential
+// join whose direction only the adopter knows, and guessing would silently
+// load the wrong end.
+func soleFKTo(join *schema.Table, table string) (string, error) {
+	var found []string
+	for _, fk := range join.ForeignKeys {
+		if fk.RefTable == table && len(fk.Columns) == 1 {
+			found = append(found, fk.Columns[0])
+		}
+	}
+	switch len(found) {
+	case 1:
+		return found[0], nil
+	case 0:
+		return "", fmt.Errorf("has no foreign key to %s", table)
+	default:
+		return "", fmt.Errorf(
+			"has %d foreign keys to %s (%s) and storm cannot tell which end is which",
+			len(found), table, strings.Join(found, ", "))
+	}
+}
+
+// claimSelfLink allows exactly one self-referential many-to-many per model.
+//
+// Two of them — the Following/Followers pair everybody reaches for — are one
+// relationship seen from both ends, and storm has no way to know that: it would
+// generate two unrelated tables, so following somebody would not make you their
+// follower. That is a wrong answer, not a missing feature, so it is refused
+// with the shape that does work.
+func (b *builder) claimSelfLink(mi *modelInfo, rel *relation) bool {
+	if prev := mi.selfLink; prev != "" {
+		b.errs.add(fmt.Errorf(
+			"%s: %s and %s are both self-referential many-to-many fields, and storm "+
+				"cannot tell whether they are one relationship or two\n"+
+				"       two generated tables would mean following someone does not make "+
+				"you their follower\n"+
+				"       declare the join model yourself with two named foreign keys, and "+
+				"traverse it as two hops",
+			mi.tbl.out.Name, prev, rel.fieldName))
+		return false
+	}
+	mi.selfLink = rel.fieldName
 	return true
 }
 

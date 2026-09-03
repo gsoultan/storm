@@ -298,37 +298,73 @@ method that cannot work is better absent than failing at run time.
 
 ### Self-referential
 
-Not supported implicitly. A graph of posts related to posts would need both
-join columns named `post_id`, and storm refuses rather than emitting a table
-with a duplicate column. Declare the join model yourself and use two
-`belongs-to` fields with distinct names.
-
-### With payload
-
-When the join carries its own columns, make it a model with a composite primary
-key and traverse it as two hops:
+One field, to your own type:
 
 ```go
-type UserRole struct {
-    User      User
-    Role      Role
-    GrantedAt time.Time
-    ExpiresAt *time.Time
+type Post struct {
+    storm.Model
+    Related []Post
+}
+// → post_related(post_id, related_id), both keys referencing posts
+```
+
+The two columns cannot both be named for the table, so the second is named for
+the **field**. The edge is **directed and stored once**: inserting A→B does not
+make B→A, because "related to" and "follows" are both spelled this way and only
+one of them is symmetric. A model that wants both directions writes both rows.
+
+**Two** self-referential slices to the same type — the `Following`/`Followers`
+pair — is refused. They are one relationship seen from both ends, and storm
+cannot tell that from two slices: it would generate two unrelated tables, so
+following somebody would not make you their follower. Declare the join model
+yourself and traverse it as two hops.
+
+### With payload — `t.Through`
+
+When the join carries its own columns, write it as a model and name it:
+
+```go
+type Membership struct {
+    User     User
+    Org      Org
+    Role     string
+    JoinedAt time.Time
 }
 
-func (ur *UserRole) Schema(t *storm.Table) {
-    t.PrimaryKey(&ur.User, &ur.Role)
-    t.Col(&ur.User).OnDelete(storm.Cascade)
-    t.Col(&ur.Role).OnDelete(storm.Restrict)
-    t.Col(&ur.GrantedAt).Default(storm.Now())
+func (m *Membership) Schema(t *storm.Table) {
+    t.PrimaryKey(&m.User, &m.Org)
+    t.Col(&m.User).OnDelete(storm.Cascade)
+    t.Col(&m.Org).OnDelete(storm.Cascade)
+    t.Col(&m.JoinedAt).Default(storm.Now())
+}
+
+func (o *Org) Schema(t *storm.Table) {
+    t.Through(&o.Members, Membership{})
 }
 ```
 
-You get `UserRole` as a table with its own columns and both foreign keys, and
-you load it as an ordinary has-many followed by a to-one. What you do **not**
-get is a `u.Roles []role.Row` that hides the join — `t.Through(...)` is not
-built. The two hops are explicit, which is more typing and exactly as many
-round trips.
+storm generates nothing here — your model **is** the join table. It reads the
+columns rather than inventing them, and requires exactly one foreign key to each
+end: with one to each, "which column points at me" has a single answer. Two keys
+to the same table is a direction only you know, and it is refused rather than
+guessed.
+
+You get both APIs:
+
+```go
+rows, _ := store.OrgWithMembers().Where(org.ID.Eq(id)).All(ctx, ex)
+for _, m := range rows[0].Members {
+    m.Email        // the far row, EMBEDDED — reads the same as a join with no payload
+    m.Via.Role     // the join row's own columns
+    m.Via.JoinedAt
+}
+```
+
+The far row is embedded so the common case reads unchanged. The payload is
+`Via`, named rather than embedded because both rows have an `ID` and a caller
+asking for one should not have to know which won.
+
+Same three round trips, and `storm lint` counts the hop as two either way.
 
 ### `storm.OneOf[…]` — exclusive arc (the default)
 
