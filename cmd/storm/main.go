@@ -22,8 +22,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	toolbootstrap "github.com/gsoultan/storm/tool/bootstrap"
 	tooldiscover "github.com/gsoultan/storm/tool/discover"
@@ -60,12 +62,40 @@ func run(args []string) error {
 	}
 	warn(r)
 
+	if err := checkUndeclarable(r); err != nil {
+		return err
+	}
 	code, err := toolbootstrap.Run(r, args)
 	if err != nil {
 		return err
 	}
 	os.Exit(code)
 	return nil
+}
+
+// checkUndeclarable fails generation on a storm.SQL call that is not a
+// package-level var.
+//
+// A warning would be the wrong shape. storm refuses to run an unregistered
+// statement — that is the check that keeps a caller's string out of SQL text —
+// and a declaration built inside a function is never registered, so the code
+// is already broken. Saying so here costs a build; saying nothing costs the
+// first request that reaches the branch.
+func checkUndeclarable(r *tooldiscover.Result) error {
+	if len(r.Undeclarable) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d raw query declaration(s) storm cannot register:\n", len(r.Undeclarable))
+	for _, u := range r.Undeclarable {
+		fmt.Fprintf(&b, "  %s\n      %s here is not a package-level var, so it is not "+
+			"discovered, not PREPAREd, and not registered — storm will refuse to run it\n",
+			u.Pos, u.Fn)
+	}
+	b.WriteString("       move it to a package-level var and pass values as $1 arguments:\n" +
+		"         var Q = storm.SQL[Row](`SELECT ... WHERE tenant = $1`)\n" +
+		"         rows, err := Q.Query(ctx, db, tenantID)")
+	return errors.New(b.String())
 }
 
 // warn reports only what the developer probably did not mean. Mixins are

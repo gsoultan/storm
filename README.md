@@ -120,6 +120,8 @@ customer.New().Where(customer.Email.ILike("ada@%"))                      // ILIK
 
 // Anything PostgreSQL can run, typed, validated against the model at
 // generate time — mismatches fail the build naming the column and the fix.
+// Only these DECLARED statements run: a statement assembled at run time is
+// refused before it reaches the server, so the escape hatch is not one.
 var Top = storm.SQL[TopRow](`WITH ranked AS (...) SELECT ... LIMIT $1`)
 var Purge = storm.SQLExec(`DELETE FROM sessions WHERE expires_at < now()`)
 ```

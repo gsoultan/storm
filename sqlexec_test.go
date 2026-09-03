@@ -31,6 +31,9 @@ func (e *execRecorder) Batch(context.Context, []runtime.BatchOp, func(int, runti
 // wrong count fails at the caller with both numbers, before any bytes move.
 func TestSQLExec_ArgCountAndPassThrough(t *testing.T) {
 	del := storm.SQLExec(`DELETE FROM t WHERE a = $1 AND b = $2`)
+	// What `storm generate` emits for a declaration it PREPAREd. Without it
+	// the statement is refused as undeclared — see sqlinjection_test.go.
+	storm.RegisterStatement(`DELETE FROM t WHERE a = $1 AND b = $2`)
 	ex := &execRecorder{}
 
 	if _, err := del.Exec(context.Background(), ex, "x"); err == nil {
