@@ -133,7 +133,13 @@ Fix is two layers:
   `storm.SQL` call that is not a package-level var — never discoverable, so
   never registerable. Detected by SUBTRACTION (mark the legitimate package-level
   values, report every other call site), so a declaration nested in a closure or
-  composite literal cannot slip through.
+  composite literal cannot slip through. Also fails a `RegisterStatement` whose
+  argument contains a call: registering computed text whitelists whatever it
+  produces, which is the one bypass of the runtime pin. A bare identifier is
+  deliberately left alone — const vs var needs the whole package, and a var is
+  registered with the value it actually has, which the runtime check then pins.
+  Generated and `_test.go` files are not scanned, so the generator's own
+  registrations and a test standing in for it are unaffected.
 
 Registration takes statement TEXT, not a digest, so the generated `init()` is
 reviewable — the thing a reader needs from it is which statements may run.

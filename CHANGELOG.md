@@ -37,10 +37,11 @@ validated is a different statement and is refused with it.
 The generated init lists the statements as source, not as digests, because what
 a reviewer needs from it is to see which statements are allowed to run.
 
-**`storm generate` also refuses a `storm.SQL` call that is not a package-level
-var.** Those were never discovered, PREPAREd or registered, so they could never
-have run; now they fail the build naming the line instead of the first request
-that reaches the branch.
+**`storm generate` also refuses two shapes the registry cannot vouch for:** a
+`storm.SQL` call that is not a package-level var — never discovered, PREPAREd or
+registered, so it could never have run — and a `RegisterStatement` whose text is
+computed, which would whitelist whatever that expression produces. Both fail the
+build naming the line, instead of the first request that reaches the branch.
 
 Migrating: nothing changes for a codebase whose raw queries are package-level
 vars — regenerate and they are registered. A test that hand-registers a scanner

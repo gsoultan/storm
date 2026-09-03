@@ -73,8 +73,9 @@ func run(args []string) error {
 	return nil
 }
 
-// checkUndeclarable fails generation on a storm.SQL call that is not a
-// package-level var.
+// checkUndeclarable fails generation on a declaration the statement registry
+// cannot vouch for: a storm.SQL call that is not a package-level var, or a
+// RegisterStatement whose text is computed.
 //
 // A warning would be the wrong shape. storm refuses to run an unregistered
 // statement — that is the check that keeps a caller's string out of SQL text —
@@ -86,13 +87,12 @@ func checkUndeclarable(r *tooldiscover.Result) error {
 		return nil
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d raw query declaration(s) storm cannot register:\n", len(r.Undeclarable))
+	fmt.Fprintf(&b, "%d raw-SQL declaration(s) that defeat the statement registry:\n",
+		len(r.Undeclarable))
 	for _, u := range r.Undeclarable {
-		fmt.Fprintf(&b, "  %s\n      %s here is not a package-level var, so it is not "+
-			"discovered, not PREPAREd, and not registered — storm will refuse to run it\n",
-			u.Pos, u.Fn)
+		fmt.Fprintf(&b, "  %s\n      %s here %s\n", u.Pos, u.Fn, u.Why)
 	}
-	b.WriteString("       move it to a package-level var and pass values as $1 arguments:\n" +
+	b.WriteString("       a statement is declared once and its values are bound, never spelled:\n" +
 		"         var Q = storm.SQL[Row](`SELECT ... WHERE tenant = $1`)\n" +
 		"         rows, err := Q.Query(ctx, db, tenantID)")
 	return errors.New(b.String())
