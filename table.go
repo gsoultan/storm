@@ -24,6 +24,17 @@ type Table struct {
 	// other table — so `&u.Posts` has nothing in off to resolve to, and a plan
 	// still has to be able to name it.
 	relOff map[uintptr]string
+
+	// through are the t.Through declarations, resolved after every table's
+	// keys exist — the join model's foreign keys are what name the columns.
+	through []throughDecl
+}
+
+// throughDecl is one t.Through call, held until the join model's own keys are
+// built.
+type throughDecl struct {
+	field string
+	join  reflect.Type
 }
 
 // col carries build-time state that does not live in the IR.
@@ -79,6 +90,21 @@ func (t *Table) resolve(fieldPtr any) (*col, error) {
 	return c, nil
 }
 
+// offsetOf is a field pointer's offset within the model, or ^uintptr(0) when it
+// does not point into one. Relations have no column, so resolve cannot find
+// them; relOff is keyed by this.
+func (t *Table) offsetOf(fieldPtr any) uintptr {
+	v := reflect.ValueOf(fieldPtr)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return ^uintptr(0)
+	}
+	base, got := uintptr(t.base), v.Pointer()
+	if got < base || got >= base+t.typ.Size() {
+		return ^uintptr(0)
+	}
+	return got - base
+}
+
 // names resolves a list of field pointers to column names, in order.
 func (t *Table) names(ptrs []any) []string {
 	out := make([]string, 0, len(ptrs))
@@ -103,6 +129,46 @@ func (t *Table) names(ptrs []any) []string {
 // composite key.
 func (t *Table) PrimaryKey(fields ...any) *Table {
 	t.out.PrimaryKey = t.names(fields)
+	return t
+}
+
+// Through declares a many-to-many that runs over a join model the adopter
+// wrote, rather than a table storm generated.
+//
+// The reason to write the join yourself is that it carries columns of its own —
+// when a role was granted, when it expires — and those columns are the point.
+// A generated join table has nowhere to put them.
+//
+//	func (u *User) Schema(t *storm.Table) {
+//	    t.Through(&u.Roles, UserRole{})
+//	}
+//
+// `join` is a VALUE of the join model, not a pointer and not a field pointer:
+// it names a type, and the type is all storm needs. The join model must carry
+// exactly one foreign key to each end, which is what makes the two directions
+// unambiguous — a join with two keys to the same table is a self-referential
+// shape that has to name its own columns.
+//
+// The plan row carries the join row and the far row together, so the payload
+// is reachable: `u.Roles[i].GrantedAt` alongside `u.Roles[i].Role.Name`.
+func (t *Table) Through(fieldPtr any, join any) *Table {
+	name, ok := t.relOff[t.offsetOf(fieldPtr)]
+	if !ok {
+		t.errs.add(fmt.Errorf(
+			"%s: Through's first argument must be a relation field on this model", t.out.Name))
+		return t
+	}
+	jt := reflect.TypeOf(join)
+	for jt != nil && jt.Kind() == reflect.Ptr {
+		jt = jt.Elem()
+	}
+	if jt == nil || jt.Kind() != reflect.Struct {
+		t.errs.add(fmt.Errorf(
+			"%s.%s: Through needs the join MODEL as a value — t.Through(&u.Roles, UserRole{})",
+			t.out.Name, name))
+		return t
+	}
+	t.through = append(t.through, throughDecl{field: name, join: jt})
 	return t
 }
 
