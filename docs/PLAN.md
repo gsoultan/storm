@@ -836,8 +836,12 @@ Written as a checklist because "production ready" is not one property.
   the v0.4.1 entry in `CHANGELOG.md`. A performance claim nobody re-runs decays
   into folklore in both directions.
 - Nesting a plan through a to-one relation is a generation error by choice.
-- The discriminator form of polymorphism (`AnyRef`) is unbuilt; exclusive arcs
-  are.
+- ~~The discriminator form of polymorphism (`AnyRef`) is unbuilt; exclusive arcs
+  are.~~ **Built 2026-09-03.** `storm.AnyRef` emits a `(<field>_type,
+  <field>_id)` pair and a composite index, and no foreign key, because none is
+  expressible. `Build` refuses it until `AcknowledgeNoFK("<why>")` is called,
+  and the reason travels into the schema so it appears in `storm diff` — where
+  a reviewer sees it — rather than only where it was written.
 
 ## Risk register
 

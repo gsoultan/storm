@@ -3,6 +3,7 @@ package storm
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"unsafe"
 
 	"github.com/gsoultan/storm/schema"
@@ -30,6 +31,10 @@ type col struct {
 	sc    *schema.Column
 	field reflect.StructField
 	isRel bool
+	// anyRef is set on the TYPE column of a discriminator pair, so
+	// AcknowledgeNoFK reaches the declaration through the field pointer the
+	// model already writes.
+	anyRef *schema.AnyRefField
 }
 
 // Col addresses a column by field pointer and returns a builder for it.
@@ -237,6 +242,28 @@ func (b *ColBuilder) Version() *ColBuilder         { b.c.sc.Version = true; retu
 func (b *ColBuilder) Comment(s string) *ColBuilder { b.c.sc.Comment = s; return b }
 func (b *ColBuilder) NotNull() *ColBuilder         { b.c.sc.NotNull = true; return b }
 func (b *ColBuilder) Nullable() *ColBuilder        { b.c.sc.NotNull = false; return b }
+
+// AcknowledgeNoFK records why this AnyRef gives up referential integrity.
+//
+// Required: Build refuses an AnyRef without one. The reason travels into the
+// schema and out through `storm diff`, so the decision is visible where it is
+// reviewed rather than only where it was made.
+func (b *ColBuilder) AcknowledgeNoFK(reason string) *ColBuilder {
+	switch {
+	case b.c.anyRef == nil:
+		b.t.errs.add(fmt.Errorf(
+			"%s.%s: AcknowledgeNoFK is only meaningful on a storm.AnyRef field — "+
+				"an ordinary reference already has a foreign key",
+			b.t.out.Name, b.c.sc.Name))
+	case strings.TrimSpace(reason) == "":
+		b.t.errs.add(fmt.Errorf(
+			"%s.%s: AcknowledgeNoFK needs a reason — it is what a reviewer reads in the diff",
+			b.t.out.Name, b.c.anyRef.Field))
+	default:
+		b.c.anyRef.Reason = reason
+	}
+	return b
+}
 
 // Raw forces a database type storm does not model.
 func (b *ColBuilder) Raw(sqlType string) *ColBuilder {
