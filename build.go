@@ -618,8 +618,17 @@ func (b *builder) validateHasMany(mi *modelInfo) {
 		}
 		col := fkColumnTo(tgt.tbl.out, mi.tbl.out.Name)
 		if col == "" {
+			// No key on the far side. Before this is an error, ask whether the
+			// far side is a slice back to here — a slice on both sides is a
+			// MANY-TO-MANY, and the key neither of them carries lives on a
+			// join table.
+			if b.linkFor(mi, tgt, rel) {
+				continue
+			}
 			b.errs.add(fmt.Errorf(
-				"%s.%s: has-many to %s, but %s has no field of type %s to carry the foreign key",
+				"%s.%s: has-many to %s, but %s has no field of type %s to carry the foreign key\n"+
+					"       add one, or declare the inverse as a slice too — a slice on both "+
+					"sides is a many-to-many and storm generates the join table",
 				mi.tbl.out.Name, rel.fieldName, rel.target.Name(),
 				tgt.tbl.out.Name, mi.typ.Name()))
 			continue
@@ -635,6 +644,117 @@ func (b *builder) validateHasMany(mi *modelInfo) {
 			Owner:    false,
 		})
 	}
+}
+
+// linkFor recognises a many-to-many and wires both sides to a join table,
+// generating the table itself the first time it is asked.
+//
+// Reports whether rel is one half of a many-to-many. It is called only when
+// the far side carries no key, which is the whole signal: a has-many whose
+// inverse is also a has-many is the shape no single foreign key can express.
+//
+// Runs once per PAIR, not once per side. The second side finds the table
+// already built and joins it, so the two agree on names by construction rather
+// than by computing the same thing twice.
+func (b *builder) linkFor(mi *modelInfo, tgt *modelInfo, rel *relation) bool {
+	// The far side must name this type back, as a slice.
+	var back *relation
+	for _, r := range tgt.pending {
+		if r.toMany && r.target == mi.typ {
+			back = r
+			break
+		}
+	}
+	if back == nil {
+		return false
+	}
+
+	here, there := mi.tbl.out, tgt.tbl.out
+	link := linkTableName(here.Name, there.Name)
+	hereCol := singular(here.Name) + "_id"
+	thereCol := singular(there.Name) + "_id"
+
+	// A self-referential many-to-many would name both columns the same thing.
+	// It is a real shape (a graph of posts related to posts) and it needs two
+	// distinct names, which the model has not given — so say so rather than
+	// emit a table with a duplicate column.
+	if here.Name == there.Name {
+		b.errs.add(fmt.Errorf(
+			"%s.%s: a self-referential many-to-many needs its own join model — "+
+				"storm cannot name both columns %s",
+			here.Name, rel.fieldName, hereCol))
+		return true
+	}
+
+	if b.outSch.Table(link) == nil {
+		b.outSch.Tables = append(b.outSch.Tables, b.buildLinkTable(link, here, there, hereCol, thereCol))
+	}
+
+	add := func(owner *schema.Table, r *relation, target *schema.Table, own, far string) {
+		owner.Relations = append(owner.Relations, &schema.Relation{
+			Field:            r.fieldName,
+			Target:           target.Name,
+			TargetGo:         goNameOf(target),
+			ToMany:           true,
+			Owner:            false,
+			Link:             link,
+			LinkColumn:       own,
+			LinkTargetColumn: far,
+		})
+	}
+	add(here, rel, there, hereCol, thereCol)
+	add(there, back, here, thereCol, hereCol)
+	// The far side is wired now; leaving it pending would report it as an
+	// error when its own table is validated.
+	back.toMany = false
+	return true
+}
+
+// buildLinkTable is the join table of an implicit many-to-many: two keys, a
+// composite primary key over both, and a cascade on each.
+//
+// CASCADE rather than RESTRICT because the row means "these two are related",
+// and deleting either end makes the statement meaningless rather than
+// dangling. It never deletes anything the adopter can see: the far ROW
+// survives, only the association goes.
+func (b *builder) buildLinkTable(name string, a, c *schema.Table, aCol, cCol string) *schema.Table {
+	t := &schema.Table{
+		Name: name,
+		// A singular Go name, so the generated package and Row type read as
+		// one link — postTag, not postTags. Set here rather than left empty
+		// because PackageName falls back to the TABLE name, and the plan that
+		// references this package derives its own name from GoName: the two
+		// must agree, and the only way to be sure is for one value to feed
+		// both.
+		GoName:    schema.GoName(singular(name)),
+		Generated: true,
+		Columns: []*schema.Column{
+			{Name: aCol, Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+			{Name: cCol, Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+		},
+		PrimaryKey: []string{aCol, cCol},
+		ForeignKeys: []*schema.ForeignKey{
+			{Name: "fk_" + name + "_" + aCol, Columns: []string{aCol},
+				RefTable: a.Name, RefColumns: a.PrimaryKey, OnDelete: schema.Cascade},
+			{Name: "fk_" + name + "_" + cCol, Columns: []string{cCol},
+				RefTable: c.Name, RefColumns: c.PrimaryKey, OnDelete: schema.Cascade},
+		},
+		// The composite primary key indexes (aCol, cCol), which serves a
+		// lookup from a but not one from c. The second index is what keeps the
+		// reverse direction from a sequential scan.
+		Indexes: []*schema.Index{{Columns: []schema.IndexColumn{{Name: cCol}, {Name: aCol}}}},
+	}
+	return t
+}
+
+// linkTableName is the join table for two tables, and must not depend on which
+// side the walker reached first. Sorted, so `posts` and `tags` give
+// `post_tags` from either direction.
+func linkTableName(a, c string) string {
+	if a > c {
+		a, c = c, a
+	}
+	return singular(a) + "_" + c
 }
 
 // fkColumnTo is the column on t that references table, or "" if none does.
@@ -792,6 +912,12 @@ func tableName(model string) string {
 }
 
 func isVowel(c byte) bool { return strings.IndexByte("aeiou", c) >= 0 }
+
+// singular and goNameOf are the join-table naming rules, both delegating so
+// that schema, codegen and the builder cannot disagree about a column name.
+func singular(s string) string { return schema.Singular(s) }
+
+func goNameOf(t *schema.Table) string { return t.GoName }
 
 // snake converts CamelCase to snake_case, keeping acronyms intact:
 // OrgID -> org_id, HTTPServer -> http_server, ID -> id.
