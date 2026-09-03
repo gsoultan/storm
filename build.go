@@ -222,6 +222,24 @@ func (b *builder) callMixinSchemas(mi *modelInfo, t reflect.Type, tbl *Table) {
 		if _, isModel := b.byType[f.Type]; isModel {
 			continue
 		}
+		// An unexported embedded field cannot be read back through reflect —
+		// Interface() panics on one — so this has to be decided from the TYPE.
+		// Skipping silently would be worse than the panic it replaces: the
+		// mixin's Schema would never run, and the table would come out missing
+		// declarations nobody could see were missing.
+		if f.PkgPath != "" {
+			if reflect.PointerTo(f.Type).Implements(schemerTyp) {
+				b.errs.add(fmt.Errorf(
+					"%s embeds %s, which is unexported and has a Schema method — "+
+						"reflect cannot reach an unexported embedded field, so that "+
+						"Schema would never run and the table would be missing whatever "+
+						"it declares\n"+
+						"       export the mixin; being embedded is what makes it a mixin, "+
+						"not being unexported",
+					t.Name(), f.Type.Name()))
+			}
+			continue
+		}
 		if s, ok := elem.Field(i).Addr().Interface().(Schemer); ok {
 			s.Schema(tbl)
 		}

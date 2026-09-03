@@ -1,6 +1,6 @@
 package blog_test
 
-// docs/API.md, compiled.
+// docs/API.md and docs/EXAMPLE.md, compiled.
 //
 // The document is the first thing an evaluator reads, and until 2026-09-04 it
 // described an API that did not exist — `user.Query()`, `storm.Pred`,
@@ -10,9 +10,10 @@ package blog_test
 // to know which half is real.
 //
 // Prose cannot be tested, so this file is the next best thing — every call
-// shape API.md shows appears below, against the generated store. A method that
-// does not exist fails the build, and a rename that lands in the generated code
-// without landing in the document fails it too.
+// shape those documents show appears below, against the generated store. A
+// method that does not exist fails the build, and a rename that lands in the
+// generated code without landing in a document fails it too. EXAMPLE.md draws
+// from the same set of shapes, so one file guards both.
 //
 // It is deliberately compile-only. The behaviour is already covered by
 // blog_test.go against a real server; what is at risk here is the SHAPE.
