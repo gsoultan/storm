@@ -242,8 +242,8 @@ func TestDiscoverReportsUndeclarableQueries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Undeclarable) != 2 {
-		t.Fatalf("got %d undeclarable declaration(s), want 2: %+v", len(r.Undeclarable), r.Undeclarable)
+	if len(r.Undeclarable) != 3 {
+		t.Fatalf("got %d undeclarable declaration(s), want 3: %+v", len(r.Undeclarable), r.Undeclarable)
 	}
 	var fns []string
 	for _, u := range r.Undeclarable {
@@ -251,10 +251,18 @@ func TestDiscoverReportsUndeclarableQueries(t *testing.T) {
 		if !strings.Contains(u.Pos, "dynamic.go") {
 			t.Errorf("position %q does not name the file", u.Pos)
 		}
+		if u.Why == "" {
+			t.Errorf("%s at %s was reported with no reason", u.Fn, u.Pos)
+		}
 	}
 	sort.Strings(fns)
-	if fns[0] != "storm.SQL" || fns[1] != "storm.SQLExec" {
-		t.Errorf("reported %v, want both halves of the escape hatch", fns)
+	// Both halves of the escape hatch, and the registry call that would
+	// whitelist a statement built at run time.
+	want := []string{"storm.RegisterStatement", "storm.SQL", "storm.SQLExec"}
+	for i := range want {
+		if fns[i] != want[i] {
+			t.Fatalf("reported %v, want %v", fns, want)
+		}
 	}
 
 	// The package-level declarations in the same package are untouched: the
