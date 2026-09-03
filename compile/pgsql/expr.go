@@ -1,6 +1,7 @@
 package pgsql
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/gsoultan/storm/schema"
@@ -42,14 +43,29 @@ func writeExpr(b *strings.Builder, e schema.Expr) {
 		writeArgs(b, e.Args)
 		b.WriteByte(')')
 
+	case schema.ExprBinary:
+		writeBinary(b, e)
+
 	case schema.ExprGrouping:
 		b.WriteString("GROUPING(")
 		writeArgs(b, e.Args)
 		b.WriteByte(')')
 
 	case schema.ExprAgg:
+		// avg() over an integer or a numeric divides, and PostgreSQL's numeric
+		// division chooses a scale large enough to overflow the eighteen
+		// significant digits a Decimal holds. The result type carries the
+		// scale storm declared; this makes the statement agree with it. Sum
+		// needs no such thing — its scale is the input's.
+		round := e.Fn == "avg" && e.Type.Name == schema.TypeNumeric && e.Type.Scale > 0
+		if round {
+			b.WriteString("round(")
+		}
 		b.WriteString(e.Fn)
 		b.WriteByte('(')
+		if e.Distinct {
+			b.WriteString("DISTINCT ")
+		}
 		writeArgs(b, e.Args)
 		b.WriteByte(')')
 		// FILTER binds to the aggregate and must precede OVER. Written before
@@ -63,6 +79,13 @@ func writeExpr(b *strings.Builder, e schema.Expr) {
 		if e.Over != nil {
 			writeOver(b, *e.Over)
 		}
+		if round {
+			// After the window, not before: round() takes the value the window
+			// produced, and rounding inside would average the rounded groups.
+			b.WriteString(", ")
+			b.WriteString(strconv.Itoa(e.Type.Scale))
+			b.WriteByte(')')
+		}
 
 	case schema.ExprWindow:
 		b.WriteString(e.Fn)
@@ -73,6 +96,62 @@ func writeExpr(b *strings.Builder, e schema.Expr) {
 			writeOver(b, *e.Over)
 		}
 	}
+}
+
+// writeBinary renders arithmetic, always parenthesised.
+//
+// Parenthesised unconditionally rather than by precedence: the IR is a tree, so
+// the grouping is already decided, and emitting `a + b * c` would make the SQL
+// mean something the tree does not say. Nobody reads generated SQL for its
+// spacing.
+//
+// The cast is the part that matters. PostgreSQL's `/` on two integers
+// truncates, so `count(paid) / count(*)` is 0 for every group that is not
+// entirely paid. schema.BinaryResult already types that expression as numeric;
+// this makes the SQL agree. It lives HERE, not in the front end, because it is
+// a PostgreSQL fact — MySQL's `/` already yields a decimal, and its back end
+// must not inherit a cast it does not need.
+func writeBinary(b *strings.Builder, e schema.Expr) {
+	if len(e.Args) != 2 {
+		return
+	}
+	if e.Arith == schema.ArithDiv {
+		// round(), because PostgreSQL's numeric division chooses its own scale
+		// and it is a large one: 1/4 is 0.25000000000000000000, which is more
+		// significant digits than a Decimal holds. The scale came from the
+		// declaration, so the statement says it too.
+		b.WriteString("round(")
+		writeExpr(b, e.Args[0])
+		if e.Args[0].Type.Name != schema.TypeNumeric {
+			b.WriteString("::numeric")
+		}
+		b.WriteString(arithOp(e.Arith))
+		writeExpr(b, e.Args[1])
+		b.WriteString(", ")
+		b.WriteString(strconv.Itoa(e.Type.Scale))
+		b.WriteByte(')')
+		return
+	}
+	b.WriteByte('(')
+	writeExpr(b, e.Args[0])
+	b.WriteString(arithOp(e.Arith))
+	writeExpr(b, e.Args[1])
+	b.WriteByte(')')
+}
+
+// arithOp spells the operator. The only place in storm that does.
+func arithOp(op schema.ArithOp) string {
+	switch op {
+	case schema.ArithAdd:
+		return " + "
+	case schema.ArithSub:
+		return " - "
+	case schema.ArithMul:
+		return " * "
+	case schema.ArithDiv:
+		return " / "
+	}
+	return " ? "
 }
 
 func writeArgs(b *strings.Builder, args []schema.Expr) {
@@ -112,7 +191,44 @@ func writeOver(b *strings.Builder, w schema.Window) {
 			}
 		}
 	}
+	if w.Frame != nil {
+		writeFrame(b, *w.Frame)
+	}
 	b.WriteByte(')')
+}
+
+// writeFrame renders ROWS/RANGE BETWEEN.
+//
+// Always BETWEEN, never the one-bound shorthand. `ROWS 3 PRECEDING` means
+// `BETWEEN 3 PRECEDING AND CURRENT ROW`, which is a rule people misremember in
+// both directions; spelling both edges makes the generated SQL say what the
+// declaration said.
+func writeFrame(b *strings.Builder, f schema.Frame) {
+	if f.Kind == schema.FrameRange {
+		b.WriteString(" RANGE BETWEEN ")
+	} else {
+		b.WriteString(" ROWS BETWEEN ")
+	}
+	writeBound(b, f.Start)
+	b.WriteString(" AND ")
+	writeBound(b, f.End)
+}
+
+func writeBound(b *strings.Builder, bound schema.FrameBound) {
+	switch bound.Kind {
+	case schema.UnboundedPreceding:
+		b.WriteString("UNBOUNDED PRECEDING")
+	case schema.Preceding:
+		b.WriteString(strconv.Itoa(bound.N))
+		b.WriteString(" PRECEDING")
+	case schema.CurrentRow:
+		b.WriteString("CURRENT ROW")
+	case schema.Following:
+		b.WriteString(strconv.Itoa(bound.N))
+		b.WriteString(" FOLLOWING")
+	case schema.UnboundedFollowing:
+		b.WriteString("UNBOUNDED FOLLOWING")
+	}
 }
 
 // Cond renders a declared predicate.

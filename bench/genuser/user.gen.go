@@ -1661,7 +1661,7 @@ type ByStatusRow struct {
 	Newest runtime.Null[time.Time]
 }
 
-const byStatusPrefix = `SELECT "status" AS "status", count(*) AS "users", avg("age") AS "avg_age", max("created_at") AS "newest" FROM "users"`
+const byStatusPrefix = `SELECT "status" AS "status", count(*) AS "users", round(avg("age"), 6) AS "avg_age", max("created_at") AS "newest" FROM "users"`
 const byStatusSuffix = ` GROUP BY "status" ORDER BY "status"`
 
 var (
