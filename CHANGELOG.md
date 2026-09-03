@@ -12,6 +12,57 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Fixed: large decimals were written to the database as zero
+
+Present in every version that has had `numeric` support. Silent, and a wrong
+answer rather than an error:
+
+```go
+d, _ := storm.ParseDecimal("123456789.987654321")
+// stored as 0.000000000
+```
+
+PostgreSQL's binary numeric format groups digits in base 10000, so a scale that
+is not a multiple of four has to be padded up to a group boundary. The encoder
+did that by multiplying the unscaled `int64` by up to 1,000. Past roughly
+9.2e15 that overflows: the value went negative, the digit loop never ran, and
+the **zero** encoding went out — on inserts, on updates, and in predicates.
+
+Not always zero, which is worse. `9999999999999999.9` was stored as
+`776627963145224.0` — the wrapped value, a plausible-looking number.
+
+Where it bites, by scale (values above these were wrong):
+
+| scale | breaks above |
+|---|---|
+| 1 | 922,337,203,685,477.5 |
+| 2 | 922,337,203,685,477.62 |
+| 5, 9 | 92,233,720,368.54 / 9,223,372.03 |
+| 0, 4, 8, 12 | never — no padding needed |
+
+Scale 9 is the dangerous one: a rate or a token amount in a `numeric(30,9)`
+column is wrong above about 9.2 million.
+
+The padding is no longer applied to the value at all. The shift moves digits
+across group boundaries as the groups are built, multiplying at most 9,999
+rather than the whole number.
+
+**The decoder had the mirror of it.** It accumulated every digit group at full
+group precision *before* trimming to the declared scale, so a value that fits a
+`Decimal` exactly was rejected as out of range — including the encoder's own
+output, and pgx's, which is byte-identical for that case. Trimming now happens
+before and during accumulation.
+
+`TestDecimal_WireRoundTrip` already existed. Every value in it was small enough
+to miss the overflow.
+
+Found by re-measuring a line in `docs/PLAN.md` that claimed `numeric[]` "still
+goes through pgx's generic codec". It does not, and cannot — pgx has no encode
+plan for `[]runtime.Decimal`. Checking the claim meant exercising the encoder
+with values nothing else had.
+
 ## v0.4.0 — 2026-09-02
 
 > **If you are on v0.3.0 and any query carries two list predicates, it is

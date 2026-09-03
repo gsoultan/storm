@@ -825,8 +825,16 @@ Written as a checklist because "production ready" is not one property.
 
 - `runtime.SpliceTree` assumes a `$N` placeholder (documented at `takesArg`).
 - ~~Only `uuid[]` has a fast array encoder~~ — `int8[]` and `text[]` shipped
-  2026-08-26 (21× and 8×, one allocation each; `bench/RESULTS.md`). `numeric[]`
-  still goes through pgx's generic codec.
+  2026-08-26 (21× and 8×, one allocation each; `bench/RESULTS.md`). ~~`numeric[]`
+  still goes through pgx's generic codec.~~ **Wrong, and corrected 2026-09-02 by
+  measuring it:** `numeric[]` has had `decimalArrayPlan` since the numeric work
+  landed, and there is no generic codec for it to go through — pgx has no encode
+  plan for `[]runtime.Decimal` at all. 500 elements: 3,126 ns, **one
+  allocation**.
+
+  Re-measuring that line is what found the numeric encoder writing zeros; see
+  the v0.4.1 entry in `CHANGELOG.md`. A performance claim nobody re-runs decays
+  into folklore in both directions.
 - Nesting a plan through a to-one relation is a generation error by choice.
 - The discriminator form of polymorphism (`AnyRef`) is unbuilt; exclusive arcs
   are.
