@@ -132,7 +132,13 @@ func AggregateResult(fn AggFunc, in Type) (out Type, nullable bool, err error) {
 	case AggAvg:
 		switch in.Name {
 		case TypeInt2, TypeInt4, TypeInt8, TypeNumeric:
-			return Type{Name: TypeNumeric}, true, nil
+			// Scaled, unlike sum, because avg DIVIDES and PostgreSQL's numeric
+			// division picks its own scale — avg of one numeric(12,2) value
+			// 123456789.12 comes back as 123456789.120000000000, twenty-one
+			// significant digits, and a Decimal holds eighteen. Sum can be left
+			// unbounded because its scale is the input's; an average's is not,
+			// so it is bounded here and the back end rounds to it.
+			return Type{Name: TypeNumeric, Scale: DivScaleDefault}, true, nil
 		case TypeFloat4, TypeFloat8:
 			// avg(float4) is float8, not float4: PostgreSQL accumulates in
 			// double precision.

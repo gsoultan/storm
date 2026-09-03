@@ -393,37 +393,41 @@ const (
 	RawAgainstLive RawSchema = "live"
 )
 
-func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]codegen.RawScanner, error) {
+func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]codegen.RawScanner, []string, error) {
 	if len(RawQueries) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if dsn == "" {
-		return nil, errors.New(
+		return nil, nil, errors.New(
 			"raw queries are registered, and validating them needs -dsn (or $STORM_DSN): " +
 				"each statement is PREPAREd against a real server — a server is " +
 				"required, an existing schema is not (unless -raw-schema live)")
 	}
 	c, ctx, done, err := connect(dsn)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer done()
 
 	if against == RawAgainstModel {
 		scratch := fmt.Sprintf("storm_sqlcheck_%d", os.Getpid())
 		if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		defer func() { _, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE") }()
 		if _, err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, err := c.Exec(ctx, pgddl.Create(model)); err != nil {
-			return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
+			return nil, nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
 		}
 	}
 
 	var out []codegen.RawScanner
+	// Every statement that PREPAREs is registered, scanner or not: SQLExec has
+	// no row type and still must be pinned, or the exec half of the escape
+	// hatch is the hole the query half no longer has.
+	var stmts []string
 	for i, d := range RawQueries {
 		rt, sql := storm.DeclOf(d)
 		name := "storm.SQLExec"
@@ -432,14 +436,28 @@ func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]c
 		}
 		sd, err := c.Prepare(ctx, fmt.Sprintf("storm_sqlcheck_%d", i), sql)
 		if err != nil {
-			return nil, fmt.Errorf("%s does not prepare against the %s schema:\n  %w", name, against, err)
+			return nil, nil, fmt.Errorf("%s does not prepare against the %s schema:\n  %w", name, against, err)
 		}
+		// The placeholder count a caller must satisfy is scanned off the
+		// statement text; the server just reported the real one. A $1 inside a
+		// string literal or a dollar-quoted body is text to PostgreSQL and a
+		// placeholder to the scanner, and that disagreement is a build error
+		// here rather than a confusing "wants 2 arguments, got 1" at the first
+		// call — the count for every shape is meant to be known at build time.
+		if want, got := len(sd.ParamOIDs), storm.ArgsOf(d); want != got {
+			return nil, nil, fmt.Errorf(
+				"%s takes %d parameter(s), but its text scans as %d — a $n inside a "+
+					"string literal or a $tag$ body reads as a placeholder\n"+
+					"  %s",
+				name, want, got, firstLineOf(sql))
+		}
+		stmts = append(stmts, sql)
 		if rt == nil {
 			// SQLExec: validated like any declaration, but it must not
 			// return rows — an exec that reads as "fire and forget" while
 			// the server sends a result set is a bug, not a convenience.
 			if len(sd.Fields) > 0 {
-				return nil, fmt.Errorf(
+				return nil, nil, fmt.Errorf(
 					"%s returns %d column(s) — use storm.SQL[T] to read them, or make the statement return nothing",
 					name, len(sd.Fields))
 			}
@@ -451,11 +469,25 @@ func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]c
 		}
 		rs, err := codegen.ResolveRawScanner(rt, rt.PkgPath(), fields)
 		if err != nil {
-			return nil, fmt.Errorf("%s\n  %w", name, err)
+			return nil, nil, fmt.Errorf("%s\n  %w", name, err)
 		}
 		out = append(out, rs)
 	}
-	return out, nil
+	return out, stmts, nil
+}
+
+// firstLineOf trims a statement to what an error can carry. The declaration is
+// named already; this is so the reader can tell WHICH of their queries it is
+// without opening the file.
+func firstLineOf(sql string) string {
+	s := strings.TrimSpace(sql)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i]) + " ..."
+	}
+	if len(s) > 120 {
+		s = s[:117] + "..."
+	}
+	return s
 }
 
 // lint costs every named plan and fails when one exceeds the budget.
@@ -524,7 +556,7 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema) e
 	if err != nil {
 		return err
 	}
-	scanners, err := prepareRawQueries(dsn, model, against)
+	scanners, statements, err := prepareRawQueries(dsn, model, against)
 	if err != nil {
 		return err
 	}
@@ -534,6 +566,7 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema) e
 		Package:       filepath.Base(dir),
 		PackageImport: hostMod + "/" + filepath.ToSlash(rel),
 		RawScanners:   scanners,
+		RawStatements: statements,
 		// The models as Go types, not as schema: the staleness check asserts
 		// the STRUCT, which the schema no longer describes once relations have
 		// become foreign keys and mixins have been flattened.
@@ -617,7 +650,7 @@ func verifyStale(dir string, model *schema.Schema, against RawSchema) error {
 	if err != nil {
 		return err
 	}
-	scanners, err := prepareRawQueries(os.Getenv("STORM_DSN"), model, against)
+	scanners, statements, err := prepareRawQueries(os.Getenv("STORM_DSN"), model, against)
 	if err != nil {
 		return err
 	}
@@ -627,6 +660,7 @@ func verifyStale(dir string, model *schema.Schema, against RawSchema) error {
 		Package:       filepath.Base(dir),
 		PackageImport: hostMod + "/" + filepath.ToSlash(rel),
 		RawScanners:   scanners,
+		RawStatements: statements,
 	})
 	if err != nil {
 		return err

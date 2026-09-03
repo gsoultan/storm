@@ -441,3 +441,105 @@ func TestCheckConstraintIsTyped(t *testing.T) {
 		t.Error("the CHECK did not refuse an oversell")
 	}
 }
+
+// The ratio must be a RATIO, which is the whole reason arithmetic is worth
+// having in a declaration.
+//
+// PostgreSQL's `/` on two integers truncates, so `paid / orders` over two
+// counts is 0 for every day that is not entirely paid and 1 for every day that
+// is. That is a plausible-looking wrong answer — the report renders, the
+// numbers are in range, and nobody notices until somebody checks by hand. Div
+// resolves integer division to numeric and the back end emits the cast, so
+// this asserts the fraction survives.
+func TestAggregateRatioIsNotIntegerDivision(t *testing.T) {
+	ctx := context.Background()
+	svc := orders.New(pool)
+	cust, _ := seed(t, "SKU-RATIO", "10.00", 100)
+
+	// Four orders, of which one is paid: 0.25, a number integer division
+	// cannot represent.
+	var ids []string
+	for i := 0; i < 4; i++ {
+		id, err := svc.PlaceOrder(ctx, cust, []orders.LineRequest{{SKU: "SKU-RATIO", Quantity: 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id.OrderID)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE orders SET status = 'paid' WHERE id = $1`, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	// Scoped to this test's customer. Predicates compose on an aggregation the
+	// same as anywhere else — they are a WHERE, filtering the rows that go
+	// INTO the groups, so the counts below are this test's and not the suite's.
+	var cid [16]byte
+	if err := pool.QueryRow(ctx, `SELECT id FROM customers WHERE id = $1`, cust).Scan(&cid); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := order.New().Where(order.CustomerID.Eq(cid)).AllTrend(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d day(s), want 1", len(rows))
+	}
+	r := rows[0]
+	if r.Orders != 4 || r.Paid != 1 {
+		t.Fatalf("counts are %d orders / %d paid, want 4 / 1", r.Orders, r.Paid)
+	}
+	rate, ok := r.PaidRate.Get()
+	if !ok {
+		t.Fatal("the ratio came back NULL for a day with four orders")
+	}
+	if got := rate.String(); !strings.HasPrefix(got, "0.25") {
+		t.Errorf("paid rate = %s, want 0.25 — integer division would give 0", got)
+	}
+
+	// One customer placed all four, which is the question CountDistinct asks
+	// and neither Count nor CountOf does.
+	if r.Buyers != 1 {
+		t.Errorf("distinct buyers = %d, want 1 for four orders from one customer", r.Buyers)
+	}
+
+	// The frame reaches back six days and forward none, so a single day's
+	// moving average is that day's revenue.
+	avg, ok := r.Revenue7d.Get()
+	if !ok {
+		t.Fatal("the moving average came back NULL")
+	}
+	rev, _ := r.Revenue.Get()
+	// Compared as numbers: PostgreSQL's avg carries a different scale from the
+	// sum it averaged, so 40.00 and 40.000000 are the same answer.
+	if avg.Float64() != rev.Float64() {
+		t.Errorf("7-day average over one day = %s, want the day's revenue %s", avg, rev)
+	}
+}
+
+// avg() over a numeric column must decode at money-sized values.
+//
+// PostgreSQL's avg DIVIDES, and numeric division picks its own scale: the
+// average of one order of 123456789.12 comes back as 123456789.120000000000 —
+// twenty-one significant digits, where a Decimal holds eighteen. Before the
+// result type carried a scale this failed to decode with ErrDecimalRange, so
+// an aggregation that worked on test-sized data broke on real invoices.
+func TestAggregateAvgDecodesAtMoneySizedValues(t *testing.T) {
+	ctx := context.Background()
+	svc := orders.New(pool)
+	cust, _ := seed(t, "SKU-BIG", "999999.99", 1000)
+	if _, err := svc.PlaceOrder(ctx, cust,
+		[]orders.LineRequest{{SKU: "SKU-BIG", Quantity: 123}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := order.New().Where(order.Status.Eq("pending")).AllByStatus(ctx, ex)
+	if err != nil {
+		t.Fatalf("avg over a money-sized column did not decode: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("no groups")
+	}
+	if _, ok := rows[0].AvgOrder.Get(); !ok {
+		t.Error("avg came back NULL for a group with orders in it")
+	}
+}

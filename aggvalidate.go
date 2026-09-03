@@ -2,6 +2,7 @@ package storm
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gsoultan/storm/schema"
 )
@@ -50,6 +51,19 @@ func validateAggregate(tbl *schema.Table, agg *schema.Aggregate) error {
 		grouped = append(grouped, g.Expr)
 	}
 	for _, t := range agg.Terms {
+		// Named before the general rule, because the general message sends the
+		// reader to "group by it or wrap it in an aggregate" and neither is the
+		// fix. The fix is the nested form, which SumOver and its siblings build.
+		if col, bad := windowedOverRow(t.Expr, grouped); bad {
+			return fmt.Errorf(
+				"%s: aggregate %q windows %s(%s) in %q, but the query is grouped — "+
+					"with OVER it is a window function, so its argument is read from the "+
+					"GROUPED rows and column %s is not there\n"+
+					"       to aggregate ACROSS the groups use %sOver(handle, %q, window), "+
+					"which builds %s(%s(...)) OVER (...)",
+				tbl.Name, agg.Name, t.Expr.Fn, col, t.As, col,
+				exportedFn(t.Expr.Fn), t.As, t.Expr.Fn, t.Expr.Fn)
+		}
 		if col, bad := ungrouped(t.Expr, grouped); bad {
 			return fmt.Errorf(
 				"%s: aggregate %q reads column %s in %q, but groups by something else — "+
@@ -96,8 +110,24 @@ func ungrouped(e schema.Expr, grouped []schema.Expr) (string, bool) {
 		// total >= 50)` alongside `GROUP BY status` is valid, and asserted
 		// against a live server by the example's TestAggregateFilter.
 		//
-		// Its OVER clause is not: a window over grouped rows sees one row per
-		// group, so it may only name grouping expressions or aggregates.
+		// UNLESS it has an OVER clause. Then it is a window function call, not
+		// an aggregate: its arguments are evaluated over the query's OUTPUT
+		// rows, which in a grouped query are groups. `sum(total) OVER (...)`
+		// alongside `GROUP BY status` reads a column that no longer exists per
+		// output row, and PostgreSQL says so — "column must appear in the GROUP
+		// BY clause or be used in an aggregate function". The form that means
+		// "across the groups" is sum(sum(total)) OVER (...), which is what
+		// SumOver and its siblings build.
+		if e.Over != nil {
+			for _, a := range e.Args {
+				if col, bad := ungrouped(a, grouped); bad {
+					return col, true
+				}
+			}
+		}
+		// The OVER clause itself is checked the same way: a window over grouped
+		// rows sees one row per group, so it may only name grouping
+		// expressions or aggregates.
 		return ungroupedWindow(e.Over, grouped)
 
 	case schema.ExprGrouping:
@@ -163,7 +193,8 @@ func ungroupedCond(c schema.Cond, grouped []schema.Expr) (string, bool) {
 // SELECT matches date_trunc('day', placed_at) in the GROUP BY; a different unit
 // does not.
 func exprEqual(a, b schema.Expr) bool {
-	if a.Kind != b.Kind || a.Col != b.Col || a.Fn != b.Fn || len(a.Args) != len(b.Args) {
+	if a.Kind != b.Kind || a.Col != b.Col || a.Fn != b.Fn || a.Arith != b.Arith ||
+		len(a.Args) != len(b.Args) {
 		return false
 	}
 	if a.Kind == schema.ExprLit && a.Lit != b.Lit {
@@ -175,4 +206,27 @@ func exprEqual(a, b schema.Expr) bool {
 		}
 	}
 	return true
+}
+
+// windowedOverRow reports an aggregate that carries a window AND reads a column
+// straight from the table. It is the one shape whose generic diagnosis points
+// the wrong way, so it is diagnosed on its own.
+func windowedOverRow(e schema.Expr, grouped []schema.Expr) (string, bool) {
+	if e.Kind != schema.ExprAgg || e.Over == nil {
+		return "", false
+	}
+	for _, a := range e.Args {
+		if col, bad := ungrouped(a, grouped); bad {
+			return col, true
+		}
+	}
+	return "", false
+}
+
+// exportedFn is the builder method name for an aggregate: sum → Sum.
+func exportedFn(fn string) string {
+	if fn == "" {
+		return fn
+	}
+	return strings.ToUpper(fn[:1]) + fn[1:]
 }

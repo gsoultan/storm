@@ -1119,8 +1119,28 @@ func (h OrderHavingLinesQuery) Count(ctx context.Context, ex runtime.Executor) (
 // Raw-query scanners, registered by row type. The statements were
 // PREPAREd against the model at generate time; these decode their
 // results with no reflect and no `any`, exactly like a table scanner.
+//
+// RegisterStatement is the other half, and it is a security boundary:
+// a scanner is keyed by row type, so it would answer for ANY query
+// returning that type — including one assembled at run time. Only the
+// statements listed here run; see storm.RegisterStatement.
 func init() {
 	storm.RegisterScanner(scanDailyRevenueRow)
+	storm.RegisterStatement(`
+    SELECT to_char(placed_at, 'YYYY-MM-DD') AS day,
+           count(*)                          AS orders,
+           coalesce(sum(total), 0)::numeric(12,2) AS revenue
+      FROM orders
+     WHERE status <> 'cancelled'
+       AND placed_at >= $1
+     GROUP BY 1
+     ORDER BY 1 DESC`)
+	storm.RegisterStatement(`
+    UPDATE stock_items s
+       SET reserved = 0, version = version + 1
+      FROM orders o
+     WHERE o.status = 'pending'
+       AND o.placed_at < $1`)
 }
 
 func scanDailyRevenueRow(rv [][]byte, r *model.DailyRevenueRow, sl *runtime.Slab) error {

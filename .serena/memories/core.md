@@ -26,6 +26,11 @@ generator, [[plan_types]] for why M3 is de-risked, [[write_path]] for M4.
 
 ## Production-grade gates (2026-08-25)
 
+**Injection closed end to end 2026-09-03**: `storm.SQL` statements are pinned to
+the text `storm generate` PREPAREd (RegisterStatement), and an undeclarable
+declaration fails the build. See [[decisions]] for why the scanner-by-row-type
+key made this a real vector.
+
 `docs/PRODUCTION-READINESS.md` is the operative plan — the PLAN.md assessment
 is superseded in part.
 

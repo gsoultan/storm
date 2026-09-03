@@ -111,3 +111,91 @@ call site of `storm.Now()`.
 
 Chosen by the user from an options set, all three breaking, all three cheaper
 before `STABILITY.md` binds at v1.0.0.
+
+## Only a declared statement runs — storm.SQL is pinned (2026-09-03)
+
+The ordinary read path was never an injection surface: a predicate is a stream
+of compiler-generated ids, values travel as bound args, and no caller string is
+present in the SQL text. `storm.SQL` was, and the reason is easy to miss —
+**`RegisterScanner` keys by ROW TYPE**, so a scanner declared for one query
+answers for any query returning that type. `storm.SQL[EarnerRow](fmt.Sprintf(…))`
+therefore ran, on the strength of a scanner it never declared.
+
+Fix is two layers:
+
+- **Runtime pin (the guarantee).** `storm generate` emits a
+  `storm.RegisterStatement` per PREPAREd statement; a declaration whose SHA-256
+  is not registered is refused at the call, before the executor. Cached in an
+  `atomic.Bool` per declaration so the warm path stays an atomic load (the perf
+  profile vetoes a map lookup per query). A miss is deliberately NOT cached —
+  every registration is in an `init()`, so a miss is permanent.
+- **Build lint (the good error).** `storm generate`/`watch` fail on a
+  `storm.SQL` call that is not a package-level var — never discoverable, so
+  never registerable. Detected by SUBTRACTION (mark the legitimate package-level
+  values, report every other call site), so a declaration nested in a closure or
+  composite literal cannot slip through. Also fails a `RegisterStatement` whose
+  argument contains a call: registering computed text whitelists whatever it
+  produces, which is the one bypass of the runtime pin. A bare identifier is
+  deliberately left alone — const vs var needs the whole package, and a var is
+  registered with the value it actually has, which the runtime check then pins.
+  Generated and `_test.go` files are not scanned, so the generator's own
+  registrations and a test standing in for it are unaffected.
+
+Placeholder arity is proven at generate time as part of the same pass:
+`maxPlaceholder` is a scan, not a lexer, so `$n` inside a string literal or a
+`$tag$` body over-counts. Rather than teach it to lex, the count is compared
+against `len(sd.ParamOIDs)` from the PREPARE — a guess checked against the
+authority. Closes M7's exit gate as written (`docs/PLAN.md:704`).
+
+Registration takes statement TEXT, not a digest, so the generated `init()` is
+reviewable — the thing a reader needs from it is which statements may run.
+
+Migration cost: a test that hand-registers a scanner must hand-register its
+statement too. See `internal/planspike/sqlquery_test.go` for the shape (SQL as a
+`const` so declaration and registration cannot drift).
+
+Not covered, deliberately: `storm.RawSQL` in check constraints and generated
+columns still reaches DDL verbatim — mitigated by ADR-0001, storm never applies
+DDL, so it is reviewed schema and not request data.
+
+## Aggregation: DISTINCT, arithmetic, window frames (2026-09-03)
+
+Four gaps closed, and the two defects found closing them matter more than the
+features.
+
+**`agg(col) OVER (...)` in a grouped query emitted SQL PostgreSQL rejects.**
+With OVER an aggregate is a WINDOW FUNCTION, so its argument is read from the
+grouped rows — `sum(total) OVER (...)` beside `GROUP BY status` names a column
+that is gone. `aggvalidate.ungrouped` treated every `ExprAgg` as if its args
+were per-row inside the group, which holds only without a window. The valid
+form is `sum(sum(total)) OVER (...)`; `SumOver`/`AvgOver`/`MinOver`/`MaxOver`
+build it, and the refusal names them rather than the generic "group by it".
+
+**`avg()` over numeric could not decode at money-sized values** — pre-existing,
+shipped, and the same root cause as the new `Div`: PostgreSQL's numeric
+division chooses its own scale. `avg(numeric(12,2))` of `122999998.77` returns
+`122999998.770000000000`, 21 significant digits against a Decimal's 18 →
+`ErrDecimalRange`. Worked on test data, broke on real invoices. Fix: `avg`
+carries `Scale: DivScaleDefault` (6) in its result type and pgsql wraps it in
+`round(..., n)` — placed AFTER the OVER clause, since rounding inside would
+average rounded groups. **`sum` is deliberately left unbounded**: its scale is
+the input's, so it has no such problem, and bounding it would defeat the
+existing comment about MaxNumericPrecision.
+
+Design notes worth keeping:
+- `Div` is ALWAYS numeric at a DECLARED scale, whatever the operands. Integer
+  division truncates (`paid/orders` → 0 or 1) and numeric division overflows;
+  neither is answerable from the operand types.
+- The `::numeric` cast and the `round()` live in `compile/pgsql`, not the front
+  end: MySQL's `/` already yields a decimal, so its back end must not inherit
+  a correction it does not need. Same reasoning as ADR-0004.
+- Frame bounds are `Exprs` methods (`a.CurrentRow()`), not package functions —
+  see the 2026-09-02 decision on the declaration vocabulary.
+- `RANGE` with an offset is refused: it needs one subtractable ORDER BY column
+  and the failure is a server error storm cannot name. `Rows` covers it.
+- Bound ordering is checked by rank, so "start after end" is decided at
+  declaration instead of by PostgreSQL at the first call.
+
+The live gate is `scripts/check/explain.sh`, which runs against
+**examples/orders only** — so every new construct is declared in that model's
+`Trend` aggregation, or it is not really gated.

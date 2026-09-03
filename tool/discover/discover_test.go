@@ -2,6 +2,7 @@ package tooldiscover
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -230,5 +231,49 @@ func TestOrderIsDeterministic(t *testing.T) {
 		if got := names(discover(t, "basic")); strings.Join(got, ",") != strings.Join(first, ",") {
 			t.Fatalf("run %d: %v != %v", i, got, first)
 		}
+	}
+}
+
+// A storm.SQL call that is not a package-level var is reported, because it can
+// never be registered and storm refuses to run an unregistered statement. The
+// error belongs at generate time, not at the first request down that branch.
+func TestDiscoverReportsUndeclarableQueries(t *testing.T) {
+	r, err := Discover(filepath.Join("testdata", "basic"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Undeclarable) != 3 {
+		t.Fatalf("got %d undeclarable declaration(s), want 3: %+v", len(r.Undeclarable), r.Undeclarable)
+	}
+	var fns []string
+	for _, u := range r.Undeclarable {
+		fns = append(fns, u.Fn)
+		if !strings.Contains(u.Pos, "dynamic.go") {
+			t.Errorf("position %q does not name the file", u.Pos)
+		}
+		if u.Why == "" {
+			t.Errorf("%s at %s was reported with no reason", u.Fn, u.Pos)
+		}
+	}
+	sort.Strings(fns)
+	// Both halves of the escape hatch, and the registry call that would
+	// whitelist a statement built at run time.
+	want := []string{"storm.RegisterStatement", "storm.SQL", "storm.SQLExec"}
+	for i := range want {
+		if fns[i] != want[i] {
+			t.Fatalf("reported %v, want %v", fns, want)
+		}
+	}
+
+	// The package-level declarations in the same package are untouched: the
+	// rule is about where a declaration lives, not that raw SQL is suspect.
+	var top bool
+	for _, q := range r.Queries {
+		if q.VarName == "Top" {
+			top = true
+		}
+	}
+	if !top {
+		t.Error("a legitimate package-level declaration stopped being discovered")
 	}
 }

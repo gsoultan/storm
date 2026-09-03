@@ -28,6 +28,10 @@ type pkgScan struct {
 	unexported  map[string]token.Position // types that matched a rule but cannot be imported
 	unexportedQ map[string]token.Position // ditto, raw query vars
 
+	// undeclarable are storm.SQL calls that are not package-level vars, and
+	// so can never be registered. See dynamic.go.
+	undeclarable []Undeclarable
+
 	// unparsed are files that did not parse. Their models are invisible, so
 	// reporting "no models found" would name the wrong cause.
 	unparsed []string
@@ -161,6 +165,7 @@ func scanFile(fset *token.FileSet, f *ast.File, scan *pkgScan) {
 			scanMethod(fset, d, scan, isPtr)
 		}
 	}
+	scanUndeclarable(fset, f, scan, is)
 }
 
 // importMap maps each import's local name to its path, so an embedded
