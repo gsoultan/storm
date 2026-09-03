@@ -75,6 +75,12 @@ store.AuthorHavingArticles(author.New(), article.PublishedAt.IsNotNull())
 // whatever the row count, and reading an unloaded relation DOES NOT COMPILE.
 feed, err := store.AuthorFeed().Limit(10).All(ctx, ex)
 
+// Many-to-many: a slice on BOTH sides, and storm generates the join table.
+// Three round trips — parents, links, far side — at any counts, not per parent.
+type Post struct { storm.Model; Tags []Tag }
+type Tag  struct { storm.Model; Posts []Post }   // → post_tags(post_id, tag_id)
+rows, err := store.PostWithTags().All(ctx, ex)
+
 // Writes are masked: unset columns take their database defaults, and an
 // UPDATE writes only what was assigned. A version column makes stale writers
 // lose loudly. Graph writes flush in FK order, one batch, atomic.
