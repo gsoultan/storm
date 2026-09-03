@@ -1,6 +1,7 @@
 package storm
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -29,13 +30,15 @@ type Exprs struct{}
 // Field pointers are accepted anywhere a Term is, so the common case reads as
 // itself: a.DateTrunc("day", &o.PlacedAt).
 type Term struct {
-	kind schema.ExprKind
-	fp   any // field pointer, resolved against the table
-	out  string
-	fn   string
-	args []Term
-	lit  schema.Literal
-	err  error
+	kind  schema.ExprKind
+	fp    any // field pointer, resolved against the table
+	out   string
+	fn    string
+	args  []Term
+	lit   schema.Literal
+	arith schema.ArithOp
+	scale int
+	err   error
 }
 
 // Col is an explicit column reference. Rarely needed: a field pointer is
@@ -88,6 +91,53 @@ func lit(v any) Term {
 // all. `unit` is a PostgreSQL field name: "hour", "day", "month", "year".
 func (Exprs) DateTrunc(unit string, ts any) Term {
 	return Term{kind: schema.ExprFunc, fn: "date_trunc", args: []Term{lit(unit), toTerm(ts)}}
+}
+
+// Add, Sub, Mul and Div are arithmetic over two terms — the ratio a report
+// asks for, written where the division is.
+//
+// Div on two integers resolves to NUMERIC, not to an integer. PostgreSQL's `/`
+// truncates, so `Div(paid, total)` over two counts would otherwise be 0 for
+// every group that is not entirely paid — a plausible-looking wrong answer,
+// which is the only kind that matters.
+//
+// Division by zero is still an error at the server, and NullIf is the guard:
+//
+//	a.Div(recent, a.NullIf(prior, a.Lit(0)))   // NULL, not a failed query
+func (Exprs) Add(l, r any) Term { return arith(schema.ArithAdd, l, r) }
+func (Exprs) Sub(l, r any) Term { return arith(schema.ArithSub, l, r) }
+func (Exprs) Mul(l, r any) Term { return arith(schema.ArithMul, l, r) }
+func (Exprs) Div(l, r any) Term {
+	t := arith(schema.ArithDiv, l, r)
+	t.scale = schema.DivScaleDefault
+	return t
+}
+
+// DivScale is Div with the scale said out loud — money that needs more than six
+// places, or a percentage that wants two.
+func (Exprs) DivScale(l, r any, scale int) Term {
+	if scale < 0 || scale > schema.DivScaleMax {
+		return Term{err: fmt.Errorf(
+			"division scale %d is outside 0..%d — past that a result with any "+
+				"integer part cannot fit the eighteen significant digits a Decimal holds",
+			scale, schema.DivScaleMax)}
+	}
+	t := arith(schema.ArithDiv, l, r)
+	t.scale = scale
+	return t
+}
+
+func arith(op schema.ArithOp, l, r any) Term {
+	return Term{kind: schema.ExprBinary, arith: op, args: toTerms([]any{l, r})}
+}
+
+// Lower and Upper case-fold text. Useful in a grouping expression, where
+// "Ada" and "ada" are one group or two and the answer has to be said.
+func (Exprs) Lower(x any) Term {
+	return Term{kind: schema.ExprFunc, fn: "lower", args: toTerms([]any{x})}
+}
+func (Exprs) Upper(x any) Term {
+	return Term{kind: schema.ExprFunc, fn: "upper", args: toTerms([]any{x})}
 }
 
 // Coalesce returns the first non-null argument.
@@ -205,6 +255,8 @@ func (Exprs) IsNotNull(x any) Cond { return Cond{kind: schema.CondIsNotNull, lef
 type WindowSpec struct {
 	partition []Term
 	order     []windowOrder
+	frame     *schema.Frame
+	err       error
 }
 
 type windowOrder struct {
@@ -214,6 +266,92 @@ type windowOrder struct {
 
 // Over starts a window.
 func (Exprs) Over() *WindowSpec { return &WindowSpec{} }
+
+// Rows frames the window by COUNTED ROWS: `Rows(a.Preceding(6), a.CurrentRow())`
+// is a seven-row moving window, which is the moving average everyone wants and
+// the default frame cannot express.
+//
+// Without a frame PostgreSQL uses RANGE from the partition start to the current
+// row — so a running total is the default and a moving one is not, and
+// last_value() reads the current row rather than the last.
+func (w *WindowSpec) Rows(start, end FrameBound) *WindowSpec {
+	return w.framed(schema.FrameRows, start, end)
+}
+
+// Range frames by PEERS — rows the ORDER BY cannot tell apart count as one.
+//
+// Offsets are refused here. `RANGE 7 PRECEDING` needs exactly one ORDER BY
+// column of a type that can be subtracted, and the failure is a server error
+// at the first call rather than anything storm could name; ROWS expresses the
+// same intent with a rule that always holds. Use Range for the unbounded
+// edges, which is what it is actually good for.
+func (w *WindowSpec) Range(start, end FrameBound) *WindowSpec {
+	if start.Kind == schema.Preceding || start.Kind == schema.Following ||
+		end.Kind == schema.Preceding || end.Kind == schema.Following {
+		w.err = errors.New(
+			"RANGE with an offset needs a single ORDER BY column that can be " +
+				"subtracted — use Rows for a counted frame")
+		return w
+	}
+	return w.framed(schema.FrameRange, start, end)
+}
+
+func (w *WindowSpec) framed(k schema.FrameKind, start, end FrameBound) *WindowSpec {
+	if w.frame != nil {
+		w.err = errors.New("declares a frame twice")
+		return w
+	}
+	// Decidable here rather than at the server. A frame whose start is after
+	// its end selects nothing PostgreSQL will accept, and the message it gives
+	// back names neither the declaration nor the window.
+	if bad := badOrder(start, end); bad != "" {
+		w.err = errors.New(bad)
+		return w
+	}
+	w.frame = &schema.Frame{Kind: k, Start: schema.FrameBound(start), End: schema.FrameBound(end)}
+	return w
+}
+
+// badOrder reports why a frame's edges are in the wrong order, or "".
+func badOrder(start, end FrameBound) string {
+	if start.Kind == schema.UnboundedFollowing {
+		return "a frame cannot START at UNBOUNDED FOLLOWING"
+	}
+	if end.Kind == schema.UnboundedPreceding {
+		return "a frame cannot END at UNBOUNDED PRECEDING"
+	}
+	if start.Rank() > end.Rank() {
+		return "the frame's start is after its end"
+	}
+	// Both PRECEDING: the start must be the FURTHER back of the two, so its
+	// offset is the larger. Both FOLLOWING: the reverse.
+	if start.Kind == schema.Preceding && end.Kind == schema.Preceding && start.N < end.N {
+		return "the frame's start is after its end: a larger PRECEDING offset is further back"
+	}
+	if start.Kind == schema.Following && end.Kind == schema.Following && start.N > end.N {
+		return "the frame's start is after its end: a larger FOLLOWING offset is further forward"
+	}
+	return ""
+}
+
+// FrameBound is one edge of a window frame, built by the methods below.
+type FrameBound = schema.FrameBound
+
+// UnboundedPreceding, CurrentRow and UnboundedFollowing are the fixed frame
+// edges; Preceding and Following take a count of rows.
+func (Exprs) UnboundedPreceding() FrameBound {
+	return FrameBound{Kind: schema.UnboundedPreceding}
+}
+func (Exprs) CurrentRow() FrameBound { return FrameBound{Kind: schema.CurrentRow} }
+func (Exprs) UnboundedFollowing() FrameBound {
+	return FrameBound{Kind: schema.UnboundedFollowing}
+}
+func (Exprs) Preceding(n int) FrameBound {
+	return FrameBound{Kind: schema.Preceding, N: n}
+}
+func (Exprs) Following(n int) FrameBound {
+	return FrameBound{Kind: schema.Following, N: n}
+}
 
 // PartitionBy restarts the window for each distinct value.
 func (w *WindowSpec) PartitionBy(xs ...any) *WindowSpec {

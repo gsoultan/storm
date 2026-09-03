@@ -32,6 +32,11 @@ const (
 	// ExprGrouping is GROUPING(cols...), which distinguishes a subtotal row's
 	// NULL from a NULL that was in the data.
 	ExprGrouping
+	// ExprBinary is arithmetic over two expressions. The OPERATOR is named
+	// abstractly and spelled by the back end, like everything else here: `/`
+	// does not mean the same thing in every dialect, which is exactly why the
+	// IR must not carry the character.
+	ExprBinary
 )
 
 // Expr is a typed expression tree.
@@ -49,11 +54,18 @@ type Expr struct {
 	Tbl string
 	// Fn is the function or aggregate name, for ExprFunc/ExprAgg/ExprWindow.
 	Fn string
+	// Arith is the operator, for ExprBinary.
+	Arith ArithOp
 	// Args are the operands.
 	Args []Expr
 	// Lit is a declaration-time literal, already in its Go form.
 	Lit Literal
 
+	// Distinct is count(DISTINCT x). Only valid on ExprAgg, and only
+	// alongside a nil Over: PostgreSQL rejects an ordered-set aggregate with
+	// DISTINCT over a window, so allowing both would emit SQL that parses in
+	// storm and fails at the server.
+	Distinct bool
 	// Filter is an aggregate's FILTER (WHERE …). Only valid on ExprAgg.
 	Filter *Cond
 	// Over is the window. Valid on ExprAgg and required on ExprWindow.
@@ -63,6 +75,73 @@ type Expr struct {
 	// never has to re-derive them and the two cannot disagree.
 	Type     Type
 	Nullable bool
+}
+
+// DivScaleDefault is the scale Div rounds to when the declaration does not
+// say. Six places is past what any ratio or percentage reports and well inside
+// what a Decimal holds; DivScale takes it explicitly when money needs more.
+const DivScaleDefault = 6
+
+// DivScaleMax is the largest scale a division may declare. Past this a result
+// with any integer part at all cannot fit eighteen significant digits, so the
+// value would decode as a range error rather than a number.
+const DivScaleMax = 12
+
+// ArithOp is an arithmetic operator, named rather than spelled.
+type ArithOp string
+
+// The four operators storm can emit. Modulo and exponentiation are absent
+// deliberately: neither has appeared in a real declaration, and every operator
+// here is a result-type rule that has to be right in five dialects.
+const (
+	ArithAdd ArithOp = "add"
+	ArithSub ArithOp = "sub"
+	ArithMul ArithOp = "mul"
+	ArithDiv ArithOp = "div"
+)
+
+// BinaryResult is the result type of an arithmetic expression.
+//
+// The whole content of this function is division. PostgreSQL's `/` on two
+// integers is INTEGER division — `count(a) / count(b)` is 0 or 1, never 0.6 —
+// and a ratio is the reason anyone wants arithmetic in a declaration at all.
+// Silently truncating it would be precisely the class of defect this library
+// exists to remove, so integer division resolves to numeric and the back end
+// renders the cast that makes that true.
+//
+// The other three widen within the numeric family and refuse to cross it:
+// adding text to a number is a mistake, not a conversion.
+func BinaryResult(op ArithOp, in []Type, divScale int) (Type, error) {
+	if len(in) != 2 {
+		return Type{}, fmt.Errorf("wants exactly two operands, got %d", len(in))
+	}
+	for _, t := range in {
+		if !numericFamily(t.Name) {
+			return Type{}, fmt.Errorf(
+				"arithmetic wants numbers; %s is not one", t.Name)
+		}
+	}
+	if op == ArithDiv {
+		// Always numeric, always at a DECLARED scale, whatever the operands.
+		//
+		// Two reasons, and both are answers the operand types cannot give.
+		// Integer division truncates, so `paid / orders` would be 0 or 1.
+		// And PostgreSQL's numeric division picks its own scale — 1/4 comes
+		// back as 0.25000000000000000000, twenty digits — which overflows the
+		// eighteen significant digits a Decimal holds. The scale is part of
+		// the declaration for the same reason a column's is.
+		return Type{Name: TypeNumeric, Scale: divScale}, nil
+	}
+	return unifyAll("arithmetic", in)
+}
+
+// integerFamily reports the types whose division truncates.
+func integerFamily(n string) bool {
+	switch n {
+	case TypeInt2, TypeInt4, TypeInt8:
+		return true
+	}
+	return false
 }
 
 // Literal is a declaration-time constant.
@@ -80,6 +159,51 @@ type Literal struct {
 type Window struct {
 	PartitionBy []Expr
 	OrderBy     []OrderTerm
+	// Frame narrows the rows the window function sees within its partition.
+	// Nil is PostgreSQL's default — RANGE from the start of the partition to
+	// the CURRENT ROW — which is not what most people picture and is why
+	// last_value() without a frame returns the current row.
+	Frame *Frame
+}
+
+// FrameKind selects how a frame's bounds are counted.
+type FrameKind uint8
+
+const (
+	// FrameRows counts ROWS: "the three rows before this one", whatever their
+	// values.
+	FrameRows FrameKind = iota
+	// FrameRange counts RANGE: peers — rows the ORDER BY cannot tell apart —
+	// are one unit.
+	FrameRange
+)
+
+// BoundKind is where a frame edge sits.
+type BoundKind uint8
+
+const (
+	UnboundedPreceding BoundKind = iota
+	Preceding
+	CurrentRow
+	Following
+	UnboundedFollowing
+)
+
+// FrameBound is one edge of a frame.
+type FrameBound struct {
+	Kind BoundKind
+	// N is the offset, for Preceding and Following.
+	N int
+}
+
+// Rank orders the bounds along the partition, which is what makes "start after
+// end" a decidable question rather than a server error.
+func (b FrameBound) Rank() int { return int(b.Kind) }
+
+// Frame is a window frame.
+type Frame struct {
+	Kind       FrameKind
+	Start, End FrameBound
 }
 
 // OrderTerm is one ORDER BY element inside a window.

@@ -3,6 +3,7 @@ package storm_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gsoultan/storm"
 )
@@ -326,5 +327,128 @@ func TestGroupFieldNameMatchesCodegen(t *testing.T) {
 		if g.As != "Active" {
 			t.Errorf("grouping field name is %q, want Active", g.As)
 		}
+	}
+}
+
+// ---- arithmetic, DISTINCT and window frames ---------------------------------
+
+type winOverRow struct {
+	storm.Model
+	Total     storm.Decimal
+	CreatedAt time.Time
+}
+
+func (m *winOverRow) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	day := b.ByExpr("Day", a.DateTrunc("day", &m.CreatedAt))
+	// sum(total) OVER (...) in a GROUPED query: with OVER it is a window
+	// function, so its argument is read from the grouped rows and `total` is
+	// not there. PostgreSQL refuses it; so must storm.
+	b.Sum(&m.Total, "Moving").OverWindow(a.Over().OrderByAsc(day))
+}
+
+type frameBackwards struct {
+	storm.Model
+	Total     storm.Decimal
+	CreatedAt time.Time
+}
+
+func (m *frameBackwards) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	day := b.ByExpr("Day", a.DateTrunc("day", &m.CreatedAt))
+	rev := b.Sum(&m.Total, "Rev")
+	b.SumOver(rev, "Bad", a.Over().OrderByAsc(day).Rows(a.CurrentRow(), a.Preceding(3)))
+}
+
+type frameNoOrder struct {
+	storm.Model
+	Total     storm.Decimal
+	CreatedAt time.Time
+}
+
+func (m *frameNoOrder) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	b.ByExpr("Day", a.DateTrunc("day", &m.CreatedAt))
+	rev := b.Sum(&m.Total, "Rev")
+	b.SumOver(rev, "Bad", a.Over().Rows(a.Preceding(3), a.CurrentRow()))
+}
+
+type frameRangeOffset struct {
+	storm.Model
+	Total     storm.Decimal
+	CreatedAt time.Time
+}
+
+func (m *frameRangeOffset) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	day := b.ByExpr("Day", a.DateTrunc("day", &m.CreatedAt))
+	rev := b.Sum(&m.Total, "Rev")
+	b.SumOver(rev, "Bad", a.Over().OrderByAsc(day).Range(a.Preceding(3), a.CurrentRow()))
+}
+
+type distinctWindowed struct {
+	storm.Model
+	Status string
+	Total  storm.Decimal
+}
+
+func (m *distinctWindowed) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	b.By(&m.Status)
+	b.CountDistinct(&m.Total, "N").OverWindow(a.Over().OrderByAsc(&m.Status))
+}
+
+type groupByAggregate struct {
+	storm.Model
+	Status string
+	Total  storm.Decimal
+}
+
+func (m *groupByAggregate) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	b.By(&m.Status)
+	n := b.Count("N")
+	// GROUP BY runs before aggregation, so an aggregate cannot appear in it.
+	b.ByExpr("Ratio", a.Div(n, a.Lit(2)))
+}
+
+type textArithmetic struct {
+	storm.Model
+	Status string
+	Total  storm.Decimal
+}
+
+func (m *textArithmetic) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	b.By(&m.Status)
+	b.Compute("Nonsense", a.Add(&m.Status, a.Lit(1)))
+}
+
+// Each of these is SQL PostgreSQL would reject, or a silently wrong answer.
+// The declaration is refused where the name of the offending output is still
+// known, rather than at the first call.
+func TestAggregateRefusesInvalidWindowsAndArithmetic(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model any
+		want  string
+	}{
+		{"windowed aggregate reads an ungrouped column", &winOverRow{}, "SumOver(handle"},
+		{"frame start after its end", &frameBackwards{}, "start is after its end"},
+		{"frame with no ordering to count along", &frameNoOrder{}, "needs an ORDER BY"},
+		{"RANGE with an offset", &frameRangeOffset{}, "use Rows"},
+		{"count(DISTINCT) with a window", &distinctWindowed{}, "cannot take a window"},
+		{"GROUP BY an aggregate", &groupByAggregate{}, "Compute"},
+		{"arithmetic on text", &textArithmetic{}, "arithmetic wants numbers"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := storm.Build(tc.model)
+			if err == nil {
+				t.Fatal("accepted a declaration PostgreSQL will not run")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error does not mention %q:\n%v", tc.want, err)
+			}
+		})
 	}
 }
