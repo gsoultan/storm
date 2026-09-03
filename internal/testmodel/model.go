@@ -58,12 +58,16 @@ type Org struct {
 	Parent   *Org
 	Children []Org
 	Users    []User
+	// Members is the same users, reached through Membership so the payload —
+	// when they joined, in what capacity — comes with them.
+	Members []User
 }
 
 func (o *Org) Schema(t *storm.Table) {
 	t.Col(&o.Parent).OnDelete(storm.Cascade)
 	t.Col(&o.Name).Size(200)
 	t.Unique(&o.Name)
+	t.Through(&o.Members, Membership{})
 }
 
 type User struct {
@@ -186,6 +190,9 @@ type Post struct {
 	Author   User
 	Comments []Comment
 	Tags     []Tag
+	// Self-referential many-to-many: a directed edge stored once, whose two
+	// join columns are named for the field rather than the table.
+	Related []Post
 }
 
 func (p *Post) Schema(t *storm.Table) {
@@ -230,6 +237,23 @@ func (a *Attachment) Schema(t *storm.Table) {
 // Event exercises the temporal and network types end to end: a calendar date,
 // a time of day, an interval with months kept apart from days, inet vs cidr,
 // and int8[].
+// Membership is a join model with a PAYLOAD: the row records when the user
+// joined the org and in what capacity, which a generated join table has
+// nowhere to put. t.Through names it.
+type Membership struct {
+	User     User
+	Org      Org
+	Role     string
+	JoinedAt time.Time
+}
+
+func (m *Membership) Schema(t *storm.Table) {
+	t.PrimaryKey(&m.User, &m.Org)
+	t.Col(&m.User).OnDelete(storm.Cascade)
+	t.Col(&m.Org).OnDelete(storm.Cascade)
+	t.Col(&m.JoinedAt).Default(storm.Now())
+}
+
 // Tag and Post's Tags are the implicit many-to-many: a slice on both sides,
 // and storm generates the join table nobody declared.
 type Tag struct {
@@ -295,6 +319,6 @@ func (b *Booking) Schema(t *storm.Table) {
 func All() []any {
 	return []any{
 		&Org{}, &User{}, &Profile{}, &Post{}, &Comment{}, &Booking{}, &Attachment{}, &Event{},
-		&AuditLog{}, &Tag{},
+		&AuditLog{}, &Tag{}, &Membership{},
 	}
 }
