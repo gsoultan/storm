@@ -1,421 +1,375 @@
 ---
 tags: [storm, api, dx]
-updated: 2026-08-27
-status: proposed — illustrative, not implemented
+updated: 2026-09-04
+status: as-built — every call shape here appears in a test that runs in CI
 ---
 
 # The API, by example
 
-> **As-built note (2026-08-25).** This document predates the implementation
-> and parts of it are still the *design sketch*. Where they differ, the
-> generated code and [`examples/blog`](../examples/blog) — which runs as a test
-> in CI — are the truth. Known drift, corrected inline below: entry points are
-> `user.New()` (not `user.Query()`); reads are `One`/`All` (there is no `Get`
-> and no `Iter` yet); inserts are the masked builder `user.Create()` (not an
-> `Insert(row)` function), because absence is tracked by a mask, never
-> inferred from a zero value; plans and projections are declared in the model
-> with **field pointers**, not package-level `Plan(...)` values.
-
+Every code sample below is the API storm actually generates. The two worked
+modules are the check: [`examples/blog`](../examples/blog) runs as a test in CI,
+and [`examples/orders`](../examples/orders) is a separate module whose statements
+are additionally sent through `EXPLAIN` by `scripts/check/explain.sh`. Where this
+document and those disagree, they are right and this is a bug — prose drifts and
+a test does not.
 
 > For a complete worked domain — every scalar type, foreign keys, one-to-one,
-> many-to-many with payload, self-referential hierarchies, **polymorphic
-> associations in three strategies**, and transactions — see [[EXAMPLE]].
-> This document is the tour; that one is the whole map.
-
-> Design goal, stated as a test: **a GORM user should be productive in an hour,
-> and should not be able to write an N+1 at all.**
-
-Every snippet below is illustrative design, not shipped code. The ordering is
-deliberate — simplest thing first, because that is the order a new user meets it.
+> many-to-many with payload, self-referential hierarchies, polymorphic
+> associations — see [[EXAMPLE]] and [[REFERENCE]]. Both are still marked as
+> design sketches; treat their call shapes with suspicion until they carry the
+> same as-built note this one does.
 
 ## Design principles
 
-1. **Read like SQL.** Bun's lesson: the closer the API is to SQL, the less there
-   is to learn.
+1. **Read like SQL.** The closer the API is to SQL, the less there is to learn.
 2. **Identifiers are typed values, never strings.** A column rename is a compile
    error, not a 2 a.m. page.
 3. **The fetch plan is visible at the call site.** You can count the queries a
    function runs by reading it.
-4. **The common case is one line.** GORM's lesson. `user.Get(ctx, db, id)`.
-5. **Errors name the query, the shape, the source line, and the SQL.**
+4. **A shape storm has not seen cannot run.** Everything with an unbounded set
+   of result shapes is *declared* in the model, not chained at the call site, so
+   every statement has a generated scanner and a compiled statement.
+5. **Errors name the query and the fix.**
 6. **Generated code is code a human reviews**, not a wall to scroll past.
 
 ---
 
 ## 1. Declare the model
 
-The model is a **plain Go struct** (ADR-0001). No DSL, no `Schema()` method, no
-per-entity files.
+A plain struct per table. No tags, no DSL. `*T` is nullable, `Xxx Yyy` is a
+foreign key, `[]T` is has-many.
 
 ```go
-// internal/model/model.go
-package model
+type Author struct {
+    storm.Model            // uuid id + created_at/updated_at, database defaults
 
-type Org struct {
-    storm.Model                 // ID uuid.UUID, CreatedAt, UpdatedAt
     Name  string
-    Users []User                // has-many
+    Email string
+
+    Articles []Article
 }
 
-type User struct {
+// Everything the type cannot say goes in Schema, using FIELD POINTERS — so the
+// editor enforces the names and a rename refactors them with the field.
+func (a *Author) Schema(t *storm.Table) {
+    t.Col(&a.Email).Size(320)
+    t.Unique(&a.Email)
+}
+
+type Article struct {
     storm.Model
 
-    Email string
-    Name  string
-    Age   *int                  // *T = nullable
+    Title       string
+    Body        string
+    PublishedAt *time.Time      // nullable
 
-    Org   Org                   // belongs-to → org_id uuid NOT NULL
-    Posts []Post                // has-many
+    Author Author               // foreign key → authors.id
+}
+
+func (ar *Article) Schema(t *storm.Table) {
+    t.Col(&ar.Title).Size(300)
+    t.Col(&ar.Author).OnDelete(storm.Cascade)
 }
 ```
 
-Everything derivable comes from the type: field name → column, `*T` → nullable,
-`Org Org` → the FK column `org_id`, `[]T` → has-many, `[]T` on both sides →
-many-to-many. A named `string` type becomes a native enum; any other struct type
-becomes typed `jsonb`.
-
-**You never write the FK field.** `Org Org` is the whole declaration — the column
-name comes from the *field* name, so `Author User` and `Reviewer User` coexist
-without ceremony. The scalar is still generated: `user.Row.OrgID`, the typed
-column `user.OrgID`, and `user.New(email, name, orgID)`.
-
-Everything else goes in one optional method, and **there are no strings in it**:
-
-```go
-func (u *User) Schema(t *storm.Table) {
-    t.Col(&u.Email).Unique().Size(320)          // per-column settings
-    t.Col(&u.Org).OnDelete(storm.Restrict)
-
-    t.Index(&u.Org, storm.Desc(&u.CreatedAt))   // table-level constraints
-    t.Check(storm.Between(&u.Age, 0, 150))
-}
-```
-
-**No strings.** `&u.Email` is a field pointer, so a rename is a compile error and
-a typo never compiles. The receiver must be a **pointer** (`u *User`): a value receiver copies the
-struct, so `&u.Email` would point into the copy; the generator resolves each pointer to a column by field offset.
-
-Literals like `0` and `150` stay literals — they are values, not identifiers,
-and their types are checked against the field at generate time.
-
-Per-column settings go through `t.Col(&field)`. **There are no struct tags** —
-the struct is your domain, the method is the database's opinions about it, and
-neither contains a Go identifier written as a string.
-
-Full type table, cascade rules, one-to-one, many-to-many with payload,
-self-referential hierarchies and polymorphic associations: [[REFERENCE]] §1.
-
+Five optional methods declare the rest, each covered in its own section below:
+`Plans`, `Projections`, `Aggregates`, `Joins`, and `Schema`.
 
 ## 2. Generate
 
-```yaml
-# storm.yaml
-version: 1
-model: ./internal/model
-targets:
-  - dialect:    postgres
-    version:    "16"
-    out:        internal/store
-    migrations: db/migrations
-portability:
-  assert: [postgres]      # add mysql8 / oracle19 / mongo7 to check at build time
-```
-
-The `model:` path above is a **sketch, and now a redundant one**: storm finds
-the models by parsing the module, so there is nothing to point it at
-([ADR-0006](adr/0006-discovery-replaces-the-bootstrap.md)). What a config file
-would still buy is the *target* block — dialect, version, output and migration
-directories — which are flags today.
+There is no config file. Storm parses your module to find the models
+([ADR-0006](adr/0006-discovery-replaces-the-bootstrap.md)), so there is nothing
+to point it at:
 
 ```console
-$ storm generate
-  users  → internal/store/user   (12 columns, 3 relations, 4 plans)
-  posts  → internal/store/post   (9 columns, 2 relations, 2 plans)
-  ✓ 21 tables, 0 unsupported types, deterministic output
-
-$ storm migrate diff add_user_status
-  → db/migrations/0007_add_user_status.up.sql   (2 statements, non-destructive)
-  review and commit — storm never applies a migration
+$ storm generate store
+  → store/article/article.gen.go (55364 bytes)
+  → store/author/author.gen.go   (51899 bytes)
+  → store/store.gen.go           (1828 bytes)
+  3 package(s) from 2 table(s)
 ```
 
-Adopting an existing database instead? `storm import` writes the model **from**
-the live schema, once, and you own it from there. Database-first is the on-ramp,
-not the steady state.
+The commands you will actually use:
 
+```console
+$ storm models                  # what discovery found, and which rule matched
+$ storm diff add_author_status  # write a migration from the live schema to the model
+$ storm verify -stale           # fail if generated code is stale (needs no database)
+$ storm verify -pending         # fail if the model has changes no migration carries
+$ storm explain                 # plan every statement; flag large seq scans
+$ storm watch ./store           # regenerate on save
+```
+
+`storm diff` writes a migration and **never applies one** — that is
+[ADR-0001](adr/0001-model-first-migration-mediated-ddl.md), and no runtime code
+path can alter a schema.
 
 ## 3. Typed columns, not strings
 
-For table `users`, the generator emits typed handles:
+Each generated package declares its own typed column handles. The *kind* of the
+handle is what makes an illegal predicate fail to compile:
 
 ```go
-package user // internal/store/user — generated
-
+// store/article — generated
 var (
-    ID        = storm.OrdCol[uuid.UUID]{...}
-    Email     = storm.TextCol{...}
-    Age       = storm.OrdCol[int32]{...}
-    Status    = storm.Col[Status]{...}     // enum → generated Go type
-    Metadata  = storm.JSONCol{...}
-    Tags      = storm.ArrayCol[string]{...}
-    CreatedAt = storm.OrdCol[time.Time]{...}
-    DeletedAt = storm.OrdCol[*time.Time]{...}
+    ID          = UUIDCol{0}
+    CreatedAt   = TimeCol{1}
+    Title       = TextCol{3}
+    PublishedAt = NullTimeCol{5}     // *time.Time in the model
+    AuthorID    = UUIDCol{6}
 )
 ```
 
-The column *kind* decides which predicates exist, so autocomplete only ever
-offers you legal ones:
-
-| Kind | Predicates |
-|---|---|
-| `Col[T]` | `Eq` `NotEq` `In` `NotIn` `IsNull` `IsNotNull` |
-| `OrdCol[T]` | + `Gt` `Gte` `Lt` `Lte` `Between` `Asc` `Desc` |
-| `TextCol` | + `Like` `ILike` `HasPrefix` `HasSuffix` |
-| `JSONCol` | + `HasKey` `Path` `Contains` |
-| `ArrayCol[T]` | + `Contains` `Overlaps` `Len` |
-
 ```go
-user.Age.Gte(18)              // ok
-user.Age.Eq("eighteen")       // compile error: cannot use string as int32
-user.Metadata.Gt(5)           // compile error: JSONCol has no method Gt
-user.Emial.Eq("a@b.com")      // compile error: undefined
+article.Title.Like("On %")           // ok
+article.Title.Gt("M")                // ok — text is ordered
+article.PublishedAt.IsNotNull()      // only on a nullable column
+article.AuthorID.Like("%x%")         // compile error: UUIDCol has no method Like
+article.Titel.Eq("x")                // compile error: undefined
 ```
+
+| Handle | Predicates |
+|---|---|
+| every kind | `Eq` `NotEq` `In` `NotIn` `Asc` `Desc` `AscNullsFirst` `DescNullsLast` |
+| ordered (`TimeCol`, numeric, `TextCol`) | + `Gt` `Gte` `Lt` `Lte` |
+| `TextCol` | + `Like` `ILike` |
+| nullable (`NullTimeCol`, …) | + `IsNull` `IsNotNull` |
+| `TSVectorCol` | + `Matches` `WebSearch` |
+| array | + `Contains` `Overlaps` |
+| jsonb | + `Contains` `HasKey` `HasAnyKey` `HasAllKeys` |
 
 Compare Ent's free functions (`user.AgeGTE(18)`, a flat namespace of hundreds)
-and Bun/GORM's `"age >= ?"`. Methods on typed columns give a smaller namespace,
+and Bun/GORM's `"age >= ?"`. Methods on typed handles give a smaller namespace,
 better autocomplete, and stricter checking than either.
 
-## 4. The one-liners
+## 4. Reads
+
+`New()` starts a query. The terminals take a `context` and an `Executor`:
 
 ```go
-u,  err := user.Get(ctx, db, id)                    // by primary key
-u,  err := user.GetByEmail(ctx, db, "a@b.com")      // by unique index
-us, err := user.All(ctx, db, user.Status.Eq(user.StatusActive))
-n,  err := user.Count(ctx, db, user.Age.Gte(18))
-ok, err := user.Exists(ctx, db, user.Email.Eq(e))
-```
-
-Generated per table from the primary key and each unique index. Fetching a row
-by ID should never require building a query.
-
-## 5. The query builder
-
-```go
-us, err := user.Query().
-    Where(user.TenantID.Eq(tid), user.Age.Gte(18)).   // variadic = AND
-    OrderBy(user.CreatedAt.Desc(), user.ID.Asc()).
+rows, err := article.New().
+    Where(article.AuthorID.Eq(id), article.PublishedAt.IsNotNull()).
+    Order(article.PublishedAt.Desc()).
     Limit(50).
-    All(ctx, db)
+    All(ctx, ex, nil)        // dst: pass a slice to reuse its capacity
+
+one, ok, err := author.New().IDEq(id).One(ctx, ex)
+n,      err := author.New().Count(ctx, ex)
+ok,     err := author.New().Where(author.Email.Eq(e)).Exists(ctx, ex)
 ```
 
-Terminals: `.All()` `.One()` `.First()` `.Count()` `.Exists()` `.Page()` `.Iter()`.
+The per-column shorthands (`IDEq`, `CreatedAtGte`, …) are generated for every
+column, so the common single-predicate read is one call.
 
-`.Iter()` returns a Go 1.23 iterator, so streaming a large result never
-materialises a slice:
+`Executor` is a four-method port. A transaction satisfies it, so the same
+generated code runs inside one and there are no `XxxTx` duplicates:
 
 ```go
-for u, err := range user.Query().Where(...).Iter(ctx, db) {
-    if err != nil { return err }
-    process(u)
+tx, _ := pool.Begin(ctx)
+txe := pgxdrv.Tx{T: tx}
+_, err := na.Insert(ctx, txe)      // same call, inside the transaction
+tx.Rollback(ctx)
+```
+
+Keyset pagination takes the last row you got back — there is no cursor string to
+encode, forge, or decode:
+
+```go
+page1, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
+    Limit(2).All(ctx, ex, nil)
+page2, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
+    After(page1[len(page1)-1]).Limit(2).All(ctx, ex, nil)
+```
+
+## 5. Dynamic filters — this is the whole thesis, and it looks boring
+
+```go
+q := article.New().Where(article.AuthorID.Eq(id))
+
+q = q.WhereIf(f.PublishedOnly, article.PublishedAt.IsNotNull())
+q = q.WhereIf(f.Search != "", article.Title.ILike("%"+f.Search+"%"))
+if f.Recent {
+    q = q.Where(article.CreatedAt.Gte(cutoff))
+}
+
+rows, err := q.Order(article.CreatedAt.Desc()).All(ctx, ex, nil)
+```
+
+`Where` is variadic AND; `Any` is OR; `Not` and `NotAny` negate. Each call
+appends a token to an inline array — a compiler-generated id for the column and
+the operator, never the value. **The assembled SQL for that combination is
+compiled once, ever**, and a warm call allocates nothing to build it.
+
+That is also why storm has no injection surface in ordinary reads: there is no
+caller string in the statement text to escape. The values travel as bound
+arguments, and `internal/planspike/injection_test.go` asserts the property
+directly — the SQL is byte-identical whatever the value, which is stronger than
+any corpus of payloads because it holds for payloads nobody thought of.
+
+## 6. Relations: named fetch plans
+
+Base row types have **no relation fields at all**:
+
+```go
+a, _, _ := author.New().IDEq(id).One(ctx, ex)
+a.Articles      // compile error: undefined (type author.Row has no field Articles)
+```
+
+To load relations you name a plan, in the model:
+
+```go
+func (a *Author) Plans(p *storm.Plans) {
+    p.Named("Feed").With(&a.Articles)
 }
 ```
 
-Composition uses the specification pattern — predicates are values, so they
-live in your domain layer where they belong:
-
 ```go
-// internal/authz/spec.go
-var Active = storm.And(user.DeletedAt.IsNull(), user.Status.Eq(user.StatusActive))
-func InTenant(t uuid.UUID) storm.Pred { return user.TenantID.Eq(t) }
-
-// call site
-user.Query().Where(Active, InTenant(tid), storm.Or(
-    user.Age.Gte(18),
-    user.Metadata.HasKey("guardian"),
-))
+feed, err := store.AuthorFeed().Limit(10).All(ctx, ex)
+feed[0].Articles        // []article.Row — exists only on the plan's row type
 ```
 
-## 6. Dynamic filters — this is the whole thesis, and it looks boring
+Exactly **two round trips whatever the row count**, and reading an unloaded
+relation does not compile. An N+1 is not something you have to remember to
+avoid; it is not expressible.
+
+The semi-join — "authors who *have* a published article" — is a generated
+function taking the child's own typed predicates:
 
 ```go
-q := user.Query().Where(user.TenantID.Eq(tid))
-
-if f.Email != "" {
-    q = q.Where(user.Email.Eq(f.Email))
-}
-if f.MinAge > 0 {
-    q = q.Where(user.Age.Gte(f.MinAge))
-}
-if f.CreatedAfter != nil {
-    q = q.Where(user.CreatedAt.Gt(*f.CreatedAfter))
-}
-
-us, err := q.OrderBy(user.CreatedAt.Desc()).Limit(f.Limit).All(ctx, db)
+n, err := store.AuthorHavingArticles(
+    author.New(),
+    article.PublishedAt.IsNotNull(),
+).Count(ctx, ex)
 ```
 
-Or fluently, if you prefer no branches:
+## 7. Declared reports: projections, aggregations, joins
+
+These are declared in the model rather than chained at the call site, and that is
+[principle 4](#design-principles): a `GroupBy(...).Select(...)` chain assembled
+at run time has an unbounded set of result shapes, and a shape the generator
+never saw can have neither a scanner nor a compiled statement. **Call-site
+predicates stay dynamic**, because those are bounded.
+
+**Projections** — a column subset:
 
 ```go
-us, err := user.Query().
-    Where(user.TenantID.Eq(tid)).
-    WhereIf(f.Email != "",       user.Email.Eq(f.Email)).
-    WhereIf(f.MinAge > 0,        user.Age.Gte(f.MinAge)).
-    WhereIf(f.CreatedAfter != nil, user.CreatedAt.Gt(f.After())).
-    All(ctx, db)
-```
-
-**That is identical to what you would write in GORM or Bun.** The point is what
-does *not* happen underneath:
-
-- `Query()` returns a **value type** with an inline `[8]pred` array and a
-  `uint64` shape mask. It spills to the heap only past eight predicates.
-- Each `.Where()` sets a bit and writes into the array. No allocation, no
-  interface boxing, no string building.
-- `.All()` reads the shape mask, does one atomic load into the compiled-statement
-  table, binds args into a pooled slice, and executes.
-
-Sixty-four filter combinations produce sixty-four compiled statements, each
-built once for the life of the process and each mapping onto its own server-side
-prepared statement. GORM, Ent, and Bun rebuild the string on every call forever.
-
-**You do not trade ergonomics for speed here. That is the entire bet.**
-
-## 7. Relations: named fetch plans
-
-Base row types have no relation fields at all:
-
-```go
-type Row struct {                 // user.Row — generated
-    ID        uuid.UUID
-    Email     string
-    Age       int32
-    CreatedAt time.Time
+func (a *Author) Projections(p *storm.Projections) {
+    p.Named("Card", &a.Name, &a.Email)
 }
 
-u, _ := user.Get(ctx, db, id)
-u.Posts       // compile error: u.Posts undefined (type user.Row has no field Posts)
+cards, err := author.New().Order(author.Name.Asc()).AllCard(ctx, ex)  // []author.CardRow
 ```
 
-To load relations you **name a plan**. Plans live in one file you own:
+**Aggregations** — a `GROUP BY` and the expressions over it:
 
 ```go
-// internal/store/plans.go
-package store
+func (o *Order) Aggregates(a *storm.Aggregates) {
+    trend := a.Named("Trend")
+    day    := trend.ByExpr("Day", a.DateTrunc("day", &o.PlacedAt))
+    orders := trend.Count("Orders")
+    paid   := trend.Count("Paid").Filter(a.Eq(&o.Status, "paid"))
+    rev    := trend.Sum(&o.Total, "Revenue")
 
-var (
-    UserFeed = user.Plan("Feed").
-        With(user.Posts.
-            Where(post.PublishedAt.IsNotNull()).
-            OrderBy(post.PublishedAt.Desc()).
-            Limit(20).
-            With(post.Comments.Limit(3))).
-        With(user.Org)
+    trend.CountDistinct(&o.Customer, "Buyers")
 
-    UserSummary = user.Plan("Summary").With(user.Org)
-)
-```
+    // NullIf is the division-by-zero guard, written where the division is.
+    // Div resolves to NUMERIC: PostgreSQL's `/` on two integers truncates, so
+    // this would otherwise be 0 on every day that was not entirely paid.
+    trend.Compute("PaidRate", a.Div(paid, a.NullIf(orders, a.Lit(0))))
 
-`storm generate` emits one type per plan. The plan is the **entry point**, and
-it lives in the package that owns `plans.go` — not on `user.Query`:
+    // A seven-day moving average — avg(sum(total)) over a frame. Without the
+    // frame PostgreSQL reaches back to the start of the partition and this is
+    // a RUNNING average, not a moving one.
+    trend.AvgOver(rev, "Revenue7d", a.Over().OrderByAsc(day).
+        Rows(a.Preceding(6), a.CurrentRow()))
 
-```go
-us, err := store.UserFeed().Where(user.TenantID.Eq(tid)).All(ctx, db)
-// us is []store.UserFeed
-
-for _, u := range us {
-    u.Org.Name                    // typed, guaranteed loaded
-    for _, p := range u.Posts {   // typed, guaranteed loaded, at most 20
-        for _, c := range p.Comments {} // typed, at most 3
-    }
+    trend.PercentRank("RevenuePct", a.Over().OrderByDesc(rev))
+    trend.Having(a.Gt(orders, 0))
 }
 ```
 
-Three properties fall out of this, and each one is a thing another ORM gets
-wrong:
-
-- **N+1 is unrepresentable.** Not discouraged, not linted — the field does not
-  exist unless it was loaded. Hibernate lazy-loads it, Ent hands you a silently
-  empty slice, GORM makes you remember `Preload`.
-- **No combinatorial type explosion.** You get exactly the plans you name. This
-  is what killed the earlier "generate every `With` combination" design — see
-  the R3 note in [[PLAN]].
-- **Fetch plans are reviewable artifacts.** `plans.go` is the one file where a
-  reviewer can see every load pattern in the system, and CI can cost them:
-
-```console
-$ storm lint --plans
-  UserFeed      3 round trips   users → posts (LATERAL) → comments (= ANY)
-  UserSummary   1 round trip    users ⋈ orgs (JOIN)
-  ✓ no plan exceeds the configured limit of 4 round trips
+```go
+rows, err := order.New().
+    Where(order.PlacedAt.Gte(since)).    // a WHERE: filters rows INTO the groups
+    AllTrend(ctx, ex)                    // []order.TrendRow
 ```
 
-That output is the `@EntityGraph` idea plus a performance gate, in one command.
+The generated row type carries the nullability the SQL actually has — `Orders
+int64` because count over zero rows is 0, `Revenue Null[Decimal]` because sum
+over zero rows is NULL, and every grouping column becomes nullable under
+`Rollup`/`Cube`/`Sets`, because a subtotal row carries NULL for what it
+aggregated over. `GroupingOf` tells that NULL from one that was in the data.
 
-> **Corrected 2026-08-24, after the P2 spike.** This section previously read
-> `user.Query().Where(…).Load(UserFeed).All(ctx, db)`. That signature cannot be
-> built: **Go methods may not have type parameters**, so a method taking a plan
-> *value* has no way to vary its return type by plan — every plan would have to
-> return the same row type, which defeats the point. The plan therefore has to
-> be the entry point (above) or a generated method per plan.
->
-> For the same reason a plan cannot live in a table package: it names two
-> tables, and a table package importing a sibling reintroduces the import cycle
-> that one-package-per-table avoids (`Org` has `Users`, `User` has an `Org`).
-> Plans live in the parent package, which imports every table package and is
-> imported by none. See `internal/planspike/` and [[PLAN]] §P2.
+Also available: `Min`/`Max`/`Avg`, `Sum`/`Min`/`Max`Over, `RowNumber`, `Rank`,
+`DenseRank`, `CumeDist`, `Lag`, `Lead`, `FirstValue`, `LastValue`, and
+`Rollup`/`Cube`/`Sets` with `GROUPING()`.
+
+**Joins** — a read that projects across tables and returns a flat row:
+
+```go
+func (o *Order) Joins(j *storm.Joins) {
+    var c Customer
+    j.Named("WithCustomer").
+        Inner(&c, &o.Customer).           // the FK relation supplies the ON clause
+        Take(&o.ID, "OrderID").
+        Take(&c.Email, "CustomerEmail").
+        Where(j.Ne(&o.Status, "cancelled")).   // a filter the caller cannot widen
+        OrderDesc(&o.PlacedAt)
+}
+```
+
+`With(alias, model, aggregate)` materialises a declared aggregation as a CTE and
+joins against it — once, rather than a correlated subquery per row. Anything
+taken through a `Left` join comes back nullable, including a count.
 
 ## 8. Writes
 
-Insert takes a plain struct. No session, no `Save()`, no active record:
+Insert is a **masked builder**, not a struct. Absence is tracked by the mask and
+never inferred from a zero value, so an unset column takes its database default
+rather than a Go zero:
 
 ```go
-id, err := user.Insert(ctx, db, user.Row{Email: "a@b.com", Age: 30})
+na := author.Create()
+na.SetName("Ada")
+na.SetEmail("ada@example.com")
+ada, err := na.Insert(ctx, ex)      // id and created_at come back filled
 
-ids, err := user.InsertMany(ctx, db, rows)   // one COPY on PG
+na.OnConflictEmail()                // ON CONFLICT (email) — generated per unique index
 ```
 
-Update is a statement, not a load-mutate-flush cycle:
+Update is the same idea: only what you assigned is written.
 
 ```go
-n, err := user.Update(ctx, db,
-    storm.Where(user.ID.Eq(id)),
-    user.Email.Set("new@b.com"),
-    user.LoginCount.Inc(1),
-    user.Tags.Append("verified"),
-)
+m := author.Mutate(ada)
+m.SetName("Ada L.")
+err := m.Update(ctx, ex)
 ```
 
-Upsert:
-
-```go
-err := user.Upsert(ctx, db, row,
-    storm.OnConflict(user.Email).DoUpdate(user.Age.SetFromExcluded()))
-```
-
-Optimistic locking, if a `version` column is declared in the schema:
-
-```go
-n, err := user.Update(ctx, db, storm.Where(user.ID.Eq(id)).At(v), ...)
-if n == 0 { return storm.ErrStaleWrite }   // version moved under you
-```
+One compiled statement per distinct dirty mask, so a hundred call sites that set
+the same two columns share one statement.
 
 ## 9. Unit of work — explicit, batched, FK-ordered
 
 Only for graph writes. Everything above works without it.
 
 ```go
-err := db.Unit(ctx, func(u *storm.Unit) error {
-    uid := u.Insert(user.Row{Email: "a@b.com"})       // deferred handle
-    oid := u.Insert(org.Row{Name: "Acme"})
-    u.Insert(member.Row{UserID: uid, OrgID: oid})     // depends on both
-    u.Update(counter.Total.Inc(1), storm.Where(counter.Key.Eq("users")))
-    return nil
-})
+u := store.NewUnit()
+graceID, artID := newID(), newID()
+
+// Staged in ANY order — the article references an author that does not exist yet.
+u.Add(article.Table, article.InsertOp(article.Row{
+    ID: artID, Title: "Compilers", AuthorID: graceID,
+}))
+u.Add(author.Table, author.InsertOp(author.Row{
+    ID: graceID, Name: "Grace", Email: "grace@example.com",
+}))
+
+_, err := u.Flush(ctx, ex)      // one round trip, FK-ordered, atomic
 ```
 
-`uid` is a **deferred value**, not a UUID — it resolves at flush from
-`RETURNING`. The unit sorts statements by FK dependency derived from the schema,
-then emits one `pgx.Batch`. Correct ordering is proven in tests with deferred
-constraints *off*, so it is the ordering that is right, not Postgres being
+The unit sorts statements by the foreign-key dependencies derived from the
+schema, then emits one batch. Correct ordering is proven in tests with deferred
+constraints **off**, so it is the ordering that is right, not PostgreSQL being
 forgiving.
 
 No dirty checking of everything you ever loaded. No flush-order surprises. No
@@ -424,108 +378,92 @@ No dirty checking of everything you ever loaded. No flush-order surprises. No
 ## 10. The escape hatch loses nothing
 
 ```go
-var TopEarners = storm.SQL[EarnerRow](`
-    WITH ranked AS (
-        SELECT id, dept, salary,
-               row_number() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn
-        FROM employees
-        WHERE tenant_id = $1
-    )
-    SELECT r.id, r.dept, r.salary, l.headcount
-    FROM ranked r
-    JOIN LATERAL (SELECT count(*) headcount FROM employees e WHERE e.dept = r.dept) l ON true
-    WHERE r.rn <= $2`)
+var TopAuthors = storm.SQL[AuthorRow](`
+    SELECT u.id, u.name, count(p.id) AS posts
+    FROM authors u JOIN articles p ON p.author_id = u.id
+    WHERE u.org_id = $1
+    GROUP BY u.id, u.name
+    ORDER BY posts DESC LIMIT $2`)
 
-rows, err := TopEarners.Query(ctx, db, tid, 3)   // []EarnerRow, generated scanner
+rows, err := TopAuthors.Query(ctx, ex, orgID, 10)   // []AuthorRow, generated scanner
 ```
 
-Validated at **build time** by `PREPARE`ing against a dev database (or a
-checked-in schema snapshot, so CI needs no live Postgres). If `EarnerRow` does
-not match the result descriptor, generation fails:
+`storm generate` PREPAREs it against the model in a scratch schema, matches the
+result descriptor to `AuthorRow`, and emits the scanner. A column with no field
+fails the build naming the column. The placeholder count is checked against the
+server's, so a `$1` inside a `$tag$` body cannot become a phantom argument.
 
-```
-storm: internal/store/reports.go:14  storm.SQL[EarnerRow]
-  result column 4 "headcount" (int8) has no field in EarnerRow
-  → add `Headcount int64` or alias the column away
-```
+The no-rows half is `storm.SQLExec`, with one extra rule: the statement must
+return **zero** columns, so "I meant to read those rows" is a generation error
+rather than a silently dropped result set.
 
-The no-rows half is `SQLExec` — junction DELETEs, `ON CONFLICT DO NOTHING`
-inserts, statements run for their effect. Same declaration discipline, same
-`PREPARE`, one extra rule: the statement must return **zero** columns, so "I
-meant to read those rows" is a generation error pointing at `SQL[T]`, never a
-silent drop of a result set the server actually sent. (A void function call
-wraps as `SELECT (fn($1) IS NULL) AS done` and stays `SQL[T]`.)
+**Only declared statements run.** `storm generate` emits a `RegisterStatement`
+for every statement it PREPAREd, and a declaration whose text is not one of them
+is refused before the executor is reached:
 
 ```go
-var DeleteRoleParents = storm.SQLExec(`DELETE FROM role_parents WHERE role_id = $1`)
-
-n, err := DeleteRoleParents.Exec(ctx, db, roleID)   // rows affected
+// Refused at the call, and at generate time: this is not a package-level var.
+q := storm.SQL[AuthorRow](fmt.Sprintf("SELECT ... WHERE name = '%s'", userInput))
 ```
 
-And raw fragments compose *into* typed queries as join sources:
+That check exists because `RegisterScanner` keys by **row type** — a scanner
+declared for one query would otherwise answer for any query returning that type,
+which makes a run-time-assembled string runnable. It is the one place a caller's
+string could reach SQL text, and it is closed.
 
-```go
-user.Query().
-    Join(TopEarners.As("te"), storm.On(user.ID.EqCol(TopEarners.Col.ID))).
-    Where(user.TenantID.Eq(tid)).
-    All(ctx, db)
-```
-
-Ent's `.Modify()` and Hibernate's native query both drop you back to untyped
-scanning. This does not. **Escaping is a supported path, not a failure.**
+Still out of reach and still `storm.SQL`: recursive CTEs, and anything outside
+the scalar-function allow-list.
 
 ## 11. When something goes wrong
 
-```
-storm: query failed — user.Query (plan UserFeed)
-  at      internal/api/users.go:88
-  shape   0x2c  [tenant_id=, age>=, created_at>]
-  sql     SELECT u.id, u.email, u.age FROM users u
-          WHERE u.tenant_id = $1 AND u.age >= $2 AND u.created_at > $3
-          ORDER BY u.created_at DESC LIMIT 50
-  args    3 bound (values hidden; set STORM_LOG=debug to include)
-  pg      42703  column u.created_at does not exist
-```
-
-Source location, shape, the exact SQL, and the driver error — because a
-generated ORM knows all four and has no excuse for hiding any of them. Bound
-values are never logged above debug level (**sec** veto).
-
-## 12. Testing
+Constraint violations arrive classified, not as a five-character SQLSTATE you
+decode by hand:
 
 ```go
-func TestFeed(t *testing.T) {
-    db := stormtest.New(t)               // transaction per test, auto rollback
-    seed(t, db)
-
-    got, err := user.Query().Load(UserFeed).All(ctx, db)
-    require.NoError(t, err)
-    db.AssertRoundTrips(t, 3)            // your own N+1 guard
-    db.AssertNoSeqScan(t)                // EXPLAIN-backed
+if _, err := na.Insert(ctx, ex); err != nil {
+    var ce *runtime.ConstraintError
+    if errors.As(err, &ce) {
+        switch {
+        case errors.Is(err, runtime.ErrUniqueViolation):
+            return fmt.Errorf("email %q is taken (%s)", email, ce.Constraint)
+        case errors.Is(err, runtime.ErrForeignKeyViolation):
+            return errUnknownAuthor
+        case errors.Is(err, runtime.ErrExclusionViolation):
+            return errRoomAlreadyBooked      // the booking-conflict case
+        }
+    }
+    if errors.Is(err, runtime.ErrSerializationFailure) ||
+        errors.Is(err, runtime.ErrDeadlock) {
+        // Not bugs — this is what concurrency control looks like when it works.
+    }
+    return err
 }
 ```
 
-The round-trip counter that proves storm's own gates is exported for **your**
-tests. An N+1 introduced by a plan change fails your suite, not production.
+`ce.Constraint` is the constraint's name, so the branch can be specific without
+matching on message text.
 
----
+## 12. Testing
+
+There is no mock layer and nothing to fake. `Executor` is the seam: hand your
+code a transaction, roll it back, and the generated code is the code that ran in
+production.
+
+```go
+tx, _ := pool.Begin(ctx)
+defer tx.Rollback(ctx)
+svc := NewService(pgxdrv.Tx{T: tx})
+```
+
+`examples/blog` and `examples/orders` are both structured this way — a real
+server, a namespace per test, `-race -shuffle=on` in CI.
 
 ## What this costs you
 
-Honest list, so the tradeoff is visible:
-
-- **A generate step.** `storm generate` must run when migrations change.
-  `storm verify` fails CI if generated code is stale.
-- **Declaring load patterns up front.** A plan must be named before it is used.
-  This is the price of N+1 being impossible, and it is the right price.
-- **Generic code over "a user, loaded or not"** needs an interface or a type
-  parameter. Rarer than it sounds; awkward when it happens.
-- **A schema-diff engine you now depend on.** storm emits migrations from the
-  model, so a bad diff can emit a bad migration. Mitigated by review (they are
-  ordinary committed files), `--allow-destructive` gating, and golden tests —
-  but it is real scope, and ADR-0001 says so.
-- **Postgres first.** Other targets are sequenced in [[DIALECTS]]; the
-  capability model tells you at build time what will not port.
-- **`storm verify` in CI is not optional.** Model, generated code, migrations
-  and the live schema are four artifacts that must agree. Three verify modes
-  keep them honest; skipping them reintroduces the drift ADR-0001 feared.
+- **A generate step.** Change the model, run `storm generate`, commit the
+  output. `storm verify -stale` fails CI if you forget, and needs no database.
+- **Declaring your reports.** A shape that is not declared cannot run. That is
+  the price of every statement having a compiled form and a generated scanner.
+- **No lazy loading, ever.** If you want the relation, name the plan.
+- **PostgreSQL.** MySQL has a DDL back end but is not a runtime target
+  ([ADR-0007](adr/0007-mysql-runtime-needs-a-second-decoder-family.md)).

@@ -14,6 +14,29 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### docs/API.md is now as-built, and compiled
+
+The document an evaluator reads first described an API that does not exist:
+`user.Query()` (it is `New()`), `OrderBy` (it is `Order`), `storm.Pred`,
+`storm.OnConflict`, `storm.Unit`, `storm.OrdCol`/`TextCol`/`JSONCol`/`ArrayCol`
+as package types, `user.Get(ctx, db, id)` one-liners, and a
+`GroupBy(...).Select(storm.Into[T](...))` chain that the compilation thesis
+rules out on purpose. Ten of its `storm.X` references had no such symbol.
+
+It carried an "as-built note" listing part of the drift, which is the shape of a
+document nobody can trust — the reader has to know which half is real.
+
+Rewritten against the generated API, and **`examples/blog/apidoc_test.go` now
+compiles every call shape it shows**. A method that does not exist fails the
+build; a rename that lands in generated code without landing in the document
+fails it too. Prose cannot be tested, so the shapes are.
+
+New section on declared reports — projections, aggregations and joins together —
+covering `CountDistinct`, `Compute`, `Div`, frames and the `*Over` family.
+
+`docs/REFERENCE.md` and `docs/EXAMPLE.md` are still marked as design sketches
+and still describe call shapes that do not exist. They are the next two.
+
 ### Aggregation: DISTINCT, arithmetic, and window frames
 
 Four gaps that each ended in `storm.SQL`, and two silent wrong answers found
