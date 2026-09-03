@@ -14,6 +14,127 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Aggregation: DISTINCT, arithmetic, and window frames
+
+Four gaps that each ended in `storm.SQL`, and two silent wrong answers found
+closing them.
+
+**`count(DISTINCT x)`** — `b.CountDistinct(&o.Customer, "Buyers")`. Offered for
+count and nothing else: `sum(DISTINCT price)` is legal SQL and almost always a
+bug. It cannot take a window, because PostgreSQL rejects that, and storm refuses
+it at declaration rather than emitting SQL the server will not plan.
+
+**Arithmetic and computed outputs.** `Add`, `Sub`, `Mul`, `Div` over terms, and
+`Compute` to make an expression over the group an output:
+
+```go
+orders := b.Count("Orders")
+paid   := b.Count("Paid").Filter(a.Eq(&o.Status, "paid"))
+b.Compute("PaidRate", a.Div(paid, a.NullIf(orders, a.Lit(0))))
+```
+
+`Div` resolves to **numeric**, never an integer. PostgreSQL's `/` on two
+integers truncates, so that ratio would otherwise be 0 on every day that was not
+entirely paid — a report that renders, with numbers in range, and is wrong.
+It also rounds to a declared scale (`DivScale` sets it): PostgreSQL's numeric
+division returns `0.25000000000000000000`, twenty-one significant digits, and a
+`Decimal` holds eighteen.
+
+**Window frames.** `Rows` and `Range` on a window, with `Preceding`,
+`CurrentRow`, `Following` and the unbounded edges — and `SumOver`, `AvgOver`,
+`MinOver`, `MaxOver` to aggregate **across the groups**, which is the form a
+moving average actually needs:
+
+```go
+rev := b.Sum(&o.Total, "Revenue")
+b.AvgOver(rev, "Revenue7d", a.Over().OrderByAsc(day).
+    Rows(a.Preceding(6), a.CurrentRow()))     // avg(sum(total)) OVER (...)
+```
+
+A frame with its start after its end, or with no ORDER BY to count along, is
+refused at declaration; both are decidable, and PostgreSQL's own message names
+neither the declaration nor the window. `RANGE` with an offset is refused too —
+it needs a single subtractable ORDER BY column, and `Rows` says the same thing
+with a rule that always holds.
+
+**Also exposed**, already in the compile allow-lists and previously unreachable:
+`percent_rank`, `cume_dist`, `last_value`, `lower`, `upper`.
+
+#### Two wrong answers found while building this
+
+**`agg(col) OVER (...)` in a grouped query generated SQL PostgreSQL rejects.**
+With `OVER` an aggregate is a *window function*, so its argument is read from
+the grouped rows — `sum(total) OVER (...)` next to `GROUP BY status` names a
+column that is no longer there. The validator treated every `ExprAgg` as if its
+arguments were per-row inside the group, which is true only without a window.
+Now refused, with the fix named: the form that means "across the groups" is
+`sum(sum(total)) OVER (...)`, which `SumOver` builds.
+
+**`avg()` over a numeric column could not decode at money-sized values.**
+`avg` divides, and PostgreSQL's numeric division picks its own scale: the
+average of a single `numeric(12,2)` of `122999998.77` comes back as
+`122999998.770000000000` — twenty-one significant digits against a `Decimal`'s
+eighteen, so it failed with `ErrDecimalRange`. An aggregation that worked on
+test-sized data broke on real invoices. `avg` now carries a declared scale and
+the back end rounds to it. `sum` is unchanged and still unbounded: its scale is
+the input's, so it has no such problem.
+
+Grouping BY an aggregate is also refused now — `GROUP BY` runs before
+aggregation, and the error names `Compute` as the place that expression belongs.
+
+### Only a declared statement runs — closing the escape hatch's injection vector
+
+Every ordinary storm query is structurally immune to injection: a predicate is
+a stream of compiler-generated ids, the values travel as bound arguments, and
+no caller string is present in the SQL text to escape. `storm.SQL` was the
+exception, and one detail made it sharper than it looked — `RegisterScanner`
+keys by **row type**, so a scanner declared for one query answered for *any*
+query returning that type:
+
+```go
+// Before: this ran, on the strength of a scanner it never declared.
+q := storm.SQL[EarnerRow](fmt.Sprintf("SELECT ... WHERE name = '%s'", userInput))
+```
+
+`storm generate` now emits a `storm.RegisterStatement` for every statement it
+PREPAREd, and a declaration whose text is not one of them **does not run** —
+the refusal happens at the call, before the executor is reached, naming the
+fix. The check is content-addressed: a statement one byte from the one that was
+validated is a different statement and is refused with it.
+
+The generated init lists the statements as source, not as digests, because what
+a reviewer needs from it is to see which statements are allowed to run.
+
+**`storm generate` also refuses two shapes the registry cannot vouch for:** a
+`storm.SQL` call that is not a package-level var — never discovered, PREPAREd or
+registered, so it could never have run — and a `RegisterStatement` whose text is
+computed, which would whitelist whatever that expression produces. Both fail the
+build naming the line, instead of the first request that reaches the branch.
+
+**The placeholder count is now proven against the server.** `maxPlaceholder`
+scans the text for the highest `$n`, so a `$1` inside a string literal or a
+`$tag$` body counted when PostgreSQL reads it as text — and every call then got
+"wants 2 arguments, got 1" for a statement that takes one. The generator
+PREPAREs each declaration and the server reports the real number, so the two are
+compared and a disagreement fails the build naming both:
+
+```
+storm.SQLExec takes 1 parameter(s), but its text scans as 2 — a $n inside a string literal or a $tag$ body reads as a placeholder
+  DELETE FROM users WHERE name = $1 AND email <> $tag$ keep $2 $tag$
+```
+
+This closes M7's exit gate as written: *the placeholder count for every shape is
+known at build time, so a violation is a generation error, not a runtime check.*
+
+Migrating: nothing changes for a codebase whose raw queries are package-level
+vars — regenerate and they are registered. A test that hand-registers a scanner
+must now hand-register its statement too:
+
+```go
+const q = `SELECT ...`
+var Q = storm.SQL[Row](q)
+func init() { storm.RegisterStatement(q) }
+```
 ### Many-to-many: self-referential, and joins with a payload
 
 The two shapes the previous entry listed as unbuilt.

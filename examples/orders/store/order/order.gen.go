@@ -1578,7 +1578,7 @@ type ByStatusRow struct {
 	LastOrderAt  runtime.Null[time.Time]
 }
 
-const byStatusPrefix = `SELECT "status" AS "status", count(*) AS "orders", count(*) FILTER (WHERE "total" >= '50.00'::numeric) AS "big_orders", sum("total") AS "revenue", avg("total") AS "avg_order", min("placed_at") AS "first_order_at", max("placed_at") AS "last_order_at" FROM "orders"`
+const byStatusPrefix = `SELECT "status" AS "status", count(*) AS "orders", count(*) FILTER (WHERE "total" >= '50.00'::numeric) AS "big_orders", sum("total") AS "revenue", round(avg("total"), 6) AS "avg_order", min("placed_at") AS "first_order_at", max("placed_at") AS "last_order_at" FROM "orders"`
 const byStatusSuffix = ` GROUP BY "status" HAVING count(*) > 0 ORDER BY "status"`
 
 var (
@@ -1835,6 +1835,111 @@ func (q Query) AllFacetsInto(ctx context.Context, ex runtime.Executor, dst []Fac
 
 var errFacetsOrdered = errors.New(
 	"storm: Order() on an aggregation — its rows are groups, not table rows, and orders.Facets is already ordered by its grouping columns; sort the returned slice if you need another order")
+
+// TrendRow is the "Trend" aggregation over orders.
+//
+// One row per group. The grouping columns come first, in declaration
+// order, and the result is ordered by them: PostgreSQL promises no
+// order for a GROUP BY, and an unordered report shuffles between
+// requests for no reason anyone can see.
+type TrendRow struct {
+	Day           time.Time
+	Orders        int64
+	Buyers        int64
+	Paid          int64
+	Revenue       runtime.Null[runtime.Decimal]
+	PaidRate      runtime.Null[runtime.Decimal]
+	Revenue7d     runtime.Null[runtime.Decimal]
+	RevenueToDate runtime.Null[runtime.Decimal]
+	RevenuePct    float64
+}
+
+const trendPrefix = `SELECT date_trunc('day', "placed_at") AS "day", count(*) AS "orders", count(DISTINCT "customer_id") AS "buyers", count(*) FILTER (WHERE "status" = 'paid') AS "paid", sum("total") AS "revenue", round(count(*) FILTER (WHERE "status" = 'paid')::numeric / nullif(count(*), 0), 6) AS "paid_rate", round(avg(sum("total")) OVER (ORDER BY date_trunc('day', "placed_at") ROWS BETWEEN 6 PRECEDING AND CURRENT ROW), 6) AS "revenue7d", sum(sum("total")) OVER (ORDER BY date_trunc('day', "placed_at")) AS "revenue_to_date", percent_rank() OVER (ORDER BY sum("total") DESC) AS "revenue_pct" FROM "orders"`
+const trendSuffix = ` GROUP BY date_trunc('day', "placed_at") ORDER BY "day"`
+
+var (
+	trendCache       = runtime.NewTreeCache()
+	trendOffsetCache = runtime.NewTreeCache()
+)
+
+func trendStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
+	c, suffix := trendCache, trendSuffix+limitSuffix
+	if withOffset {
+		c, suffix = trendOffsetCache, trendSuffix+limitOffsetSuffix
+	}
+	if st := c.Get(toks); st != nil {
+		return st
+	}
+	return c.Put(toks, runtime.SpliceTree(trendPrefix, toks, lowering, suffix))
+}
+
+func scanTrend(rv [][]byte, r *TrendRow, sl *runtime.Slab) error {
+	var decErr error
+	r.Day = runtime.Timestamptz(rv[0])
+	r.Orders = runtime.Int8(rv[1])
+	r.Buyers = runtime.Int8(rv[2])
+	r.Paid = runtime.Int8(rv[3])
+	r.Revenue, decErr = runtime.NullNumeric(rv[4])
+	if decErr != nil {
+		return decErr
+	}
+	r.PaidRate, decErr = runtime.NullNumeric(rv[5])
+	if decErr != nil {
+		return decErr
+	}
+	r.Revenue7d, decErr = runtime.NullNumeric(rv[6])
+	if decErr != nil {
+		return decErr
+	}
+	r.RevenueToDate, decErr = runtime.NullNumeric(rv[7])
+	if decErr != nil {
+		return decErr
+	}
+	r.RevenuePct = runtime.Float8(rv[8])
+	return nil
+}
+
+// AllTrend runs the "Trend" aggregation. Predicates compose exactly as on All —
+// they filter the rows that go INTO the groups, which is the WHERE clause
+// and not a HAVING. Limit and offset page the groups.
+func (q Query) AllTrend(ctx context.Context, ex runtime.Executor) ([]TrendRow, error) {
+	var sl runtime.Slab
+	return q.AllTrendInto(ctx, ex, nil, &sl)
+}
+
+// AllTrendInto lets the caller own the output slice and the arena.
+func (q Query) AllTrendInto(ctx context.Context, ex runtime.Executor, dst []TrendRow, sl *runtime.Slab) ([]TrendRow, error) {
+	if err := q.Err(); err != nil {
+		return dst, err
+	}
+	if q.no > 0 {
+		return dst, errTrendOrdered
+	}
+	var buf [21]runtime.Tok
+	st := trendStmtFor(q.preds(&buf), q.offset > 0)
+	if st.Err != nil {
+		return dst, st.Err
+	}
+	sl.Reserve(st.SlabHint())
+	b := binders.Get()
+	defer putBinder(b)
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, TrendRow{})
+		if err := scanTrend(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
+	}
+	st.ObserveSlab(sl.Size())
+	return dst, rows.Err()
+}
+
+var errTrendOrdered = errors.New(
+	"storm: Order() on an aggregation — its rows are groups, not table rows, and orders.Trend is already ordered by its grouping columns; sort the returned slice if you need another order")
 
 // ByCustomerRow is the "ByCustomer" aggregation over orders.
 //

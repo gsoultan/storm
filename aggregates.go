@@ -1,6 +1,7 @@
 package storm
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/gsoultan/storm/schema"
@@ -99,6 +100,11 @@ func (o Out) OverWindow(w *WindowSpec) Out {
 		b.fail("OverWindow applies to an aggregate; %q is not one", o.name)
 		return o
 	}
+	if t.Expr.Distinct {
+		b.fail("%q is a count(DISTINCT ...) and cannot take a window — PostgreSQL "+
+			"rejects DISTINCT in an aggregate used as a window function", o.name)
+		return o
+	}
 	win, err := b.resolveWindow(w)
 	if err != nil {
 		b.fail("window on %q: %w", o.name, err)
@@ -191,6 +197,18 @@ func (b *AggregateBuilder) addGroup(as string, t Term) Out {
 	e, err := b.resolveTerm(t)
 	if err != nil {
 		b.fail("grouping %q: %w", as, err)
+		return b.none()
+	}
+	// GROUP BY runs BEFORE aggregation, so an aggregate cannot appear in it —
+	// PostgreSQL says "aggregate functions are not allowed in GROUP BY" and
+	// the declaration is refused here instead, where the name of the offending
+	// output is still known. The mistake is easy to make with arithmetic:
+	// a ratio over two counts is an OUTPUT, not a grouping expression, and
+	// Compute is where it goes.
+	if containsAgg(e) {
+		b.fail("grouping %q is computed from an aggregate, and GROUP BY runs before "+
+			"aggregation — declare it with Compute, which makes it an output over the "+
+			"group rather than part of the group's key", as)
 		return b.none()
 	}
 	// Checked before the field-name clash so the message names the actual
@@ -295,6 +313,22 @@ func (b *AggregateBuilder) CountOf(fieldPtr any, as string) Out {
 	return b.agged(schema.AggCount, toTerm(fieldPtr), as)
 }
 
+// CountDistinct adds count(DISTINCT col): how many DIFFERENT values the column
+// takes, which is a third question again from Count (rows) and CountOf (rows
+// where it is not null).
+//
+// DISTINCT is offered for count and nothing else. `sum(DISTINCT x)` and
+// `avg(DISTINCT x)` are legal SQL and almost always a bug — the sum of the
+// distinct values of a price column is not a number anyone wanted — so having
+// them would cost more than it bought.
+//
+// It cannot be combined with a window: PostgreSQL rejects DISTINCT in an
+// aggregate used as a window function, and storm refuses it at declaration
+// rather than emitting SQL the server will not plan.
+func (b *AggregateBuilder) CountDistinct(fieldPtr any, as string) Out {
+	return b.aggedDist(schema.AggCount, toTerm(fieldPtr), as, true)
+}
+
 // Sum, Avg, Min and Max are the ordinary aggregates. All four are NULL over
 // zero rows, so all four produce a nullable field.
 func (b *AggregateBuilder) Sum(x any, as string) Out {
@@ -325,6 +359,10 @@ func (b *AggregateBuilder) GroupingOf(as string, fieldPtrs ...any) Out {
 }
 
 func (b *AggregateBuilder) agged(fn schema.AggFunc, arg Term, as string) Out {
+	return b.aggedDist(fn, arg, as, false)
+}
+
+func (b *AggregateBuilder) aggedDist(fn schema.AggFunc, arg Term, as string, distinct bool) Out {
 	if b.dead {
 		return b.none()
 	}
@@ -371,13 +409,74 @@ func (b *AggregateBuilder) agged(fn schema.AggFunc, arg Term, as string) Out {
 		}
 	}
 	e := schema.Expr{
-		Kind: schema.ExprAgg, Fn: string(fn),
+		Kind: schema.ExprAgg, Fn: string(fn), Distinct: distinct,
 		Args: []schema.Expr{resolved}, Type: rt, Nullable: nullable,
 	}
 	return b.push(as, e)
 }
 
 // ---- window functions -------------------------------------------------------
+
+// SumOver, AvgOver, MinOver and MaxOver aggregate ACROSS THE GROUPS — the
+// running total, the moving average, the high-water mark:
+//
+//	rev := b.Sum(&o.Total, "Revenue")
+//	b.AvgOver(rev, "Moving7", a.Over().OrderByAsc(day).
+//	    Rows(a.Preceding(6), a.CurrentRow()))
+//
+// The argument is a declared output, and that is the whole distinction. A
+// grouped query has already collapsed its rows, so `sum(total) OVER (...)`
+// reads a column that no longer exists per output row and PostgreSQL refuses
+// it; `sum(sum(total)) OVER (...)` is the form that means "across the groups",
+// and passing the handle is what produces it.
+//
+// Give them a frame. Without one PostgreSQL's default reaches from the start of
+// the partition to the current row, which makes every one of these a RUNNING
+// figure rather than a moving one.
+func (b *AggregateBuilder) SumOver(x any, as string, w *WindowSpec) Out {
+	return b.aggOver(schema.AggSum, x, as, w)
+}
+func (b *AggregateBuilder) AvgOver(x any, as string, w *WindowSpec) Out {
+	return b.aggOver(schema.AggAvg, x, as, w)
+}
+func (b *AggregateBuilder) MinOver(x any, as string, w *WindowSpec) Out {
+	return b.aggOver(schema.AggMin, x, as, w)
+}
+func (b *AggregateBuilder) MaxOver(x any, as string, w *WindowSpec) Out {
+	return b.aggOver(schema.AggMax, x, as, w)
+}
+
+func (b *AggregateBuilder) aggOver(fn schema.AggFunc, x any, as string, w *WindowSpec) Out {
+	if b.dead {
+		return b.none()
+	}
+	if !isExportedIdent(as) {
+		b.fail("%s(...) is named %q, which must be a valid exported Go identifier", fn, as)
+		return b.none()
+	}
+	inner, err := b.resolveTerm(toTerm(x))
+	if err != nil {
+		b.fail("%s %q: %w", fn, as, err)
+		return b.none()
+	}
+	rt, _, err := schema.AggregateResult(fn, inner.Type)
+	if err != nil {
+		b.fail("%s %q: %w", fn, as, err)
+		return b.none()
+	}
+	win, err := b.resolveWindow(w)
+	if err != nil {
+		b.fail("window on %q: %w", as, err)
+		return b.none()
+	}
+	return b.push(as, schema.Expr{
+		Kind: schema.ExprAgg, Fn: string(fn),
+		Args: []schema.Expr{inner}, Over: win,
+		// Always nullable: a frame can be empty at a partition edge even when
+		// every group has a value, and sum over no rows is NULL.
+		Type: rt, Nullable: true,
+	})
+}
 
 // RowNumber, Rank and DenseRank number rows within the window.
 func (b *AggregateBuilder) RowNumber(as string, w *WindowSpec) Out {
@@ -388,6 +487,18 @@ func (b *AggregateBuilder) Rank(as string, w *WindowSpec) Out {
 }
 func (b *AggregateBuilder) DenseRank(as string, w *WindowSpec) Out {
 	return b.windowed("dense_rank", nil, as, w)
+}
+
+// PercentRank and CumeDist are the fractional ranks: where a row sits in its
+// window as a number between 0 and 1, which is what a percentile report wants
+// and what Rank cannot give without knowing the partition size.
+//
+// Both are float8 and never NULL — an empty window produces no rows to rank.
+func (b *AggregateBuilder) PercentRank(as string, w *WindowSpec) Out {
+	return b.windowed("percent_rank", nil, as, w)
+}
+func (b *AggregateBuilder) CumeDist(as string, w *WindowSpec) Out {
+	return b.windowed("cume_dist", nil, as, w)
 }
 
 // Lag and Lead read the previous or next row in the window. Both are NULL at
@@ -403,6 +514,17 @@ func (b *AggregateBuilder) Lead(x any, as string, w *WindowSpec) Out {
 // FirstValue is the first row's value in the window.
 func (b *AggregateBuilder) FirstValue(x any, as string, w *WindowSpec) Out {
 	return b.windowed("first_value", toTerm(x), as, w)
+}
+
+// LastValue reads the last row of the window frame — and the frame, not the
+// partition, is the point. PostgreSQL's default frame ends at the CURRENT ROW,
+// so `last_value` without a frame returns the current row's own value, which
+// is the single most reported surprise in window functions. Give it a frame
+// that reaches the end:
+//
+//	a.Over().OrderByAsc(day).Rows(a.UnboundedPreceding(), a.UnboundedFollowing())
+func (b *AggregateBuilder) LastValue(x any, as string, w *WindowSpec) Out {
+	return b.windowed("last_value", toTerm(x), as, w)
 }
 
 func (b *AggregateBuilder) windowed(fn string, arg any, as string, w *WindowSpec) Out {
@@ -478,6 +600,47 @@ func (b *AggregateBuilder) Having(c Cond) *AggregateBuilder {
 
 // ---- resolution -------------------------------------------------------------
 
+// Compute adds an output that is an EXPRESSION over the group — the ratio, the
+// difference, the share — rather than a single aggregate:
+//
+//	orders := b.Count("Orders")
+//	paid   := b.Count("Paid").Filter(a.Eq(&o.Status, "paid"))
+//	b.Compute("PaidRate", a.Div(paid, a.NullIf(orders, a.Lit(0))))
+//
+// The NullIf is not decoration. It is the division-by-zero guard, and it sits
+// in the expression instead of in a comment above it.
+//
+// The result type is whatever the expression resolves to, so a ratio over two
+// counts is numeric — not the truncated integer PostgreSQL's `/` would give.
+func (b *AggregateBuilder) Compute(as string, t Term) Out {
+	if b.dead {
+		return b.none()
+	}
+	if !isExportedIdent(as) {
+		b.fail("computed output is named %q, which must be a valid exported Go identifier", as)
+		return b.none()
+	}
+	e, err := b.resolveTerm(t)
+	if err != nil {
+		b.fail("computing %q: %w", as, err)
+		return b.none()
+	}
+	return b.push(as, e)
+}
+
+// containsAgg reports whether an expression aggregates anywhere inside it.
+func containsAgg(e schema.Expr) bool {
+	if e.Kind == schema.ExprAgg || e.Kind == schema.ExprWindow {
+		return true
+	}
+	for _, a := range e.Args {
+		if containsAgg(a) {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *AggregateBuilder) push(as string, e schema.Expr) Out {
 	if !b.claim(as) {
 		return b.none()
@@ -548,6 +711,20 @@ func (b *AggregateBuilder) resolveTerm(t Term) (schema.Expr, error) {
 		_ = anyNull
 		return schema.Expr{Kind: schema.ExprGrouping, Args: args,
 			Type: schema.Type{Name: schema.TypeInt4}}, nil
+
+	case schema.ExprBinary:
+		args, in, anyNull, err := b.resolveArgs(t.args)
+		if err != nil {
+			return schema.Expr{}, err
+		}
+		rt, err := schema.BinaryResult(t.arith, in, t.scale)
+		if err != nil {
+			return schema.Expr{}, fmt.Errorf("%s: %w", t.arith, err)
+		}
+		return schema.Expr{
+			Kind: schema.ExprBinary, Arith: t.arith, Args: args,
+			Type: rt, Nullable: anyNull,
+		}, nil
 
 	case schema.ExprFunc:
 		sig, ok := schema.Funcs[t.fn]
@@ -647,7 +824,19 @@ func (b *AggregateBuilder) resolveCond(c Cond) (schema.Cond, error) {
 }
 
 func (b *AggregateBuilder) resolveWindow(w *WindowSpec) (*schema.Window, error) {
-	out := &schema.Window{}
+	if w.err != nil {
+		return nil, w.err
+	}
+	out := &schema.Window{Frame: w.frame}
+	if w.frame != nil && len(w.order) == 0 {
+		// A frame counts rows in the window's order. With no ORDER BY there is
+		// no order to count in, so the frame selects an arbitrary set that can
+		// differ between runs of the same query — a wrong answer that does not
+		// look like one.
+		return nil, errors.New(
+			"a window frame needs an ORDER BY: without one the rows have no order to " +
+				"count along, and the frame picks an arbitrary set")
+	}
 	for _, p := range w.partition {
 		e, err := b.resolveTerm(p)
 		if err != nil {

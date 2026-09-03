@@ -19,6 +19,10 @@ type Result struct {
 	// Unparsed are files discovery could not read. Any model in them is
 	// invisible, so this has to be said out loud before "no models found" is.
 	Unparsed []string
+	// Undeclarable are storm.SQL calls that are not package-level vars. They
+	// cannot be registered, so storm would refuse them at run time; reported
+	// here they fail the build instead.
+	Undeclarable []Undeclarable
 }
 
 // Packages is every import the bootstrap needs, deduplicated and ordered.

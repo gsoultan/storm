@@ -224,6 +224,34 @@ func (o *Order) Aggregates(a *storm.Aggregates) {
 	facets.Sum(&o.Total, "Revenue")
 	facets.GroupingOf("StatusIsSubtotal", &o.Status)
 
+	// Arithmetic, DISTINCT, and a framed window — the three things a report
+	// asks for that used to end in raw SQL.
+	trend := a.Named("Trend")
+	tday := trend.ByExpr("Day", a.DateTrunc("day", &o.PlacedAt))
+	torders := trend.Count("Orders")
+	// How many DIFFERENT customers, which is neither "how many orders" nor
+	// "how many orders have a customer".
+	trend.CountDistinct(&o.Customer, "Buyers")
+	tpaid := trend.Count("Paid").Filter(a.Eq(&o.Status, string(StatusPaid)))
+	trev := trend.Sum(&o.Total, "Revenue")
+
+	// The ratio. Div over two counts resolves to NUMERIC — PostgreSQL's `/` on
+	// integers truncates, so this would otherwise be 0 on every day that was
+	// not entirely paid. NullIf is the division-by-zero guard, written where
+	// the division is.
+	trend.Compute("PaidRate", a.Div(tpaid, a.NullIf(torders, a.Lit(0))))
+
+	// A seven-day moving average of DAILY revenue: avg(sum(total)) OVER a
+	// frame. The frame is the point — without one PostgreSQL reaches back to
+	// the start of the partition and this is a running average, not a moving
+	// one.
+	trend.AvgOver(trev, "Revenue7d", a.Over().OrderByAsc(tday).
+		Rows(a.Preceding(6), a.CurrentRow()))
+	trend.SumOver(trev, "RevenueToDate", a.Over().OrderByAsc(tday))
+
+	// Where the day sits in the whole range, as a fraction.
+	trend.PercentRank("RevenuePct", a.Over().OrderByDesc(trev))
+
 	// Grouped by customer — the CTE the VsLifetime join materialises.
 	byCustomer := a.Named("ByCustomer")
 	byCustomer.By(&o.Customer)

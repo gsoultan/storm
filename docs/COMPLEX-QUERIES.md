@@ -10,13 +10,16 @@ Eight queries a backend engineer actually gets asked for, none of them
 expressible in GORM or Ent without dropping to raw SQL. All string-free, all
 composable, all compiled at build time.
 
-> **What is built, as of v0.3.0 — all of it.** Single-table aggregation;
-> grouping by an expression (`date_trunc`, `coalesce`, `nullif`, `abs`);
-> `FILTER`; `HAVING`; `GROUPING SETS` / `ROLLUP` / `CUBE` with `GROUPING()`;
-> window functions (`row_number`, `rank`, `dense_rank`, `lag`, `lead`,
-> `first_value`, and any aggregate over a window); **joins projecting across
-> tables**, inner and left; and **CTEs** that materialise a declared aggregation
-> once and join against it.
+> **What is built — all of it.** Single-table aggregation; grouping by an
+> expression (`date_trunc`, `coalesce`, `nullif`, `abs`, `lower`, `upper`);
+> `FILTER`; `HAVING`; `count(DISTINCT)`; **arithmetic** (`Add`/`Sub`/`Mul`/`Div`)
+> and computed outputs over the group; `GROUPING SETS` / `ROLLUP` / `CUBE` with
+> `GROUPING()`; window functions (`row_number`, `rank`, `dense_rank`,
+> `percent_rank`, `cume_dist`, `lag`, `lead`, `first_value`, `last_value`);
+> aggregates windowed **across the groups** (`SumOver`, `AvgOver`, `MinOver`,
+> `MaxOver`) with explicit **`ROWS`/`RANGE` frames**, which is what a moving
+> average needs; **joins projecting across tables**, inner and left; and
+> **CTEs** that materialise a declared aggregation once and join against it.
 >
 > They are **declared** — in `Aggregates` and `Joins` methods on the model — not
 > composed at the call site as sketched below. The difference is deliberate: a

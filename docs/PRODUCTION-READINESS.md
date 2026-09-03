@@ -404,7 +404,10 @@ stats-bearing replica is where the performance signal lives.
 ## What is already load-bearing (do not re-litigate)
 
 Injection is structural and fuzzed (~80M executions, one real fail-open found
-and fixed). Round-trip counts are asserted per shape. Migrations converge
+and fixed). The structural argument now covers the escape hatch too: `storm.SQL`
+statements are pinned to the text `storm generate` PREPAREd, so a statement
+assembled at run time is refused before the executor is reached, and a
+declaration that is not a package-level var fails the build. Round-trip counts are asserted per shape. Migrations converge
 end-to-end. `-race -shuffle=on` is green with coverage floors. govulncheck is
 gated with zero reachable findings. The write path's atomicity is tested, not
 argued. The first adopter migrated a whole bounded context in a day, and the

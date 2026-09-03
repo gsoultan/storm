@@ -133,6 +133,9 @@ func Discover(start string) (*Result, error) {
 		}
 		return r.Models[i].TypeName < r.Models[j].TypeName
 	})
+	sort.Slice(r.Undeclarable, func(i, j int) bool {
+		return r.Undeclarable[i].Pos < r.Undeclarable[j].Pos
+	})
 	sort.Slice(r.Queries, func(i, j int) bool {
 		if r.Queries[i].ImportPath != r.Queries[j].ImportPath {
 			return r.Queries[i].ImportPath < r.Queries[j].ImportPath
@@ -166,6 +169,7 @@ func collect(r *Result, scan *pkgScan, ip string) {
 			Pos:        pos.String(),
 		})
 	}
+	r.Undeclarable = append(r.Undeclarable, scan.undeclarable...)
 	// Unexported matches are reported, not failed — erroring would break
 	// mixins, which are a supported shape, to catch a mistake.
 	for name, pos := range scan.unexported {

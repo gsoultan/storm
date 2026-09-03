@@ -58,6 +58,19 @@ func (o *xOrder) Aggregates(a *storm.Aggregates) {
 	f.Count("N")
 	f.GroupingOf("IsSubtotal", &o.Status)
 
+	// Arithmetic, DISTINCT and a framed window: three constructs whose text is
+	// fixed at generate time, so a lowering bug is SQL nobody plans until a
+	// caller runs it.
+	tr := a.Named("Trend")
+	trday := tr.ByExpr("Day", a.DateTrunc("day", &o.CreatedAt))
+	trn := tr.Count("N")
+	tr.CountDistinct(&o.Customer, "Buyers")
+	trrev := tr.Sum(&o.Total, "Rev")
+	tr.Compute("Rate", a.Div(trn, a.NullIf(trn, a.Lit(0))))
+	tr.AvgOver(trrev, "Moving", a.Over().OrderByAsc(trday).
+		Rows(a.Preceding(6), a.CurrentRow()))
+	tr.PercentRank("Pct", a.Over().OrderByDesc(trrev))
+
 	// The aggregate a CTE will select from.
 	c := a.Named("ByCustomer")
 	c.By(&o.Customer)
@@ -120,6 +133,17 @@ func TestExplainCoversDeclaredAggregates(t *testing.T) {
 		// GROUPING() only means anything with a grouping set, and the two are
 		// lowered separately.
 		{"x_orders → Facets (aggregate)", []string{"ROLLUP", "GROUPING("}},
+		// DISTINCT sits inside the parentheses, the frame inside OVER, and the
+		// division carries a cast and a round — three places a lowering can be
+		// well-formed to storm and rejected by PostgreSQL.
+		{"x_orders → Trend (aggregate)", []string{
+			"count(DISTINCT",
+			"ROWS BETWEEN 6 PRECEDING AND CURRENT ROW",
+			"::numeric /",
+			"round(",
+			"percent_rank()",
+			"avg(sum(",
+		}},
 	} {
 		sql, ok := got[tc.label]
 		if !ok {

@@ -53,6 +53,12 @@ type PackageOptions struct {
 	// database connection); Package only prints.
 	RawScanners []RawScanner
 
+	// RawStatements is every storm.SQL and storm.SQLExec statement that
+	// PREPAREd cleanly, in sorted order. Emitted as RegisterStatement calls:
+	// a statement that is not one of these does not run, which is what keeps
+	// a run-time-assembled string from riding on a scanner keyed by row type.
+	RawStatements []string
+
 	// Package is the parent package that holds the context file: the flush
 	// order and the Unit constructor. Empty skips it, which is what a
 	// single-table generation wants.
@@ -237,7 +243,7 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	body.emitRawScanners(rawScanners)
+	body.emitRawScanners(rawScanners, sortedUnique(o.RawStatements))
 	for _, h := range having {
 		arcPkgs[h.ParentPkg] = true
 		arcPkgs[h.ChildPkg] = true

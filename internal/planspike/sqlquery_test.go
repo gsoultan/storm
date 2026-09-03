@@ -24,7 +24,10 @@ type earnerRow struct {
 	OrgUsers int64
 }
 
-var topPerOrg = storm.SQL[earnerRow](`
+// The statement is a const so the declaration and the registration cannot
+// drift: RegisterStatement pins the exact text `storm generate` PREPAREd, and
+// the spike stands in for the generator here.
+const topPerOrgSQL = `
 	WITH ranked AS (
 		SELECT u.email, u.org_id,
 		       row_number() OVER (PARTITION BY u.org_id ORDER BY u.email) AS rn
@@ -38,9 +41,12 @@ var topPerOrg = storm.SQL[earnerRow](`
 	) l ON true
 	WHERE r.rn <= $1
 	ORDER BY o.name, r.rn
-	LIMIT $2`)
+	LIMIT $2`
+
+var topPerOrg = storm.SQL[earnerRow](topPerOrgSQL)
 
 func init() {
+	storm.RegisterStatement(topPerOrgSQL)
 	storm.RegisterScanner(func(rv [][]byte, r *earnerRow, sl *runtime.Slab) error {
 		r.Email = sl.Str(rv[0])
 		r.OrgName = sl.Str(rv[1])
