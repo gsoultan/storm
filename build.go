@@ -64,6 +64,11 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.callSchemas(mi)
 	}
+	// Pass 4a: the AnyRef acknowledgement, which IS a user declaration and so
+	// cannot be checked before they have run.
+	for _, mi := range b.ordered {
+		b.checkAnyRefsAcknowledged(mi)
+	}
 	// Pass 4b': projections ride the same window as plans, for the same
 	// reasons.
 	for _, mi := range b.ordered {
@@ -230,6 +235,12 @@ func (b *builder) walk(mi *modelInfo, t reflect.Type, base uintptr, tbl *Table) 
 		// Exclusive arc? One nullable foreign key per variant.
 		if vs, opt, ok := arcVariants(f.Type); ok {
 			b.buildArc(mi, tbl, f, off, vs, opt)
+			continue
+		}
+
+		// Discriminator polymorphism? A (type, id) pair and no foreign key.
+		if f.Type == anyRefType {
+			b.buildAnyRef(mi, tbl, f, off)
 			continue
 		}
 
@@ -431,6 +442,28 @@ func (b *builder) resolveRelations(mi *modelInfo) {
 		mi.fkCols = append(mi.fkCols, rel.colName)
 	}
 	b.resolveArcs(mi)
+}
+
+// checkAnyRefsAcknowledged is the whole reason AnyRef is a distinct type rather
+// than two columns someone declares by hand.
+//
+// Two columns are ordinary and pass without comment. A declaration that names
+// the shape can be refused until somebody writes down why the integrity is
+// being given up — and the refusal happens at Build, so it is a failed
+// generation rather than a code review nobody ran.
+func (b *builder) checkAnyRefsAcknowledged(mi *modelInfo) {
+	for _, ar := range mi.tbl.out.AnyRefs {
+		if ar.Reason != "" {
+			continue
+		}
+		b.errs.add(fmt.Errorf(
+			"%s.%s: storm.AnyRef gives up referential integrity — orphan rows are "+
+				"possible and no database constraint will prevent them\n"+
+				"       prefer storm.OneOf[...] (up to 8 variants, keys enforced), a "+
+				"supertype table (unbounded, still enforced), or acknowledge it:\n"+
+				"       t.Col(&x.%s).AcknowledgeNoFK(\"<why>\")",
+			mi.tbl.out.Name, ar.Field, ar.Field))
+	}
 }
 
 // resolveArcs finishes the exclusive arcs: a foreign key per variant, the
@@ -806,6 +839,44 @@ func arcVariants(t reflect.Type) (vs []reflect.Type, optional bool, ok bool) {
 		vs = append(vs, ft.Elem())
 	}
 	return vs, optional, true
+}
+
+var anyRefType = reflect.TypeOf(AnyRef{})
+
+// buildAnyRef emits the (type, id) column pair and records the declaration.
+//
+// No foreign key and no CHECK, because there is nothing to point at: the whole
+// shape is that the target table is not known until the row is read. What it
+// does get is a composite index, since every read of a discriminator pair
+// filters on both columns and neither alone is selective.
+func (b *builder) buildAnyRef(mi *modelInfo, tbl *Table, f reflect.StructField, off uintptr) {
+	base := snake(f.Name)
+	ar := &schema.AnyRefField{
+		Field:      f.Name,
+		TypeColumn: base + "_type",
+		IDColumn:   base + "_id",
+	}
+
+	// The TYPE column carries the back-pointer, so t.Col(&a.Subject) resolves
+	// to something AcknowledgeNoFK can reach.
+	tc := &col{
+		sc:     &schema.Column{Name: ar.TypeColumn, Type: schema.Type{Name: schema.TypeText}, NotNull: true},
+		field:  f,
+		anyRef: ar,
+	}
+	ic := &col{
+		sc:    &schema.Column{Name: ar.IDColumn, Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+		field: f,
+	}
+	tbl.out.Columns = append(tbl.out.Columns, tc.sc, ic.sc)
+	tbl.off[off] = tc
+
+	// Both columns, in this order: a lookup names the type first and the id
+	// second, and a btree on (type, id) serves that prefix.
+	tbl.out.Indexes = append(tbl.out.Indexes, &schema.Index{
+		Columns: []schema.IndexColumn{{Name: ar.TypeColumn}, {Name: ar.IDColumn}},
+	})
+	tbl.out.AnyRefs = append(tbl.out.AnyRefs, ar)
 }
 
 // buildArc emits a nullable foreign key per variant, a CHECK that the right
