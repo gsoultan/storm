@@ -9,8 +9,10 @@ import (
 
 	"github.com/gsoultan/storm/internal/planspike/store/attachment"
 	"github.com/gsoultan/storm/internal/planspike/store/comment"
+	"github.com/gsoultan/storm/internal/planspike/store/membership"
 	"github.com/gsoultan/storm/internal/planspike/store/org"
 	"github.com/gsoultan/storm/internal/planspike/store/post"
+	"github.com/gsoultan/storm/internal/planspike/store/postrelated"
 	"github.com/gsoultan/storm/internal/planspike/store/posttag"
 	"github.com/gsoultan/storm/internal/planspike/store/tag"
 	"github.com/gsoultan/storm/internal/planspike/store/user"
@@ -22,15 +24,17 @@ import (
 // runtime code inspects a schema and no constraint has to be deferred for
 // a graph write to succeed.
 var FlushOrder = map[string]int{
-	"audit_logs":  0,
-	"events":      2,
-	"orgs":        3,
-	"tags":        4,
-	"users":       5,
-	"posts":       6,
-	"comments":    8,
-	"post_tags":   9,
-	"attachments": 10,
+	"audit_logs":   0,
+	"events":       2,
+	"orgs":         3,
+	"tags":         4,
+	"users":        5,
+	"memberships":  6,
+	"posts":        7,
+	"comments":     9,
+	"post_related": 10,
+	"post_tags":    11,
+	"attachments":  12,
 }
 
 // NewUnit stages writes across this context and flushes them in foreign-key
@@ -584,6 +588,238 @@ func (p CommentWithRepliesQuery) All(ctx context.Context, ex runtime.Executor) (
 	return out, nil
 }
 
+// MembershipWithOrgRow is memberships with its Org loaded.
+type MembershipWithOrgRow struct {
+	membership.Row
+	Org org.Row
+}
+
+type MembershipWithOrgQuery struct {
+	q membership.Query
+}
+
+// MembershipWithOrg starts the plan.
+func MembershipWithOrg() MembershipWithOrgQuery { return MembershipWithOrgQuery{q: membership.New()} }
+
+func (p MembershipWithOrgQuery) Where(ps ...membership.Pred) MembershipWithOrgQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p MembershipWithOrgQuery) WhereIf(cond bool, pr membership.Pred) MembershipWithOrgQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p MembershipWithOrgQuery) Any(ps ...membership.Pred) MembershipWithOrgQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p MembershipWithOrgQuery) Not(pr membership.Pred) MembershipWithOrgQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p MembershipWithOrgQuery) NotAny(ps ...membership.Pred) MembershipWithOrgQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p MembershipWithOrgQuery) Order(ts ...membership.Sort) MembershipWithOrgQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p MembershipWithOrgQuery) Limit(n int64) MembershipWithOrgQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p MembershipWithOrgQuery) Offset(n int64) MembershipWithOrgQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p MembershipWithOrgQuery) After(r MembershipWithOrgRow) MembershipWithOrgQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p MembershipWithOrgQuery) Err() error { return p.q.Err() }
+
+// All runs the plan in exactly TWO round trips. Distinct parent keys are
+// de-duplicated before the second, so a thousand rows pointing at three
+// orgs fetch three orgs.
+func (p MembershipWithOrgQuery) All(ctx context.Context, ex runtime.Executor) ([]MembershipWithOrgRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]MembershipWithOrgRow, len(parents))
+	seen := make(map[[16]byte]bool, len(parents))
+	ids := make([][16]byte, 0, len(parents))
+	for i, r := range parents {
+		out[i] = MembershipWithOrgRow{Row: r}
+		key := r.OrgID
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	targets, err := org.New().Unordered().
+		Where(org.ID.In(ids...)).
+		Limit(int64(len(ids))).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key := out[i].OrgID
+		j, ok := by[key]
+		if !ok {
+			// A foreign key pointing at a row that is not there. The database
+			// forbids it, so reaching this means the constraint was dropped.
+			return nil, fmt.Errorf("storm: %s references a missing %s row", "memberships", "orgs")
+		}
+		out[i].Org = targets[j]
+	}
+	return out, nil
+}
+
+// MembershipWithUserRow is memberships with its User loaded.
+type MembershipWithUserRow struct {
+	membership.Row
+	User user.Row
+}
+
+type MembershipWithUserQuery struct {
+	q membership.Query
+}
+
+// MembershipWithUser starts the plan.
+func MembershipWithUser() MembershipWithUserQuery {
+	return MembershipWithUserQuery{q: membership.New()}
+}
+
+func (p MembershipWithUserQuery) Where(ps ...membership.Pred) MembershipWithUserQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p MembershipWithUserQuery) WhereIf(cond bool, pr membership.Pred) MembershipWithUserQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p MembershipWithUserQuery) Any(ps ...membership.Pred) MembershipWithUserQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p MembershipWithUserQuery) Not(pr membership.Pred) MembershipWithUserQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p MembershipWithUserQuery) NotAny(ps ...membership.Pred) MembershipWithUserQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p MembershipWithUserQuery) Order(ts ...membership.Sort) MembershipWithUserQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p MembershipWithUserQuery) Limit(n int64) MembershipWithUserQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p MembershipWithUserQuery) Offset(n int64) MembershipWithUserQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p MembershipWithUserQuery) After(r MembershipWithUserRow) MembershipWithUserQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p MembershipWithUserQuery) Err() error { return p.q.Err() }
+
+// All runs the plan in exactly TWO round trips. Distinct parent keys are
+// de-duplicated before the second, so a thousand rows pointing at three
+// orgs fetch three orgs.
+func (p MembershipWithUserQuery) All(ctx context.Context, ex runtime.Executor) ([]MembershipWithUserRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		return nil, nil
+	}
+	out := make([]MembershipWithUserRow, len(parents))
+	seen := make(map[[16]byte]bool, len(parents))
+	ids := make([][16]byte, 0, len(parents))
+	for i, r := range parents {
+		out[i] = MembershipWithUserRow{Row: r}
+		key := r.UserID
+		if !seen[key] {
+			seen[key] = true
+			ids = append(ids, key)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	targets, err := user.New().Unordered().
+		Where(user.ID.In(ids...)).
+		Limit(int64(len(ids))).
+		All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	by := make(map[[16]byte]int, len(targets))
+	for i := range targets {
+		by[targets[i].ID] = i
+	}
+	for i := range out {
+		key := out[i].UserID
+		j, ok := by[key]
+		if !ok {
+			// A foreign key pointing at a row that is not there. The database
+			// forbids it, so reaching this means the constraint was dropped.
+			return nil, fmt.Errorf("storm: %s references a missing %s row", "memberships", "users")
+		}
+		out[i].User = targets[j]
+	}
+	return out, nil
+}
+
 // OrgWithChildrenRow is orgs with its Children loaded.
 //
 // Children is a field HERE and nowhere else: org.Row has no such field, so an
@@ -766,6 +1002,217 @@ func (p OrgWithChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([]O
 		}
 		if i, ok := at[key]; ok {
 			out[i].Children = append(out[i].Children, k)
+		}
+	}
+	return out, nil
+}
+
+// OrgWithMembersRow is orgs with its Members loaded.
+//
+// Members is a field HERE and nowhere else: org.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type OrgWithMembersRow struct {
+	org.Row
+	Members []OrgMembersLink
+}
+
+// OrgMembersLink is one membership of the join: the far row, and the join row's
+// own columns beside it.
+//
+// The far row is EMBEDDED, so it reads the same as a join with no
+// payload — r.Members[i].Name either way. The payload is Via, named
+// rather than embedded because both rows have an ID and a caller
+// asking for one should not have to know which won.
+type OrgMembersLink struct {
+	user.Row
+	Via membership.Row
+}
+
+// OrgWithMembersQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type OrgWithMembersQuery struct {
+	q          org.Query
+	childLimit int64
+	childOrder []user.Sort
+	childTop   int64
+}
+
+// OrgWithMembers starts the plan.
+func OrgWithMembers() OrgWithMembersQuery {
+	return OrgWithMembersQuery{q: org.New(), childLimit: defaultChildLimit}
+}
+
+func (p OrgWithMembersQuery) Where(ps ...org.Pred) OrgWithMembersQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p OrgWithMembersQuery) WhereIf(cond bool, pr org.Pred) OrgWithMembersQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p OrgWithMembersQuery) Any(ps ...org.Pred) OrgWithMembersQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p OrgWithMembersQuery) Not(pr org.Pred) OrgWithMembersQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p OrgWithMembersQuery) NotAny(ps ...org.Pred) OrgWithMembersQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p OrgWithMembersQuery) Order(ts ...org.Sort) OrgWithMembersQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p OrgWithMembersQuery) Limit(n int64) OrgWithMembersQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p OrgWithMembersQuery) Offset(n int64) OrgWithMembersQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p OrgWithMembersQuery) After(r OrgWithMembersRow) OrgWithMembersQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p OrgWithMembersQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	user.New().Where(user..Eq(id)).Order(...).After(last).Limit(20)
+func (p OrgWithMembersQuery) ChildLimit(n int64) OrgWithMembersQuery {
+	p.childLimit = n
+	return p
+}
+
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p OrgWithMembersQuery) ChildOrder(ts ...user.Sort) OrgWithMembersQuery {
+	p.childOrder = ts
+	return p
+}
+
+// All runs the plan in exactly THREE round trips, whatever the counts.
+//
+// One more than a direct has-many, and that one is what a join table
+// costs: the parents, the link rows, then the far side by primary key.
+// Fixed, not per parent.
+//
+// Two queries rather than one join, deliberately. A join returns the far
+// row once per parent referencing it — the same tag repeated across every
+// post carrying it — which is the row multiplication a batch loader exists
+// to avoid. The second query is bounded by DISTINCT children.
+func (p OrgWithMembersQuery) All(ctx context.Context, ex runtime.Executor) ([]OrgWithMembersRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// No parents, no link query, no far query. An empty parent set costs
+		// ONE round trip, not three.
+		return nil, nil
+	}
+	out := make([]OrgWithMembersRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = OrgWithMembersRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	links, err := membership.New().Unordered().Where(membership.OrgID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so. The guard is on the
+	// LINK rows, which is where the fan-out actually is.
+	if int64(len(links)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	if len(links) == 0 {
+		return out, nil
+	}
+	seen := make(map[[16]byte]bool, len(links))
+	far := make([][16]byte, 0, len(links))
+	for _, l := range links {
+		if !seen[l.UserID] {
+			seen[l.UserID] = true
+			far = append(far, l.UserID)
+		}
+	}
+	cq := user.New().Unordered().Where(user.ID.In(far...)).Limit(int64(len(far)))
+	if len(p.childOrder) > 0 {
+		cq = cq.Order(p.childOrder...)
+	}
+	kids, err := cq.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[[16]byte]user.Row, len(kids))
+	for _, k := range kids {
+		byKey[k.ID] = k
+	}
+	// Attached in the order the CHILD query returned, so ChildOrder means
+	// what it says: walking the link rows instead would order by the join
+	// table and silently ignore it.
+	for _, k := range kids {
+		for _, l := range links {
+			if l.UserID != k.ID {
+				continue
+			}
+			if i, ok := at[l.OrgID]; ok {
+				out[i].Members = append(out[i].Members, OrgMembersLink{Row: k, Via: l})
+			}
 		}
 	}
 	return out, nil
@@ -1370,6 +1817,205 @@ func (p PostWithCommentsQuery) All(ctx context.Context, ex runtime.Executor) ([]
 	for _, k := range kids {
 		if i, ok := at[k.PostID]; ok {
 			out[i].Comments = append(out[i].Comments, k)
+		}
+	}
+	return out, nil
+}
+
+// PostWithRelatedRow is posts with its Related loaded.
+//
+// Related is a field HERE and nowhere else: post.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type PostWithRelatedRow struct {
+	post.Row
+	Related []post.Row
+}
+
+// PostWithRelatedQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type PostWithRelatedQuery struct {
+	q          post.Query
+	childLimit int64
+	childOrder []post.Sort
+	childTop   int64
+}
+
+// PostWithRelated starts the plan.
+func PostWithRelated() PostWithRelatedQuery {
+	return PostWithRelatedQuery{q: post.New(), childLimit: defaultChildLimit}
+}
+
+func (p PostWithRelatedQuery) Where(ps ...post.Pred) PostWithRelatedQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p PostWithRelatedQuery) WhereIf(cond bool, pr post.Pred) PostWithRelatedQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p PostWithRelatedQuery) Any(ps ...post.Pred) PostWithRelatedQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p PostWithRelatedQuery) Not(pr post.Pred) PostWithRelatedQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p PostWithRelatedQuery) NotAny(ps ...post.Pred) PostWithRelatedQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p PostWithRelatedQuery) Order(ts ...post.Sort) PostWithRelatedQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p PostWithRelatedQuery) Limit(n int64) PostWithRelatedQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p PostWithRelatedQuery) Offset(n int64) PostWithRelatedQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p PostWithRelatedQuery) After(r PostWithRelatedRow) PostWithRelatedQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p PostWithRelatedQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	post.New().Where(post..Eq(id)).Order(...).After(last).Limit(20)
+func (p PostWithRelatedQuery) ChildLimit(n int64) PostWithRelatedQuery {
+	p.childLimit = n
+	return p
+}
+
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p PostWithRelatedQuery) ChildOrder(ts ...post.Sort) PostWithRelatedQuery {
+	p.childOrder = ts
+	return p
+}
+
+// All runs the plan in exactly THREE round trips, whatever the counts.
+//
+// One more than a direct has-many, and that one is what a join table
+// costs: the parents, the link rows, then the far side by primary key.
+// Fixed, not per parent.
+//
+// Two queries rather than one join, deliberately. A join returns the far
+// row once per parent referencing it — the same tag repeated across every
+// post carrying it — which is the row multiplication a batch loader exists
+// to avoid. The second query is bounded by DISTINCT children.
+func (p PostWithRelatedQuery) All(ctx context.Context, ex runtime.Executor) ([]PostWithRelatedRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// No parents, no link query, no far query. An empty parent set costs
+		// ONE round trip, not three.
+		return nil, nil
+	}
+	out := make([]PostWithRelatedRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = PostWithRelatedRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	links, err := postrelated.New().Unordered().Where(postrelated.PostID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so. The guard is on the
+	// LINK rows, which is where the fan-out actually is.
+	if int64(len(links)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	if len(links) == 0 {
+		return out, nil
+	}
+	seen := make(map[[16]byte]bool, len(links))
+	far := make([][16]byte, 0, len(links))
+	for _, l := range links {
+		if !seen[l.RelatedID] {
+			seen[l.RelatedID] = true
+			far = append(far, l.RelatedID)
+		}
+	}
+	cq := post.New().Unordered().Where(post.ID.In(far...)).Limit(int64(len(far)))
+	if len(p.childOrder) > 0 {
+		cq = cq.Order(p.childOrder...)
+	}
+	kids, err := cq.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[[16]byte]post.Row, len(kids))
+	for _, k := range kids {
+		byKey[k.ID] = k
+	}
+	// Attached in the order the CHILD query returned, so ChildOrder means
+	// what it says: walking the link rows instead would order by the join
+	// table and silently ignore it.
+	for _, k := range kids {
+		for _, l := range links {
+			if l.RelatedID != k.ID {
+				continue
+			}
+			if i, ok := at[l.PostID]; ok {
+				out[i].Related = append(out[i].Related, k)
+			}
 		}
 	}
 	return out, nil

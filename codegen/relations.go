@@ -50,6 +50,11 @@ type relPlan struct {
 	LinkChildCol  string
 	ChildKey      string
 	ChildKeyGo    string
+	// LinkRowType is the generated element type when the join carries columns
+	// of its own: the far row embedded, and the join row beside it as Via.
+	// Empty when the join is only two keys, where the far Row is the whole
+	// answer and wrapping it would be ceremony.
+	LinkRowType string
 }
 
 // isLink reports whether this plan loads through a join table.
@@ -146,6 +151,9 @@ func planFor(s *schema.Schema, parent, child *schema.Table, rel *schema.Relation
 		p.LinkPkg = linkPkg
 		p.LinkParentCol = rel.LinkColumn
 		p.LinkChildCol = rel.LinkTargetColumn
+		if rel.LinkPayload {
+			p.LinkRowType = exportName(parent.GoName) + exportName(rel.Field) + "Link"
+		}
 		return p, nil
 	}
 
@@ -822,7 +830,11 @@ func (g *gen) emitToManyLinkAll(q string, p relPlan) {
 	g.p("\t\t\t\tcontinue")
 	g.p("\t\t\t}")
 	g.p("\t\t\tif i, ok := at[l.%s]; ok {", linkParent)
-	g.p("\t\t\t\tout[i].%s = append(out[i].%s, k)", field, field)
+	if p.LinkRowType != "" {
+		g.p("\t\t\t\tout[i].%s = append(out[i].%s, %s{Row: k, Via: l})", field, field, p.LinkRowType)
+	} else {
+		g.p("\t\t\t\tout[i].%s = append(out[i].%s, k)", field, field)
+	}
 	g.p("\t\t\t}")
 	g.p("\t\t}")
 	g.p("\t}")
@@ -849,11 +861,29 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	g.p("// %s is a field HERE and nowhere else: %s.Row has no such field, so an", p.rel.Field, p.ParentPkg)
 	g.p("// unloaded relation is not an empty slice, not a lazy fetch and not a")
 	g.p("// lint warning — it does not compile.")
+	elem := p.ChildPkg + ".Row"
+	if p.LinkRowType != "" {
+		elem = p.LinkRowType
+	}
 	g.p("type %sRow struct {", p.Name)
 	g.p("\t%s.Row", p.ParentPkg)
-	g.p("\t%s []%s.Row", exportName(p.rel.Field), p.ChildPkg)
+	g.p("\t%s []%s", exportName(p.rel.Field), elem)
 	g.p("}")
 	g.p("")
+	if p.LinkRowType != "" {
+		g.p("// %s is one membership of the join: the far row, and the join row's", p.LinkRowType)
+		g.p("// own columns beside it.")
+		g.p("//")
+		g.p("// The far row is EMBEDDED, so it reads the same as a join with no")
+		g.p("// payload — r.%s[i].Name either way. The payload is Via, named", exportName(p.rel.Field))
+		g.p("// rather than embedded because both rows have an ID and a caller")
+		g.p("// asking for one should not have to know which won.")
+		g.p("type %s struct {", p.LinkRowType)
+		g.p("\t%s.Row", p.ChildPkg)
+		g.p("\tVia %s.Row", p.LinkPkg)
+		g.p("}")
+		g.p("")
+	}
 
 	q := p.Name + "Query"
 	g.p("// %s builds the plan. Every builder method is redeclared rather than", q)
