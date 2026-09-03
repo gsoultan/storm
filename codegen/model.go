@@ -327,17 +327,10 @@ func relationFieldName(col string) string {
 // be in codegen: this output is a draft a human reads and renames, and the
 // table name is pinned explicitly in Schema so a wrong guess cannot rename a
 // table.
-func singular(s string) string {
-	switch {
-	case strings.HasSuffix(s, "ies"):
-		return s[:len(s)-3] + "y"
-	case strings.HasSuffix(s, "sses"), strings.HasSuffix(s, "xes"), strings.HasSuffix(s, "ches"):
-		return s[:len(s)-2]
-	case strings.HasSuffix(s, "s") && !strings.HasSuffix(s, "ss"):
-		return s[:len(s)-1]
-	}
-	return s
-}
+// singular delegates to schema.Singular — the join table's column names come
+// from there, and a second copy here is how the two would name different
+// columns.
+func singular(s string) string { return schema.Singular(s) }
 
 // tableNameFor mirrors storm's pluralisation, to decide whether the table name
 // has to be pinned explicitly.

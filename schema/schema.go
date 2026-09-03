@@ -56,6 +56,12 @@ type Table struct {
 	// about — an arc keeps referential integrity and this gives it up.
 	AnyRefs []*AnyRefField
 
+	// Generated marks a table storm synthesized rather than one an adopter
+	// declared — today, the join table of an implicit many-to-many. It exists
+	// so `storm diff` can say where the table came from, and so discovery does
+	// not look for a Go model that was never written.
+	Generated bool
+
 	// Arcs are the exclusive-arc polymorphic fields: one column per variant
 	// with a CHECK that exactly one is set. Kept in the IR because code
 	// generation needs the variant list, which the columns alone cannot give
@@ -178,6 +184,22 @@ type Relation struct {
 
 	// Nullable is true when the link is optional (`*Profile`, a nullable FK).
 	Nullable bool
+
+	// Link is the join table of a MANY-TO-MANY, empty for every other shape.
+	//
+	// Neither side of a many-to-many carries a key, so Column means nothing
+	// here and is left empty: the two columns that matter are on the join
+	// table, and both are named below. A loader reads the link rows first and
+	// the far side second, which is one more round trip than a direct
+	// has-many and still a fixed number.
+	Link string
+	// LinkColumn references THIS table; LinkTargetColumn references Target.
+	LinkColumn       string
+	LinkTargetColumn string
+	// LinkPayload is true when the join table carries columns beyond its two
+	// foreign keys — a `t.Through` over a model the adopter declared, rather
+	// than a table storm generated.
+	LinkPayload bool
 }
 
 // Column is one attribute.
