@@ -12,6 +12,49 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### `storm.AnyRef` — discriminator polymorphism, with the cost made explicit
+
+The Rails/GORM shape: a `(subject_type, subject_id)` pair naming a row in any
+table at all. Unbounded variants, which is the one thing `OneOf` cannot offer
+past about eight.
+
+```go
+type AuditLog struct {
+    storm.Model
+    Action  string
+    Subject storm.AnyRef
+}
+
+func (a *AuditLog) Schema(t *storm.Table) {
+    t.Col(&a.Subject).AcknowledgeNoFK("audit rows outlive their subjects by design")
+}
+```
+
+Two columns, a composite `(type, id)` index, and **no foreign key** — no
+database can constrain one. Nothing stops the id naming a row that does not
+exist, or the type naming a table that does not either.
+
+`Build` refuses an `AnyRef` until `AcknowledgeNoFK` is called, naming the field
+and both alternatives (`OneOf[...]`, or a supertype table). The reason travels
+into the schema, so it appears in `storm diff` — "we gave up referential
+integrity" belongs where a reviewer reads it, not only where it was written.
+That requirement is the entire reason `AnyRef` is a declared type rather than
+two columns somebody adds by hand: two columns are ordinary and pass without
+comment.
+
+Zero-sized, like every `OneOfN`. The generated `Row` carries `SubjectType
+string` and `SubjectID [16]byte`, both queryable, exactly as an arc's variants
+appear as their own key columns.
+
+Also fixes: `docs/PLAN.md` had four stale claims, found by re-running what it
+asserts. The query-side dialect seam it said "does not exist" is
+`compile/pgsql`, and R9's mitigation it said "was never implemented" is
+`TestNoSQLTextInCodegen`, gated by `boundaries.sh` on every CI run. M2, M3 and
+M6 were still marked incomplete while the same file records, further down, that
+all three passed.
+
 ## v0.4.1 — 2026-09-03
 
 ### Fixed: large decimals were written to the database as zero

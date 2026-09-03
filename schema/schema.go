@@ -50,6 +50,12 @@ type Table struct {
 	// the database sees.
 	Relations []*Relation
 
+	// AnyRefs are the discriminator-form polymorphic fields: a (type, id)
+	// column pair with no foreign key. Kept beside Arcs rather than folded
+	// into them because the two differ in exactly the property a reader cares
+	// about — an arc keeps referential integrity and this gives it up.
+	AnyRefs []*AnyRefField
+
 	// Arcs are the exclusive-arc polymorphic fields: one column per variant
 	// with a CHECK that exactly one is set. Kept in the IR because code
 	// generation needs the variant list, which the columns alone cannot give
@@ -96,6 +102,19 @@ type Arc struct {
 	// generated match arity, so changing it changes every call site — which is
 	// the point.
 	Variants []ArcVariant
+}
+
+// AnyRefField is one discriminator-form polymorphic field.
+type AnyRefField struct {
+	// Field is the Go field name: "Subject".
+	Field string
+	// TypeColumn and IDColumn are the pair: "subject_type", "subject_id".
+	TypeColumn string
+	IDColumn   string
+	// Reason is the acknowledgement text. Never empty in a schema that built:
+	// Build refuses an unacknowledged AnyRef, and this is what a migration
+	// diff carries so the decision appears where it is reviewed.
+	Reason string
 }
 
 // ArcVariant is one target of an arc.

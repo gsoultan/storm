@@ -229,6 +229,19 @@ func (a *Attachment) Schema(t *storm.Table) {
 // Event exercises the temporal and network types end to end: a calendar date,
 // a time of day, an interval with months kept apart from days, inet vs cidr,
 // and int8[].
+// AuditLog carries the discriminator form: a subject in any table at all, and
+// no foreign key, acknowledged where a reviewer sees it.
+type AuditLog struct {
+	storm.Model
+
+	Action  string
+	Subject storm.AnyRef
+}
+
+func (a *AuditLog) Schema(t *storm.Table) {
+	t.Col(&a.Subject).AcknowledgeNoFK("audit rows outlive the rows they describe, by design")
+}
+
 type Event struct {
 	storm.Model
 
@@ -272,5 +285,6 @@ func (b *Booking) Schema(t *storm.Table) {
 func All() []any {
 	return []any{
 		&Org{}, &User{}, &Profile{}, &Post{}, &Comment{}, &Booking{}, &Attachment{}, &Event{},
+		&AuditLog{},
 	}
 }

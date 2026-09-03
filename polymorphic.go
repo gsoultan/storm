@@ -88,3 +88,28 @@ type OneOf8[A, B, C, D, E, F, G, H any] struct {
 	g [0]G
 	h [0]H
 }
+
+// AnyRef is the DISCRIMINATOR form of polymorphism: a (type, id) pair naming a
+// row in any table at all.
+//
+// Two columns — `<field>_type` and `<field>_id` — and no foreign key, because
+// no database can constrain one. Nothing stops the id naming a row that does
+// not exist, or the type naming a table that does not either. That is not a
+// gap in storm; it is what the shape costs, and it is why OneOf is the default.
+//
+// storm will not generate it silently. A model declaring an AnyRef without
+// calling AcknowledgeNoFK fails Build, naming the field and the two ways out.
+// "We gave up referential integrity" belongs in a diff, and a required call is
+// the only place a reviewer is guaranteed to see it.
+//
+// The variants are unbounded, which is the one thing OneOf cannot offer past
+// about eight. When integrity matters and the variant count does not fit a
+// column each, the answer is a supertype table — full integrity, no arity
+// limit, one extra insert.
+//
+// Zero-sized, like every OneOfN, and for the same reason: the model is a
+// DECLARATION. The two columns it stands for appear in the generated Row as
+// SubjectType and SubjectID, exactly as an arc's variants appear as their own
+// key columns — the row carries columns, not the declaration that produced
+// them.
+type AnyRef struct{}
