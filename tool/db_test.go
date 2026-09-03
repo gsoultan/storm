@@ -327,6 +327,10 @@ func TestCLI_GenerateRawQueries(t *testing.T) {
 		"storm.RegisterScanner(scanEarnerRow)",
 		"func scanEarnerRow(rv [][]byte, r *testmodel.EarnerRow, sl *runtime.Slab) error {",
 		"r.OrgUsers = runtime.Int8(rv[3])",
+		// The statement is pinned as well as scanned. A scanner is keyed by
+		// row type and would answer for any query returning that type, so
+		// without this line a statement assembled at run time would run.
+		"storm.RegisterStatement(",
 	} {
 		if !strings.Contains(string(src), want) {
 			t.Errorf("the emitted scanner is missing %q", want)

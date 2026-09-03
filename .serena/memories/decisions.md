@@ -111,3 +111,37 @@ call site of `storm.Now()`.
 
 Chosen by the user from an options set, all three breaking, all three cheaper
 before `STABILITY.md` binds at v1.0.0.
+
+## Only a declared statement runs — storm.SQL is pinned (2026-09-03)
+
+The ordinary read path was never an injection surface: a predicate is a stream
+of compiler-generated ids, values travel as bound args, and no caller string is
+present in the SQL text. `storm.SQL` was, and the reason is easy to miss —
+**`RegisterScanner` keys by ROW TYPE**, so a scanner declared for one query
+answers for any query returning that type. `storm.SQL[EarnerRow](fmt.Sprintf(…))`
+therefore ran, on the strength of a scanner it never declared.
+
+Fix is two layers:
+
+- **Runtime pin (the guarantee).** `storm generate` emits a
+  `storm.RegisterStatement` per PREPAREd statement; a declaration whose SHA-256
+  is not registered is refused at the call, before the executor. Cached in an
+  `atomic.Bool` per declaration so the warm path stays an atomic load (the perf
+  profile vetoes a map lookup per query). A miss is deliberately NOT cached —
+  every registration is in an `init()`, so a miss is permanent.
+- **Build lint (the good error).** `storm generate`/`watch` fail on a
+  `storm.SQL` call that is not a package-level var — never discoverable, so
+  never registerable. Detected by SUBTRACTION (mark the legitimate package-level
+  values, report every other call site), so a declaration nested in a closure or
+  composite literal cannot slip through.
+
+Registration takes statement TEXT, not a digest, so the generated `init()` is
+reviewable — the thing a reader needs from it is which statements may run.
+
+Migration cost: a test that hand-registers a scanner must hand-register its
+statement too. See `internal/planspike/sqlquery_test.go` for the shape (SQL as a
+`const` so declaration and registration cannot drift).
+
+Not covered, deliberately: `storm.RawSQL` in check constraints and generated
+columns still reaches DDL verbatim — mitigated by ADR-0001, storm never applies
+DDL, so it is reviewed schema and not request data.

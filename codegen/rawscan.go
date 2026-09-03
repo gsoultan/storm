@@ -3,6 +3,8 @@ package codegen
 import (
 	"fmt"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/gsoultan/storm/schema"
@@ -252,16 +254,24 @@ func oidGoType(oid uint32) string {
 
 // emitRawScanners writes one scanner per row type plus the init that registers
 // them.
-func (g *gen) emitRawScanners(scanners []RawScanner) {
-	if len(scanners) == 0 {
+func (g *gen) emitRawScanners(scanners []RawScanner, statements []string) {
+	if len(scanners) == 0 && len(statements) == 0 {
 		return
 	}
 	g.p("// Raw-query scanners, registered by row type. The statements were")
 	g.p("// PREPAREd against the model at generate time; these decode their")
 	g.p("// results with no reflect and no `any`, exactly like a table scanner.")
+	g.p("//")
+	g.p("// RegisterStatement is the other half, and it is a security boundary:")
+	g.p("// a scanner is keyed by row type, so it would answer for ANY query")
+	g.p("// returning that type — including one assembled at run time. Only the")
+	g.p("// statements listed here run; see storm.RegisterStatement.")
 	g.p("func init() {")
 	for _, rs := range scanners {
 		g.p("\tstorm.RegisterScanner(scan%s)", rs.TypeName)
+	}
+	for _, sql := range statements {
+		g.p("\tstorm.RegisterStatement(%s)", goStringLit(sql))
 	}
 	g.p("}")
 	g.p("")
@@ -342,4 +352,39 @@ func oidSchemaType(k kind) schema.Type {
 		return schema.Type{Name: schema.TypeNumeric, Array: true}
 	}
 	return schema.Type{}
+}
+
+// goStringLit renders a statement as a Go literal.
+//
+// A raw literal where the statement allows one, because these are read: a
+// multi-line query escaped onto one line is a diff nobody checks, and what a
+// reviewer needs from this init is to see which statements can run.
+func goStringLit(s string) string {
+	if !strings.ContainsAny(s, "`\r") {
+		return "`" + s + "`"
+	}
+	return strconv.Quote(s)
+}
+
+// sortedUnique orders the statements and drops duplicates.
+//
+// Sorted because generated output is byte-deterministic across runs and
+// machines, and the registration order is whatever order the bootstrap
+// happened to collect declarations in. Unique because two declarations with
+// identical text are one statement to the registry.
+func sortedUnique(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	n := 0
+	for i, s := range out {
+		if i > 0 && s == out[n-1] {
+			continue
+		}
+		out[n] = s
+		n++
+	}
+	return out[:n]
 }

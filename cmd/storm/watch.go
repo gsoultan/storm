@@ -113,6 +113,10 @@ func regenerate(dir string, args []string) {
 			fmt.Fprintf(os.Stderr, "storm: skipped %s.%s — %s\n", s.ImportPath, s.Name, s.Why)
 		}
 	}
+	if err := checkUndeclarable(r); err != nil {
+		fmt.Fprintf(os.Stderr, "storm: %s\n", err)
+		return
+	}
 
 	code, err := toolbootstrap.RunWith(r, append([]string{"generate", dir}, args...), io.Discard)
 	switch {

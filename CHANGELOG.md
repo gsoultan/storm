@@ -14,6 +14,43 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Only a declared statement runs — closing the escape hatch's injection vector
+
+Every ordinary storm query is structurally immune to injection: a predicate is
+a stream of compiler-generated ids, the values travel as bound arguments, and
+no caller string is present in the SQL text to escape. `storm.SQL` was the
+exception, and one detail made it sharper than it looked — `RegisterScanner`
+keys by **row type**, so a scanner declared for one query answered for *any*
+query returning that type:
+
+```go
+// Before: this ran, on the strength of a scanner it never declared.
+q := storm.SQL[EarnerRow](fmt.Sprintf("SELECT ... WHERE name = '%s'", userInput))
+```
+
+`storm generate` now emits a `storm.RegisterStatement` for every statement it
+PREPAREd, and a declaration whose text is not one of them **does not run** —
+the refusal happens at the call, before the executor is reached, naming the
+fix. The check is content-addressed: a statement one byte from the one that was
+validated is a different statement and is refused with it.
+
+The generated init lists the statements as source, not as digests, because what
+a reviewer needs from it is to see which statements are allowed to run.
+
+**`storm generate` also refuses a `storm.SQL` call that is not a package-level
+var.** Those were never discovered, PREPAREd or registered, so they could never
+have run; now they fail the build naming the line instead of the first request
+that reaches the branch.
+
+Migrating: nothing changes for a codebase whose raw queries are package-level
+vars — regenerate and they are registered. A test that hand-registers a scanner
+must now hand-register its statement too:
+
+```go
+const q = `SELECT ...`
+var Q = storm.SQL[Row](q)
+func init() { storm.RegisterStatement(q) }
+```
 ### Many-to-many: self-referential, and joins with a payload
 
 The two shapes the previous entry listed as unbuilt.
