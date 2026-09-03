@@ -141,6 +141,12 @@ Fix is two layers:
   Generated and `_test.go` files are not scanned, so the generator's own
   registrations and a test standing in for it are unaffected.
 
+Placeholder arity is proven at generate time as part of the same pass:
+`maxPlaceholder` is a scan, not a lexer, so `$n` inside a string literal or a
+`$tag$` body over-counts. Rather than teach it to lex, the count is compared
+against `len(sd.ParamOIDs)` from the PREPARE — a guess checked against the
+authority. Closes M7's exit gate as written (`docs/PLAN.md:704`).
+
 Registration takes statement TEXT, not a digest, so the generated `init()` is
 reviewable — the thing a reader needs from it is which statements may run.
 

@@ -43,6 +43,21 @@ registered, so it could never have run — and a `RegisterStatement` whose text 
 computed, which would whitelist whatever that expression produces. Both fail the
 build naming the line, instead of the first request that reaches the branch.
 
+**The placeholder count is now proven against the server.** `maxPlaceholder`
+scans the text for the highest `$n`, so a `$1` inside a string literal or a
+`$tag$` body counted when PostgreSQL reads it as text — and every call then got
+"wants 2 arguments, got 1" for a statement that takes one. The generator
+PREPAREs each declaration and the server reports the real number, so the two are
+compared and a disagreement fails the build naming both:
+
+```
+storm.SQLExec takes 1 parameter(s), but its text scans as 2 — a $n inside a string literal or a $tag$ body reads as a placeholder
+  DELETE FROM users WHERE name = $1 AND email <> $tag$ keep $2 $tag$
+```
+
+This closes M7's exit gate as written: *the placeholder count for every shape is
+known at build time, so a violation is a generation error, not a runtime check.*
+
 Migrating: nothing changes for a codebase whose raw queries are package-level
 vars — regenerate and they are registered. A test that hand-registers a scanner
 must now hand-register its statement too:

@@ -438,6 +438,19 @@ func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]c
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s does not prepare against the %s schema:\n  %w", name, against, err)
 		}
+		// The placeholder count a caller must satisfy is scanned off the
+		// statement text; the server just reported the real one. A $1 inside a
+		// string literal or a dollar-quoted body is text to PostgreSQL and a
+		// placeholder to the scanner, and that disagreement is a build error
+		// here rather than a confusing "wants 2 arguments, got 1" at the first
+		// call — the count for every shape is meant to be known at build time.
+		if want, got := len(sd.ParamOIDs), storm.ArgsOf(d); want != got {
+			return nil, nil, fmt.Errorf(
+				"%s takes %d parameter(s), but its text scans as %d — a $n inside a "+
+					"string literal or a $tag$ body reads as a placeholder\n"+
+					"  %s",
+				name, want, got, firstLineOf(sql))
+		}
 		stmts = append(stmts, sql)
 		if rt == nil {
 			// SQLExec: validated like any declaration, but it must not
@@ -461,6 +474,20 @@ func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]c
 		out = append(out, rs)
 	}
 	return out, stmts, nil
+}
+
+// firstLineOf trims a statement to what an error can carry. The declaration is
+// named already; this is so the reader can tell WHICH of their queries it is
+// without opening the file.
+func firstLineOf(sql string) string {
+	s := strings.TrimSpace(sql)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i]) + " ..."
+	}
+	if len(s) > 120 {
+		s = s[:117] + "..."
+	}
+	return s
 }
 
 // lint costs every named plan and fails when one exceeds the budget.
