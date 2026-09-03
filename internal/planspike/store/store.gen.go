@@ -11,6 +11,8 @@ import (
 	"github.com/gsoultan/storm/internal/planspike/store/comment"
 	"github.com/gsoultan/storm/internal/planspike/store/org"
 	"github.com/gsoultan/storm/internal/planspike/store/post"
+	"github.com/gsoultan/storm/internal/planspike/store/posttag"
+	"github.com/gsoultan/storm/internal/planspike/store/tag"
 	"github.com/gsoultan/storm/internal/planspike/store/user"
 	"github.com/gsoultan/storm/runtime"
 )
@@ -23,10 +25,12 @@ var FlushOrder = map[string]int{
 	"audit_logs":  0,
 	"events":      2,
 	"orgs":        3,
-	"users":       4,
-	"posts":       5,
-	"comments":    7,
-	"attachments": 8,
+	"tags":        4,
+	"users":       5,
+	"posts":       6,
+	"comments":    8,
+	"post_tags":   9,
+	"attachments": 10,
 }
 
 // NewUnit stages writes across this context and flushes them in foreign-key
@@ -1366,6 +1370,404 @@ func (p PostWithCommentsQuery) All(ctx context.Context, ex runtime.Executor) ([]
 	for _, k := range kids {
 		if i, ok := at[k.PostID]; ok {
 			out[i].Comments = append(out[i].Comments, k)
+		}
+	}
+	return out, nil
+}
+
+// PostWithTagsRow is posts with its Tags loaded.
+//
+// Tags is a field HERE and nowhere else: post.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type PostWithTagsRow struct {
+	post.Row
+	Tags []tag.Row
+}
+
+// PostWithTagsQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type PostWithTagsQuery struct {
+	q          post.Query
+	childLimit int64
+	childOrder []tag.Sort
+	childTop   int64
+}
+
+// PostWithTags starts the plan.
+func PostWithTags() PostWithTagsQuery {
+	return PostWithTagsQuery{q: post.New(), childLimit: defaultChildLimit}
+}
+
+func (p PostWithTagsQuery) Where(ps ...post.Pred) PostWithTagsQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p PostWithTagsQuery) WhereIf(cond bool, pr post.Pred) PostWithTagsQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p PostWithTagsQuery) Any(ps ...post.Pred) PostWithTagsQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p PostWithTagsQuery) Not(pr post.Pred) PostWithTagsQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p PostWithTagsQuery) NotAny(ps ...post.Pred) PostWithTagsQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p PostWithTagsQuery) Order(ts ...post.Sort) PostWithTagsQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p PostWithTagsQuery) Limit(n int64) PostWithTagsQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p PostWithTagsQuery) Offset(n int64) PostWithTagsQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p PostWithTagsQuery) After(r PostWithTagsRow) PostWithTagsQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p PostWithTagsQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	tag.New().Where(tag..Eq(id)).Order(...).After(last).Limit(20)
+func (p PostWithTagsQuery) ChildLimit(n int64) PostWithTagsQuery {
+	p.childLimit = n
+	return p
+}
+
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p PostWithTagsQuery) ChildOrder(ts ...tag.Sort) PostWithTagsQuery {
+	p.childOrder = ts
+	return p
+}
+
+// All runs the plan in exactly THREE round trips, whatever the counts.
+//
+// One more than a direct has-many, and that one is what a join table
+// costs: the parents, the link rows, then the far side by primary key.
+// Fixed, not per parent.
+//
+// Two queries rather than one join, deliberately. A join returns the far
+// row once per parent referencing it — the same tag repeated across every
+// post carrying it — which is the row multiplication a batch loader exists
+// to avoid. The second query is bounded by DISTINCT children.
+func (p PostWithTagsQuery) All(ctx context.Context, ex runtime.Executor) ([]PostWithTagsRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// No parents, no link query, no far query. An empty parent set costs
+		// ONE round trip, not three.
+		return nil, nil
+	}
+	out := make([]PostWithTagsRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = PostWithTagsRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	links, err := posttag.New().Unordered().Where(posttag.PostID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so. The guard is on the
+	// LINK rows, which is where the fan-out actually is.
+	if int64(len(links)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	if len(links) == 0 {
+		return out, nil
+	}
+	seen := make(map[[16]byte]bool, len(links))
+	far := make([][16]byte, 0, len(links))
+	for _, l := range links {
+		if !seen[l.TagID] {
+			seen[l.TagID] = true
+			far = append(far, l.TagID)
+		}
+	}
+	cq := tag.New().Unordered().Where(tag.ID.In(far...)).Limit(int64(len(far)))
+	if len(p.childOrder) > 0 {
+		cq = cq.Order(p.childOrder...)
+	}
+	kids, err := cq.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[[16]byte]tag.Row, len(kids))
+	for _, k := range kids {
+		byKey[k.ID] = k
+	}
+	// Attached in the order the CHILD query returned, so ChildOrder means
+	// what it says: walking the link rows instead would order by the join
+	// table and silently ignore it.
+	for _, k := range kids {
+		for _, l := range links {
+			if l.TagID != k.ID {
+				continue
+			}
+			if i, ok := at[l.PostID]; ok {
+				out[i].Tags = append(out[i].Tags, k)
+			}
+		}
+	}
+	return out, nil
+}
+
+// TagWithPostsRow is tags with its Posts loaded.
+//
+// Posts is a field HERE and nowhere else: tag.Row has no such field, so an
+// unloaded relation is not an empty slice, not a lazy fetch and not a
+// lint warning — it does not compile.
+type TagWithPostsRow struct {
+	tag.Row
+	Posts []post.Row
+}
+
+// TagWithPostsQuery builds the plan. Every builder method is redeclared rather than
+// embedded: Go has no delegation, and an embedded Query would return
+// itself from Where(), dropping straight out of the plan.
+type TagWithPostsQuery struct {
+	q          tag.Query
+	childLimit int64
+	childOrder []post.Sort
+	childTop   int64
+}
+
+// TagWithPosts starts the plan.
+func TagWithPosts() TagWithPostsQuery {
+	return TagWithPostsQuery{q: tag.New(), childLimit: defaultChildLimit}
+}
+
+func (p TagWithPostsQuery) Where(ps ...tag.Pred) TagWithPostsQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p TagWithPostsQuery) WhereIf(cond bool, pr tag.Pred) TagWithPostsQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p TagWithPostsQuery) Any(ps ...tag.Pred) TagWithPostsQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p TagWithPostsQuery) Not(pr tag.Pred) TagWithPostsQuery {
+	p.q = p.q.Not(pr)
+	return p
+}
+
+func (p TagWithPostsQuery) NotAny(ps ...tag.Pred) TagWithPostsQuery {
+	p.q = p.q.NotAny(ps...)
+	return p
+}
+
+func (p TagWithPostsQuery) Order(ts ...tag.Sort) TagWithPostsQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p TagWithPostsQuery) Limit(n int64) TagWithPostsQuery {
+	p.q = p.q.Limit(n)
+	return p
+}
+
+func (p TagWithPostsQuery) Offset(n int64) TagWithPostsQuery {
+	p.q = p.q.Offset(n)
+	return p
+}
+
+// After pages the PARENTS past one already seen — keyset pagination over
+// the plan. It takes the plan's row type, so the cursor is a row you
+// actually received rather than one you had to unwrap.
+func (p TagWithPostsQuery) After(r TagWithPostsRow) TagWithPostsQuery {
+	p.q = p.q.After(r.Row)
+	return p
+}
+
+// Err reports a parent query that outgrew its buffers or was given a
+// mixed ordering to page. Terminals return it too; this is for checking
+// a composed plan before running it.
+func (p TagWithPostsQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps the total children fetched ACROSS ALL PARENTS.
+//
+// It is a guard, not a page size. Fifty parents with ChildLimit(100) is
+// an error, not a hundred children each — the two queries fetch every
+// child of every matched parent in one batch, and the limit only exists
+// so that batch cannot silently come back partial.
+//
+// THERE IS NO PER-PARENT LIMIT. "Each parent with its first twenty
+// children" is greatest-n-per-group, and doing it in two round trips
+// needs LATERAL or row_number(); slicing in Go after the fact would
+// fetch everything and only look like a limit. It is not built yet.
+//
+// To page ONE parent's children — the common case — query the child
+// table directly, where Order, After and Limit all work:
+//
+//	post.New().Where(post..Eq(id)).Order(...).After(last).Limit(20)
+func (p TagWithPostsQuery) ChildLimit(n int64) TagWithPostsQuery {
+	p.childLimit = n
+	return p
+}
+
+// ChildTop keeps at most n children PER PARENT — greatest-n-per-group,
+// still two round trips.
+//
+// This is the per-parent limit ChildLimit is not. "Fifty tenants, each
+// with its five newest people" is one query, not fifty, because the
+// limit is expressed in SQL rather than by looping or by slicing
+// afterwards — slicing would fetch every child and only look like a
+// limit.
+//
+// It REQUIRES ChildOrder, and that ordering must be a strict total order.
+// "The first three by date" with ties on that date returns an arbitrary
+// three, and a different arbitrary three next call — a bug that only
+// appears under data the developer did not have. Add the child's primary
+// key as a final term if the natural ordering is not unique.
+// ChildOrder orders the children within each parent.
+//
+// Without it they arrive in the child table's default order, which is its
+// primary key — defined, but almost never what a caller wanted to show.
+func (p TagWithPostsQuery) ChildOrder(ts ...post.Sort) TagWithPostsQuery {
+	p.childOrder = ts
+	return p
+}
+
+// All runs the plan in exactly THREE round trips, whatever the counts.
+//
+// One more than a direct has-many, and that one is what a join table
+// costs: the parents, the link rows, then the far side by primary key.
+// Fixed, not per parent.
+//
+// Two queries rather than one join, deliberately. A join returns the far
+// row once per parent referencing it — the same tag repeated across every
+// post carrying it — which is the row multiplication a batch loader exists
+// to avoid. The second query is bounded by DISTINCT children.
+func (p TagWithPostsQuery) All(ctx context.Context, ex runtime.Executor) ([]TagWithPostsRow, error) {
+	parents, err := p.q.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	if len(parents) == 0 {
+		// No parents, no link query, no far query. An empty parent set costs
+		// ONE round trip, not three.
+		return nil, nil
+	}
+	out := make([]TagWithPostsRow, len(parents))
+	ids := make([][16]byte, len(parents))
+	at := make(map[[16]byte]int, len(parents))
+	for i, r := range parents {
+		out[i] = TagWithPostsRow{Row: r}
+		ids[i] = r.ID
+		at[r.ID] = i
+	}
+	links, err := posttag.New().Unordered().Where(posttag.TagID.In(ids...)).Limit(p.childLimit).All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	// A partial relation load is worse than a failed one: every count
+	// computed from it is wrong and nothing says so. The guard is on the
+	// LINK rows, which is where the fan-out actually is.
+	if int64(len(links)) >= p.childLimit {
+		return nil, runtime.ErrChildLimit
+	}
+	if len(links) == 0 {
+		return out, nil
+	}
+	seen := make(map[[16]byte]bool, len(links))
+	far := make([][16]byte, 0, len(links))
+	for _, l := range links {
+		if !seen[l.PostID] {
+			seen[l.PostID] = true
+			far = append(far, l.PostID)
+		}
+	}
+	cq := post.New().Unordered().Where(post.ID.In(far...)).Limit(int64(len(far)))
+	if len(p.childOrder) > 0 {
+		cq = cq.Order(p.childOrder...)
+	}
+	kids, err := cq.All(ctx, ex, nil)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[[16]byte]post.Row, len(kids))
+	for _, k := range kids {
+		byKey[k.ID] = k
+	}
+	// Attached in the order the CHILD query returned, so ChildOrder means
+	// what it says: walking the link rows instead would order by the join
+	// table and silently ignore it.
+	for _, k := range kids {
+		for _, l := range links {
+			if l.PostID != k.ID {
+				continue
+			}
+			if i, ok := at[l.TagID]; ok {
+				out[i].Posts = append(out[i].Posts, k)
+			}
 		}
 	}
 	return out, nil

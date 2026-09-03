@@ -370,15 +370,17 @@ func planPackages(plans []relPlan, named []namedPlan, extra map[string]bool) []s
 			}
 		}
 	}
+	// LinkPkg is empty for every shape but a many-to-many, and add skips "".
+	// A plan that loads through a join table names three packages, not two.
 	for _, p := range plans {
-		add(p.ParentPkg, p.ChildPkg)
+		add(p.ParentPkg, p.ChildPkg, p.LinkPkg)
 	}
 	for _, np := range named {
 		add(np.ParentPkg)
 		for _, m := range np.members {
-			add(m.ChildPkg)
+			add(m.ChildPkg, m.LinkPkg)
 			for _, sub := range m.Nested {
-				add(sub.ChildPkg)
+				add(sub.ChildPkg, sub.LinkPkg)
 			}
 		}
 	}
@@ -471,6 +473,13 @@ func batchTopColumns(s *schema.Schema, table string, in []string) []string {
 		}
 		for _, rel := range t.Relations {
 			if !rel.ToMany || rel.Target != table {
+				continue
+			}
+			// A many-to-many is not batched by a column on the far side —
+			// there is none. Its parent key lives on the join table, and the
+			// loader reads that first. Left in, rel.Column is "" and the
+			// generator asks for a column named nothing.
+			if rel.Link != "" {
 				continue
 			}
 			if !seen[rel.Column] {
