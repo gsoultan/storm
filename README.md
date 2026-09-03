@@ -20,7 +20,7 @@ migrations and **never applies DDL**.
 
 ## Status
 
-**v0.4.0 is tagged.** The read path, migrations, relations, writes, the typed
+**v0.4.1 is tagged.** The read path, migrations, relations, writes, the typed
 escape hatch and the tooling gate are built, benchmarked and hardened; the first
 adopter migrated a whole bounded context (M6) and runs on the published module.
 v0.3.0 added model discovery, declared aggregations and joins, full-text
@@ -28,9 +28,12 @@ search, range types and typed constraint errors — and a MySQL DDL back end tha
 is **not** a runtime target
 ([ADR-0007](docs/adr/0007-mysql-runtime-needs-a-second-decoder-family.md)).
 v0.4.0 makes every supported column type **filterable** — arrays and jsonb
-round-tripped but could only be tested for NULL — and **fixes a silent wrong
-answer**: through v0.3.0, two list predicates in one query bound the same list
-twice and returned the wrong rows without erroring. The milestone log with
+round-tripped but could only be tested for NULL — and fixed a silent wrong
+answer: through v0.3.0, two list predicates in one query bound the same list
+twice and returned the wrong rows without erroring. **v0.4.1 fixes another, in
+every version that has had `numeric`**: a `Decimal` whose scale is not a
+multiple of four and whose value passes roughly 9.2e15 was encoded as zero, or
+as a wrapped value that looks plausible. The milestone log with
 every exit gate is [docs/PLAN.md](docs/PLAN.md), and what would still stop a
 team adopting this is written down, with gates, in
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md).
