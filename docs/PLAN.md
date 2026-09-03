@@ -41,13 +41,13 @@ they are called out here so the override is deliberate.
 |---|---|---|---|---|
 | M0 | Thesis spike | ✅ | **PASSED 2026-08-23** — 0.95× raw pgx, 0-alloc warm path. `bench/RESULTS.md` | *(cleared: kill line was 1.30×)* |
 | M1 | Model + schema IR + migration diff | ✅ | **PASSED 2026-08-24** — round-trip is a fixpoint; migrations converge on a live DB | *(cleared)* |
-| M2 | Query compiler + read codegen | ◐ | **read path shipped 2026-08-24** — end-to-end parity, 0 allocs, deterministic. Expressiveness (joins, CTEs, windows, ordering, pagination) outstanding → **P5** | *(cleared: codegen model is sound)* |
-| M3 | Relations without N+1 (named plans) | 4 | 2 round trips; unloaded read is a compile error; polymorphic integrity generated | plan types unusable → runtime-checked plan B |
+| M2 | Query compiler + read codegen | ✅ | **PASSED 2026-09-01 (v0.3.0)** — read path 2026-08-24 (parity, 0 allocs, deterministic); the expressiveness this row called outstanding — joins, CTEs, windows, ordering, pagination — shipped with declared aggregations | *(cleared: codegen model is sound)* |
+| M3 | Relations without N+1 (named plans) | ✅ | **PASSED 2026-08-24** — all four relation kinds at exactly 2 round trips; unloaded read is a compile error; polymorphic integrity generated (see P4 status) | *(cleared: plan types are usable)* |
 | M4 | Writes, unit of work, batching | ✅ | **PASSED 2026-08-24** — 1,000 inserts = 1 `COPY`; 1,000 mixed = 1 batch; FK order correct with constraints *not* deferred | *(cleared)* |
 | M5 | Typed escape hatch | ✅ | **PASSED 2026-08-25** — the gate query (window over CTE with lateral join) fully typed against live PG; mismatches fail generation naming column and fix; validation needs a server, not a schema | *(cleared)* |
-| M6 | First adopter: `anubis/authz` | 3 | authorize p95 does not regress | > 3 wks or p95 regression → freeze features |
+| M6 | First adopter: `anubis/authz` | ✅ | **PASSED 2026-08-25, in one day** — whole bounded context migrated; p95 did not regress (see M6 status) | *(cleared: kill line was 3 wks or a p95 regression)* |
 | M7 | Tooling gate + hardening | ✅ | **PASSED 2026-08-24** — explain/lint/verify(-stale,-pending) shipped and tested; fuzz corpus + injection suite in CI; coverage floors enforced | *(cleared)* |
-| M8 | v1.0 release (Postgres) | 2 | docs, examples, stability policy | — |
+| M8 | v1.0 release (Postgres) | ◐ | docs, examples and `docs/STABILITY.md` exist; **v0.4.1 tagged 2026-09-03**. What v1.0 still waits on is a SECOND adopter — every wrong-answer bug so far was found by exercising a path no test reached | — |
 | M9 | MySQL 8 + MariaDB | 4 | full suite green on both; seam has no leaks | seam leaked → fix `compile/` before any further target |
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
@@ -70,10 +70,17 @@ findings from reading the code as it actually stands drove the reordering:
    generation and no `storm generate` subcommand. M3 and M4 both hard-require
    multi-table output — FK-ordered flush needs the whole graph, relations span
    tables. This is a prerequisite, not a milestone.
-2. **The query-side dialect seam does not exist.** `SELECT` / `ORDER BY` /
+2. ~~**The query-side dialect seam does not exist.** `SELECT` / `ORDER BY` /
    `LIMIT` / `$N` / quoting are hardcoded Postgres literals in `codegen/gen.go`;
    `compile/` holds only `pgddl`. **R9's mitigation — "CI-enforced from M2, not
-   added at M9" — was never implemented.** There is nothing to enforce.
+   added at M9" — was never implemented.** There is nothing to enforce.~~
+
+   **Struck 2026-09-03: every clause of this is now false.** `compile/` holds
+   `pgsql`, `pgddl` and `myddl`. `codegen/` contains no SQL text, and R9's
+   mitigation is exactly the CI gate it asked for — `TestNoSQLTextInCodegen` is
+   an AST walk over string literals, run by `scripts/check/boundaries.sh` on
+   every CI run under the heading it names. It was implemented; this paragraph
+   was never updated.
 3. **M3 is not blocked on joins.** M2's `= ANY` work already proved the N+1
    guarantee — 50 parents + 25,000 children, exactly 2 round trips, asserted by
    `CountingExecutor`. The M2 table said otherwise; that claim is struck.
