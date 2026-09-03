@@ -375,3 +375,37 @@ type projBadName struct {
 }
 
 func (m *projBadName) Projections(p *storm.Projections) { p.Named("contact", &m.A) }
+
+// An unexported mixin with a Schema method used to PANIC inside reflect:
+// callMixinSchemas called Interface() on an embedded field it could not read,
+// while walk right below it skipped unexported fields correctly.
+//
+// Skipping silently would have been worse than the panic. The mixin's Schema
+// never runs, so the table comes out missing whatever it declared — a default,
+// a version column — and nothing says so.
+type unexportedMixin struct {
+	Version int32
+}
+
+func (m *unexportedMixin) Schema(t *storm.Table) {
+	t.Col(&m.Version).Default("0").Version()
+}
+
+type embedsUnexported struct {
+	storm.Model
+	unexportedMixin
+
+	Name string
+}
+
+func TestUnexportedMixinIsAnErrorNotAPanic(t *testing.T) {
+	_, err := storm.Build(&embedsUnexported{})
+	if err == nil {
+		t.Fatal("an unexported mixin built cleanly; its Schema cannot have run")
+	}
+	for _, want := range []string{"unexported", "Schema", "export"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q:\n%v", want, err)
+		}
+	}
+}

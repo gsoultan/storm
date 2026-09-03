@@ -14,6 +14,40 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### The reference docs describe the API that exists, and are compiled
+
+`docs/API.md`, `docs/EXAMPLE.md` and `docs/REFERENCE.md` were all marked
+*"proposed — illustrative, not implemented"* and all three documented an API
+that is not there. REFERENCE.md was the worst of them: `t.ForeignKey`,
+`t.Inverse`, `t.Plan`, `t.Set`, `user.Get(ctx, db, id)`, `Between`,
+`HasPrefix`, jsonb `Path`, a declaration-time `.Latest()`/`.Top()` on a
+relation, `Descend`/`Ascend`, `Iter` — none of which exist. It is easier to
+trust a short document than a long one with a warning on top, so it is now 309
+lines of modelling reference plus an explicit list of what is **not** built.
+
+Two test files keep them honest, because prose cannot be tested and these
+drifted for a year:
+
+- `examples/blog/apidoc_test.go` compiles every call shape API.md and
+  EXAMPLE.md show, against the generated store.
+- `docs_test.go` puts every declaration REFERENCE.md shows through
+  `storm.Build` — the same front end `storm generate` runs.
+
+A method that does not exist now fails the build, and a rename that lands in
+generated code without landing in a document fails it too.
+
+#### Fixed: an unexported mixin panicked instead of failing
+
+Writing this found it. `callMixinSchemas` called `Interface()` on an embedded
+field it could not read, while `walk` immediately below skipped unexported
+fields correctly — so embedding an unexported mixin crashed inside `reflect`
+rather than reporting anything.
+
+Silently skipping would have been worse than the panic: the mixin's `Schema`
+never runs, so the table comes out missing whatever it declared — a default, a
+version column — and nothing says so. It is now an error naming the mixin and
+the fix.
+
 ### docs/API.md is now as-built, and compiled
 
 The document an evaluator reads first described an API that does not exist:

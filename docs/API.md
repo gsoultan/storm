@@ -130,13 +130,20 @@ article.Titel.Eq("x")                // compile error: undefined
 
 | Handle | Predicates |
 |---|---|
-| every kind | `Eq` `NotEq` `In` `NotIn` `Asc` `Desc` `AscNullsFirst` `DescNullsLast` |
-| ordered (`TimeCol`, numeric, `TextCol`) | + `Gt` `Gte` `Lt` `Lte` |
-| `TextCol` | + `Like` `ILike` |
+| every kind | `Asc` `Desc` `AscNullsFirst` `DescNullsLast` |
+| `UUIDCol` | `Eq` `NotEq` `In` `NotIn` |
+| `TextCol` | `Eq` `NotEq` `In` `NotIn` `Gt` `Gte` `Lt` `Lte` `Like` `ILike` |
+| `TimeCol`, `DecimalCol`, numeric | `Eq` `NotEq` `Gt` `Gte` `Lt` `Lte` |
+| `BoolCol` | `Eq` `NotEq` |
 | nullable (`NullTimeCol`, …) | + `IsNull` `IsNotNull` |
-| `TSVectorCol` | + `Matches` `WebSearch` |
-| array | + `Contains` `Overlaps` |
-| jsonb | + `Contains` `HasKey` `HasAnyKey` `HasAllKeys` |
+| `TSVectorCol` | `Matches` `WebSearch` |
+| array (`TextArrayCol`, …) | `Contains` `ContainedBy` `Overlaps` |
+| jsonb (`JSONCol`) | `Contains` `ContainedBy` `HasAnyKey` `HasAllKeys` |
+| `TstzRangeCol` | `Eq` `NotEq` `Overlaps` `ContainsRange` `ContainedBy` |
+
+There is no `Between`, no `HasPrefix`/`HasSuffix`, and no jsonb `Path` — the
+list above is the whole vocabulary, and it is generated from the column's type
+rather than written by hand.
 
 Compare Ent's free functions (`user.AgeGTE(18)`, a flat namespace of hundreds)
 and Bun/GORM's `"age >= ?"`. Methods on typed handles give a smaller namespace,
