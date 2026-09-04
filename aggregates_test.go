@@ -452,3 +452,35 @@ func TestAggregateRefusesInvalidWindowsAndArithmetic(t *testing.T) {
 		})
 	}
 }
+
+// The share-of-group query: a per-row value beside the partition's total.
+//
+// `sum(x) OVER (PARTITION BY p ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED
+// FOLLOWING)` needs no ORDER BY — that frame is the whole partition however the
+// rows are ordered, so it is exactly as deterministic without one. The first
+// version of the frame rule refused it, which sent the most common reason to
+// want a frame at all back to raw SQL.
+type wholePartitionFrame struct {
+	storm.Model
+	Total     storm.Decimal
+	CreatedAt time.Time
+}
+
+func (m *wholePartitionFrame) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	day := b.ByExpr("Day", a.DateTrunc("day", &m.CreatedAt))
+	rev := b.Sum(&m.Total, "Rev")
+	b.SumOver(rev, "DayTotal", a.Over().PartitionBy(day).
+		Rows(a.UnboundedPreceding(), a.UnboundedFollowing()))
+}
+
+func TestWholePartitionFrameNeedsNoOrdering(t *testing.T) {
+	s, err := storm.Build(&wholePartitionFrame{})
+	if err != nil {
+		t.Fatalf("refused a frame that covers the whole partition: %v", err)
+	}
+	tbl := s.Table("whole_partition_frames")
+	if tbl == nil || len(tbl.Aggregates) != 1 {
+		t.Fatal("aggregate did not build")
+	}
+}

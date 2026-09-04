@@ -14,6 +14,33 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### COMPLEX-QUERIES.md says where the line is, and a frame rule was too strict
+
+The eight-scenario page was the last doc showing a call-site
+`GroupBy(...).Select(...)` chain. Rewritten around the question it exists to
+answer — *which of these is a declaration, and which sends you back to SQL* —
+with the answer marked per scenario: five declarable, three not, and a table of
+what is missing and why. A page where every example happens to work says less
+than one that admits `UNION`, `NOT EXISTS`, `generate_series` and
+run-time-relative `FILTER` boundaries are not there.
+
+Writing scenario 1 found a **false refusal**: the frame rule required an
+`ORDER BY` for every window frame, but `ROWS BETWEEN UNBOUNDED PRECEDING AND
+UNBOUNDED FOLLOWING` is the whole partition however the rows are ordered — as
+deterministic without an ordering as with one. It is also how you put a
+partition total beside a per-row value, which is the most common reason to want
+a frame at all, so the rule sent the share-of-group query back to raw SQL. Now
+allowed; every other frame still requires the ordering.
+
+#### Fixed: REFERENCE.md said recursive queries were not built
+
+They are. A self-referential foreign key generates `Descend` and `Ascend`, each
+a single `WITH RECURSIVE` with a required depth bound and a path array that
+refuses a row already on it. The claim came from a grep that only matched
+methods, while these are package-level functions — a reminder that a *negative*
+claim about an API cannot be checked by a compile test the way a positive one
+can.
+
 ### The reference docs describe the API that exists, and are compiled
 
 `docs/API.md`, `docs/EXAMPLE.md` and `docs/REFERENCE.md` were all marked
