@@ -252,6 +252,21 @@ func (o *Order) Aggregates(a *storm.Aggregates) {
 	// Where the day sits in the whole range, as a fraction.
 	trend.PercentRank("RevenuePct", a.Over().OrderByDesc(trev))
 
+	// The query a FILTER alone cannot express: "the last N days" is relative
+	// to when the report runs, and a declared filter is fixed at generate
+	// time. A declared PARAMETER is the narrow answer — the shape stays one
+	// shape, and only the boundary moves.
+	rate := a.Named("PaidRate")
+	since := rate.Param("Since")
+	rate.By(&o.Status)
+	recent := rate.Count("Recent").Filter(a.Gte(&o.PlacedAt, since))
+	rate.Count("RecentPaid").Filter(a.And(
+		a.Gte(&o.PlacedAt, since),
+		a.Eq(&o.Status, string(StatusPaid)),
+	))
+	rate.Sum(&o.Total, "RecentRevenue").Filter(a.Gte(&o.PlacedAt, since))
+	rate.Having(a.Gt(recent, 0))
+
 	// Grouped by customer — the CTE the VsLifetime join materialises.
 	byCustomer := a.Named("ByCustomer")
 	byCustomer.By(&o.Customer)
@@ -263,6 +278,43 @@ func (o *Order) Aggregates(a *storm.Aggregates) {
 	totals.Count("Orders")
 	totals.Sum(&o.Total, "Revenue")
 }
+
+// Activity merges two tables into one reverse-chronological stream: who did
+// what, in the order it happened, across sources that share no table.
+//
+// `Actor` is text in one branch and varchar(200) in the other, which is fine —
+// PostgreSQL widens a union column and storm types the row for what the server
+// will actually send. An enum beside a varchar is NOT fine, and is refused.
+//
+// This is the read a per-table query cannot give you — the ordering and the
+// limit apply to the MERGE, so ten rows is the ten most recent things rather
+// than ten of each. A union has no driving table, so it is declared here as a
+// package-level var rather than on Order or Booking (ADR-0008).
+var Activity = storm.Union("Activity", func(u *storm.UnionSpec) {
+	// One declared parameter, reaching both branches as the same placeholder:
+	// a feed narrowed to one actor, which is what most feeds are.
+	actor := u.Param("Actor")
+
+	var o Order
+	orders := u.From(&o)
+	orders.Take(&o.PlacedAt, "At")
+	orders.Take(&o.UpdatedBy, "Actor")
+	orders.Const("Kind", "order")
+	// Cancelled orders are never activity, and no call site can widen that.
+	orders.Where(storm.Exprs{}.And(
+		storm.Exprs{}.Ne(&o.Status, string(StatusCancelled)),
+		storm.Exprs{}.Eq(&o.UpdatedBy, actor),
+	))
+
+	var b Booking
+	bookings := u.From(&b)
+	bookings.Take(&b.CreatedAt, "At")
+	bookings.Take(&b.Guest, "Actor")
+	bookings.Const("Kind", "booking")
+	bookings.Where(storm.Exprs{}.Eq(&b.Guest, actor))
+
+	u.OrderDesc("At")
+})
 
 func mustDec(s string) storm.Decimal {
 	d, err := storm.ParseDecimal(s)

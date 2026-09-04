@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 
+	"time"
+
 	"github.com/gsoultan/storm/examples/blog/store/article"
 	"github.com/gsoultan/storm/examples/blog/store/author"
 	"github.com/gsoultan/storm/runtime"
@@ -451,19 +453,62 @@ func (p AuthorFeedQuery) load0(ctx context.Context, ex runtime.Executor, out []A
 	return nil
 }
 
-// AuthorHavingArticles narrows q to rows with at least one matching articles row — the
-// filtered semi-join, in one statement. The child predicates are typed
-// by the child's own package; ids and values meet only here.
-func AuthorHavingArticles(q author.Query, ps ...article.Pred) AuthorHavingArticlesQuery {
-	return AuthorHavingArticlesQuery{q: q, c: article.New().Unordered().Where(ps...)}
-}
-
-type AuthorHavingArticlesQuery struct {
+// AuthorArticlesProbeQuery is a parent query with one or more existence probes against
+// articles, combined with AND. Build it with AuthorHavingArticles or
+// AuthorNotHavingArticles and extend it with AndHaving/AndNotHaving.
+type AuthorArticlesProbeQuery struct {
 	q author.Query
-	c article.Query
+	p []authorArticlesProbeQueryProbe
 }
 
-var authorHavingArticlesLowering = func() runtime.Lowering {
+type authorArticlesProbeQueryProbe struct {
+	c   article.Query
+	neg bool
+}
+
+// AuthorHavingArticles narrows q to rows with at least one matching articles row —
+// the filtered semi-join, in one statement. The child predicates are
+// typed by the child's own package; ids and values meet only here.
+func AuthorHavingArticles(q author.Query, ps ...article.Pred) AuthorArticlesProbeQuery {
+	return AuthorArticlesProbeQuery{q: q}.AndHaving(ps...)
+}
+
+// AuthorNotHavingArticles narrows q to rows with NO matching articles row — the
+// filtered anti-join.
+//
+// Read the predicates carefully: this is "has no articles row matching
+// these", not "has a articles row that does not match". With no predicates
+// at all it is "has none". The two questions have different answers
+// whenever a parent has several children, and SQL spells them the same
+// way round.
+func AuthorNotHavingArticles(q author.Query, ps ...article.Pred) AuthorArticlesProbeQuery {
+	return AuthorArticlesProbeQuery{q: q}.AndNotHaving(ps...)
+}
+
+// AndHaving adds another EXISTS probe against articles, ANDed with the
+// ones already there.
+func (h AuthorArticlesProbeQuery) AndHaving(ps ...article.Pred) AuthorArticlesProbeQuery {
+	return h.probe(false, ps...)
+}
+
+// AndNotHaving adds a NOT EXISTS probe against articles. This is how
+// "has one of these but none of those" is one statement:
+//
+//	AuthorHavingArticles(q, bought).AndNotHaving(alsoBought)
+func (h AuthorArticlesProbeQuery) AndNotHaving(ps ...article.Pred) AuthorArticlesProbeQuery {
+	return h.probe(true, ps...)
+}
+
+func (h AuthorArticlesProbeQuery) probe(neg bool, ps ...article.Pred) AuthorArticlesProbeQuery {
+	// Copied rather than appended in place: a composer is a value, and
+	// two chains branching from one base must not share a backing array.
+	p := make([]authorArticlesProbeQueryProbe, len(h.p), len(h.p)+1)
+	copy(p, h.p)
+	h.p = append(p, authorArticlesProbeQueryProbe{c: article.New().Unordered().Where(ps...), neg: neg})
+	return h
+}
+
+var authorArticlesProbeQueryLowering = func() runtime.Lowering {
 	lw := author.Lowering()
 	parentFrag := lw.Frag
 	lw.Frag = func(op, col uint32) runtime.Frag {
@@ -472,27 +517,42 @@ var authorHavingArticlesLowering = func() runtime.Lowering {
 		}
 		return parentFrag(op, col)
 	}
-	lw.Exists = func(uint32) string {
+	// The token's relation id picks the header: 0 positive, 1 negated.
+	// Both probes are the same relation, so only the polarity varies.
+	lw.Exists = func(rel uint32) string {
+		if rel == 1 {
+			return "NOT EXISTS (SELECT 1 FROM \"articles\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"authors\".\"id\""
+		}
 		return "EXISTS (SELECT 1 FROM \"articles\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"authors\".\"id\""
 	}
 	return lw
 }()
 
-var authorHavingArticlesCache = runtime.NewTreeCache()
+var authorArticlesProbeQueryCache = runtime.NewTreeCache()
 
-func (h AuthorHavingArticlesQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+func (h AuthorArticlesProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
 	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
+	stack := 0
+	if len(toks) > 0 {
+		stack = 1
 	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	for _, pr := range h.p {
+		child := pr.c.PredToks(nil)
+		toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+		arity := uint32(0)
+		if len(child) > 0 {
+			arity = 1 // the child stream reduces to one stack entry
+		}
+		rel := uint32(0)
+		if pr.neg {
+			rel = 1
+		}
+		toks = append(toks, runtime.MakeExists(rel, arity))
+		stack++
+	}
+	if stack > 1 {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, uint32(stack)))
 	}
 	if !count {
 		toks = h.q.OrderToks(toks)
@@ -502,19 +562,45 @@ func (h AuthorHavingArticlesQuery) stmt(count bool) (*runtime.Stmt, []runtime.To
 	if count {
 		prefix, suffix = cnt, ""
 	}
-	if st := authorHavingArticlesCache.Get(toks); st != nil {
+	if st := authorArticlesProbeQueryCache.Get(toks); st != nil {
 		return st, toks
 	}
-	return authorHavingArticlesCache.Put(toks, runtime.SpliceTree(prefix, toks, authorHavingArticlesLowering, suffix)), toks
+	return authorArticlesProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, authorArticlesProbeQueryLowering, suffix)), toks
 }
 
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h AuthorHavingArticlesQuery) All(ctx context.Context, ex runtime.Executor) ([]author.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
+// bind returns the arguments in STREAM order: parent predicates, then
+// each probe's, then the parent's paging. Each probe takes its own
+// binder — bindPreds resets the arenas it fills, so two probes sharing
+// one binder would have the second silently overwrite the first.
+func (h AuthorArticlesProbeQuery) bind(pb *author.Binder, paging bool) ([]any, []*article.Binder) {
+	args := h.q.BindPreds(pb, nil)
+	cbs := make([]*article.Binder, 0, len(h.p))
+	for _, pr := range h.p {
+		cb := article.GetBinder()
+		cbs = append(cbs, cb)
+		args = pr.c.BindPreds(cb, args)
 	}
-	if err := h.c.Err(); err != nil {
+	if paging {
+		args = h.q.BindPaging(pb, args)
+	}
+	return args, cbs
+}
+
+func (h AuthorArticlesProbeQuery) err() error {
+	if err := h.q.Err(); err != nil {
+		return err
+	}
+	for _, pr := range h.p {
+		if err := pr.c.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All runs the composed statement.
+func (h AuthorArticlesProbeQuery) All(ctx context.Context, ex runtime.Executor) ([]author.Row, error) {
+	if err := h.err(); err != nil {
 		return nil, err
 	}
 	st, _ := h.stmt(false)
@@ -523,11 +609,12 @@ func (h AuthorHavingArticlesQuery) All(ctx context.Context, ex runtime.Executor)
 	}
 	pb := author.GetBinder()
 	defer author.PutBinder(pb)
-	cb := article.GetBinder()
-	defer article.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			article.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return nil, err
@@ -545,11 +632,8 @@ func (h AuthorHavingArticlesQuery) All(ctx context.Context, ex runtime.Executor)
 }
 
 // Count runs the composed count: no ordering, no paging.
-func (h AuthorHavingArticlesQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
+func (h AuthorArticlesProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.err(); err != nil {
 		return 0, err
 	}
 	st, _ := h.stmt(true)
@@ -558,10 +642,12 @@ func (h AuthorHavingArticlesQuery) Count(ctx context.Context, ex runtime.Executo
 	}
 	pb := author.GetBinder()
 	defer author.PutBinder(pb)
-	cb := article.GetBinder()
-	defer article.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
+	args, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			article.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return 0, err
@@ -571,4 +657,53 @@ func (h AuthorHavingArticlesQuery) Count(ctx context.Context, ex runtime.Executo
 		return 0, rows.Err()
 	}
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+// FeedRow is the "Feed" union: 3 column(s) merged from 2 table(s).
+//
+// A column is nullable here when ANY branch can produce NULL for it,
+// whatever the other branches' constraints say — typing it otherwise
+// would decode one branch's NULL as another branch's zero value.
+type FeedRow struct {
+	At   time.Time
+	Text string
+	Kind string
+}
+
+const feedSQL = `(SELECT "created_at" AS "at", "name" AS "text", 'author' AS "kind" FROM "authors" WHERE "id" = $1) UNION ALL (SELECT "created_at" AS "at", "title" AS "text", 'article' AS "kind" FROM "articles" WHERE ("published_at" IS NOT NULL AND "author_id" = $1)) ORDER BY "at" DESC LIMIT $2`
+
+func scanFeed(rv [][]byte, r *FeedRow, sl *runtime.Slab) error {
+	r.At = runtime.Timestamptz(rv[0])
+	r.Text = sl.Str(rv[1])
+	r.Kind = sl.Str(rv[2])
+	return nil
+}
+
+// Feed runs the "Feed" union: every branch, merged, ordered as one, in ONE
+// round trip. n caps the merged result, not any single branch — which is
+// the difference between a feed and several lists the caller has to
+// interleave itself.
+//
+// A declared parameter used in several branches is ONE argument: the
+// same value reaches every branch that names it, which is what
+// "this actor's feed" has to mean.
+func Feed(ctx context.Context, ex runtime.Executor, authorID [16]byte, n int64) ([]FeedRow, error) {
+	var sl runtime.Slab
+	return FeedInto(ctx, ex, nil, &sl, authorID, n)
+}
+
+// FeedInto lets the caller own the output slice and the string arena.
+func FeedInto(ctx context.Context, ex runtime.Executor, dst []FeedRow, sl *runtime.Slab, authorID [16]byte, n int64) ([]FeedRow, error) {
+	rows, err := ex.Query(ctx, feedSQL, []any{authorID, n})
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, FeedRow{})
+		if err := scanFeed(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
+	}
+	return dst, rows.Err()
 }

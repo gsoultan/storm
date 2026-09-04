@@ -73,10 +73,21 @@ const (
 	CmpLt
 )
 
-// MaxCols is how many columns a token can address: Col is ten bits wide.
-// Generated code checks against this rather than guessing, and a table with
-// more filterable columns is a generation error, never a truncation.
-const MaxCols = 1 << 10
+// MaxCols is how many columns a token can address in ONE table.
+//
+// Col is ten bits, so a token can carry 1024 ids — but a composed statement
+// splits that space: the parent's columns below ChildColBase and a wrapped
+// child's above it. A table wider than the split is therefore not merely
+// unusual, it is WRONG in a composer: a parent column at 550 and a child
+// column at 38 both address 550, and the lowering routes on the boundary
+// alone, so the parent's predicate would be built from the child package's
+// fragment table. Silently, and with the wrong rows.
+//
+// Any table can be a composer's parent or child — every foreign key generates
+// one — so the ceiling is the half, not the whole. Generated code checks
+// against this rather than guessing, and a table with more filterable columns
+// is a generation error, never a truncation.
+const MaxCols = ChildColBase
 
 // MakeLeaf builds a predicate token.
 func MakeLeaf(op, col uint32) Tok { return Tok(KLeaf<<28 | op<<22 | col<<12) }
@@ -307,7 +318,7 @@ type Lowering struct {
 // are part of the key: two queries differing only in ordering are different
 // statements, and sharing one would serve the wrong rows in the wrong order.
 func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
-	return spliceTree(prefix, "", toks, lw, suffix)
+	return spliceTree(prefix, "", toks, lw, suffix, 0)
 }
 
 // SpliceTreeWhere is SpliceTree with a DECLARED predicate ANDed in front of the
@@ -318,13 +329,30 @@ func SpliceTree(prefix string, toks []Tok, lw Lowering, suffix string) *Stmt {
 // merged, so no call site can widen what the declaration narrowed; that is the
 // whole reason to declare it there instead of at every call site.
 func SpliceTreeWhere(prefix, declared string, toks []Tok, lw Lowering, suffix string) *Stmt {
-	return spliceTree(prefix, declared, toks, lw, suffix)
+	return spliceTree(prefix, declared, toks, lw, suffix, 0)
 }
 
-func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string) *Stmt {
+// SpliceTreeFrom is SpliceTree with the first `reserved` ordinals already
+// spent, so numbering starts at reserved+1.
+//
+// A declared aggregation can carry parameters inside a FILTER — "the last
+// thirty days", which is relative to when the query runs and so cannot be a
+// declaration-time literal. Those live in the statement's PREFIX, which is
+// fixed at generate time and can therefore spell $1..$k itself. The dynamic
+// predicates then continue from k+1.
+//
+// Reserving rather than scanning the prefix for `$` on purpose: a
+// declaration-time literal may legitimately contain one — `'$5.00'` is a text
+// constant, not a placeholder — and a scanner would number it. The prefix
+// knows its own count; the splicer only needs to be told.
+func SpliceTreeFrom(prefix string, toks []Tok, lw Lowering, suffix string, reserved int) *Stmt {
+	return spliceTree(prefix, "", toks, lw, suffix, reserved)
+}
+
+func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string, reserved int) *Stmt {
 	frag, ord2, ob := lw.Frag, lw.Order, lw.OB
 	var stack []string
-	ord := 0
+	ord := reserved
 
 	orderAt := len(toks)
 	for i, t := range toks {
@@ -469,10 +497,22 @@ func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string)
 	b.WriteString(sql)
 	for i := 0; i < len(suffix); i++ {
 		b.WriteByte(suffix[i])
-		if suffix[i] == placeholderSigil {
-			ord++
-			b.WriteString(itoa(ord))
+		if suffix[i] != placeholderSigil {
+			continue
 		}
+		// A sigil ALREADY carrying an ordinal is not the splicer's to number.
+		//
+		// Two things put one there. A declared parameter used in a HAVING is
+		// spelled $1 at generate time, because it lives in the fixed text and
+		// its number is known then. And a declaration-time text literal may
+		// simply contain a dollar — `'$5.00'` is a price, not a placeholder.
+		// Numbering either produced `$31` out of `$1` and a statement the
+		// server could not type.
+		if i+1 < len(suffix) && suffix[i+1] >= '0' && suffix[i+1] <= '9' {
+			continue
+		}
+		ord++
+		b.WriteString(itoa(ord))
 	}
 	return &Stmt{SQL: b.String(), NArg: ord, Err: streamErr}
 }

@@ -1,1285 +1,338 @@
 ---
 tags: [storm, reference, model]
-updated: 2026-08-23
-status: proposed — illustrative design, not implemented
+updated: 2026-09-04
+status: as-built — the modelling surface, verified against the shipped API
 ---
 
-# Reference: the parts you reach for later
+# Reference: declaring the model
 
-[[EXAMPLE]] is the one-page introduction — read that first. This document is the
-lookup table for everything it left out: the full type mapping, cascade rules,
-one-to-one, many-to-many with payload, self-referential hierarchies, polymorphic
-associations, unit-of-work graph writes, and optimistic locking.
+[[EXAMPLE]] is the one-page introduction and [[API]] is the query surface. This
+document is the other half: everything you can say in a `Schema` method, and the
+relationship shapes storm knows how to generate.
 
-The model is always a plain Go struct, and **there are no struct tags** —
-per-column settings go through `t.Col(&field)`, table-level ones are direct
-calls. Nothing here is a Go identifier written as a string.
+> **Rewritten 2026-09-04.** The previous version of this file was a design
+> sketch that predated the implementation, and most of its call shapes were
+> never built — `t.ForeignKey`, `t.Inverse`, `t.Plan`, `t.Set`, `user.Get(...)`,
+> `Between`, a `GroupBy(...).Select(...)` chain. It is easier to trust a short
+> document than a long one with a warning on top, so the fiction is gone rather
+> than annotated. What is genuinely not built is listed at the end.
 
-## Two structs, one concept
+## 1. Type mapping
 
-You declare `model.User`. Queries return `user.Row`. They are related by one
-mechanical rule:
+The Go type is the column type. Nothing to annotate:
 
-> **`user.Row` is your struct with each relation replaced by its scalar foreign
-> key, and `*T` rewritten to `storm.Null[T]`.**
+| Go | PostgreSQL |
+|---|---|
+| `bool` | `bool` |
+| `int16`, `uint16` | `int2` |
+| `int32`, `uint32` | `int4` |
+| `int`, `int64`, `uint`, `uint64` | `int8` |
+| `float32` / `float64` | `float4` / `float8` |
+| `string` | `text` |
+| `[]byte` | `bytea` |
+| `[16]byte`, `storm.UUID` | `uuid` |
+| `time.Time` | `timestamptz` |
+| `storm.TimeOfDay` | `time` |
+| `storm.Decimal` | `numeric` — unbounded unless you say `.Numeric(p, s)` |
+| `storm.Interval` | `interval` |
+| `storm.TstzRange` | `tstzrange` |
+| `storm.TSVector` | `tsvector` |
+| `netip.Prefix` | `inet`, or `cidr` with `.Cidr()` |
+| `[]T` of a scalar | `T[]` |
+| `map[string]string` | `hstore` |
+| any other `map` or struct | `jsonb` |
+| a named string type with declared values | an enum |
+| `*T` | the same, nullable |
 
-So `Org Org` in the model becomes `OrgID uuid.UUID` in the row — you declare the
-relationship once and read the id without loading anything.
+`storm.Decimal` is unbounded by default on purpose: `numeric` with no bounds is
+legal and means "as much as you need". Money says so — `.Numeric(19, 4)` — and
+the generator refuses a precision a `Decimal` cannot carry.
 
-Relations are dropped because that is what makes N+1 impossible — a `Posts`
-field that always exists cannot be a compile error when unloaded (ADR-0003).
-`*T` becomes `Null[T]` because a pointer costs an allocation per non-nil field
-per row, and the row type is on the hot path. The declaration is never
-instantiated at runtime, so it stays idiomatic Go.
+`netip.Prefix` covers both `inet` and `cidr`. An inet is an address that may
+carry host bits; a cidr is a network where the *database* forbids them. One Go
+type, and `.Cidr()` opts into the stricter one.
 
----
+## 2. The `Schema` method
 
-# Part 1 — The model
-
-## 1.1 Type mapping
-
-| Go type in your struct | Postgres | Notes |
-|---|---|---|
-| `uuid.UUID` | `uuid` | `storm.UUID` (`[16]byte`) if you want zero dependencies |
-| `string` | `text` | `t.Col(&u.Name).Size(120)` → `varchar(120)` |
-| `bool` | `boolean` | |
-| `int16` `int32` `int64` `int` | `smallint` `integer` `bigint` `bigint` | |
-| `float32` `float64` | `real` `double precision` | never for money |
-| `storm.Decimal` | `numeric` | `t.Col(&u.Bal).Numeric(18, 4)` |
-| `[]byte` | `bytea` | `nil` = NULL |
-| `time.Time` | `timestamptz` | |
-| `storm.Date` | `date` | |
-| `storm.TimeOfDay` | `time` | |
-| `storm.Interval` | `interval` | **not `time.Duration`** — see below |
-| a named `string` type with constants | native `enum` | inferred |
-| any other struct type | `jsonb` | inferred; typed scan, no `[]byte` |
-| `[]string` `[]int32` `[]uuid.UUID` | `text[]` `integer[]` `uuid[]` | |
-| `map[string]string` | `hstore` | |
-| `netip.Addr` / `netip.Prefix` | `inet` / `cidr` | stdlib |
-| `net.HardwareAddr` | `macaddr` | |
-| `storm.TSVector` | `tsvector` | usually a generated column |
-| `storm.Range[T]` | `int4range` `tstzrange` … | |
-| `*T` (any of the above) | the same, `NULL`able | |
-
-Three that bite:
-
-- **`interval` is not `time.Duration`.** Postgres intervals carry months, days
-  and microseconds separately, and a month is not a fixed number of seconds.
-  `storm.Interval` keeps all three. `t.Col(&u.TTL).AsDuration()` opts into the
-  lossy mapping explicitly.
-- **A struct field becomes typed `jsonb`.** `Prefs Prefs` scans straight into
-  your struct with a generated codec — never `[]byte` you decode by hand.
-- **A named string type becomes a native enum**, and its constants become the
-  enum labels. Nothing to declare.
-
-Anything storm does not know is an explicit escape, never a silent `[]byte`:
-
-```go
-Location geo.Point                                          // in the struct
-t.Col(&u.Location).Raw("geography(Point,4326)", geo.Codec)  // in Schema
-```
-
-## 1.2 Mixins are embedded structs
-
-```go
-// internal/model/mixins.go
-package model
-
-type TenantScoped struct {
-    Tenant Tenant                             // → tenant_id uuid NOT NULL
-}
-
-func (ts *TenantScoped) Schema(t *storm.Table) {
-    t.Col(&ts.Tenant).OnDelete(storm.Restrict)
-}
-
-type Timestamps struct {
-    CreatedAt time.Time
-    UpdatedAt time.Time
-}
-
-func (ts *Timestamps) Schema(t *storm.Table) {
-    t.Col(&ts.CreatedAt).Default(storm.Now()).Immutable()
-    t.Col(&ts.UpdatedAt).Default(storm.Now()).AutoUpdate()
-}
-
-type Auditable struct {
-    Version   int32                           // optimistic locking
-    UpdatedBy *User                           // → updated_by uuid NULL
-}
-
-func (a *Auditable) Schema(t *storm.Table) {
-    t.Col(&a.Version).Version()
-    t.Col(&a.UpdatedBy).OnDelete(storm.SetNull)
-}
-```
-
-Embed them and the columns inline:
-
-```go
-type Post struct {
-    storm.Model
-    TenantScoped
-    Timestamps
-    Auditable
-
-    Title string
-    Body  string
-}
-```
-
-An embedded struct's `Schema` runs against the same table, so mixins compose.
-`.Immutable()` means the generator emits no setter — `post.CreatedAt.Set(...)`
-becomes a compile error rather than a code-review comment.
-
-## 1.3 Foreign keys and cascade rules
-
-A field whose type is another model **is** the foreign key. You never declare
-the id column.
-
-```go
-type Post struct {
-    storm.Model
-
-    Author User   // → author_id NOT NULL
-    Org    Org    // → org_id    NOT NULL
-    Editor *User  // → editor_id NULL
-}
-
-func (p *Post) Schema(t *storm.Table) {
-    t.Col(&p.Author).OnDelete(storm.Cascade)
-    t.Col(&p.Org).OnDelete(storm.Restrict).OnUpdate(storm.Cascade)
-    t.Col(&p.Editor).OnDelete(storm.SetNull)
-}
-```
-
-**Value = required, pointer = optional**, the same rule as scalars. The column
-name comes from the *field* name plus `_id`, so `Author User` and `Editor *User`
-coexist with no ambiguity. `t.Col(&p.Editor).Named("reviewer_id")` overrides it;
-`t.Col(&u.Org).References(storm.In(func(o *Org) storm.Set { return storm.Of(&o.Slug) }))`
-points at a column other than the primary key.
-
-`ondelete=` accepts `cascade`, `restrict`, `setnull`, `setdefault`, `noaction`.
-**`setnull` on a value (non-pointer) relation is a generation error** — the
-column is `NOT NULL`, so the action could never fire.
-
-Composite foreign keys use the method form, still without strings:
+Everything the type cannot say. Declared with **field pointers**, so the editor
+enforces the names and renaming a field refactors its declaration with it.
 
 ```go
 func (u *User) Schema(t *storm.Table) {
-    t.ForeignKey(&u.TenantID, &u.OrgCode).
-        References(storm.In(func(o *Org) storm.Set { return storm.Of(&o.TenantID, &o.Code) }))
+    t.Col(&u.Email).Size(320)
+    t.Col(&u.Balance).Numeric(19, 4)
+    t.Col(&u.Status).Default("'pending'")
+    t.Col(&u.Org).OnDelete(storm.Cascade)
+
+    t.Unique(&u.Email)
+    t.Index(&u.Org, storm.Desc(&u.CreatedAt))
+    t.Check(storm.RawSQL(`balance >= 0`))
 }
 ```
 
-Two models that each require the other (`A{B B}` and `B{A A}`) will not compile
-in Go, and should not: a mutually-required FK pair cannot be inserted without
-deferred constraints. Make one side a pointer.
+### On a column — `t.Col(&f)`
 
-## 1.4 One-to-one
+| | |
+|---|---|
+| `.Size(n)` | `varchar(n)` instead of `text` |
+| `.Numeric(p, s)` | precision and scale |
+| `.Date()` | `date` rather than `timestamptz` |
+| `.Cidr()` | `cidr` rather than `inet` |
+| `.Default(sql)` | a database default, e.g. `storm.Now()` |
+| `.Generated(expr)` | a generated column — the `tsvector` case |
+| `.NotNull()` / `.Nullable()` | override what the type implies |
+| `.Unique()` | a single-column unique constraint |
+| `.Immutable()` | refuse updates to this column |
+| `.Version()` | the optimistic-locking column |
+| `.OnDelete(a)` / `.OnUpdate(a)` | FK actions: `storm.Cascade`, `storm.Restrict`, … |
+| `.Named(s)` | override the derived column name |
+| `.Comment(s)` | a `COMMENT ON COLUMN` |
+| `.Index()` | a single-column index |
+| `.AcknowledgeNoFK(why)` | required on `storm.AnyRef` — see §6 |
 
-A **unique** foreign key is what makes it one-to-one:
+### On the table
+
+| | |
+|---|---|
+| `t.PrimaryKey(&a, &b)` | a natural or composite key, instead of `storm.Model` |
+| `t.Unique(&a, &b)` | a composite unique constraint |
+| `t.Index(&a, storm.Desc(&b))` | an index; `storm.Desc` orders a key descending |
+| `t.Check(storm.RawSQL(...))` | a check constraint |
+| `t.Exclude(...)` | an exclusion constraint — see §5 |
+| `t.Through(&field, &JoinModel{})` | many-to-many with a payload — see §4 |
+| `t.Name(s)` | override the derived table name |
+| `t.Comment(s)` | a `COMMENT ON TABLE` |
+
+## 3. Mixins are embedded structs
+
+A struct of shared columns, with its own `Schema` method, embedded into real
+models:
 
 ```go
-type Profile struct {
-    storm.Model
-
-    User    User
-    Bio     *string
-    Website *string
+type Auditable struct {
+    Version int32
 }
 
+func (a *Auditable) Schema(t *storm.Table) {
+    t.Col(&a.Version).Default("0").Version()
+}
+
+type Order struct {
+    storm.Model
+    Auditable          // version, and its declaration, come along
+
+    Total storm.Decimal
+}
+```
+
+A mixin looks exactly like a model — exported, with a `Schema` method — and
+being *embedded* is the only thing that tells them apart. Storm classifies it
+that way for exactly that reason, and generates no table for it.
+
+## 4. Relationships
+
+**Foreign key** — name the other struct as a field. The column and the
+constraint are inferred:
+
+```go
+type Article struct {
+    storm.Model
+    Author Author        // author_id uuid, references authors(id)
+}
+```
+
+**Has-many** — a slice of the child. Declare it only if you traverse that way.
+
+```go
+type Author struct {
+    storm.Model
+    Articles []Article
+}
+```
+
+**One-to-one** is a foreign key that is unique. There is no separate
+declaration, because there is no separate concept:
+
+```go
 func (p *Profile) Schema(t *storm.Table) {
-    t.Col(&p.User).Unique().OnDelete(storm.Cascade)   // unique → 1:1, not 1:N
-    t.Col(&p.Bio).Size(2000)
-}
-
-type User struct {
-    storm.Model
-    Profile *Profile                        // has-one, inferred from the unique FK
+    t.Col(&p.User).Unique().OnDelete(storm.Cascade)   // unique FK => one-to-one
 }
 ```
 
-## 1.5 Self-referential hierarchies
+**Many-to-many** is a slice on **both** sides. Storm generates the join table:
 
 ```go
-type Org struct {
-    storm.Model
-    Name string
+type Post struct { storm.Model; Tags []Tag }
+type Tag  struct { storm.Model; Posts []Post }
+// → post_tags(post_id, tag_id)
+```
 
-    Parent   *Org    // pointer is forced → optional → this org is a root
-    Children []Org
-}
+Three round trips at any row count — parents, links, far side — not one per
+parent. A join would return the same tag once per post carrying it, which is the
+row multiplication a batch loader exists to avoid.
 
+**Self-referential many-to-many** is a slice of the same type. The two columns
+cannot both be named for the table, so the second is named for the **field**:
+
+```go
+type Post struct { storm.Model; Related []Post }
+// → post_related(post_id, related_id), both referencing posts
+```
+
+The edge is directed and stored once: inserting A→B does not make B→A, because
+"related to" and "follows" are both spelled this way and only one is symmetric.
+Two self-referential slices to the same type — `Following` and `Followers` — are
+**refused**. They are one relationship seen from both ends, storm cannot tell
+that from two, and two generated tables would mean following somebody does not
+make you their follower. That is a wrong answer, not a missing feature.
+
+**With a payload**, write the join as a model and name it. Storm generates
+nothing — your model *is* the join table:
+
+```go
 func (o *Org) Schema(t *storm.Table) {
-    t.Col(&o.Parent).OnDelete(storm.Cascade)
-    t.Inverse(&o.Children, &o.Parent)      // both field pointers, same receiver
-}
-
-type Comment struct {
-    storm.Model
-    Body string
-
-    Post    Post
-    Parent  *Comment
-    Replies []Comment
-}
-
-func (c *Comment) Schema(t *storm.Table) {
-    t.Col(&c.Post).OnDelete(storm.Cascade)
-    t.Col(&c.Parent).OnDelete(storm.Cascade)
-    t.Inverse(&c.Replies, &c.Parent)
+    t.Through(&o.Members, &Membership{})
 }
 ```
 
-A self-reference **must** be a pointer or the type would be infinitely sized —
-which conveniently makes it optional, and a hierarchy root has no parent anyway.
-
-`t.Inverse(&o.Children, &o.Parent)` pairs the two sides — both are field pointers
-on the same receiver, so a rename of either is a compile error. It is needed only
-when a model has more than one relation to the same type; elsewhere the inverse
-is inferred.
-
-## 1.6 Many-to-many
-
-A slice on **both** sides. storm generates the join table; declaring it is a
-chore, not a feature.
+## 5. Table-level constraints
 
 ```go
-type Post struct {
-    storm.Model
-    Title string
-    Tags  []Tag
-}
-
-type Tag struct {
-    storm.Model
-    Name  string
-    Posts []Post
-}
-// → post_tags(post_id, tag_id): composite primary key, both foreign keys
-//   ON DELETE CASCADE, and a reverse index on (tag_id, post_id)
+t.Unique(&u.TenantID, &u.Email)          // composite
+t.Check(storm.RawSQL(`total >= 0`))
 ```
 
-The table name is derived from the two table names **sorted**, so it does not
-depend on which model storm walked first. Both sides are wired from one place,
-so they cannot disagree about a column name.
-
-`CASCADE` on both keys because the row means "these two are related", and
-deleting either end makes the statement meaningless rather than dangling. It
-never removes a row an adopter can see — the far row survives, only the
-association goes.
-
-### Loading
+An **exclusion constraint** is the one worth spelling out, because the
+alternative is a race:
 
 ```go
-rows, err := store.PostWithTags().Where(post.AuthorID.Eq(id)).All(ctx, ex)
-for _, r := range rows {
-    r.Tags // []tag.Row — and it does not compile unless the plan loaded it
+func (b *Booking) Schema(t *storm.Table) {
+    // EXCLUDE USING gist (room WITH =, during WITH &&): no two rows may share
+    // a room AND overlap in time.
+    t.Exclude(
+        storm.With(&b.Room, storm.OpEq),
+        storm.With(&b.During, storm.OpOverlaps),
+    )
 }
 ```
 
-**Three round trips**, whatever the counts: the parents, the link rows, then the
-far side by primary key. One more than a direct has-many, and that one is what
-a join table costs. `storm lint` counts it as two for the hop and prints the
-join table in the chain.
+Storing two timestamps and checking in Go loses the boundary cases, and races
+anyway. A violation arrives as `runtime.ErrExclusionViolation`.
 
-Two queries rather than one join, deliberately. A join returns the far row once
-per parent referencing it — the same tag repeated across every post carrying it
-— which is the row multiplication a batch loader exists to avoid. The second
-query is bounded by the number of *distinct* children.
+## 6. Polymorphic associations
 
-An empty parent set costs **one** round trip, not three; no parents means no
-links to look up.
+Two strategies, and the choice is about referential integrity.
 
-`ChildOrder` applies. `ChildTop` does **not** exist on a many-to-many plan —
-greatest-n-per-group through a join table needs a different query shape, and a
-method that cannot work is better absent than failing at run time.
-
-### Self-referential
-
-One field, to your own type:
-
-```go
-type Post struct {
-    storm.Model
-    Related []Post
-}
-// → post_related(post_id, related_id), both keys referencing posts
-```
-
-The two columns cannot both be named for the table, so the second is named for
-the **field**. The edge is **directed and stored once**: inserting A→B does not
-make B→A, because "related to" and "follows" are both spelled this way and only
-one of them is symmetric. A model that wants both directions writes both rows.
-
-**Two** self-referential slices to the same type — the `Following`/`Followers`
-pair — is refused. They are one relationship seen from both ends, and storm
-cannot tell that from two slices: it would generate two unrelated tables, so
-following somebody would not make you their follower. Declare the join model
-yourself and traverse it as two hops.
-
-### With payload — `t.Through`
-
-When the join carries its own columns, write it as a model and name it:
-
-```go
-type Membership struct {
-    User     User
-    Org      Org
-    Role     string
-    JoinedAt time.Time
-}
-
-func (m *Membership) Schema(t *storm.Table) {
-    t.PrimaryKey(&m.User, &m.Org)
-    t.Col(&m.User).OnDelete(storm.Cascade)
-    t.Col(&m.Org).OnDelete(storm.Cascade)
-    t.Col(&m.JoinedAt).Default(storm.Now())
-}
-
-func (o *Org) Schema(t *storm.Table) {
-    t.Through(&o.Members, Membership{})
-}
-```
-
-storm generates nothing here — your model **is** the join table. It reads the
-columns rather than inventing them, and requires exactly one foreign key to each
-end: with one to each, "which column points at me" has a single answer. Two keys
-to the same table is a direction only you know, and it is refused rather than
-guessed.
-
-You get both APIs:
-
-```go
-rows, _ := store.OrgWithMembers().Where(org.ID.Eq(id)).All(ctx, ex)
-for _, m := range rows[0].Members {
-    m.Email        // the far row, EMBEDDED — reads the same as a join with no payload
-    m.Via.Role     // the join row's own columns
-    m.Via.JoinedAt
-}
-```
-
-The far row is embedded so the common case reads unchanged. The payload is
-`Via`, named rather than embedded because both rows have an `ID` and a caller
-asking for one should not have to know which won.
-
-Same three round trips, and `storm lint` counts the hop as two either way.
-
-### `storm.OneOf[…]` — exclusive arc (the default)
-
-One nullable FK column per variant plus a `CHECK` that exactly one is set.
-**Referential integrity is preserved** — every variant is a real foreign key.
+**`storm.OneOfN` — the exclusive arc.** One nullable FK column per variant, with
+a check constraint that exactly one is set. The database still enforces every
+reference:
 
 ```go
 type Attachment struct {
     storm.Model
-    TenantScoped
-
-    Filename string
-    MimeType string
-    Size     int64
-
-    Subject storm.OneOf[Post, Comment, User]
-}
-
-func (a *Attachment) Schema(t *storm.Table) {
-    t.Col(&a.Subject).OnDelete(storm.Cascade)
+    Subject storm.OneOf2[Post, Comment]     // OneOf2 … OneOf8
 }
 ```
 
-Generated:
-
-```sql
-post_id    uuid REFERENCES posts(id)    ON DELETE CASCADE,
-comment_id uuid REFERENCES comments(id) ON DELETE CASCADE,
-user_id    uuid REFERENCES users(id)    ON DELETE CASCADE,
-CONSTRAINT ck_attachments_subject CHECK (
-    (post_id IS NOT NULL)::int + (comment_id IS NOT NULL)::int
-  + (user_id IS NOT NULL)::int = 1)
--- plus a partial index per variant
-```
-
-Use `*storm.OneOf[...]` for "at most one" — the `CHECK` becomes `<= 1`.
-
-### `storm.AnyRef` — discriminator (Rails / GORM style)
-
-Two columns, unbounded variants, **no foreign keys possible**:
+**`storm.AnyRef` — the discriminator.** One `subject_type` + `subject_id` pair,
+Rails-style. It cannot have a foreign key, so the database can no longer tell you
+the row exists — and storm makes you say that out loud:
 
 ```go
-type AuditLog struct {
+type AuditEntry struct {
     storm.Model
-    TenantScoped
-
-    Action  Action
-    Diff    map[string]any                  // → jsonb
     Subject storm.AnyRef
 }
 
-func (a *AuditLog) Schema(t *storm.Table) {
+func (a *AuditEntry) Schema(t *storm.Table) {
     t.Col(&a.Subject).AcknowledgeNoFK("audit rows outlive their subjects by design")
 }
 ```
 
-Without that acknowledgement, generation warns:
+Without `AcknowledgeNoFK`, generation fails naming referential integrity and
+pointing at `OneOf`. The reason is not paperwork: an `AnyRef` is the one place
+storm cannot give the guarantee it gives everywhere else, and a cost you
+acknowledged is different from one you did not notice.
 
-```
-storm: internal/model/audit.go:9
-  AnyRef gives up referential integrity — orphan rows are possible and no
-  database constraint will prevent them.
-  Prefer storm.OneOf[...] (≤ 8 variants), or call .AcknowledgeNoFK("<reason>")
-```
+## 7. Declared reads
 
-The reason string lands in the model file, where a reviewer sees the trade-off.
+The reads whose *shape* must be known at build time are declared on the model:
+`Plans`, `Projections`, `Aggregates` and `Joins`. [[API]] §6 and §7 cover all
+four with examples.
 
-### Choosing
+A **union** is the exception, and the only declared read that is not a method:
+it merges several tables and belongs to none, so it is a package-level
+`storm.Union` var passed to `Build` with the models
+([ADR-0008](adr/0008-union-has-no-driving-table.md)). See [[API]] §7.
 
-| | Integrity | Variants | Write cost |
-|---|---|---|---|
-| `OneOf[…]` | ✓ full | ≤ ~8 (a column each) | plain insert |
-| `AnyRef` | ✗ none | unbounded | plain insert |
-| `OneOf[…]` + supertype table | ✓ full | unbounded | 2 inserts |
+Two things live only here.
 
-Default to `OneOf`. If you expect variants to keep growing, the supertype table
-is the honest choice and the extra join is its price.
+### n children per parent
 
-### Reading a polymorphic field
+On the plan's query, not in the declaration:
 
 ```go
-switch s := a.Subject.(type) {
-case attachment.SubjectPost: _ = s.Post.Title
-// …
-}
+p, err := store.CommentWithReplies().
+    ChildOrder(comment.CreatedAt.Desc(), comment.ID.Asc()).
+    ChildTop(3).                    // three replies PER COMMENT, not three total
+    All(ctx, ex)
 ```
 
-Go type switches are not exhaustive — add a variant and every switch quietly
-falls through to `default`. So the generator also emits `Match`, where **adding
-a variant breaks every call site at compile time**:
+`ChildTop` requires `ChildOrder`, and that ordering must be a strict total
+order — two rows sharing a `created_at` would otherwise give a different answer
+per run. `ChildLimit(n)` is the other one and means something different: a cap on
+the total children fetched, not per parent.
+
+This is the query every ORM gets wrong the same way. In GORM, Ent and Bun a
+`Limit` inside an eager load applies to the whole loaded set, so "one post each"
+across fifty users returns one post *total*. Here they are two methods with two
+names.
+
+It lowers to a `LATERAL` join by default, chosen by measurement rather than
+argument: measured 2026-08-24, LATERAL beat the `row_number()` form at every
+parent count and every n — 3.5x at one parent, 33x at a hundred — because the
+window form reads every child of every matched parent and discards the ones past
+n, so its cost tracks the total child count rather than the rows returned.
+`DISTINCT ON` is deliberately absent: it only expresses n = 1, so it would be a
+strategy that silently stopped applying when somebody changed `ChildTop(1)` to
+`ChildTop(2)`.
+
+### Walking a self-reference
+
+A model whose foreign key points at its own table gets two generated
+traversals, each a single `WITH RECURSIVE`:
 
 ```go
-label := attachment.MatchSubject(a.Subject,
-    func(p post.Row) string    { return "post: " + p.Title },
-    func(c comment.Row) string { return "comment on " + c.PostID.String() },
-    func(u user.Row) string    { return "avatar of " + u.Name },
-)
+subtree, err := org.Descend(ctx, ex, [][16]byte{rootID}, 10)  // root + 9 levels
+chain,   err := org.Ascend(ctx, ex, [][16]byte{leafID}, 10)   // leaf -> root
 ```
 
-Use `Match` for anything that must stay correct as the model grows — the same
-instinct as ADR-0003: turn a runtime failure into a compile error.
-
-## 1.8 Table-level constraints
-
-Everything above used `t.Col(&field)` for per-column settings. Table-level
-constraints are direct calls on the same object:
-
-```go
-func (u *User) Schema(t *storm.Table) {
-    t.Unique(&u.Tenant, storm.Lower(&u.Email))
-    t.Index(&u.Org, storm.Desc(&u.CreatedAt))
-    t.Index(&u.Scopes).Using(storm.GIN)
-    t.Index(&u.Status).Where(storm.NotEq(&u.Status, StatusSuspended))   // partial
-    t.Check(storm.Between(&u.Age, 0, 150))
-    t.Generated(&u.Search, storm.ToTSVector(storm.English, &u.Name, &u.Email))
-    t.Immutable(&u.CreatedAt)
-    t.Default(&u.Status, StatusPending)
-    t.Size(&u.Name, 120)
-}
-```
-
-### Why field pointers, and how they resolve
-
-`&u.Email` is an ordinary Go expression. Rename the field and every reference is
-a compile error; mistype it and it never compiles. That is strictly stronger
-than a string a generator validates, because the *editor* enforces it and
-refactoring tools follow it.
-
-The receiver must be a **pointer** (`u *User`). A value receiver copies the
-struct before the method runs, so `&u.Email` points into the copy and cannot be
-resolved — storm rejects that at build time rather than emitting a wrong schema.
-Two resolution paths, both real:
-
-- **Generation** reads the method at AST level and resolves `u.Email` to a field
-  by name — no execution, so it works on a package that does not yet compile.
-- **Runtime** (`storm verify --drift`) allocates one zero value, calls `Schema`,
-  and maps each pointer back to a field by offset from the base address.
-
-### What is still a literal, and why that is fine
-
-`0`, `150`, `StatusPending`, `120` are **values, not identifiers**. They cannot
-be stale, and a rename cannot break them. Their types are checked against the
-field at generate time. `storm.English` is a typed constant, not the string
-`"english"`.
-
-### The only strings that remain
-
-Three, and none of them is a Go identifier:
-
-| String | Example | Why it cannot be an object |
-|---|---|---|
-| a **database** identifier you are naming | `t.Col(&p.Editor).Named("reviewer_id")` | you are naming a column, not referring to a Go field |
-| a **database type** | `t.Col(&u.Loc).Raw("geography(Point,4326)", geo.Codec)` | it is Postgres syntax, not Go |
-| **prose** | `.AcknowledgeNoFK("audit rows outlive their subjects")` | it is documentation |
-
-Plus one deliberate escape, `storm.RawSQL(...)`, for SQL storm does not model.
-It is `PREPARE`-checked at generate time and listed by `storm lint --expr`, so
-every occurrence in the codebase is visible in review.
-
-**No string in the model can be stale.** A renamed Go field breaks the build;
-these three name things that live in the database or in English.
-
-```go
-t.Check(storm.RawSQL(`tstzrange(starts_at, ends_at) <> 'empty'`))
-```
-
-Every construct above exists so that you almost never reach for that one.
-
-# Part 2 — Generate
-
-```console
-$ storm generate
-  tenants  → internal/store/tenant       (4 columns)
-  orgs     → internal/store/org          (6 columns, 2 relations: Parent, Children)
-  users    → internal/store/user         (22 columns, 5 relations, 3 plans)
-  profiles → internal/store/profile      (7 columns, 1 relation)
-  posts    → internal/store/post         (10 columns, 4 relations)
-  comments → internal/store/comment      (9 columns, 4 relations)
-  tags     → internal/store/tag          (4 columns, 1 relation)
-  roles    → internal/store/role         (3 columns)
-  attachments → internal/store/attachment (11 columns, polymorphic: 3 variants, ExclusiveArc)
-  audit_logs  → internal/store/auditlog   (8 columns, polymorphic: 4 variants, Discriminator ⚠ no FK)
-  ✓ 12 tables · 0 unsupported types · deterministic output
-
-$ storm migrate diff initial_schema
-  → db/migrations/0001_initial_schema.up.sql   (34 statements, non-destructive)
-  → db/migrations/0001_initial_schema.down.sql
-  review and commit — storm never applies a migration
-```
-
-## What you get, per table
-
-```go
-package user   // internal/store/user — generated
-
-Given this declaration:
-
-```go
-type User struct {
-    storm.Model                     // ID, CreatedAt, UpdatedAt
-    TenantScoped                    // TenantID, Tenant
-    Auditable                       // Version, UpdatedBy
-
-    Email       string
-    DisplayName string
-    Status      Status                        // named string type → enum
-    Prefs       Prefs                         // struct → typed jsonb
-    Scopes      []string
-    Age         *int16
-    CreditBalance *storm.Decimal
-    LastLoginAt *time.Time
-    BirthDate   *storm.Date
-    SessionTTL  *storm.Interval
-    LastIP      *netip.Addr
-    AvatarThumb []byte
-    SubscriptionPeriod *storm.Range[storm.Date]
-
-    Org     Org                               // → OrgID in the Row
-    Profile *Profile
-    Posts   []Post
-    Roles   []Role
-}
-
-func (u *User) Schema(t *storm.Table) {
-    t.Col(&u.Email).Unique().Size(320)
-    t.Col(&u.DisplayName).Size(120)
-    t.Col(&u.CreditBalance).Numeric(18, 4)
-    t.Col(&u.Org).OnDelete(storm.Restrict)
-}
-```
-
-you get — the same struct with relations replaced by their scalar foreign keys
-and `*T` rewritten to `storm.Null[T]`:
-
-```go
-// Row: what a full read returns. No relation fields — see plans.
-type Row struct {
-    ID           storm.UUID
-    Email        string
-    DisplayName  string
-    Status       model.Status
-    Prefs        storm.JSON[model.Prefs]
-    Scopes       []string
-    Age          storm.Null[int16]
-    CreditBalance storm.Null[storm.Decimal]
-    LastLoginAt  storm.Null[time.Time]
-    BirthDate    storm.Null[storm.Date]
-    SessionTTL   storm.Null[storm.Interval]
-    LastIP       storm.Null[netip.Addr]
-    AvatarThumb  []byte
-    SubscriptionPeriod storm.Null[storm.Range[storm.Date]]
-    OrgID        storm.UUID
-    TenantID     storm.UUID
-    CreatedAt    time.Time
-    UpdatedAt    time.Time
-    Version      int32
-    UpdatedBy    storm.Null[storm.UUID]
-}
-
-// Required: NOT NULL with no default. The constructor takes exactly these.
-func New(email, displayName string, orgID, tenantID storm.UUID, opt ...Option) Draft
-
-// Options exist only for columns that are nullable or DB-defaulted.
-func WithStatus(model.Status) Option
-func WithPrefs(model.Prefs) Option
-func WithAge(int16) Option
-// … no WithID, WithCreatedAt, WithVersion — the database owns those.
-
-// Typed columns
-var (
-    ID          = storm.OrdCol[storm.UUID]{…}
-    Email       = storm.TextCol{…}
-    Status      = storm.EnumCol[model.Status]{…}
-    Prefs       = storm.JSONCol[model.Prefs]{…}
-    Scopes      = storm.ArrayCol[string]{…}
-    Age         = storm.NullOrdCol[int16]{…}
-    Search      = storm.TSVectorCol{…}
-    // …
-)
-```
-
-**On mandatory fields, honestly:** Go cannot enforce "every field of a struct
-literal was assigned" — `user.Row{}` compiles. The generated **positional
-constructor is the only compile-time guarantee available**, so `New` takes the
-required set positionally and everything else as options. Most tables have one
-to four truly-required columns, which keeps that readable. Three layers back it
-up: the constructor (compile time), `storm lint` flagging zero-valued required
-columns in raw literals (build time), and `NOT NULL` (run time, always).
-
----
-
-# Part 3 — Fetch plans
-
-Every load pattern in the system, in one reviewable file.
-
-```go
-// internal/store/plans.go
-package store
-
-var (
-    // Light: for lists.
-    UserCard = user.Plan("Card").With(user.Org)
-
-    // Heavy: a profile page.
-    UserPage = user.Plan("Page").
-        With(user.Org.With(org.Parent)).
-        With(user.Profile).
-        With(user.Roles.Payload()).            // include user_roles columns
-        With(user.Posts.
-            Where(post.PublishedAt.IsNotNull()).
-            OrderBy(post.PublishedAt.Desc(), post.ID.Asc()).
-            Top(10).                                // 10 per user, not 10 total
-            With(post.Tags).
-            With(post.Comments.
-                Where(comment.Parent.IsNull()).     // top-level only
-                OrderBy(comment.CreatedAt.Asc(), comment.ID.Asc()).
-                Top(5).                             // 5 per post
-                With(comment.Author).
-                With(comment.Replies.Top(3))))
-
-    // Polymorphic: loads all three variants, batched.
-    PostWithFiles = post.Plan("WithFiles").
-        With(post.Attachments).
-        With(post.Author)
-)
-```
-
-```console
-$ storm lint --plans
-  UserCard       1 round trip    users ⋈ orgs
-  UserPage       7 round trips   users ⋈ orgs ⋈ orgs(parent) → profiles → user_roles ⋈ roles
-                                 → posts → post_tags ⋈ tags → comments ⋈ users → comments(replies)
-  PostWithFiles  2 round trips   posts ⋈ users → attachments (3 variants, 1 batch)
-  ⚠ UserPage exceeds the configured limit of 5 round trips
-```
-
-That warning is the point. The plan is one object, its cost is one number, and
-CI can hold a line on it.
-
-Using a plan:
-
-```go
-u, err := user.Query().Where(user.ID.Eq(id)).Load(UserPage).One(ctx, db)
-
-u.Org.Parent.Name                 // typed, guaranteed loaded
-u.Profile.Bio                     // storm.Null[string]
-for _, r := range u.Roles {
-    r.Key, r.Grant.GrantedAt      // .Grant is the join payload
-}
-for _, p := range u.Posts {
-    for _, c := range p.Comments {
-        c.Author.DisplayName
-        for _, rep := range c.Replies { _ = rep }
-    }
-}
-
-u.Attachments                     // compile error: not in the UserPage plan
-```
-
----
-
-# Part 4 — Queries
-
-## 4.1 The one-liners
-
-```go
-u,  err := user.Get(ctx, db, id)                       // by PK
-u,  err := user.GetByTenantEmail(ctx, db, tid, email)  // by the unique index
-us, err := user.All(ctx, db, user.Status.Eq(model.StatusActive))
-n,  err := user.Count(ctx, db, user.OrgID.Eq(orgID))
-ok, err := user.Exists(ctx, db, user.Email.Eq(e))
-```
-
-## 4.2 Predicates across every type
-
-```go
-user.Query().Where(
-    user.TenantID.Eq(tid),                                    // uuid
-    user.Status.In(model.StatusActive, model.StatusPending),  // enum
-    user.Age.Between(18, 65),                                 // nullable int → NULLs excluded
-    user.Age.IsNotNull(),
-    user.CreditBalance.Gte(storm.Dec("100.0000")),            // numeric, never float
-    user.Email.HasSuffix("@corp.com"),
-    user.DisplayName.ILike("%ada%"),
-    user.Scopes.Contains("admin", "billing"),                 // text[] @>
-    user.Scopes.Overlaps("read", "write"),                    // text[] &&
-    user.Prefs.Path("theme").Eq("dark"),                      // jsonb ->>
-    user.Prefs.HasKey("digest"),                              // jsonb ?
-    user.LastIP.InSubnet(netip.MustParsePrefix("10.0.0.0/8")),// inet <<=
-    user.BirthDate.Before(storm.DateOf(2008, 1, 1)),
-    user.SubscriptionPeriod.ContainsDate(storm.Today()),      // range @>
-    user.Search.Matches("english", "ada lovelace"),           // tsvector @@
-    user.CreatedAt.Gte(cutoff),
-)
-```
-
-`user.Age` is `NullOrdCol[int16]`, so `.Eq(nil)` does not compile — use
-`.IsNull()`. Three-valued logic is in the type, not in a comment.
-
-## 4.3 Composition, boolean logic, and dynamic filters
-
-```go
-// Reusable specifications live in your domain layer.
-var Active = storm.And(
-    user.Status.Eq(model.StatusActive),
-    user.LastLoginAt.Gte(storm.NowMinus(90*24*time.Hour)),
-)
-
-q := user.Query().Where(user.TenantID.Eq(tid), Active)
-
-if f.Search != ""    { q = q.Where(user.Search.Matches("english", f.Search)) }
-if f.OrgID != nil    { q = q.Where(user.OrgID.Eq(*f.OrgID)) }
-if len(f.Scopes) > 0 { q = q.Where(user.Scopes.Contains(f.Scopes...)) }
-if f.MinBalance != nil {
-    q = q.Where(storm.Or(
-        user.CreditBalance.Gte(*f.MinBalance),
-        user.Scopes.Contains("comp"),
-    ))
-}
-
-us, err := q.OrderBy(user.CreatedAt.Desc(), user.ID.Asc()).
-    Limit(f.Limit).Load(UserCard).All(ctx, db)
-```
-
-Each `.Where` sets one bit in a `uint64` and writes into an inline array. The
-assembled SQL for that combination is compiled once, ever.
-
-## 4.4 Joins, aggregation, windows, and grouping
-
-```go
-// Explicit join with a projection type — no entity round-tripping.
-type OrgStat struct {
-    OrgID    storm.UUID
-    OrgName  string
-    Users    int64
-    AvgAge   storm.Null[float64]
-    TopEmail string
-}
-
-stats, err := user.Query().
-    Join(org.T, storm.On(user.OrgID.EqCol(org.ID))).
-    Where(user.TenantID.Eq(tid)).
-    GroupBy(org.ID, org.Name).
-    Having(storm.Count(user.ID).Gt(5)).
-    Select(storm.Into[OrgStat](
-        org.ID.As("org_id"),
-        org.Name.As("org_name"),
-        storm.Count(user.ID).As("users"),
-        storm.Avg(user.Age).As("avg_age"),
-        storm.FirstValue(user.Email).
-            Over(storm.PartitionBy(org.ID).OrderBy(user.CreatedAt.Asc())).
-            As("top_email"),
-    )).
-    OrderBy(storm.Count(user.ID).Desc()).
-    All(ctx, db)
-```
-
-`storm.Into[OrgStat](...)` is checked at generation time: a column with no
-matching field, or a type mismatch, fails the build with the offending line.
-
-## 4.5 Pagination
-
-```go
-// Offset paging — fine for small offsets.
-page, err := user.Query().Where(Active).OrderBy(user.CreatedAt.Desc()).
-    Page(ctx, db, storm.Offset(200, 50))
-
-// Keyset paging — what you want at scale. Cursor is opaque and signed.
-page, err := user.Query().Where(Active).
-    OrderBy(user.CreatedAt.Desc(), user.ID.Asc()).
-    Page(ctx, db, storm.After(cursor, 50))
-
-page.Items      // []user.Row
-page.Next       // storm.Cursor, empty at the end
-page.Total      // only populated by storm.Offset — keyset does not count
-```
-
-`storm.After` requires the `OrderBy` to be a strict total order. It is not: a
-generation error tells you to add a tiebreaker column.
-
-## 4.6 Streaming
-
-```go
-for u, err := range user.Query().Where(user.TenantID.Eq(tid)).Iter(ctx, db) {
-    if err != nil { return err }
-    if err := export(u); err != nil { return err }
-}
-```
-
-A Go 1.23 iterator over a server-side cursor. Nothing materialises a slice, so
-memory is flat regardless of result size.
-
-## 4.7 Recursive queries over a self-reference
-
-The org hierarchy and the comment tree are both self-referential, so both get a
-generated recursive traversal:
-
-```go
-// Every descendant org, depth-first, with the path.
-subtree, err := org.Query().Where(org.ID.Eq(rootID)).
-    Descend(org.Children, storm.MaxDepth(10)).
-    All(ctx, db)
-
-for _, o := range subtree {
-    fmt.Printf("%*s%s (depth %d)\n", o.Depth*2, "", o.Name, o.Depth)
-}
-
-// Ancestors, for a breadcrumb.
-chain, err := org.Query().Where(org.ID.Eq(id)).Ascend(org.Parent).All(ctx, db)
-```
-
-Both lower to a single `WITH RECURSIVE`. `MaxDepth` becomes a depth predicate in
-the recursive term — a cycle in the data cannot hang the query.
-
-## 4.8 Querying polymorphic relations
-
-```go
-// Load a post's attachments (any variant) — one batched round trip.
-p, err := post.Query().Where(post.ID.Eq(pid)).Load(PostWithFiles).One(ctx, db)
-for _, a := range p.Attachments { _ = a.Filename }
-
-// Query attachments directly, filtered to one variant.
-imgs, err := attachment.Query().
-    Where(attachment.SubjectIsPost(), attachment.MimeType.HasPrefix("image/")).
-    All(ctx, db)
-
-// Resolve subjects — exhaustive, so a new variant breaks this at compile time.
-for _, a := range withSubjects {
-    line := attachment.MatchSubject(a.Subject,
-        func(p post.Row) string    { return "post " + p.Title },
-        func(c comment.Row) string { return "comment " + c.ID.String() },
-        func(u user.Row) string    { return "avatar " + u.DisplayName },
-    )
-    fmt.Println(line)
-}
-```
-
-`SubjectIsPost()` lowers to `post_id IS NOT NULL` under ExclusiveArc and to
-`subject_type = 'post'` under Discriminator. The call site does not change when
-the strategy does.
-
----
-
-## 4.9 First, last, and top-N *per parent*
-
-The greatest-n-per-group problem: **the newest post for each user**, the first
-order per customer, the latest comment on each post.
-
-This is the query every ORM in [[COMPARISON]] gets wrong, and always the same
-way. In GORM, Ent, and Bun, a `Limit` inside an eager load applies to the
-**whole loaded set**, not per parent — so `Preload("Posts", limit 1)` across 50
-users returns *one post total*, not one each. The usual workarounds are loading
-everything and slicing in Go (unbounded memory, and it defeats the point) or
-dropping to raw SQL and losing the typed result.
-
-### The API
-
-Say what you mean:
-
-```go
-var WithLatestPost = user.Plan("WithLatestPost").
-    With(user.Posts.Latest(post.CreatedAt))       // newest post PER USER
-
-var WithFirstPost = user.Plan("WithFirstPost").
-    With(user.Posts.Earliest(post.CreatedAt))     // oldest post PER USER
-```
-
-**Name the plan for what it loads, not for the ordering.** `user.Plan("Latest")`
-reads like "the latest user" and is a bug waiting to be misread;
-`WithLatestPost` cannot be.
-
-| | Meaning | Field type becomes |
-|---|---|---|
-| `.Latest(col)` | newest row per parent by `col` | `storm.Null[post.Row]` |
-| `.Earliest(col)` | oldest row per parent by `col` | `storm.Null[post.Row]` |
-| `.LatestN(n, col)` | newest *n* per parent | `[]post.Row`, len ≤ n |
-| `.EarliestN(n, col)` | oldest *n* per parent | `[]post.Row`, len ≤ n |
-| `.First()` / `.Last()` / `.Top(n)` | the same, for an arbitrary `OrderBy` | as above |
-
-`Latest` and `Earliest` **append the primary key as a tiebreaker automatically**,
-so two posts sharing a `created_at` still give a deterministic answer and there
-is no total-order error to hit. Use `.OrderBy(...).First()` only when you need an
-ordering `Latest`/`Earliest` cannot express.
-
-### Which of these do you actually want?
-
-Four different questions, easy to conflate:
-
-```go
-// (a) ONE user, with their newest post
-u, _ := user.Query().Where(user.ID.Eq(id)).Load(WithLatestPost).One(ctx, db)
-u.Posts                     // a single post.Row — not a slice
-
-// (b) MANY users, each with their OWN newest post   ← greatest-n-per-group
-us, _ := user.Query().Where(user.OrgID.Eq(orgID)).Load(WithLatestPost).All(ctx, db)
-for _, u := range us { _ = u.Posts }    // 50 users → 50 posts, 2 round trips
-
-// (c) The newest posts overall — no grouping, no plan needed
-ps, _ := post.Query().OrderBy(post.CreatedAt.Desc()).Limit(10).All(ctx, db)
-
-// (d) The newest post per author, as a flat list of posts
-ps, _ := post.Query().LatestPer(post.Author, post.CreatedAt).All(ctx, db)
-```
-
-**(b) is the hard one** — it is what the rest of this section is about. **(c) is
-an ordinary ordered query** and needs none of this machinery; reach for a plan
-only when you are grouping.
-
-These change the field from a slice to a **single nullable value**, so there is
-no `posts[0]` to panic on when a user has never posted:
-
-```go
-u, _ := user.Query().Where(user.ID.Eq(id)).Load(UserFeed).One(ctx, db)
-
-if p, ok := u.Posts.Get(); ok {
-    fmt.Println("latest:", p.Title)
-}
-```
-
-### `.Limit()` inside a relation does not compile
-
-Because it is ambiguous, and every ORM that allows it produces the wrong answer:
-
-```
-storm: store/plans.go:12
-  Limit(10) inside With(user.Posts) is ambiguous.
-  Did you mean 10 posts PER USER, or 10 posts across all users?
-    · Top(10)         — 10 per user   (greatest-n-per-group)
-    · LimitAcross(10) — 10 in total   (rarely what you want)
-```
-
-`LimitAcross` exists so the rare case is still reachable, and so choosing it is
-visible in review.
-
-### Ties, and why a tiebreaker is required
-
-`OrderBy(post.PublishedAt.Desc())` alone is not a total order — two posts
-published in the same microsecond make the result nondeterministic between runs.
-storm treats that as a generation error, the same rule as keyset pagination in
-§4.5:
-
-```
-storm: store/plans.go:12
-  First() needs a strict total order; published_at is not unique.
-  Add a tiebreaker: OrderBy(post.PublishedAt.Desc(), post.ID.Asc())
-  — or use Latest(post.PublishedAt), which appends the primary key for you.
-```
-
-Want the ties instead of an arbitrary winner? `.TopWithTies(n)` lowers to
-`rank()` rather than `row_number()`, and the field type stays a slice because
-the count is no longer bounded by *n*.
-
-### How it lowers
-
-Still **one round trip for the relation** — the guarantee from ADR-0003 holds.
-`internal/cost` picks between three shapes, and the choice is measured, not
-assumed ([[PERFORMANCE]]):
-
-```sql
--- DISTINCT ON — n = 1, index on (author_id, published_at DESC)
-SELECT DISTINCT ON (p.author_id) p.*
-FROM posts p WHERE p.author_id = ANY($1)
-ORDER BY p.author_id, p.published_at DESC, p.id;
-
--- LATERAL — small n, index-driven, does not touch rows it will discard
-SELECT p.* FROM unnest($1::uuid[]) AS k(author_id)
-JOIN LATERAL (
-    SELECT * FROM posts WHERE author_id = k.author_id
-    ORDER BY published_at DESC, id LIMIT $2
-) p ON true;
-
--- row_number() — larger n, or when the child scan is happening anyway
-SELECT * FROM (
-    SELECT p.*, row_number() OVER (PARTITION BY p.author_id
-                                   ORDER BY p.published_at DESC, p.id) AS rn
-    FROM posts p WHERE p.author_id = ANY($1)
-) t WHERE t.rn <= $2;
-```
-
-Override the choice when you have measured something storm has not:
-`.Top(10).Using(storm.Lateral)`.
-
-### The index this needs, and the lint that checks for it
-
-`LATERAL` and `DISTINCT ON` are only fast with an index on
-`(parent_fk, sort_col DESC)`. Without it Postgres sorts the whole child
-partition per parent, which is the slow shape this section exists to avoid. So
-`storm lint` checks for it:
-
-```console
-$ storm lint --plans
-  WithLatestPost  2 round trips   users → posts (DISTINCT ON)
-  ⚠ WithLatestPost: Posts.Latest(created_at) orders by (created_at DESC, id)
-    but posts has no index on (author_id, created_at DESC, id).
-    → t.Index(&p.Author, storm.Desc(&p.CreatedAt), &p.ID)
-```
-
-The suggested fix is the exact line to paste into your `Schema` method.
-
-### Standalone, without a parent load
-
-The same thing as a flat query — the newest post per author, no users loaded:
-
-```go
-latest, err := post.Query().
-    Where(post.PublishedAt.IsNotNull()).
-    FirstPer(post.Author, storm.By(post.PublishedAt.Desc(), post.ID.Asc())).
-    All(ctx, db)
-```
-
-```go
-ps, err := post.Query().LatestPer(post.Author, post.CreatedAt).All(ctx, db)
-```
-
-`LatestPer` / `EarliestPer` take the group and the ordering column;
-`FirstPer` / `LastPer` / `TopPer(n, …)` take an explicit ordering. All lower to
-the same three shapes. Group by something other than a relation —
-`post.Status`, an expression — by passing that column instead.
-
-# Part 5 — Writes
-
-## 5.1 Insert
-
-```go
-draft := user.New(
-    "ada@corp.com", "Ada Lovelace", orgID, tenantID,   // required, positional
-    user.WithStatus(model.StatusActive),
-    user.WithPrefs(model.Prefs{Theme: "dark", Locale: "en-GB"}),
-    user.WithScopes("read", "write"),
-)
-u, err := user.Insert(ctx, db, draft)   // returns the full Row via RETURNING
-```
-
-Omit `orgID` and it does not compile. Pass `WithID(...)` and there is no such
-option — the database owns generated columns.
-
-Bulk, via `COPY`:
-
-```go
-n, err := user.InsertMany(ctx, db, drafts)      // one COPY, whatever len(drafts) is
-```
-
-## 5.2 Update
-
-```go
-n, err := user.Update(ctx, db,
-    storm.Where(user.ID.Eq(id)).At(u.Version),   // optimistic lock
-    user.Email.Set("new@corp.com"),
-    user.Scopes.Append("billing"),
-    user.Prefs.SetPath("theme", "light"),        // jsonb_set, not read-modify-write
-    user.CreditBalance.Dec(storm.Dec("9.99")),
-)
-if errors.Is(err, storm.ErrStaleWrite) { /* version moved under you */ }
-
-// user.CreatedAt.Set(...)  → compile error: declared Immutable()
-```
-
-`Append`, `SetPath`, and `Dec` are single-statement mutations. There is no
-load-mutate-save cycle, so there is no lost-update window to reason about.
-
-## 5.3 Upsert and delete
-
-```go
-err := tag.Upsert(ctx, db, draft,
-    storm.OnConflict(tag.TenantID, tag.Name).DoNothing())
-
-n, err := comment.Delete(ctx, db, storm.Where(comment.PostID.Eq(pid)))
-```
-
-## 5.4 Unit of work — graph writes, FK-ordered, one batch
-
-```go
-err := db.Unit(ctx, func(u *storm.Unit) error {
-    orgID  := u.Insert(org.New("Acme", tenantID))            // deferred handle
-    userID := u.Insert(user.New("ada@acme.io", "Ada", orgID, tenantID))
-    postID := u.Insert(post.New("Hello", "…", userID, tenantID))
-
-    u.Insert(attachment.New("spec.pdf", "application/pdf", 8241, sum, tenantID,
-        attachment.SubjectPostID(postID)))
-
-    for _, name := range []string{"go", "orm"} {
-        tagID := u.Upsert(tag.New(name, tenantID),
-            storm.OnConflict(tag.TenantID, tag.Name).Returning())
-        u.Insert(posttag.New(postID, tagID))
-    }
-
-    u.Update(auditcounter.Total.Inc(1), storm.Where(auditcounter.Key.Eq("posts")))
-    return nil
-})
-```
-
-`orgID`, `userID`, `postID`, and `tagID` are **deferred values**, not UUIDs —
-they resolve from `RETURNING` at flush. The unit topologically sorts statements
-by the foreign keys declared in the model, then emits one `pgx.Batch`. Ordering
-is proven in tests with deferred constraints **off**, so it is the ordering that
-is correct rather than Postgres being lenient.
-
-On MySQL, where there is no `RETURNING`, the same code lowers to `INSERT` +
-`LAST_INSERT_ID()` pairs in one batch. The call site is unchanged.
-
----
-
-# Part 6 — Transactions
-
-```go
-err := db.Tx(ctx, func(tx storm.Tx) error {
-    from, err := account.Get(ctx, tx, fromID)      // tx satisfies the same
-    if err != nil { return err }                   // interface as db
-    if from.Balance.LessThan(amount) {
-        return ErrInsufficientFunds                // any error → rollback
-    }
-    if _, err := account.Update(ctx, tx,
-        storm.Where(account.ID.Eq(fromID)).At(from.Version),
-        account.Balance.Dec(amount)); err != nil { return err }
-
-    _, err = account.Update(ctx, tx,
-        storm.Where(account.ID.Eq(toID)), account.Balance.Inc(amount))
-    return err
-})
-```
-
-Isolation, read-only hints, and automatic retry on serialization failure:
-
-```go
-err := db.Tx(ctx,
-    storm.Serializable().Retry(3, storm.ExpBackoff(5*time.Millisecond)),
-    func(tx storm.Tx) error { … })
-```
-
-Retry fires only on `40001` (serialization failure) and `40P01` (deadlock). The
-callback must therefore be side-effect-free outside the transaction, and that is
-stated in its doc comment rather than assumed.
-
-Savepoints nest naturally:
-
-```go
-db.Tx(ctx, func(tx storm.Tx) error {
-    mustSucceed(tx)
-    if err := tx.Nested(ctx, func(sp storm.Tx) error {
-        return tryOptional(sp)          // rolls back to the savepoint only
-    }); err != nil {
-        log.Warn("optional step skipped", "err", err)
-    }
-    return nil
-})
-```
-
-Two properties worth naming:
-
-- **`db` and `tx` satisfy the same interface**, so every generated function
-  takes either. No duplicate `XxxTx` variants, no `WithTx(...)` plumbing.
-- **A `Unit` inside a `Tx` joins it** rather than opening its own. Nested
-  transaction management is not something the caller has to think about.
-
----
-
-# Part 7 — When the ORM is not enough
-
-```go
-var DormantHighValue = storm.SQL[DormantRow](`
-    WITH per_org AS (
-        SELECT u.org_id, u.id, u.email, u.credit_balance,
-               percent_rank() OVER (PARTITION BY u.org_id
-                                    ORDER BY u.credit_balance DESC) AS pr
-        FROM users u
-        WHERE u.tenant_id = $1 AND u.status = 'active'
-    )
-    SELECT p.org_id, p.id, p.email, p.credit_balance, last_seen.at
-    FROM per_org p
-    JOIN LATERAL (
-        SELECT max(c.created_at) AS at FROM comments c WHERE c.author_id = p.id
-    ) last_seen ON true
-    WHERE p.pr <= 0.10
-      AND (last_seen.at IS NULL OR last_seen.at < $2)
-    ORDER BY p.credit_balance DESC`)
-
-rows, err := DormantHighValue.Query(ctx, db, tenantID, cutoff)
-```
-
-`PREPARE`d at generation time against a dev database (or a checked-in schema
-snapshot), so the column list, types, and placeholder count are verified before
-the binary exists, and `DormantRow` gets a generated scanner. A mismatch is a
-build error naming the column.
-
-Raw fragments also compose into typed queries as join sources:
-
-```go
-user.Query().
-    Join(DormantHighValue.As("d"), storm.On(user.ID.EqCol(DormantHighValue.Col.ID))).
-    Where(user.TenantID.Eq(tid)).
-    Load(UserCard).
-    All(ctx, db)
-```
-
----
-
-# What this walkthrough demonstrates
-
-| Requirement | Where |
-|---|---|
-| Every scalar type, incl. UUID, numeric, interval, inet, ranges, tsvector | §1.1, §1.4 |
-| Typed JSONB and enums | §1.4 |
-| Mandatory fields | §1.4, Part 2 — positional constructor + lint + `NOT NULL` |
-| Foreign keys, cascade / restrict / set-null | §1.3–1.7 |
-| One-to-one, one-to-many, many-to-many, M:N with payload | §1.5–1.7 |
-| Self-referential hierarchies + recursive traversal | §1.3, §1.6, §4.7 |
-| **Polymorphic, three strategies, with integrity constraints generated** | §1.8 |
-| Exhaustive variant handling | §1.8 `MatchSubject` |
-| Composite primary keys, partial/GIN indexes, check constraints | §1.4, §1.7 |
-| Generated columns and full-text search | §1.4, §4.2 |
-| Optimistic locking | §1.2, §5.2 |
-| Transactions, isolation, retry, savepoints | Part 6 |
-| Graph writes with FK ordering and deferred IDs | §5.4 |
-| Escape hatch with full typing | Part 7 |
-
-The two claims to keep hold of: **`u.Attachments` does not compile unless the
-plan loaded it**, and **every filter combination above compiles its SQL once,
-ever**.
+The roots are included, at depth 1, so `maxDepth` of 1 returns exactly the
+roots. A depth bound is **required** — `ErrDepth` otherwise — because
+`parent_id` being a foreign key does not stop A pointing at B pointing at A, and
+unbounded recursion over a cycle does not return. The generated statement also
+carries an explicit path array and refuses a row already on it, so a cycle in
+the data cannot hang the connection.
+
+Rows come back in **no guaranteed order**. A tree has no total order, inventing
+one would be a lie, and every row carries its `parent_id` — so the caller
+reassembles the shape it wanted.
+
+## 8. What is not built
+
+Listed because the previous version of this file documented all of it as though
+it were:
+
+- **Streaming / `Iter`.** Reads are `All`, `One`, `Count`, `Exists`. There is no
+  iterator and no cursor API.
+- **Declaration-time `Latest`/`Earliest`/`Top` on a relation.** The per-parent
+  limit is `ChildTop`/`ChildOrder` at the call site, as above.
+- **Call-site `GroupBy(...).Select(...)`.** Not missing — refused. An unbounded
+  set of result shapes can have neither a generated scanner nor a compiled
+  statement, which is the whole thesis. Aggregations are declared; [[API]] §7.
+- **`Between`, `HasPrefix`/`HasSuffix`, jsonb `Path`.** The predicate vocabulary
+  is generated per column type and is listed in [[API]] §3.
+- **Package-level `user.Get(ctx, db, id)` one-liners.** It is
+  `user.New().IDEq(id).One(ctx, ex)`, plus a generated shorthand per column.
+- **MySQL at run time.** There is a MySQL DDL back end, but it is not a runtime
+  target ([ADR-0007](adr/0007-mysql-runtime-needs-a-second-decoder-family.md)).

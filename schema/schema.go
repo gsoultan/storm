@@ -20,6 +20,19 @@ import (
 type Schema struct {
 	Tables []*Table
 	Enums  []*Enum
+	// Unions are the declared UNION reads. They hang off the schema rather
+	// than a table because a union has no driving table — see ADR-0008.
+	Unions []*Union
+}
+
+// Union finds a declared union by name.
+func (s *Schema) Union(name string) *Union {
+	for _, u := range s.Unions {
+		if u.Name == name {
+			return u
+		}
+	}
+	return nil
 }
 
 // Table is one relation.

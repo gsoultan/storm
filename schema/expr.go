@@ -32,6 +32,10 @@ const (
 	// ExprGrouping is GROUPING(cols...), which distinguishes a subtotal row's
 	// NULL from a NULL that was in the data.
 	ExprGrouping
+	// ExprParam is a bound parameter: a value the CALL supplies, numbered at
+	// generate time. Only a union has these — every other read binds through
+	// the token stream, which a union has no call-site predicates to build.
+	ExprParam
 	// ExprBinary is arithmetic over two expressions. The OPERATOR is named
 	// abstractly and spelled by the back end, like everything else here: `/`
 	// does not mean the same thing in every dialect, which is exactly why the
@@ -56,6 +60,11 @@ type Expr struct {
 	Fn string
 	// Arith is the operator, for ExprBinary.
 	Arith ArithOp
+	// Param is the zero-based parameter index, for ExprParam. It is rendered
+	// as $(Param+1), and the same parameter used in two branches renders as
+	// the same placeholder — PostgreSQL allows that, and it keeps one declared
+	// parameter to one argument at the call.
+	Param int
 	// Args are the operands.
 	Args []Expr
 	// Lit is a declaration-time literal, already in its Go form.
@@ -271,6 +280,19 @@ type FuncSig struct {
 	NullableIfAnyArgIs bool
 }
 
+// DateTruncUnits is the field names date_trunc accepts.
+//
+// An allow-list for the same reason the function list is one: the unit is a
+// STRING, so a typo is not a compile error, and PostgreSQL's answer to
+// `date_trunc('dya', ...)` is a runtime error on a statement that was fixed at
+// generate time. Everything else about a declared aggregation is checked
+// before it can run; this was the one string that was not.
+var DateTruncUnits = map[string]bool{
+	"microseconds": true, "milliseconds": true, "second": true, "minute": true,
+	"hour": true, "day": true, "week": true, "month": true, "quarter": true,
+	"year": true, "decade": true, "century": true, "millennium": true,
+}
+
 // Funcs is the allow-list of scalar functions.
 //
 // An allow-list, and a small one. An open `storm.Raw("whatever(x)")` would
@@ -408,6 +430,14 @@ func (l Literal) SQL() string {
 // integer literal, PostgreSQL casts the literal, and refusing them would make
 // the documented use of both functions unwritable. Anything outside one family
 // is still refused — mixing text with a number is a mistake, not a cast.
+// UnifyUnion is the type a union column takes when two branches disagree about
+// it. text next to varchar(300) is text, int4 next to int8 is int8 — the same
+// widening PostgreSQL does for a UNION, said out loud so the generated row
+// type carries the type the server will actually send.
+func UnifyUnion(a, b Type) (Type, error) {
+	return unifyAll("a union column", []Type{a, b})
+}
+
 func unifyAll(fn string, in []Type) (Type, error) {
 	out := in[0]
 	for _, t := range in[1:] {

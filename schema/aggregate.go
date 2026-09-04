@@ -33,6 +33,15 @@ type Aggregate struct {
 	// Terms are the aggregate and window expressions, in declaration order.
 	Terms []AggregateTerm
 
+	// Params are values the CALL supplies, in declaration order. They are
+	// numbered $1..$k in the statement's fixed PREFIX, and the dynamic
+	// predicates continue from k+1.
+	//
+	// A FILTER is part of the declaration, so it cannot say "since 30 days
+	// ago" — that is relative to when the query runs. A parameter is the
+	// narrow answer: the aggregation's shape is still one shape.
+	Params []Param
+
 	// Having is the declared predicate over the grouped rows. Unlike a
 	// call-site Where it never varies, so it is rendered into the statement
 	// rather than bound.

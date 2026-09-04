@@ -375,3 +375,62 @@ type projBadName struct {
 }
 
 func (m *projBadName) Projections(p *storm.Projections) { p.Named("contact", &m.A) }
+
+// An unexported mixin with a Schema method used to PANIC inside reflect:
+// callMixinSchemas called Interface() on an embedded field it could not read,
+// while walk right below it skipped unexported fields correctly.
+//
+// Skipping silently would have been worse than the panic. The mixin's Schema
+// never runs, so the table comes out missing whatever it declared — a default,
+// a version column — and nothing says so.
+type unexportedMixin struct {
+	Version int32
+}
+
+func (m *unexportedMixin) Schema(t *storm.Table) {
+	t.Col(&m.Version).Default("0").Version()
+}
+
+type embedsUnexported struct {
+	storm.Model
+	unexportedMixin
+
+	Name string
+}
+
+func TestUnexportedMixinIsAnErrorNotAPanic(t *testing.T) {
+	_, err := storm.Build(&embedsUnexported{})
+	if err == nil {
+		t.Fatal("an unexported mixin built cleanly; its Schema cannot have run")
+	}
+	for _, want := range []string{"unexported", "Schema", "export"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q:\n%v", want, err)
+		}
+	}
+}
+
+// A model that shadows one of storm.Model's fields used to produce BOTH
+// columns, and PostgreSQL rejected the CREATE TABLE with "column specified
+// more than once".
+//
+// The DDL is a late place to find out. The model is what is wrong — Go's field
+// promotion makes the outer CreatedAt the one you read, so the embedded one is
+// invisible to the author and silently doubled in the table.
+type shadowsModel struct {
+	storm.Model
+	Name      string
+	CreatedAt time.Time // shadows storm.Model.CreatedAt
+}
+
+func TestDuplicateColumnIsRefused(t *testing.T) {
+	_, err := storm.Build(&shadowsModel{})
+	if err == nil {
+		t.Fatal("a model with two created_at columns built cleanly; its DDL cannot apply")
+	}
+	for _, want := range []string{"created_at", "twice", "storm.Model"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q:\n%v", want, err)
+		}
+	}
+}

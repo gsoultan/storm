@@ -2,6 +2,7 @@ package codegen_test
 
 import (
 	"crypto/sha256"
+	"github.com/gsoultan/storm/runtime"
 	"go/parser"
 	"go/token"
 	"strings"
@@ -109,5 +110,21 @@ func TestGenerate_NumericPrecisionBeyondDecimal(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error should mention %q, got: %v", want, err)
 		}
+	}
+}
+
+// A table wider than one half of the token column space is refused.
+//
+// Col is ten bits, but a COMPOSED statement splits that space at
+// runtime.ChildColBase: the parent below, a wrapped child above. The check
+// used to compare against the full 1024, so a 600-column table passed — and
+// then its column 550 and a child's column 38 addressed the same id, with the
+// composite lowering routing the parent's predicate through the child
+// package's fragment table. Wrong rows, silently.
+func TestWideTableIsRefusedAtTheComposerHalf(t *testing.T) {
+	if runtime.MaxCols != runtime.ChildColBase {
+		t.Fatalf("MaxCols = %d, want the composer half %d: a table between the two "+
+			"builds cleanly and mis-routes its predicates in any semi-join",
+			runtime.MaxCols, runtime.ChildColBase)
 	}
 }

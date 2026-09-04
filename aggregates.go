@@ -578,6 +578,41 @@ func (b *AggregateBuilder) windowed(fn string, arg any, as string, w *WindowSpec
 
 // ---- modifiers on the last term ---------------------------------------------
 
+// Param declares a value the CALL supplies, for use inside a Filter or a
+// Having:
+//
+//	since := b.Param("Since")
+//	b.Count("Recent").Filter(a.Gte(&e.OccurredAt, since))
+//
+//	rows, err := event.New().AllRates(ctx, ex, time.Now().Add(-30*24*time.Hour))
+//
+// A FILTER is part of the declaration, so its condition is fixed at generate
+// time — which makes "the last thirty days" unsayable, because that is
+// relative to when the query runs. This is the narrow answer: the aggregation
+// still has ONE shape, one compiled statement and one scanner; only a value
+// varies.
+//
+// The type is inferred from the column the parameter is first compared with,
+// so the generated signature cannot disagree with what it filters. Declared
+// parameters are numbered before the call-site predicates, and appear in the
+// generated function in declaration order.
+func (b *AggregateBuilder) Param(name string) Term {
+	if b.dead {
+		return Term{err: errors.New("aggregate is already in error")}
+	}
+	if !isExportedIdent(name) {
+		b.fail("parameter %q must be a valid exported Go identifier", name)
+		return Term{err: errors.New("bad parameter name")}
+	}
+	for i, p := range b.agg.Params {
+		if p.Name == name {
+			return Term{kind: schema.ExprParam, param: i + 1}
+		}
+	}
+	b.agg.Params = append(b.agg.Params, schema.Param{Name: name})
+	return Term{kind: schema.ExprParam, param: len(b.agg.Params)}
+}
+
 // Having filters the GROUPS, after aggregation. A call-site Where filters the
 // rows that go INTO the groups; these are different questions and mixing them
 // up silently changes the answer.
@@ -684,6 +719,11 @@ func (b *AggregateBuilder) resolveTerm(t Term) (schema.Expr, error) {
 			"storm.Out(%q) names no output declared so far — declare it before whatever refers to it", t.out)
 	}
 	switch t.kind {
+	case schema.ExprParam:
+		// Typed at the comparison, in resolveCond: a parameter alone has
+		// nothing to take a type from.
+		return schema.Expr{Kind: schema.ExprParam, Param: t.param - 1}, nil
+
 	case schema.ExprStar:
 		// Reachable only through resolveTerm's callers, all of which forbid a
 		// bare star. Count handles its own argument before getting here.
@@ -792,6 +832,14 @@ func (b *AggregateBuilder) resolveCond(c Cond) (schema.Cond, error) {
 		if err != nil {
 			return schema.Cond{}, err
 		}
+		// A declared parameter takes the type of whatever it is compared with,
+		// before comparability is judged — it has none of its own.
+		if err := b.typeParam(&l, r); err != nil {
+			return schema.Cond{}, err
+		}
+		if err := b.typeParam(&r, l); err != nil {
+			return schema.Cond{}, err
+		}
 		// A literal declared as text next to an enum column is the ordinary
 		// case and PostgreSQL casts it; anything else being compared across
 		// unrelated types is a mistake worth naming.
@@ -823,19 +871,61 @@ func (b *AggregateBuilder) resolveCond(c Cond) (schema.Cond, error) {
 	}
 }
 
+// wholePartition reports a frame that covers every row of the partition, which
+// is the one frame whose meaning does not depend on the ordering.
+func wholePartition(f *schema.Frame) bool {
+	return f.Start.Kind == schema.UnboundedPreceding &&
+		f.End.Kind == schema.UnboundedFollowing
+}
+
+// typeParam gives a declared parameter the type of the thing beside it.
+func (b *AggregateBuilder) typeParam(p *schema.Expr, other schema.Expr) error {
+	if p.Kind != schema.ExprParam {
+		return nil
+	}
+	if other.Kind == schema.ExprParam {
+		return errors.New(
+			"two parameters are compared with each other, so neither has a type " +
+				"to take — compare a parameter with a column")
+	}
+	decl := &b.agg.Params[p.Param]
+	if decl.Type.Name == "" {
+		decl.Type = other.Type
+		p.Type = other.Type
+		return nil
+	}
+	if decl.Type.Name != other.Type.Name {
+		return fmt.Errorf(
+			"parameter %q is compared with %s here and %s elsewhere — it is one "+
+				"argument at the call, so it is one Go type",
+			decl.Name, other.Type.Name, decl.Type.Name)
+	}
+	p.Type = decl.Type
+	return nil
+}
+
 func (b *AggregateBuilder) resolveWindow(w *WindowSpec) (*schema.Window, error) {
 	if w.err != nil {
 		return nil, w.err
 	}
 	out := &schema.Window{Frame: w.frame}
-	if w.frame != nil && len(w.order) == 0 {
+	if w.frame != nil && len(w.order) == 0 && !wholePartition(w.frame) {
 		// A frame counts rows in the window's order. With no ORDER BY there is
 		// no order to count in, so the frame selects an arbitrary set that can
 		// differ between runs of the same query — a wrong answer that does not
 		// look like one.
+		//
+		// UNBOUNDED PRECEDING to UNBOUNDED FOLLOWING is the exception, and it
+		// is the reason this is not a blanket rule: that frame is the whole
+		// partition however the rows are ordered, so it is exactly as
+		// deterministic without an ORDER BY as with one. It is also the way to
+		// say "the total for this partition" next to a per-row value — the
+		// share-of-group query — and refusing it would send that back to SQL.
 		return nil, errors.New(
 			"a window frame needs an ORDER BY: without one the rows have no order to " +
-				"count along, and the frame picks an arbitrary set")
+				"count along, and the frame picks an arbitrary set\n" +
+				"       (a frame of UnboundedPreceding to UnboundedFollowing is the whole " +
+				"partition and needs no ordering)")
 	}
 	for _, p := range w.partition {
 		e, err := b.resolveTerm(p)

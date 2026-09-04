@@ -1,370 +1,297 @@
 ---
 tags: [storm, example, quickstart]
-updated: 2026-08-27
-status: proposed — illustrative design, not implemented
+updated: 2026-09-04
+status: as-built — this is [`examples/blog`](../examples/blog), which runs as a test in CI
 ---
 
-# The whole thing, in one page
+# The quickstart
 
-Three models, from declaration to query. This is the 80% path. Everything
-exotic — every scalar type, polymorphic associations, recursive hierarchies —
-lives in [[REFERENCE]] and you can ignore it until you need it.
+Two models, from declaration to query. This is the 80% path; everything
+exotic — polymorphic associations, many-to-many with a payload, self-referential
+hierarchies — lives in [[REFERENCE]] and you can ignore it until you need it.
+[[API]] is the same ground in more depth.
+
+This file tracks [`examples/blog`](../examples/blog) deliberately. That module
+runs as a test in CI against a real PostgreSQL, so if the two ever disagree,
+it is right and this is a bug.
 
 ## 1. The model is a struct
 
 ```go
-// internal/model/model.go
+// model/model.go
 package model
 
 import (
     "time"
+
     "github.com/gsoultan/storm"
 )
 
-type Org struct {
-    storm.Model                 // ID uuid.UUID, CreatedAt, UpdatedAt
+type Author struct {
+    storm.Model            // uuid id + created_at/updated_at, database defaults
 
     Name  string
-    Users []User                // has-many — declare only if you traverse this way
-}
-
-type User struct {
-    storm.Model
-
     Email string
-    Name  string
-    Age   *int                  // *T = nullable
 
-    Org   Org                   // belongs-to, required → org_id uuid NOT NULL
-    Posts []Post                // has-many
+    Articles []Article     // has-many — declare it only if you traverse this way
 }
 
-type Post struct {
+type Article struct {
     storm.Model
 
     Title       string
     Body        string
-    PublishedAt *time.Time
+    PublishedAt *time.Time // nullable
 
-    Author User                 // → author_id, from the FIELD name
+    Author Author          // foreign key → authors.id
 }
 ```
 
-That is the entire schema. No DSL, no `Schema()` method, no per-entity files.
-
-**What the generator infers, and the whole list of rules:**
+That is the whole schema. What the generator infers:
 
 | From | It infers |
 |---|---|
+| type name `Article` | table `articles` |
 | field name `PublishedAt` | column `published_at` |
-| `string`, `int`, `time.Time`, `uuid.UUID` … | the column type |
-| `*T` | nullable; a value type is `NOT NULL` |
-| embedded `storm.Model` | `id uuid PRIMARY KEY DEFAULT uuidv7()`, `created_at`, `updated_at` |
-| `Org Org` | FK column `org_id → orgs.id`, `NOT NULL` |
-| `Org *Org` | the same FK, nullable |
-| `Posts []Post` | has-many; the FK is found on `Post` |
-| `[]T` on both sides | many-to-many + join table |
-| `t.Col(&u.Email).Unique()` | a unique index |
+| `string`, `time.Time`, `storm.Decimal`, … | the column type |
+| `*time.Time` | the column is nullable |
+| `Author Author` | `author_id uuid` + a foreign key |
+| `[]Article` | a has-many, loaded through a named plan |
+| `storm.Model` | `id`, `created_at`, `updated_at`, with database defaults |
 
-**Pointer means optional — for scalars and relations alike.** A to-one relation
-does not need a pointer for the type to be finite, because the slice on the
-other side provides the indirection. Self-references are the exception: `Parent
-*Org` must be a pointer, which makes them optional, which is correct — a root
-has no parent.
-
-**The FK column name comes from the field name, not the type.** `Author User`
-and `Reviewer User` on the same struct give you `author_id` and `reviewer_id`
-with nothing to declare. Override with `t.Col(&p.Owner).Named("owner_id")` when
-you must — that string names a *database* column, not a Go field.
-
-You never write the scalar yourself, but you still get it: `user.Row` has
-`OrgID uuid.UUID`, `user.OrgID` is a typed column for predicates, and
-`user.New(email, name, orgID)` takes the id — so setting a foreign key never
-requires loading the parent.
-
-Anything the type cannot say goes in one optional method, and **it is objects
-all the way down**:
+Anything the type cannot say goes in a `Schema` method, using **field
+pointers** — so the editor enforces the names, and renaming a field refactors
+its declaration with it:
 
 ```go
-func (u *User) Schema(t *storm.Table) {
-    t.Col(&u.Email).Unique().Size(320)          // per-column settings
-    t.Col(&u.Org).OnDelete(storm.Restrict)
+func (a *Author) Schema(t *storm.Table) {
+    t.Col(&a.Email).Size(320)
+    t.Unique(&a.Email)
+}
 
-    t.Index(&u.Org, storm.Desc(&u.CreatedAt))   // table-level constraints
-    t.Check(storm.Between(&u.Age, 0, 150))
+func (ar *Article) Schema(t *storm.Table) {
+    t.Col(&ar.Title).Size(300)
+    t.Col(&ar.Author).OnDelete(storm.Cascade)
 }
 ```
 
-**No strings.** `&u.Email` is a field pointer, so a rename is a compile error and
-a typo never compiles. The receiver must be a **pointer** (`u *User`): a value receiver copies the
-struct, so `&u.Email` would point into the copy; the generator resolves each pointer to a column by field offset.
+Two more optional methods declare the reads whose shape must be known at
+build time:
 
-Literals like `0` and `150` stay literals — they are values, not identifiers,
-and their types are checked against the field at generate time.
+```go
+// One round trip per relation, whatever the row count.
+func (a *Author) Plans(p *storm.Plans) {
+    p.Named("Feed").With(&a.Articles)
+}
 
-Per-column settings go through `t.Col(&field)` — `.Unique()`, `.Size(n)`,
-`.Default(v)`, `.Immutable()`, `.OnDelete(...)`. **There are no struct tags.**
-The struct holds your domain; the method holds the database's opinions about it.
+// A column subset — two columns instead of the row, and a covering index away
+// from an index-only scan.
+func (a *Author) Projections(p *storm.Projections) {
+    p.Named("Card", &a.Name, &a.Email)
+}
+```
 
 ## 2. Generate
 
-Install the tool once and run it. There is nothing to write and no registry to
-maintain — storm finds the models by parsing your module:
+Storm finds the models by parsing your module, so there is nothing to configure
+and nothing to point it at:
 
 ```console
-$ go install github.com/gsoultan/storm/cmd/storm@latest
-$ go get github.com/gsoultan/storm/tool   # once per module, see below
-```
-
-A type is a model when it **embeds `storm.Model`**, or declares a **`Schema`,
-`Plans` or `Projections`** method, or carries **`//storm:model`**. A type
-**embedded in another struct is a mixin** — it contributes columns and gets no
-table. `//storm:ignore` excludes a type outright. Ask what storm concluded:
-
-```console
-$ storm models
-module example.com/app
-
-3 model(s):
-  example.com/app/model.Org
-      embeds storm.Model
-      /src/app/model/model.go:12:6
-  ...
-
-1 skipped:
-  example.com/app/model.Auditable
-      embedded in another struct, so it is a mixin rather than a table
-```
-
-Then every command works against *your* schema:
-
-```console
-$ storm generate internal/store
-  → internal/store/org/org.gen.go (45981 bytes)
-  → internal/store/store.gen.go (13658 bytes)
-  → internal/store/user/user.gen.go (58057 bytes)
+$ storm generate store
+  → store/article/article.gen.go (55364 bytes)
+  → store/author/author.gen.go   (51899 bytes)
+  → store/store.gen.go           (1828 bytes)
   3 package(s) from 2 table(s)
-
-$ storm ddl              # CREATE statements; storm never applies them
-$ storm diff init        # a reviewable migration
-$ storm verify -stale    # generated code vs model; needs no database
-$ storm verify -pending  # "changed the model, forgot the migration"
-$ storm lint             # every named plan costed in round trips
 ```
 
-**Never think about regenerating.** Leave the watcher running while you work —
-edit a model, save, and the store is current before you have switched windows:
+One package per table, plus a context package for the reads that span tables.
+Commit the output; `storm verify -stale` fails CI if it drifts, and needs no
+database to say so.
+
+For the schema itself:
 
 ```console
-$ storm watch store
-storm: watching example.com/app → store
-storm: ctrl-c to stop
-storm: 5 model(s) → store (1.3s)
-storm: 5 model(s) → store (871ms)     ← you saved model.go
+$ storm diff create_blog        # writes db/migrations/0001_create_blog.up.sql
 ```
 
-And if you were not running it, a stale store **stops the build** rather than
-compiling with the column missing:
-
-```
-store/shape.gen.go:57:2: too few values in struct literal of type model.Product
-```
-
-That assertion covers the struct: a field added, removed, renamed or reordered.
-A change inside `Schema`, `Plans` or `Projections` is a method body the type
-system cannot see, so `verify -stale` remains the check for those.
-
-**`verify -stale` and databases.** It compares generated code to the model, so
-it needs no server — *unless* you declare `storm.SQL[T]` or `storm.SQLExec`.
-Those are PREPAREd against a real one, so a project with raw queries needs
-`-dsn` (a server, not an existing schema) even for the stale check.
-
-**The one-time `go get`.** Nothing in your source imports `storm/tool`, so
-`go mod tidy` cannot know it is needed and the first run fails with go's
-`updates to go.mod needed`. storm detects that and names the command; you run
-it once per module.
-
-**Keeping the old way.** The hand-written bootstrap still works and is still
-supported — if you already have one, or you want models storm's rules would not
-find, keep it:
-
-```go
-// cmd/storm/main.go
-package main
-
-import (
-	"example.com/app/model"
-	"github.com/gsoultan/storm/tool"
-)
-
-func main() { tool.Main(model.All(), model.Queries()) }
-```
-
-Both paths generate byte-identical code; `scripts/check/outsider.sh` asserts it.
-
-Generated code is `// Code generated` — commit it or gitignore it, your call;
-`verify -stale` fails CI if it is stale.
+storm **never applies DDL** ([ADR-0001](adr/0001-model-first-migration-mediated-ddl.md)).
+It writes a migration you review and run with whatever you already use.
 
 ## 3. Query
 
 ```go
-// By primary key.
-u, err := user.Get(ctx, db, id)
+published, err := article.New().
+    Where(article.AuthorID.Eq(ada.ID), article.PublishedAt.IsNotNull()).
+    Order(article.PublishedAt.Desc()).
+    All(ctx, ex, nil)
 
-// A filter.
-us, err := user.All(ctx, db, user.Age.Gte(18))
-
-// A real query.
-us, err := user.Query().
-    Where(user.OrgID.Eq(orgID), user.Email.HasSuffix("@corp.com")).
-    OrderBy(user.CreatedAt.Desc()).
-    Limit(50).
-    All(ctx, db)
+one, ok, err := author.New().IDEq(id).One(ctx, ex)
+n,      err := author.New().Count(ctx, ex)
 ```
 
-Columns are typed values, so `user.Age.Eq("old")` and `user.Emial` are both
-compile errors.
+Columns are typed values, not strings, so a rename is a compile error and an
+illegal predicate does not exist:
+
+```go
+article.Title.ILike("%engine%")   // ok
+article.AuthorID.ILike("%x%")     // compile error: UUIDCol has no method ILike
+```
 
 ### Dynamic filters
 
+The part that looks boring and is the entire point:
+
 ```go
-q := user.Query().Where(user.OrgID.Eq(orgID))
+q := article.New().Where(article.AuthorID.Eq(id))
+q = q.WhereIf(f.PublishedOnly, article.PublishedAt.IsNotNull())
+q = q.WhereIf(f.Search != "", article.Title.ILike("%"+f.Search+"%"))
 
-if f.Name != ""  { q = q.Where(user.Name.ILike("%" + f.Name + "%")) }
-if f.MinAge > 0  { q = q.Where(user.Age.Gte(f.MinAge)) }
-
-us, err := q.Limit(f.Limit).All(ctx, db)
+rows, err := q.Order(article.CreatedAt.Desc()).Limit(50).All(ctx, ex, nil)
 ```
 
-Ordinary Go — the same code you would write in GORM. Underneath, each `.Where`
-sets a bit in a `uint64`; that combination's SQL is compiled once for the life of
-the process instead of rebuilt on every call. **This is the whole thesis, and it
-costs you nothing to read.**
+Each `Where` appends a compiler-generated id — for the column and the operator,
+never the value. A given combination of filters compiles to SQL **once, ever**,
+and a warm call allocates nothing to build it. Values travel as bound arguments,
+so there is no string in the statement to escape and no injection surface to
+defend.
+
+Keyset pagination takes the last row you were given; there is no cursor to
+encode or forge:
+
+```go
+p1, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
+    Limit(2).All(ctx, ex, nil)
+p2, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
+    After(p1[len(p1)-1]).Limit(2).All(ctx, ex, nil)
+```
 
 ## 4. Relations
 
-`user.Row` has no `Posts` field, so the N+1 mistake is not available:
+A base row has **no relation fields at all**:
 
 ```go
-u, _ := user.Get(ctx, db, id)
-u.Posts        // compile error: user.Row has no field Posts
+a, _, _ := author.New().IDEq(id).One(ctx, ex)
+a.Articles      // compile error: type author.Row has no field Articles
 ```
 
-Name a plan for what you want loaded:
+To load the relation, use the plan you declared:
 
 ```go
-// store/plans.go
-var UserWithPosts = user.Plan("WithPosts").With(user.Posts).With(user.Org)
+feed, err := store.AuthorFeed().Limit(10).All(ctx, ex)
+feed[0].Articles        // []article.Row — this type has the field
 ```
+
+**Two round trips, whatever the row count.** Ten authors or ten thousand, it is
+two queries — the parents, then their articles by a key array. An N+1 is not
+something you have to remember to avoid here; reading an unloaded relation does
+not compile, so it is not expressible.
+
+The semi-join — "authors who *have* a published article" — takes the child's own
+typed predicates and lowers to one `EXISTS` probe, with no join fan-out and no
+`DISTINCT`:
 
 ```go
-u, err := user.Query().Where(user.ID.Eq(id)).Load(UserWithPosts).One(ctx, db)
-
-u.Org.Name                            // typed, guaranteed loaded
-for _, p := range u.Posts { … }       // typed, guaranteed loaded — 2 queries, not 51
+n, err := store.AuthorHavingArticles(
+    author.New(),
+    article.PublishedAt.IsNotNull(),
+).Count(ctx, ex)
 ```
 
-Want only the *newest* post per user rather than all of them?
+And the projection you declared is a method on the query:
 
 ```go
-var UserWithLatestPost = user.Plan("WithLatestPost").
-    With(user.Posts.Latest(post.CreatedAt))
-```
-
-```go
-us, err := user.Query().Where(user.OrgID.Eq(orgID)).
-    Load(UserWithLatestPost).All(ctx, db)
-
-for _, u := range us {
-    if p, ok := u.Posts.Get(); ok {   // ONE post, not a slice — each user's own
-        fmt.Println(u.Name, "→", p.Title)
-    }
-}
-```
-
-50 users give 50 *different* posts, one each, in 2 round trips. GORM, Ent and
-Bun all return one post *in total* here, because their `Limit` inside an eager
-load caps the whole set rather than each parent. `.Earliest(...)` gives the
-first post instead; `.LatestN(3, ...)` gives the newest three per user.
-
-Plans are the one file listing every load pattern in the app, so CI can cost them:
-
-```console
-$ storm lint --plans
-  UserWithPosts       2 round trips   users ⋈ orgs → posts
-  UserWithLatestPost  2 round trips   users → posts (DISTINCT ON)
+cards, err := author.New().Order(author.Name.Asc()).AllCard(ctx, ex)  // []author.CardRow
 ```
 
 ## 5. Write
 
+Insert is a masked builder. Absence is tracked by the mask and never inferred
+from a zero value, so a column you did not set takes its **database default**
+rather than a Go zero:
+
 ```go
-u, err := user.Insert(ctx, db, user.New("ada@corp.com", "Ada", orgID))
-
-n, err := user.Update(ctx, db,
-    storm.Where(user.ID.Eq(id)),
-    user.Name.Set("Ada Lovelace"),
-)
-
-n, err := user.Delete(ctx, db, storm.Where(user.ID.Eq(id)))
+na := author.Create()
+na.SetName("Ada")
+na.SetEmail("ada@example.com")
+ada, err := na.Insert(ctx, ex)      // id and created_at come back filled
 ```
 
-`user.New` takes the `NOT NULL` fields that have no default, positionally —
-forget one and it does not compile. Everything else is an option:
-`user.New("ada@corp.com", "Ada", orgID, user.WithAge(36))`.
+Update is the same idea — only what you assigned is written, and one statement
+is compiled per distinct set of assigned columns:
+
+```go
+m := author.Mutate(ada)
+m.SetName("Ada L.")
+err := m.Update(ctx, ex)
+```
+
+For a graph write, the unit of work stages statements in any order and flushes
+them in foreign-key order, in one round trip:
+
+```go
+u := store.NewUnit()
+u.Add(article.Table, article.InsertOp(article.Row{
+    ID: artID, Title: "Compilers", AuthorID: graceID,   // author does not exist yet
+}))
+u.Add(author.Table, author.InsertOp(author.Row{
+    ID: graceID, Name: "Grace", Email: "grace@example.com",
+}))
+_, err := u.Flush(ctx, ex)
+```
 
 ## 6. Transactions
 
-```go
-err := db.Tx(ctx, func(tx storm.Tx) error {
-    u, err := user.Get(ctx, tx, id)          // tx works anywhere db works
-    if err != nil { return err }
+There is no `WithTx` plumbing and no `XxxTx` duplicates. `Executor` is a
+four-method port, a transaction satisfies it, and the same generated code runs
+inside one:
 
-    _, err = post.Insert(ctx, tx, post.New("Hello", "…", u.ID))
-    return err                                // any error rolls back
-})
+```go
+tx, _ := pool.Begin(ctx)
+txe := pgxdrv.Tx{T: tx}
+
+nb := author.Create()
+nb.SetName("Ephemeral")
+nb.SetEmail("gone@example.com")
+_, err := nb.Insert(ctx, txe)
+
+tx.Rollback(ctx)        // and the row is gone
 ```
 
-`db` and `tx` satisfy the same interface, so there are no `XxxTx` duplicates and
-no `WithTx(...)` plumbing.
+This is also the testing story: hand your code a transaction, roll it back, and
+the code under test is the code that runs in production. There is no mock layer
+because there is nothing to mock.
 
 ## 7. When you need real SQL
 
 ```go
 var TopAuthors = storm.SQL[AuthorRow](`
     SELECT u.id, u.name, count(p.id) AS posts
-    FROM users u JOIN posts p ON p.author_id = u.id
+    FROM authors u JOIN articles p ON p.author_id = u.id
     WHERE u.org_id = $1
     GROUP BY u.id, u.name
     ORDER BY posts DESC LIMIT $2`)
 
-rows, err := TopAuthors.Query(ctx, db, orgID, 10)
+rows, err := TopAuthors.Query(ctx, ex, orgID, 10)
 ```
 
-`PREPARE`d at generate time, so a wrong column name fails the build, and
-`AuthorRow` gets a generated scanner. **Escaping costs you no type safety.**
+`storm generate` PREPAREs it against the model, matches the result descriptor to
+`AuthorRow`, and emits the scanner — so a wrong column name fails the build, not
+the request. **Escaping costs you no type safety.**
 
----
+It costs you no safety either: only statements the generator saw will run, so a
+query assembled at run time is refused before it reaches the server. It must be
+a package-level `var`, which is also how the generator finds it.
 
 ## That is the whole surface
 
-Seven things: declare a struct, generate, query, name a plan, write, transact,
-escape. If you know SQL you know the rest.
+Declare a struct, generate, query, name a plan, write, transact, and drop to SQL
+when you need it. Seven things.
 
-What is deliberately absent: no `Schema()` DSL to learn, no session or
-persistence context, no lazy loading, no `AutoMigrate`, no `Preload` to remember,
-no reflection.
+What is deliberately absent: lazy loading, a session, dirty tracking of
+everything you ever touched, and a string-typed query language. What you give up
+for that is a generate step and having to name the reads whose shape has to be
+known in advance.
 
-One thing worth knowing now: you declare `model.User`, and queries return
-`user.Row`. The rule is mechanical — **`user.Row` is your struct with each
-relation replaced by its scalar foreign key, and `*T` rewritten to
-`storm.Null[T]`**. So `Org Org` becomes `OrgID uuid.UUID`: you keep the id
-without loading anything, and `u.Org` stays a compile error until a plan loads
-it.
-
-**Next:** [[REFERENCE]] for the full type table, foreign key cascade rules,
-one-to-one, many-to-many with payload, self-referential hierarchies, polymorphic
-associations, unit-of-work graph writes, and optimistic locking.
-
-**Or** [[COMPLEX-QUERIES]] if you want to see whether the object form survives
-contact with a real reporting query — MRR dashboards, churn cohorts,
-"bought X but never Y", double-booking prevention, faceted search.
+Next: [[API]] for the same ground in depth — including declared aggregations,
+window frames and joins across tables — and [[REFERENCE]] for the parts this
+page skipped.

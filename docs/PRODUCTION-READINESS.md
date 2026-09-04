@@ -331,7 +331,9 @@ yes.
 
 ## P3 — The soak, and what it is actually measuring
 
-The two-week anubis soak (2026-08-25 → 2026-09-08, gating the `v0.1.0` tag)
+The two-week anubis soak (2026-08-25 → 2026-09-08; it was written to gate
+`v0.1.0` and has outlived that — the tag it now bears on is the next release
+after it closes)
 is worth nothing if the only thing observed is "no crash". Record, weekly:
 
 | Signal | Where from | What it would prove |

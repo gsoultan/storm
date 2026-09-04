@@ -60,7 +60,14 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)
+	if len(agg.Params) > 0 {
+		g.p("\t// The declared parameters spell $1..$%d in the prefix, so the", len(agg.Params))
+		g.p("\t// call-site predicates are numbered from there.")
+		g.p("\treturn c.Put(toks, runtime.SpliceTreeFrom(%sPrefix, toks, lowering, suffix, %d))",
+			low, len(agg.Params))
+	} else {
+		g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)
+	}
 	g.p("}")
 	g.p("")
 
@@ -89,13 +96,19 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("// All%s runs the %q aggregation. Predicates compose exactly as on All —", name, name)
 	g.p("// they filter the rows that go INTO the groups, which is the WHERE clause")
 	g.p("// and not a HAVING. Limit and offset page the groups.")
-	g.p("func (q Query) All%s(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", name, name)
+	psig, pargs := aggParams(agg)
+	if len(agg.Params) > 0 {
+		g.p("// Declared parameters come first, in declaration order, and are")
+		g.p("// numbered before any call-site predicate — a FILTER lives in the")
+		g.p("// statement's fixed prefix, so its placeholders are known here.")
+	}
+	g.p("func (q Query) All%s(ctx context.Context, ex runtime.Executor%s) ([]%sRow, error) {", name, psig, name)
 	g.p("\tvar sl runtime.Slab")
-	g.p("\treturn q.All%sInto(ctx, ex, nil, &sl)", name)
+	g.p("\treturn q.All%sInto(ctx, ex, nil, &sl%s)", name, pargs2(agg))
 	g.p("}")
 	g.p("")
 	g.p("// All%sInto lets the caller own the output slice and the arena.", name)
-	g.p("func (q Query) All%sInto(ctx context.Context, ex runtime.Executor, dst []%sRow, sl *runtime.Slab) ([]%sRow, error) {", name, name, name)
+	g.p("func (q Query) All%sInto(ctx context.Context, ex runtime.Executor, dst []%sRow, sl *runtime.Slab%s) ([]%sRow, error) {", name, name, psig, name)
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
@@ -119,7 +132,12 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tsl.Reserve(st.SlabHint())")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
-	g.p("\trows, err := ex.Query(ctx, st.SQL, q.bind(b))")
+	if len(agg.Params) > 0 {
+		g.p("\t// Declared values first: they are $1..$%d, ahead of the predicates.", len(agg.Params))
+		g.p("\trows, err := ex.Query(ctx, st.SQL, append([]any{%s}, q.bind(b)...))", pargs)
+	} else {
+		g.p("\trows, err := ex.Query(ctx, st.SQL, q.bind(b))")
+	}
 	g.p("\tif err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
@@ -142,8 +160,8 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 
 	if len(agg.By) == 0 {
 		g.p("// One%s is the whole-table aggregate: exactly one row, always.", name)
-		g.p("func (q Query) One%s(ctx context.Context, ex runtime.Executor) (%sRow, error) {", name, name)
-		g.p("\tout, err := q.All%s(ctx, ex)", name)
+		g.p("func (q Query) One%s(ctx context.Context, ex runtime.Executor%s) (%sRow, error) {", name, psig, name)
+		g.p("\tout, err := q.All%s(ctx, ex%s)", name, pargs2(agg))
 		g.p("\tif err != nil || len(out) == 0 {")
 		g.p("\t\treturn %sRow{}, err", name)
 		g.p("\t}")
@@ -254,4 +272,30 @@ func (g *gen) aggregates() {
 	for _, agg := range g.t.Aggregates {
 		g.aggregate(agg)
 	}
+}
+
+// aggParams renders declared parameters as a signature fragment and a
+// comma-joined argument list.
+//
+// Declaration order is signature order is placeholder order — one rule for all
+// three, so a reader of the generated function holds no mapping in their head.
+func aggParams(agg *schema.Aggregate) (sig, list string) {
+	for i, p := range agg.Params {
+		n := lowerFirst(p.Name)
+		sig += ", " + n + " " + goType(&schema.Column{Name: p.Name, Type: p.Type, NotNull: true})
+		if i > 0 {
+			list += ", "
+		}
+		list += n
+	}
+	return sig, list
+}
+
+// pargs2 is the same names as a trailing argument sequence.
+func pargs2(agg *schema.Aggregate) string {
+	var s string
+	for _, p := range agg.Params {
+		s += ", " + lowerFirst(p.Name)
+	}
+	return s
 }

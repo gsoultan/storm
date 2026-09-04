@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gsoultan/storm/runtime"
 
@@ -541,5 +542,66 @@ func TestAggregateAvgDecodesAtMoneySizedValues(t *testing.T) {
 	}
 	if _, ok := rows[0].AvgOrder.Get(); !ok {
 		t.Error("avg came back NULL for a group with orders in it")
+	}
+}
+
+// A declared parameter and a call-site predicate in one statement.
+//
+// The parameter is $1, in the fixed prefix where the FILTER lives; the
+// predicate is spliced after it and must be numbered from $2. Getting that
+// wrong does not fail loudly — it binds the wrong value to the wrong
+// placeholder and returns plausible rows, which is why this asserts the
+// numbers by asserting the ANSWER.
+func TestAggregateParamComposesWithCallSitePredicates(t *testing.T) {
+	ctx := context.Background()
+	svc := orders.New(pool)
+	cust, _ := seed(t, "SKU-PARAM", "5.00", 100)
+	if _, err := svc.PlaceOrder(ctx, cust, []orders.LineRequest{{SKU: "SKU-PARAM", Quantity: 2}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var cid [16]byte
+	if err := pool.QueryRow(ctx, `SELECT id FROM customers WHERE id = $1`, cust).Scan(&cid); err != nil {
+		t.Fatal(err)
+	}
+
+	// A boundary in the past: the order counts.
+	past := time.Now().Add(-time.Hour)
+	rows, err := order.New().Where(order.CustomerID.Eq(cid)).AllPaidRate(ctx, ex, past)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recent int64
+	for _, r := range rows {
+		recent += r.Recent
+	}
+	if recent != 1 {
+		t.Fatalf("recent = %d with a boundary an hour ago, want 1", recent)
+	}
+
+	// A boundary in the future: the same statement, the same predicate, and
+	// nothing is recent. If the parameter and the predicate were transposed
+	// this would not change.
+	future := time.Now().Add(time.Hour)
+	rows, err = order.New().Where(order.CustomerID.Eq(cid)).AllPaidRate(ctx, ex, future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Recent != 0 {
+			t.Fatalf("recent = %d with a boundary an hour ahead, want 0", r.Recent)
+		}
+	}
+
+	// And the call-site predicate still narrows: a customer with no orders.
+	other, _ := seed(t, "SKU-PARAM2", "5.00", 100)
+	var oid [16]byte
+	if err := pool.QueryRow(ctx, `SELECT id FROM customers WHERE id = $1`, other).Scan(&oid); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := order.New().Where(order.CustomerID.Eq(oid)).AllPaidRate(ctx, ex, past); err != nil {
+		t.Fatal(err)
+	} else if len(rows) != 0 {
+		t.Fatalf("a customer with no orders produced %d group(s)", len(rows))
 	}
 }
