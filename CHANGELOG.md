@@ -14,6 +14,70 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Declared UNIONs
+
+Several tables merged into one stream, ordered and capped as a **merge** rather
+than per source — which is the read a per-table query cannot give you at all:
+
+```go
+var Activity = storm.Union("Activity", func(u *storm.UnionSpec) {
+    var o Order
+    orders := u.From(&o)
+    orders.Take(&o.PlacedAt, "At")
+    orders.Take(&o.UpdatedBy, "Actor")
+    orders.Const("Kind", "order")
+    orders.Where(storm.Exprs{}.Ne(&o.Status, "cancelled"))
+
+    var b Booking
+    bookings := u.From(&b)
+    bookings.Take(&b.CreatedAt, "At")
+    bookings.Take(&b.Guest, "Actor")
+    bookings.Const("Kind", "booking")
+
+    u.OrderDesc("At")
+})
+
+recent, err := store.Activity(ctx, ex, 20)   // the 20 most recent THINGS
+```
+
+**A union has no driving table**, which is the whole difficulty and the reason
+this is the first declared read that is not a method on a model. A join hangs
+off the table that declares it; a feed of orders and bookings has no such
+centre, and putting it on either would place the row type in a package with no
+more claim to it than the other. So it is a package-level var, found by the
+same discovery pass that finds `storm.SQL`, and passed to `Build` with the
+models. Full reasoning in
+[ADR-0008](docs/adr/0008-union-has-no-driving-table.md).
+
+What it refuses, all at generate time and each because the alternative is a
+wrong answer rather than an error:
+
+- branches that project different names, or different counts, in the same
+  position — values would land in the wrong fields and PostgreSQL would not
+  object as long as the types lined up;
+- an ordering that names something a branch did not project, or **no ordering
+  at all** — a merged bag of rows with a `LIMIT` over it returns an arbitrary
+  subset that differs between runs;
+- types that will not unify, such as an enum beside a varchar. Types that
+  PostgreSQL *does* widen — text beside varchar(300) — widen here too, and the
+  row carries what the server will actually send;
+- fewer than two branches.
+
+Nullability ORs across branches: a column is nullable if **any** branch can
+produce NULL there, or one branch's NULL decodes as another branch's zero.
+`UNION ALL` is the default, inverting SQL's, because de-duplicating means
+sorting the entire result before the first row comes back.
+
+**Not built: parameters.** The only value a call site supplies is the row cap,
+and a branch filter is a declared constant — so a *global* feed is a
+declaration and a per-user one is still `storm.SQL[T]`. Most feeds are
+somebody's, so this is half the feature; it is written down in the ADR rather
+than glossed.
+
+The union in `examples/orders` is planned by `storm explain` (16 statements
+now), and `examples/blog` asserts the merge, the ordering, the declared branch
+filter and the cap against a real server.
+
 ### Chained existence probes: `AndHaving` / `AndNotHaving`
 
 The upsell query — *bought Coffee, never bought Equipment* — is now one

@@ -37,6 +37,15 @@ type ExplainQuery struct {
 func ExplainQueries(s *schema.Schema, tables []string) ([]ExplainQuery, error) {
 	var out []ExplainQuery
 
+	// Unions first: they belong to no table, so a loop over tables would miss
+	// them entirely — and their SQL is wholly fixed at generate time, which
+	// makes them exactly the kind of statement this gate exists for.
+	for _, u := range s.Unions {
+		out = append(out, ExplainQuery{
+			Label: "union " + u.Name,
+			SQL:   pgsql.UnionSelect(u) + pgsql.UnionSuffix(u),
+		})
+	}
 	for _, name := range tables {
 		t := s.Table(name)
 		if t == nil {

@@ -264,6 +264,35 @@ func (o *Order) Aggregates(a *storm.Aggregates) {
 	totals.Sum(&o.Total, "Revenue")
 }
 
+// Activity merges two tables into one reverse-chronological stream: who did
+// what, in the order it happened, across sources that share no table.
+//
+// `Actor` is text in one branch and varchar(200) in the other, which is fine —
+// PostgreSQL widens a union column and storm types the row for what the server
+// will actually send. An enum beside a varchar is NOT fine, and is refused.
+//
+// This is the read a per-table query cannot give you — the ordering and the
+// limit apply to the MERGE, so ten rows is the ten most recent things rather
+// than ten of each. A union has no driving table, so it is declared here as a
+// package-level var rather than on Order or Booking (ADR-0008).
+var Activity = storm.Union("Activity", func(u *storm.UnionSpec) {
+	var o Order
+	orders := u.From(&o)
+	orders.Take(&o.PlacedAt, "At")
+	orders.Take(&o.UpdatedBy, "Actor")
+	orders.Const("Kind", "order")
+	// Cancelled orders are never activity, and no call site can widen that.
+	orders.Where(storm.Exprs{}.Ne(&o.Status, string(StatusCancelled)))
+
+	var b Booking
+	bookings := u.From(&b)
+	bookings.Take(&b.CreatedAt, "At")
+	bookings.Take(&b.Guest, "Actor")
+	bookings.Const("Kind", "booking")
+
+	u.OrderDesc("At")
+})
+
 func mustDec(s string) storm.Decimal {
 	d, err := storm.ParseDecimal(s)
 	if err != nil {

@@ -136,6 +136,12 @@ func Discover(start string) (*Result, error) {
 	sort.Slice(r.Undeclarable, func(i, j int) bool {
 		return r.Undeclarable[i].Pos < r.Undeclarable[j].Pos
 	})
+	sort.Slice(r.Unions, func(i, j int) bool {
+		if r.Unions[i].ImportPath != r.Unions[j].ImportPath {
+			return r.Unions[i].ImportPath < r.Unions[j].ImportPath
+		}
+		return r.Unions[i].VarName < r.Unions[j].VarName
+	})
 	sort.Slice(r.Queries, func(i, j int) bool {
 		if r.Queries[i].ImportPath != r.Queries[j].ImportPath {
 			return r.Queries[i].ImportPath < r.Queries[j].ImportPath
@@ -163,6 +169,14 @@ func collect(r *Result, scan *pkgScan, ip string) {
 	}
 	for name, pos := range scan.queries {
 		r.Queries = append(r.Queries, Query{
+			ImportPath: ip,
+			PkgName:    scan.name,
+			VarName:    name,
+			Pos:        pos.String(),
+		})
+	}
+	for name, pos := range scan.unions {
+		r.Unions = append(r.Unions, Query{
 			ImportPath: ip,
 			PkgName:    scan.name,
 			VarName:    name,

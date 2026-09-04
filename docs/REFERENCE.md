@@ -260,6 +260,11 @@ The reads whose *shape* must be known at build time are declared on the model:
 `Plans`, `Projections`, `Aggregates` and `Joins`. [[API]] §6 and §7 cover all
 four with examples.
 
+A **union** is the exception, and the only declared read that is not a method:
+it merges several tables and belongs to none, so it is a package-level
+`storm.Union` var passed to `Build` with the models
+([ADR-0008](adr/0008-union-has-no-driving-table.md)). See [[API]] §7.
+
 Two things live only here.
 
 ### n children per parent

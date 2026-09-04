@@ -10,8 +10,8 @@ The question this page exists to answer is not "is storm expressive" but
 **"where is the line?"** — which of these is a declaration, and which sends you
 back to SQL.
 
-Six of the eight are declarations today. Two are not, and saying which is more
-useful than a page of examples that all happen to work.
+Four of the eight are declarations, two are half, and two are not. Saying which
+is more useful than a page of examples that all happen to work.
 
 > **How the declarations differ from a query builder.** They live in
 > `Aggregates` and `Joins` methods on the model, not in a chain at the call
@@ -170,8 +170,11 @@ facets, err := product.New().
 Every grouping column is nullable here, because a subtotal row carries NULL for
 what it aggregated over, and `GroupingOf` tells that NULL from one in the data.
 
-**The gap:** results and facets are two round trips, not one. Combining them
-needs a `UNION` of two shapes, and storm generates no `UNION`.
+**The gap:** results and facets are two round trips, not one. A union could
+merge them, but a union's branches must project the **same shape** — and a
+product row and a facet count are not the same shape. Making them one means
+padding both into a widest-common row of mostly-NULL columns, which is a thing
+you can do in SQL and not a thing worth generating.
 
 ## 6. Permission inheritance down an org tree ✅
 
@@ -192,14 +195,46 @@ which is the failure mode a hand-written recursive CTE usually ships with.
 Rows come back unordered, on purpose: a tree has no total order, and every row
 carries its `parent_id` for the caller to reassemble.
 
-## 7. Activity feed from heterogeneous sources ❌
+## 7. Activity feed from heterogeneous sources ⚠️
 
 > *"One reverse-chronological feed of comments, follows, and releases."*
 
-**Still `storm.SQL[T]`.** This is a `UNION ALL` of three different tables into
-one row shape, and storm generates no `UNION`. Why that is the most expensive
-gap left, and what it would take, is
-[ADR-0008](adr/0008-union-has-no-driving-table.md). Polymorphism helps with the
+The merge is a declaration now. A union has no driving table, so it is declared
+as a package-level var rather than on one of the models
+([ADR-0008](adr/0008-union-has-no-driving-table.md)):
+
+```go
+var Activity = storm.Union("Activity", func(u *storm.UnionSpec) {
+    var o Order
+    orders := u.From(&o)
+    orders.Take(&o.PlacedAt, "At")
+    orders.Take(&o.UpdatedBy, "Actor")
+    orders.Const("Kind", "order")
+    orders.Where(storm.Exprs{}.Ne(&o.Status, "cancelled"))
+
+    var b Booking
+    bookings := u.From(&b)
+    bookings.Take(&b.CreatedAt, "At")
+    bookings.Take(&b.Guest, "Actor")
+    bookings.Const("Kind", "booking")
+
+    u.OrderDesc("At")
+})
+```
+
+```go
+recent, err := store.Activity(ctx, ex, 20)   // the 20 most recent THINGS
+```
+
+The ordering and the cap apply to the **merge**, which is the whole point: 20
+rows is the twenty most recent events, not twenty of each source. `Const` is how
+a row says which branch it came from — without it the sources are
+indistinguishable once merged.
+
+**What is still missing: parameters.** The only value a call site supplies is
+the row cap, and a branch filter is a constant — so *this actor's* feed cannot
+be expressed. A global feed is a declaration; a personal one is still
+`storm.SQL[T]`. Most feeds are somebody's, so treat this as half done. Polymorphism helps with the
 *storage* side — `storm.OneOfN` and `storm.AnyRef` in [[REFERENCE]] §6 — but not
 with merging three tables into one stream.
 
@@ -227,7 +262,7 @@ Not declarable, and each for a reason rather than an oversight:
 
 | Missing | Why |
 |---|---|
-| `UNION` | no driving table to declare it on, and one child column range — [ADR-0008](adr/0008-union-has-no-driving-table.md) |
+| a parameterised union | branch filters are declared constants; only the row cap varies per call |
 | probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
 | set-returning functions | `generate_series` is not a scalar function |
 | run-time-relative filters | a declared `FILTER` is fixed at generate time |

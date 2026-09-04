@@ -32,6 +32,11 @@ type pkgScan struct {
 	// so can never be registered. See dynamic.go.
 	undeclarable []Undeclarable
 
+	// unions are package-level storm.Union declarations. A union belongs to no
+	// table, so it reaches Build as an argument like a model rather than
+	// through a method on one.
+	unions map[string]token.Position
+
 	// unparsed are files that did not parse. Their models are invisible, so
 	// reporting "no models found" would name the wrong cause.
 	unparsed []string
@@ -54,6 +59,7 @@ func newPkgScan() *pkgScan {
 		queries:     map[string]token.Position{},
 		unexported:  map[string]token.Position{},
 		unexportedQ: map[string]token.Position{},
+		unions:      map[string]token.Position{},
 		localEmbeds: map[string]bool{},
 		qualEmbeds:  map[string]bool{},
 	}
@@ -252,6 +258,24 @@ func scanGenDecl(fset *token.FileSet, d *ast.GenDecl, scan *pkgScan, is func(ast
 // scanQueryVar finds `var X = storm.SQL[Row](...)` and `storm.SQLExec(...)`,
 // in both the call form and the explicitly-typed form.
 func scanQueryVar(fset *token.FileSet, s *ast.ValueSpec, scan *pkgScan, is func(ast.Expr, string) bool) {
+	// Unions first: they are a different kind of declaration reaching a
+	// different argument of Build, so they are not raw queries.
+	union := isPtrTo(s.Type, is, "UnionDecl")
+	for i, name := range s.Names {
+		hit := union
+		if !hit && i < len(s.Values) {
+			hit = isUnionCall(s.Values[i], is)
+		}
+		if !hit {
+			continue
+		}
+		if !ast.IsExported(name.Name) {
+			scan.unexportedQ[name.Name] = fset.Position(name.Pos())
+			continue
+		}
+		scan.unions[name.Name] = fset.Position(name.Pos())
+	}
+
 	typed := isPtrTo(s.Type, is, "SQLQuery") || isPtrTo(s.Type, is, "SQLStmt")
 	for i, name := range s.Names {
 		hit := typed
@@ -268,6 +292,15 @@ func scanQueryVar(fset *token.FileSet, s *ast.ValueSpec, scan *pkgScan, is func(
 		}
 		scan.queries[name.Name] = pos
 	}
+}
+
+// isUnionCall matches `storm.Union(name, func(...))`.
+func isUnionCall(e ast.Expr, is func(ast.Expr, string) bool) bool {
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	return is(call.Fun, "Union")
 }
 
 func isStormCall(e ast.Expr, is func(ast.Expr, string) bool) bool {

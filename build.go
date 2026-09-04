@@ -41,7 +41,16 @@ func Build(models ...any) (*schema.Schema, error) {
 
 	// Pass 1: register every model so a field whose type is a model can be
 	// told apart from a field whose type is just a struct (which becomes jsonb).
+	//
+	// Union declarations travel in the same argument list and are set aside
+	// here: they are not models, they have no table, and they cannot resolve
+	// until every table they read from exists.
+	var unions []*UnionDecl
 	for _, m := range models {
+		if u, ok := m.(*UnionDecl); ok {
+			unions = append(unions, u)
+			continue
+		}
 		if err := b.register(m); err != nil {
 			b.errs.add(err)
 		}
@@ -97,6 +106,12 @@ func Build(models ...any) (*schema.Schema, error) {
 	// declared aggregations, so every table has to be complete first.
 	for _, mi := range b.ordered {
 		b.callJoins(mi)
+	}
+	// Unions after the joins, for the same reason and one more: a union reads
+	// several tables and belongs to none, so it is the only declaration that
+	// cannot run until ALL of them are complete.
+	for _, u := range unions {
+		b.callUnion(u)
 	}
 	// Pass 5: index every foreign key nothing already covers. Last, so a user
 	// index leading with the same column suppresses the redundant one.
