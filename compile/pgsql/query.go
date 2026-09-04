@@ -286,3 +286,12 @@ func ExistsOpen(childTable, childFK, parentTable, parentPK string) string {
 	f := ExistsFrag(childTable, childFK, parentTable, parentPK)
 	return f[:len(f)-1]
 }
+
+// NotExistsOpen is ExistsOpen negated — the anti-join's header.
+//
+// `NOT EXISTS (...)` rather than `NOT (EXISTS (...))`: the same plan either
+// way, and the shorter form is what a reviewer of the generated SQL expects to
+// read.
+func NotExistsOpen(childTable, childFK, parentTable, parentPK string) string {
+	return "NOT " + ExistsOpen(childTable, childFK, parentTable, parentPK)
+}

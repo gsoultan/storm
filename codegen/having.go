@@ -27,9 +27,20 @@ import (
 func (g *gen) emitHaving(np havingSpec) {
 	q := np.Name + "Query"
 
-	g.p("// %s narrows q to rows with at least one matching %s row — the", np.Name, np.child)
-	g.p("// filtered semi-join, in one statement. The child predicates are typed")
-	g.p("// by the child's own package; ids and values meet only here.")
+	if np.negated {
+		g.p("// %s narrows q to rows with NO matching %s row — the", np.Name, np.child)
+		g.p("// filtered anti-join, in one statement.")
+		g.p("//")
+		g.p("// Read the predicates carefully: this is \"has no %s row matching", np.child)
+		g.p("// these\", not \"has a %s row that does not match\". With no", np.child)
+		g.p("// predicates at all it is \"has none\". The two questions have")
+		g.p("// different answers whenever a parent has several children, and")
+		g.p("// SQL spells them the same way round.")
+	} else {
+		g.p("// %s narrows q to rows with at least one matching %s row — the", np.Name, np.child)
+		g.p("// filtered semi-join, in one statement. The child predicates are typed")
+		g.p("// by the child's own package; ids and values meet only here.")
+	}
 	g.p("func %s(q %s.Query, ps ...%s.Pred) %s {", np.Name, np.ParentPkg, np.ChildPkg, q)
 	g.p("\treturn %s{q: q, c: %s.New().Unordered().Where(ps...)}", q, np.ChildPkg)
 	g.p("}")
@@ -163,6 +174,7 @@ type havingSpec struct {
 	ChildPkg  string
 	child     string // child table name, for docs
 	header    string // the EXISTS opener, built by pgsql at generate time
+	negated   bool   // the anti-join: NOT EXISTS
 }
 
 // havingSpecs enumerates the composers for a context.
@@ -196,6 +208,18 @@ func havingSpecs(s *schema.Schema, tables []string) ([]havingSpec, error) {
 				ChildPkg:  cpkg,
 				child:     child.Name,
 				header:    pgsql.ExistsOpen(child.Name, rel.Column, t.Name, t.PrimaryKey[0]),
+			})
+			// The anti-join, from the same spec. "Bought X but never Y" is one
+			// of each, and having only the positive half means writing the
+			// second in SQL and losing the composable predicate for the first
+			// as well.
+			out = append(out, havingSpec{
+				Name:      exportName(t.GoName) + "NotHaving" + exportName(rel.Field),
+				ParentPkg: ppkg,
+				ChildPkg:  cpkg,
+				child:     child.Name,
+				header:    pgsql.NotExistsOpen(child.Name, rel.Column, t.Name, t.PrimaryKey[0]),
+				negated:   true,
 			})
 		}
 	}
