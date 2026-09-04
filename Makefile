@@ -5,7 +5,7 @@
 # container already forwards 5432.
 DSN ?= postgres://storm:storm@127.0.0.1:5433/storm
 
-.PHONY: db db-stop test bench results vet generate
+.PHONY: db db-stop test check bench results vet generate
 
 db:            ## start Postgres in an Apple container, published on 127.0.0.1:5433
 	@container list | grep -q storm-pg || \
@@ -24,8 +24,17 @@ vet:
 generate:      ## regenerate code from the model
 	go run ./cmd/genbench
 
-test: vet
+test: vet      ## the inner loop: formatting, vet, boundaries, the race suite
 	STORM_DSN='$(DSN)' go test -race -shuffle=on ./...
+
+check: test    ## everything CI gates on — run this before opening a PR
+	@# `test` is the fast loop and deliberately does not include these. CI does,
+	@# and the difference is how a green local run becomes a red build: a
+	@# coverage floor is not something `go test` reports, and `storm explain`
+	@# needs a server. Both are cheap enough that there is no excuse for
+	@# finding out from GitHub.
+	STORM_DSN='$(DSN)' ./scripts/check/coverage.sh
+	STORM_DSN='$(DSN)' ./scripts/check/explain.sh
 
 example:       ## the Go kit example: its own module, generated and tested
 	cd examples/orders && \
