@@ -1,6 +1,7 @@
 package pgsql
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/gsoultan/storm/schema"
@@ -88,6 +89,8 @@ func UnionSuffix(u *schema.Union) string {
 			}
 		}
 	}
-	b.WriteString(" LIMIT " + Placeholder + "1")
+	// The cap is the last placeholder, after every declared parameter — which
+	// is also the order the generated function takes them.
+	b.WriteString(" LIMIT " + Placeholder + strconv.Itoa(len(u.Params)+1))
 	return b.String()
 }

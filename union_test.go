@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/schema"
 )
 
 type uPost struct {
@@ -159,6 +161,105 @@ func TestUnionRefusals(t *testing.T) {
 			_, err := storm.Build(&uPost{}, &uEvent{}, tc.decl)
 			if err == nil {
 				t.Fatal("accepted a union PostgreSQL would refuse or that answers wrongly")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error does not mention %q:\n%v", tc.want, err)
+			}
+		})
+	}
+}
+
+// ---- parameters -------------------------------------------------------------
+
+var uParam = storm.Union("P", func(u *storm.UnionSpec) {
+	who := u.Param("Who")
+
+	var p uPost
+	a := u.From(&p)
+	a.Take(&p.CreatedAt, "At")
+	a.Take(&p.Title, "Text")
+	a.Where(storm.Exprs{}.Eq(&p.Title, who))
+
+	var e uEvent
+	b := u.From(&e)
+	b.Take(&e.When, "At")
+	b.Take(&e.Label, "Text")
+	b.Where(storm.Exprs{}.Eq(&e.Label, who))
+
+	u.OrderDesc("At")
+})
+
+// One declared parameter is one argument and one placeholder, however many
+// branches name it. Passing it per branch would invite passing two different
+// values for "the same" actor.
+func TestUnionParamIsSharedAcrossBranches(t *testing.T) {
+	s, err := storm.Build(&uPost{}, &uEvent{}, uParam)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := s.Union("P")
+	if len(u.Params) != 1 {
+		t.Fatalf("got %d parameter(s), want 1 shared by both branches", len(u.Params))
+	}
+	if got := u.Params[0].Type.Name; got != schema.TypeText {
+		t.Errorf("parameter type = %s, want text inferred from the column", got)
+	}
+	sql := pgsql.UnionSelect(u) + pgsql.UnionSuffix(u)
+	if strings.Count(sql, "$1") != 2 {
+		t.Errorf("the shared parameter is not one placeholder in both branches:\n%s", sql)
+	}
+	if !strings.HasSuffix(sql, "LIMIT $2") {
+		t.Errorf("the cap should be the placeholder after the parameters:\n%s", sql)
+	}
+}
+
+func TestUnionParamRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		decl *storm.UnionDecl
+		want string
+	}{
+		{"declared and never used", union(func(u *storm.UnionSpec) {
+			u.Param("Unused")
+			var p uPost
+			a := u.From(&p)
+			a.Take(&p.CreatedAt, "At")
+			var e uEvent
+			b := u.From(&e)
+			b.Take(&e.When, "At")
+			u.OrderDesc("At")
+		}), "never compares it with a column"},
+
+		{"compared with two different types", union(func(u *storm.UnionSpec) {
+			who := u.Param("Who")
+			var p uPost
+			a := u.From(&p)
+			a.Take(&p.CreatedAt, "At")
+			a.Where(storm.Exprs{}.Eq(&p.Title, who)) // text
+			var e uEvent
+			b := u.From(&e)
+			b.Take(&e.When, "At")
+			b.Where(storm.Exprs{}.Eq(&e.When, who)) // timestamptz
+			u.OrderDesc("At")
+		}), "one argument at the call, so it is one Go type"},
+
+		{"two parameters compared with each other", union(func(u *storm.UnionSpec) {
+			a1 := u.Param("A")
+			b1 := u.Param("B")
+			var p uPost
+			a := u.From(&p)
+			a.Take(&p.CreatedAt, "At")
+			a.Where(storm.Exprs{}.Eq(a1, b1))
+			var e uEvent
+			bb := u.From(&e)
+			bb.Take(&e.When, "At")
+			u.OrderDesc("At")
+		}), "neither has a type to take"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := storm.Build(&uPost{}, &uEvent{}, tc.decl)
+			if err == nil {
+				t.Fatal("accepted a parameter declaration that cannot generate")
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("the error does not mention %q:\n%v", tc.want, err)

@@ -38,6 +38,9 @@ type Term struct {
 	lit   schema.Literal
 	arith schema.ArithOp
 	scale int
+	// param is the 1-based union parameter index; 0 is "not a parameter", so
+	// the zero Term stays meaningless rather than meaning parameter 0.
+	param int
 	err   error
 }
 

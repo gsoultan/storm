@@ -1297,7 +1297,7 @@ type ActivityRow struct {
 	Kind  string
 }
 
-const activitySQL = `(SELECT "placed_at" AS "at", "updated_by" AS "actor", 'order' AS "kind" FROM "orders" WHERE "status" <> 'cancelled') UNION ALL (SELECT "created_at" AS "at", "guest" AS "actor", 'booking' AS "kind" FROM "bookings") ORDER BY "at" DESC LIMIT $1`
+const activitySQL = `(SELECT "placed_at" AS "at", "updated_by" AS "actor", 'order' AS "kind" FROM "orders" WHERE ("status" <> 'cancelled' AND "updated_by" = $1)) UNION ALL (SELECT "created_at" AS "at", "guest" AS "actor", 'booking' AS "kind" FROM "bookings" WHERE "guest" = $1) ORDER BY "at" DESC LIMIT $2`
 
 func scanActivity(rv [][]byte, r *ActivityRow, sl *runtime.Slab) error {
 	r.At = runtime.Timestamptz(rv[0])
@@ -1308,16 +1308,20 @@ func scanActivity(rv [][]byte, r *ActivityRow, sl *runtime.Slab) error {
 
 // Activity runs the "Activity" union: every branch, merged, ordered as one, in ONE
 // round trip. n caps the merged result, not any single branch — which is
-// the difference between a feed and three lists the caller has to
+// the difference between a feed and several lists the caller has to
 // interleave itself.
-func Activity(ctx context.Context, ex runtime.Executor, n int64) ([]ActivityRow, error) {
+//
+// A declared parameter used in several branches is ONE argument: the
+// same value reaches every branch that names it, which is what
+// "this actor's feed" has to mean.
+func Activity(ctx context.Context, ex runtime.Executor, actor string, n int64) ([]ActivityRow, error) {
 	var sl runtime.Slab
-	return ActivityInto(ctx, ex, nil, &sl, n)
+	return ActivityInto(ctx, ex, nil, &sl, actor, n)
 }
 
 // ActivityInto lets the caller own the output slice and the string arena.
-func ActivityInto(ctx context.Context, ex runtime.Executor, dst []ActivityRow, sl *runtime.Slab, n int64) ([]ActivityRow, error) {
-	rows, err := ex.Query(ctx, activitySQL, []any{n})
+func ActivityInto(ctx context.Context, ex runtime.Executor, dst []ActivityRow, sl *runtime.Slab, actor string, n int64) ([]ActivityRow, error) {
+	rows, err := ex.Query(ctx, activitySQL, []any{actor, n})
 	if err != nil {
 		return dst, err
 	}

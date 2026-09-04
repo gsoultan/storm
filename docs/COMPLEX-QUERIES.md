@@ -10,7 +10,7 @@ The question this page exists to answer is not "is storm expressive" but
 **"where is the line?"** — which of these is a declaration, and which sends you
 back to SQL.
 
-Four of the eight are declarations, two are half, and two are not. Saying which
+Five of the eight are declarations, one is half, and two are not. Saying which
 is more useful than a page of examples that all happen to work.
 
 > **How the declarations differ from a query builder.** They live in
@@ -195,7 +195,7 @@ which is the failure mode a hand-written recursive CTE usually ships with.
 Rows come back unordered, on purpose: a tree has no total order, and every row
 carries its `parent_id` for the caller to reassemble.
 
-## 7. Activity feed from heterogeneous sources ⚠️
+## 7. Activity feed from heterogeneous sources ✅
 
 > *"One reverse-chronological feed of comments, follows, and releases."*
 
@@ -231,10 +231,22 @@ rows is the twenty most recent events, not twenty of each source. `Const` is how
 a row says which branch it came from — without it the sources are
 indistinguishable once merged.
 
-**What is still missing: parameters.** The only value a call site supplies is
-the row cap, and a branch filter is a constant — so *this actor's* feed cannot
-be expressed. A global feed is a declaration; a personal one is still
-`storm.SQL[T]`. Most feeds are somebody's, so treat this as half done. Polymorphism helps with the
+A **declared parameter** narrows it to one actor. It reaches every branch that
+names it as the same placeholder, so "this actor's feed" cannot accidentally
+mean two different actors:
+
+```go
+actor := u.Param("Actor")
+orders.Where(storm.Exprs{}.Eq(&o.UpdatedBy, actor))
+bookings.Where(storm.Exprs{}.Eq(&b.Guest, actor))
+```
+
+```go
+recent, err := store.Activity(ctx, ex, actorID, 20)
+```
+
+The parameter's Go type is inferred from the column it is compared with, so the
+signature cannot disagree with what it filters. Polymorphism helps with the
 *storage* side — `storm.OneOfN` and `storm.AnyRef` in [[REFERENCE]] §6 — but not
 with merging three tables into one stream.
 
@@ -262,7 +274,6 @@ Not declarable, and each for a reason rather than an oversight:
 
 | Missing | Why |
 |---|---|
-| a parameterised union | branch filters are declared constants; only the row cap varies per call |
 | probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
 | set-returning functions | `generate_series` is not a scalar function |
 | run-time-relative filters | a declared `FILTER` is fixed at generate time |

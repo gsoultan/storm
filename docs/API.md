@@ -360,9 +360,21 @@ var Feed = storm.Union("Feed", func(u *storm.UnionSpec) {
 })
 ```
 
+A declared parameter narrows it, and reaches every branch that names it as the
+same placeholder — so "this author's feed" cannot mean two different authors:
+
 ```go
-stream, err := store.Feed(ctx, ex, 20)   // the 20 most recent THINGS
+author := u.Param("AuthorID")            // in the declaration
+authors.Where(storm.Exprs{}.Eq(&a.ID, author))
+articles.Where(storm.Exprs{}.Eq(&ar.Author, author))
 ```
+
+```go
+stream, err := store.Feed(ctx, ex, authorID, 20)  // the 20 most recent THINGS
+```
+
+Its Go type is inferred from the column it is compared with, so the signature
+cannot disagree with what it filters.
 
 The ordering and the cap apply to the **merge**, not to each branch — twenty
 rows is the twenty most recent, not twenty of each. Every branch must project
@@ -370,8 +382,8 @@ the same names in the same order; a column is nullable if **any** branch can
 produce NULL there; and `UNION ALL` is the default, because de-duplicating
 means sorting the whole result first.
 
-Only the row cap varies per call: a branch filter is declared, so a union is a
-global read. A *per-user* feed still needs `storm.SQL`.
+Branch filters that are *not* parameterised stay declared constants, so a
+declaration can narrow a feed in ways no call site can widen.
 
 **Joins** — a read that projects across tables and returns a flat row:
 

@@ -241,12 +241,14 @@ func TestTheTour(t *testing.T) {
 	// ordered and paged as a MERGE rather than per source. Two authors and two
 	// published articles; Grace's draft is excluded by the branch's declared
 	// filter, which no call site can widen.
-	stream, err := store.Feed(ctx, ex, 10)
+	// One declared parameter reaches BOTH branches as the same $1, so this is
+	// Ada's feed: Ada herself plus her two published articles.
+	stream, err := store.Feed(ctx, ex, ada.ID, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stream) != 4 {
-		t.Fatalf("feed has %d rows, want 4 (2 authors + 2 published articles)", len(stream))
+	if len(stream) != 3 {
+		t.Fatalf("Ada's feed has %d rows, want 3 (herself + 2 published articles)", len(stream))
 	}
 	kinds := map[string]int{}
 	for i, r := range stream {
@@ -255,16 +257,24 @@ func TestTheTour(t *testing.T) {
 			t.Fatalf("feed is not descending at %d: %s after %s", i, r.At, stream[i-1].At)
 		}
 	}
-	if kinds["author"] != 2 || kinds["article"] != 2 {
-		t.Fatalf("feed kinds = %v, want 2 of each", kinds)
+	if kinds["author"] != 1 || kinds["article"] != 2 {
+		t.Fatalf("feed kinds = %v, want 1 author and 2 articles", kinds)
+	}
+
+	// Grace's feed is Grace and nothing else: her only article is a draft, and
+	// the branch's declared filter excludes it whatever the parameter says.
+	if g, err := store.Feed(ctx, ex, grace.ID, 10); err != nil {
+		t.Fatal(err)
+	} else if len(g) != 1 || g[0].Kind != "author" {
+		t.Fatalf("Grace's feed = %+v, want just herself", g)
 	}
 
 	// The limit caps the MERGED result, not each branch — which is the whole
 	// difference between a feed and two lists the caller interleaves.
-	if page, err := store.Feed(ctx, ex, 3); err != nil {
+	if page, err := store.Feed(ctx, ex, ada.ID, 2); err != nil {
 		t.Fatal(err)
-	} else if len(page) != 3 {
-		t.Fatalf("limited feed has %d rows, want 3", len(page))
+	} else if len(page) != 2 {
+		t.Fatalf("limited feed has %d rows, want 2", len(page))
 	}
 
 	// ---- Transactions are Executors you were given: the same generated code

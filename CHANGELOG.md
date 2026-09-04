@@ -68,11 +68,28 @@ produce NULL there, or one branch's NULL decodes as another branch's zero.
 `UNION ALL` is the default, inverting SQL's, because de-duplicating means
 sorting the entire result before the first row comes back.
 
-**Not built: parameters.** The only value a call site supplies is the row cap,
-and a branch filter is a declared constant — so a *global* feed is a
-declaration and a per-user one is still `storm.SQL[T]`. Most feeds are
-somebody's, so this is half the feature; it is written down in the ADR rather
-than glossed.
+**Declared parameters** narrow it, because a union that cannot be narrowed is a
+global feed and most feeds are somebody's:
+
+```go
+actor := u.Param("Actor")
+orders.Where(storm.Exprs{}.Eq(&o.UpdatedBy, actor))
+bookings.Where(storm.Exprs{}.Eq(&b.Guest, actor))
+
+recent, err := store.Activity(ctx, ex, actorID, 20)
+```
+
+A parameter used in several branches is **one argument and one placeholder** —
+`$1` in each of them. Making the caller pass it per branch invites passing two
+different values for the same actor. Its Go type is inferred from the column it
+is first compared with, so the generated signature cannot disagree with what it
+filters, and a parameter compared with two different column types is refused
+rather than widened: it is one argument, so it is one type. A parameter
+declared and never used is refused too — it would sit in the signature
+demanding a value that reaches no statement.
+
+Branch filters that are not parameterised stay declared constants, so a
+declaration can still narrow a feed in ways no call site can widen.
 
 The union in `examples/orders` is planned by `storm explain` (16 statements
 now), and `examples/blog` asserts the merge, the ordering, the declared branch

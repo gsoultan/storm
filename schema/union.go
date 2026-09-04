@@ -27,6 +27,16 @@ type Union struct {
 	// after they are merged, so there is nothing else in scope.
 	OrderBy []UnionOrder
 
+	// Params are the values the call supplies, in declaration order — which is
+	// the order they appear in the generated function's signature.
+	//
+	// A union has no call-site predicates (its branches read different tables,
+	// so a predicate would have to say which one it filtered), and a feed that
+	// cannot be narrowed to one actor is not much of a feed. Declared
+	// parameters are the narrow answer: the SHAPE stays fixed, and only values
+	// vary.
+	Params []UnionParam
+
 	// Distinct selects UNION over UNION ALL.
 	//
 	// ALL is the default, inverting SQL's, because de-duplicating means
@@ -58,6 +68,16 @@ type UnionCol struct {
 	// NOT NULL in two tables and nullable in the third is nullable in the
 	// union, and typing it otherwise would decode a NULL as a zero value.
 	Nullable bool
+}
+
+// UnionParam is one declared parameter.
+type UnionParam struct {
+	// Name is the Go argument name in the generated function.
+	Name string
+	// Type is resolved from the column the parameter is first compared with:
+	// a parameter has no type of its own, and inferring it from use means the
+	// generated signature cannot disagree with the column it filters.
+	Type Type
 }
 
 // UnionOrder is one ORDER BY term over the merged rows.
