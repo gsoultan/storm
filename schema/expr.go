@@ -32,6 +32,10 @@ const (
 	// ExprGrouping is GROUPING(cols...), which distinguishes a subtotal row's
 	// NULL from a NULL that was in the data.
 	ExprGrouping
+	// ExprParam is a bound parameter: a value the CALL supplies, numbered at
+	// generate time. Only a union has these — every other read binds through
+	// the token stream, which a union has no call-site predicates to build.
+	ExprParam
 	// ExprBinary is arithmetic over two expressions. The OPERATOR is named
 	// abstractly and spelled by the back end, like everything else here: `/`
 	// does not mean the same thing in every dialect, which is exactly why the
@@ -56,6 +60,11 @@ type Expr struct {
 	Fn string
 	// Arith is the operator, for ExprBinary.
 	Arith ArithOp
+	// Param is the zero-based parameter index, for ExprParam. It is rendered
+	// as $(Param+1), and the same parameter used in two branches renders as
+	// the same placeholder — PostgreSQL allows that, and it keeps one declared
+	// parameter to one argument at the call.
+	Param int
 	// Args are the operands.
 	Args []Expr
 	// Lit is a declaration-time literal, already in its Go form.

@@ -37,6 +37,14 @@ func writeExpr(b *strings.Builder, e schema.Expr) {
 	case schema.ExprLit:
 		b.WriteString(e.Lit.SQL())
 
+	case schema.ExprParam:
+		// Numbered at generate time, not counted at splice time: a union has
+		// no token stream to number against, and the same parameter used in
+		// two branches must render as the SAME placeholder or the caller would
+		// have to pass it twice.
+		b.WriteString(Placeholder)
+		b.WriteString(strconv.Itoa(e.Param + 1))
+
 	case schema.ExprFunc:
 		b.WriteString(e.Fn)
 		b.WriteByte('(')

@@ -276,19 +276,27 @@ func (o *Order) Aggregates(a *storm.Aggregates) {
 // than ten of each. A union has no driving table, so it is declared here as a
 // package-level var rather than on Order or Booking (ADR-0008).
 var Activity = storm.Union("Activity", func(u *storm.UnionSpec) {
+	// One declared parameter, reaching both branches as the same placeholder:
+	// a feed narrowed to one actor, which is what most feeds are.
+	actor := u.Param("Actor")
+
 	var o Order
 	orders := u.From(&o)
 	orders.Take(&o.PlacedAt, "At")
 	orders.Take(&o.UpdatedBy, "Actor")
 	orders.Const("Kind", "order")
 	// Cancelled orders are never activity, and no call site can widen that.
-	orders.Where(storm.Exprs{}.Ne(&o.Status, string(StatusCancelled)))
+	orders.Where(storm.Exprs{}.And(
+		storm.Exprs{}.Ne(&o.Status, string(StatusCancelled)),
+		storm.Exprs{}.Eq(&o.UpdatedBy, actor),
+	))
 
 	var b Booking
 	bookings := u.From(&b)
 	bookings.Take(&b.CreatedAt, "At")
 	bookings.Take(&b.Guest, "Actor")
 	bookings.Const("Kind", "booking")
+	bookings.Where(storm.Exprs{}.Eq(&b.Guest, actor))
 
 	u.OrderDesc("At")
 })

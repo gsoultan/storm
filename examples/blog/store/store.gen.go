@@ -670,7 +670,7 @@ type FeedRow struct {
 	Kind string
 }
 
-const feedSQL = `(SELECT "created_at" AS "at", "name" AS "text", 'author' AS "kind" FROM "authors") UNION ALL (SELECT "created_at" AS "at", "title" AS "text", 'article' AS "kind" FROM "articles" WHERE "published_at" IS NOT NULL) ORDER BY "at" DESC LIMIT $1`
+const feedSQL = `(SELECT "created_at" AS "at", "name" AS "text", 'author' AS "kind" FROM "authors" WHERE "id" = $1) UNION ALL (SELECT "created_at" AS "at", "title" AS "text", 'article' AS "kind" FROM "articles" WHERE ("published_at" IS NOT NULL AND "author_id" = $1)) ORDER BY "at" DESC LIMIT $2`
 
 func scanFeed(rv [][]byte, r *FeedRow, sl *runtime.Slab) error {
 	r.At = runtime.Timestamptz(rv[0])
@@ -681,16 +681,20 @@ func scanFeed(rv [][]byte, r *FeedRow, sl *runtime.Slab) error {
 
 // Feed runs the "Feed" union: every branch, merged, ordered as one, in ONE
 // round trip. n caps the merged result, not any single branch — which is
-// the difference between a feed and three lists the caller has to
+// the difference between a feed and several lists the caller has to
 // interleave itself.
-func Feed(ctx context.Context, ex runtime.Executor, n int64) ([]FeedRow, error) {
+//
+// A declared parameter used in several branches is ONE argument: the
+// same value reaches every branch that names it, which is what
+// "this actor's feed" has to mean.
+func Feed(ctx context.Context, ex runtime.Executor, authorID [16]byte, n int64) ([]FeedRow, error) {
 	var sl runtime.Slab
-	return FeedInto(ctx, ex, nil, &sl, n)
+	return FeedInto(ctx, ex, nil, &sl, authorID, n)
 }
 
 // FeedInto lets the caller own the output slice and the string arena.
-func FeedInto(ctx context.Context, ex runtime.Executor, dst []FeedRow, sl *runtime.Slab, n int64) ([]FeedRow, error) {
-	rows, err := ex.Query(ctx, feedSQL, []any{n})
+func FeedInto(ctx context.Context, ex runtime.Executor, dst []FeedRow, sl *runtime.Slab, authorID [16]byte, n int64) ([]FeedRow, error) {
+	rows, err := ex.Query(ctx, feedSQL, []any{authorID, n})
 	if err != nil {
 		return dst, err
 	}

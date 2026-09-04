@@ -1,6 +1,6 @@
 # ADR-0008 — UNION has no driving table, and the column-id space is the real ceiling
 
-**Status:** Accepted · 2026-09-04 · **partly implemented** — see "What shipped"
+**Status:** Accepted · 2026-09-04 · implemented
 **Context for:** [COMPLEX-QUERIES](../COMPLEX-QUERIES.md) §5 and §7, [ADR-0004](0004-mongodb-as-backend.md)
 
 ## Context
@@ -171,16 +171,19 @@ Built as decided, with one part of §2 deferred:
   varchar is text); an enum beside a varchar is refused, because the server
   refuses it too. Nullability ORs: a column is nullable if ANY branch can
   produce NULL there, or one branch's NULL decodes as another's zero value.
-- ❌ **Declared parameters are NOT built.** The only value a call site supplies
-  is the row cap. That means the motivating query — *this actor's* feed — is
-  still out of reach: a branch filter is a constant, so "where actor = $1"
-  cannot be said.
+- ✅ **Declared parameters**, added straight after the first cut, because a
+  union that cannot be narrowed is a global feed and most feeds are somebody's.
+  `u.Param("Actor")` returns a handle for a branch filter; the type is inferred
+  from the column it is first compared with, so the generated signature cannot
+  disagree with what it filters. A parameter used in several branches is **one
+  argument and one placeholder** — making the caller pass it per branch invites
+  passing two different values for the same actor.
 
-The last point matters more than the four ticks above it. A union that cannot
-be parameterised is a global feed, and most feeds are somebody's. It was left
-out because parameters are a separable piece of work and the merge, the
-ordering and the shape checking are not — but nobody should read this ADR as
-saying the activity feed is done.
+  Refused: a parameter declared and never compared (it would demand an argument
+  that reaches no statement), one compared with two different column types (it
+  is one Go argument, so it is one type, and picking would make the signature a
+  guess), and two parameters compared with each other (neither has a type to
+  take).
 
 ## Consequences
 

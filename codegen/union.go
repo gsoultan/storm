@@ -67,19 +67,27 @@ func (g *gen) emitUnion(u *schema.Union) {
 	g.p("}")
 	g.p("")
 
+	params, args := unionParams(u)
+
 	g.p("// %s runs the %q union: every branch, merged, ordered as one, in ONE", u.Name, u.Name)
 	g.p("// round trip. n caps the merged result, not any single branch — which is")
-	g.p("// the difference between a feed and three lists the caller has to")
+	g.p("// the difference between a feed and several lists the caller has to")
 	g.p("// interleave itself.")
-	g.p("func %s(ctx context.Context, ex runtime.Executor, n int64) ([]%sRow, error) {", u.Name, u.Name)
+	if len(u.Params) > 0 {
+		g.p("//")
+		g.p("// A declared parameter used in several branches is ONE argument: the")
+		g.p("// same value reaches every branch that names it, which is what")
+		g.p("// \"this actor's feed\" has to mean.")
+	}
+	g.p("func %s(ctx context.Context, ex runtime.Executor%s, n int64) ([]%sRow, error) {", u.Name, params, u.Name)
 	g.p("\tvar sl runtime.Slab")
-	g.p("\treturn %sInto(ctx, ex, nil, &sl, n)", u.Name)
+	g.p("\treturn %sInto(ctx, ex, nil, &sl%s, n)", u.Name, args)
 	g.p("}")
 	g.p("")
 	g.p("// %sInto lets the caller own the output slice and the string arena.", u.Name)
-	g.p("func %sInto(ctx context.Context, ex runtime.Executor, dst []%sRow, sl *runtime.Slab, n int64) ([]%sRow, error) {",
-		u.Name, u.Name, u.Name)
-	g.p("\trows, err := ex.Query(ctx, %sSQL, []any{n})", low)
+	g.p("func %sInto(ctx context.Context, ex runtime.Executor, dst []%sRow, sl *runtime.Slab%s, n int64) ([]%sRow, error) {",
+		u.Name, u.Name, params, u.Name)
+	g.p("\trows, err := ex.Query(ctx, %sSQL, []any{%sn})", low, args2(u))
 	g.p("\tif err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
@@ -138,4 +146,30 @@ func unionsNeedTime(us []*schema.Union) bool {
 		}
 	}
 	return false
+}
+
+// unionParams renders the declared parameters as a Go signature fragment and
+// the matching argument list.
+//
+// Declaration order is signature order is placeholder order. One rule for all
+// three, so a reader of the generated function does not have to hold a mapping
+// in their head.
+func unionParams(u *schema.Union) (sig, args string) {
+	for _, p := range u.Params {
+		name := lowerFirst(p.Name)
+		sig += ", " + name + " " + goType(&schema.Column{
+			Name: p.Name, Type: p.Type, NotNull: true,
+		})
+		args += ", " + name
+	}
+	return sig, args
+}
+
+// args2 is the same list as a leading argument sequence for the []any.
+func args2(u *schema.Union) string {
+	var s string
+	for _, p := range u.Params {
+		s += lowerFirst(p.Name) + ", "
+	}
+	return s
 }

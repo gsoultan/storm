@@ -159,6 +159,38 @@ func (b *UnionBranchSpec) Where(c Cond) *UnionBranchSpec {
 	return b
 }
 
+// Param declares a value the CALL supplies, and returns a handle to use in a
+// branch filter:
+//
+//	actor := u.Param("Actor")
+//	orders.Where(storm.Exprs{}.Eq(&o.CustomerID, actor))
+//
+// The parameter has no type of its own — it takes the type of the column it is
+// first compared with, so the generated function's signature cannot disagree
+// with the column it filters. A parameter that is never used is refused: it
+// would sit in the signature demanding an argument that reaches no statement.
+//
+// The same parameter used in two branches is ONE argument and one placeholder.
+// That is the point: "this actor's feed" means the same actor in every branch,
+// and making the caller pass it once per branch invites passing two different
+// values.
+func (s *UnionSpec) Param(name string) Term {
+	if s.dead {
+		return Term{err: fmt.Errorf("union is already in error")}
+	}
+	if !isExportedIdent(name) {
+		s.fail("parameter %q must be a valid exported Go identifier", name)
+		return Term{err: fmt.Errorf("bad parameter name")}
+	}
+	for i, p := range s.u.Params {
+		if p.Name == name {
+			return Term{kind: schema.ExprParam, param: i + 1}
+		}
+	}
+	s.u.Params = append(s.u.Params, schema.UnionParam{Name: name})
+	return Term{kind: schema.ExprParam, param: len(s.u.Params)}
+}
+
 // OrderAsc and OrderDesc order the MERGED rows. They name output columns:
 // after the branches are unioned the source tables' own names are gone, and an
 // output alias is the only thing left in scope.
@@ -238,6 +270,16 @@ func (b *UnionBranchSpec) resolveCond(c Cond) (schema.Cond, error) {
 		if err != nil {
 			return schema.Cond{}, err
 		}
+		// A parameter takes the type of whatever it is compared with. Two
+		// comparisons that disagree are refused rather than widened: a
+		// parameter is one argument at the call, so it is one Go type, and
+		// picking between them would make the signature a guess.
+		if err := b.typeParam(&l, r); err != nil {
+			return schema.Cond{}, err
+		}
+		if err := b.typeParam(&r, l); err != nil {
+			return schema.Cond{}, err
+		}
 		return schema.Cond{Kind: schema.CondCmp, Op: c.op, Left: l, Right: r}, nil
 
 	case schema.CondIsNull, schema.CondIsNotNull:
@@ -270,6 +312,10 @@ func (b *UnionBranchSpec) resolveTerm(t Term) (schema.Expr, error) {
 		return schema.Expr{}, t.err
 	}
 	switch t.kind {
+	case schema.ExprParam:
+		// Typed by inference at the comparison, in resolveCond: alone, a
+		// parameter has nothing to take a type from.
+		return schema.Expr{Kind: schema.ExprParam, Param: t.param - 1}, nil
 	case schema.ExprLit:
 		return schema.Expr{Kind: schema.ExprLit, Lit: t.lit,
 			Type: schema.Type{Name: t.lit.Kind}}, nil
@@ -284,6 +330,32 @@ func (b *UnionBranchSpec) resolveTerm(t Term) (schema.Expr, error) {
 	return schema.Expr{}, fmt.Errorf(
 		"a branch filter takes this branch's columns and literals; " +
 			"expressions and aggregates are not in scope before the merge")
+}
+
+// typeParam gives a parameter the type of the thing beside it.
+func (b *UnionBranchSpec) typeParam(p *schema.Expr, other schema.Expr) error {
+	if p.Kind != schema.ExprParam {
+		return nil
+	}
+	if other.Kind == schema.ExprParam {
+		return fmt.Errorf(
+			"two parameters are compared with each other, so neither has a type " +
+				"to take — compare a parameter with a column")
+	}
+	decl := &b.s.u.Params[p.Param]
+	if decl.Type.Name == "" {
+		decl.Type = other.Type
+		p.Type = other.Type
+		return nil
+	}
+	if decl.Type.Name != other.Type.Name {
+		return fmt.Errorf(
+			"parameter %q is compared with %s here and %s elsewhere — it is one "+
+				"argument at the call, so it is one Go type",
+			decl.Name, other.Type.Name, decl.Type.Name)
+	}
+	p.Type = decl.Type
+	return nil
 }
 
 // column resolves a field pointer against this branch's local instance.
@@ -368,6 +440,14 @@ func (s *UnionSpec) validate() bool {
 			"rows from several tables, and Limit over it returns an arbitrary " +
 			"subset that can differ between runs")
 		return false
+	}
+	for i, p := range u.Params {
+		if p.Type.Name == "" {
+			s.fail("declares parameter %q and never compares it with a column — "+
+				"it would sit in the generated signature demanding an argument "+
+				"that reaches no statement", u.Params[i].Name)
+			return false
+		}
 	}
 	for _, o := range u.OrderBy {
 		if u.Col(o.Col) == nil {
