@@ -275,12 +275,17 @@ with merging three tables into one stream.
 
 > *"Daily signups for the last 90 days — including the days with none."*
 
-**Still `storm.SQL[T]`.** Gap-filling needs `generate_series`, and the
-scalar-function allow-list has `date_trunc`, `coalesce`, `nullif`, `abs`,
-`lower` and `upper` — a set-returning function is a different thing entirely.
+**Still `storm.SQL[T]`.** `AllDaily` gives the days that *have* rows; the empty
+ones were never in the data.
 
-`AllDaily` gives you the days that *have* rows; the empty ones have to come from
-somewhere, and today that is SQL.
+Producing them needs `generate_series`, and adding it beside `date_trunc` in the
+scalar-function allow-list does not work — those are **scalar** functions, called
+on a value and returning a value, while this one returns *rows*. A row source
+that is not a table is a different thing in every layer, and every read storm
+generates today starts `FROM <table>`.
+
+Two designs, both real work, neither started:
+[ADR-0009](adr/0009-gap-filling-needs-a-from-that-is-not-a-table.md).
 
 ---
 
@@ -296,7 +301,7 @@ Not declarable, and each for a reason rather than an oversight:
 | Missing | Why |
 |---|---|
 | probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
-| set-returning functions | `generate_series` is not a scalar function |
+| set-returning functions | a row source that is not a table — [ADR-0009](adr/0009-gap-filling-needs-a-from-that-is-not-a-table.md) |
 | recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |
 
 And when a query is not declarable, `storm.SQL[T]` is not a downgrade: the

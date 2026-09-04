@@ -73,10 +73,21 @@ const (
 	CmpLt
 )
 
-// MaxCols is how many columns a token can address: Col is ten bits wide.
-// Generated code checks against this rather than guessing, and a table with
-// more filterable columns is a generation error, never a truncation.
-const MaxCols = 1 << 10
+// MaxCols is how many columns a token can address in ONE table.
+//
+// Col is ten bits, so a token can carry 1024 ids — but a composed statement
+// splits that space: the parent's columns below ChildColBase and a wrapped
+// child's above it. A table wider than the split is therefore not merely
+// unusual, it is WRONG in a composer: a parent column at 550 and a child
+// column at 38 both address 550, and the lowering routes on the boundary
+// alone, so the parent's predicate would be built from the child package's
+// fragment table. Silently, and with the wrong rows.
+//
+// Any table can be a composer's parent or child — every foreign key generates
+// one — so the ceiling is the half, not the whole. Generated code checks
+// against this rather than guessing, and a table with more filterable columns
+// is a generation error, never a truncation.
+const MaxCols = ChildColBase
 
 // MakeLeaf builds a predicate token.
 func MakeLeaf(op, col uint32) Tok { return Tok(KLeaf<<28 | op<<22 | col<<12) }

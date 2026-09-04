@@ -193,8 +193,21 @@ Built as decided, with one part of §2 deferred:
 - The row type lives in the declaring package, not a table package — the first
   generated scanner that does. `storm.SQL` already works this way, so the
   precedent exists.
-- **The column-id split is deferred, not avoided.** Cross-relation probe chains
-  want it too. When the second feature needs it, do it once and re-base both.
+- **The column-id split is deferred, and the ceiling was wrong.** Writing this
+  up found a live bug rather than a future one: `runtime.MaxCols` was 1024, the
+  FULL token column width, while a composed statement gives each side half.
+  A 600-column table therefore passed generation and then addressed the same
+  ids as its wrapped child, so the parent's predicate was built from the child
+  package's fragment table — wrong rows, silently. `MaxCols` is now
+  `ChildColBase`.
+
+  That also raises the price of the split. Narrowing to four ranges of 256
+  would be a *second* ceiling reduction in one release, and it would break any
+  table between 257 and 511 columns — for a query shape (probes across two
+  relations, per-branch union predicates) that nobody has asked for yet. A
+  mis-routed column is a wrong-rows bug with no symptom, which is the worst
+  class to take speculative risk in. The bar stays what it was: do it once,
+  when a feature actually needs it, and re-base both.
 - Cost is comparable to `Joins`, which is the largest single feature in the
   compiler so far. It should not land in the same release as a fail-closed
   security change.

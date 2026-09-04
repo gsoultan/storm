@@ -66,8 +66,11 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	cols := filterable(t)
 	if len(cols) > runtime.MaxCols {
 		return nil, fmt.Errorf(
-			"codegen: table %s has %d filterable columns; the token column field holds %d — "+
-				"split the table, or narrow it with a projection",
+			"codegen: table %s has %d filterable columns; a composed statement gives "+
+				"each side %d — beyond that a parent column and a wrapped child column "+
+				"address the same id and the predicate is built from the wrong table's "+
+				"fragments\n"+
+				"       split the table, or narrow it with a projection",
 			t.Name, len(cols), runtime.MaxCols)
 	}
 

@@ -280,6 +280,19 @@ type FuncSig struct {
 	NullableIfAnyArgIs bool
 }
 
+// DateTruncUnits is the field names date_trunc accepts.
+//
+// An allow-list for the same reason the function list is one: the unit is a
+// STRING, so a typo is not a compile error, and PostgreSQL's answer to
+// `date_trunc('dya', ...)` is a runtime error on a statement that was fixed at
+// generate time. Everything else about a declared aggregation is checked
+// before it can run; this was the one string that was not.
+var DateTruncUnits = map[string]bool{
+	"microseconds": true, "milliseconds": true, "second": true, "minute": true,
+	"hour": true, "day": true, "week": true, "month": true, "quarter": true,
+	"year": true, "decade": true, "century": true, "millennium": true,
+}
+
 // Funcs is the allow-list of scalar functions.
 //
 // An allow-list, and a small one. An open `storm.Raw("whatever(x)")` would
