@@ -296,3 +296,41 @@ func TestSpliceTreeWhereComposes(t *testing.T) {
 		t.Errorf("SpliceTree gained a declared predicate: %s", st.SQL)
 	}
 }
+
+// A sigil already carrying an ordinal is not the splicer's to number.
+//
+// Two things put one in a suffix. A declared parameter used in a HAVING is
+// spelled $1 at generate time, because it lives in fixed text whose numbers are
+// known then. And a declaration-time literal may simply contain a dollar —
+// `'$5.00'` is a price. Numbering either turned `$1` into `$31` and produced a
+// statement PostgreSQL could not type.
+func TestSpliceLeavesNumberedSigilsAlone(t *testing.T) {
+	lw := runtime.Lowering{
+		Frag:  func(op, col uint32) runtime.Frag { return runtime.Frag{A: `"c" = $`} },
+		Order: func(dir, col uint32) string { return `"c"` },
+		OB:    runtime.Order{Lead: " ORDER BY ", Sep: ", "},
+	}
+	toks := []runtime.Tok{runtime.MakeLeaf(0, 0)}
+
+	// One predicate, then a suffix carrying a declared $1 and a bare cap.
+	st := runtime.SpliceTree("SELECT 1 FROM t", toks, lw, ` HAVING x > $1 LIMIT $`)
+	if want := `SELECT 1 FROM t WHERE "c" = $1 HAVING x > $1 LIMIT $2`; st.SQL != want {
+		t.Errorf("got  %s\nwant %s", st.SQL, want)
+	}
+
+	// Reserved ordinals, in the shape a declared aggregation actually has: the
+	// parameter is $1 in the SELECT list, so the predicate is $2 and the cap
+	// is $3 — and the suffix's own $1 survives untouched.
+	st = runtime.SpliceTreeFrom("SELECT count(*) FILTER (WHERE d > $1) FROM t", toks, lw,
+		` HAVING x > $1 LIMIT $`, 1)
+	want := `SELECT count(*) FILTER (WHERE d > $1) FROM t WHERE "c" = $2 HAVING x > $1 LIMIT $3`
+	if st.SQL != want {
+		t.Errorf("got  %s\nwant %s", st.SQL, want)
+	}
+
+	// A dollar inside a literal is a dollar.
+	st = runtime.SpliceTree("SELECT 1 FROM t", nil, lw, ` WHERE label = '$5.00' LIMIT $`)
+	if want := `SELECT 1 FROM t WHERE label = '$5.00' LIMIT $1`; st.SQL != want {
+		t.Errorf("got  %s\nwant %s", st.SQL, want)
+	}
+}

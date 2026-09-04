@@ -10,8 +10,8 @@ The question this page exists to answer is not "is storm expressive" but
 **"where is the line?"** — which of these is a declaration, and which sends you
 back to SQL.
 
-Five of the eight are declarations, one is half, and two are not. Saying which
-is more useful than a page of examples that all happen to work.
+Six of the eight are declarations, one is half, and one is not. Saying which is
+more useful than a page of examples that all happen to work.
 
 > **How the declarations differ from a query builder.** They live in
 > `Aggregates` and `Joins` methods on the model, not in a chain at the call
@@ -70,19 +70,40 @@ func (s *Subscription) Joins(j *storm.Joins) {
 **What it buys:** `FILTER` instead of `SUM(CASE WHEN …)`, and `LAG` over an
 aggregate — both of which GORM and Ent can only reach through raw SQL.
 
-## 2. Churn risk — accounts whose usage is falling ❌
+## 2. Churn risk — accounts whose usage is falling ✅
 
 > *"Accounts whose last-30-day event count is below 60% of the 30 days before
 > that."*
 
-**Still `storm.SQL[T]`**, and the reason is precise: a `FILTER` condition is part
-of the declaration, so it is fixed at generate time. "The last 30 days" is
-relative to *when the query runs*, and there is no way to say that in a
-declared filter.
+A `FILTER` is part of the declaration, so its condition is fixed at generate
+time — and "the last 30 days" is relative to when the query runs. A **declared
+parameter** is what closes that gap:
 
-The arithmetic itself is no longer the obstacle — `a.Div(recent,
-a.NullIf(prior, a.Lit(0)))` is a declaration and resolves to numeric, not to
-truncated integer division. It is the moving boundary that does not fit.
+```go
+rate  := a.Named("PaidRate")
+since := rate.Param("Since")
+rate.By(&o.Status)
+recent := rate.Count("Recent").Filter(a.Gte(&o.PlacedAt, since))
+rate.Count("RecentPaid").Filter(a.And(
+    a.Gte(&o.PlacedAt, since),
+    a.Eq(&o.Status, "paid"),
+))
+rate.Having(a.Gt(recent, 0))
+```
+
+```go
+rows, err := order.New().
+    Where(order.Region.Eq(r)).                       // call-site predicates still compose
+    AllPaidRate(ctx, ex, time.Now().AddDate(0, 0, -30))
+```
+
+The parameter is `$1`, in the statement's fixed prefix where the `FILTER`
+lives; the call-site predicates are numbered from `$2`. Its Go type is inferred
+from the column it is compared with.
+
+The ratio itself was never the obstacle: `a.Div(recent, a.NullIf(prior,
+a.Lit(0)))` is a declaration and resolves to numeric rather than truncated
+integer division.
 
 ## 3. Bought X, never bought Y ✅
 
@@ -276,7 +297,6 @@ Not declarable, and each for a reason rather than an oversight:
 |---|---|
 | probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
 | set-returning functions | `generate_series` is not a scalar function |
-| run-time-relative filters | a declared `FILTER` is fixed at generate time |
 | recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |
 
 And when a query is not declarable, `storm.SQL[T]` is not a downgrade: the

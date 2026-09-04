@@ -187,7 +187,7 @@ func (s *UnionSpec) Param(name string) Term {
 			return Term{kind: schema.ExprParam, param: i + 1}
 		}
 	}
-	s.u.Params = append(s.u.Params, schema.UnionParam{Name: name})
+	s.u.Params = append(s.u.Params, schema.Param{Name: name})
 	return Term{kind: schema.ExprParam, param: len(s.u.Params)}
 }
 

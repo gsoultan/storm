@@ -252,6 +252,21 @@ func (o *Order) Aggregates(a *storm.Aggregates) {
 	// Where the day sits in the whole range, as a fraction.
 	trend.PercentRank("RevenuePct", a.Over().OrderByDesc(trev))
 
+	// The query a FILTER alone cannot express: "the last N days" is relative
+	// to when the report runs, and a declared filter is fixed at generate
+	// time. A declared PARAMETER is the narrow answer — the shape stays one
+	// shape, and only the boundary moves.
+	rate := a.Named("PaidRate")
+	since := rate.Param("Since")
+	rate.By(&o.Status)
+	recent := rate.Count("Recent").Filter(a.Gte(&o.PlacedAt, since))
+	rate.Count("RecentPaid").Filter(a.And(
+		a.Gte(&o.PlacedAt, since),
+		a.Eq(&o.Status, string(StatusPaid)),
+	))
+	rate.Sum(&o.Total, "RecentRevenue").Filter(a.Gte(&o.PlacedAt, since))
+	rate.Having(a.Gt(recent, 0))
+
 	// Grouped by customer — the CTE the VsLifetime join materialises.
 	byCustomer := a.Named("ByCustomer")
 	byCustomer.By(&o.Customer)
