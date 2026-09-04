@@ -14,61 +14,70 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
-### Fixed: a wide table mis-routed its own predicates in a composed statement
+**Upgrading requires regeneration.** `storm.SQL` statements are now pinned to
+the text `storm generate` PREPAREd, and the check is fail-closed: a declaration
+the generator has not seen does not run. Regenerate before you upgrade, or the
+first raw query to execute will refuse. Everything else here is additive.
 
-`runtime.MaxCols` was 1024 — the full token column width — but a composed
-statement (a semi- or anti-join) splits that space in half: the parent's
-columns below `ChildColBase`, the wrapped child's above. A table with 600
-filterable columns therefore passed generation and then addressed the same ids
-as its child, so the parent's predicate was assembled from the **child**
-package's fragment table. Wrong rows, no error, no symptom.
+The headline is the escape hatch closing — that was the one place a caller's
+string could reach SQL text. After it: unions, declared parameters, a much
+larger aggregation surface, the anti-join, many-to-many, and seven correctness
+fixes. The four reference documents were rewritten as-built and are now
+compiled by tests, because all four described an API that did not exist.
 
-Any table can be a composer's parent or child — every foreign key generates one
-— so the ceiling is the half. `MaxCols` is now `ChildColBase`, and the
-generation error explains what would otherwise have happened.
+### Only a declared statement runs — closing the escape hatch's injection vector
 
-### `date_trunc` units are checked at build time
-
-The unit is a string, so `date_trunc("dya", …)` is not a compile error, and the
-statement is fixed at generate time — which made generation the last place to
-catch it and PostgreSQL the first, on a query no test happened to call. Now an
-allow-list, listed in the error.
-
-### Declared parameters for aggregations
-
-A `FILTER` is part of the declaration, so its condition is fixed at generate
-time — which makes *"the last thirty days"* unsayable, because that is relative
-to when the query runs. It was the one thing standing between storm and the
-churn-risk report, and the reason that query was raw SQL.
+Every ordinary storm query is structurally immune to injection: a predicate is
+a stream of compiler-generated ids, the values travel as bound arguments, and
+no caller string is present in the SQL text to escape. `storm.SQL` was the
+exception, and one detail made it sharper than it looked — `RegisterScanner`
+keys by **row type**, so a scanner declared for one query answered for *any*
+query returning that type:
 
 ```go
-rate  := a.Named("PaidRate")
-since := rate.Param("Since")
-recent := rate.Count("Recent").Filter(a.Gte(&o.PlacedAt, since))
-rate.Having(a.Gt(recent, 0))
-
-rows, err := order.New().
-    Where(order.Region.Eq(r)).                       // predicates still compose
-    AllPaidRate(ctx, ex, time.Now().AddDate(0, 0, -30))
+// Before: this ran, on the strength of a scanner it never declared.
+q := storm.SQL[EarnerRow](fmt.Sprintf("SELECT ... WHERE name = '%s'", userInput))
 ```
 
-Declared parameters are `$1..$k` in the statement's **fixed prefix**, where the
-`FILTER` lives, and the call-site predicates are numbered from `k+1`. The type
-is inferred from the column the parameter is first compared with, so the
-generated signature cannot disagree with what it filters. The same rules as
-union parameters, and the same `schema.Param` behind both.
+`storm generate` now emits a `storm.RegisterStatement` for every statement it
+PREPAREd, and a declaration whose text is not one of them **does not run** —
+the refusal happens at the call, before the executor is reached, naming the
+fix. The check is content-addressed: a statement one byte from the one that was
+validated is a different statement and is refused with it.
 
-#### Fixed: the splicer renumbered dollars it did not own
+The generated init lists the statements as source, not as digests, because what
+a reviewer needs from it is to see which statements are allowed to run.
 
-Found by the first parameterised `HAVING`. The suffix scan numbered **every**
-`$` it walked past, so a declared `$1` in a `HAVING` became `$31` and the server
-could not type the statement.
+**`storm generate` also refuses two shapes the registry cannot vouch for:** a
+`storm.SQL` call that is not a package-level var — never discovered, PREPAREd or
+registered, so it could never have run — and a `RegisterStatement` whose text is
+computed, which would whitelist whatever that expression produces. Both fail the
+build naming the line, instead of the first request that reaches the branch.
 
-The rule is now that a sigil already carrying an ordinal is not the splicer's.
-That also fixes a latent bug nobody had hit: a declaration-time text literal
-containing a dollar — `'$5.00'` is a price, not a placeholder — was being
-renumbered into nonsense. 650k fuzz executions over `FuzzSpliceTree` green.
+**The placeholder count is now proven against the server.** `maxPlaceholder`
+scans the text for the highest `$n`, so a `$1` inside a string literal or a
+`$tag$` body counted when PostgreSQL reads it as text — and every call then got
+"wants 2 arguments, got 1" for a statement that takes one. The generator
+PREPAREs each declaration and the server reports the real number, so the two are
+compared and a disagreement fails the build naming both:
 
+```
+storm.SQLExec takes 1 parameter(s), but its text scans as 2 — a $n inside a string literal or a $tag$ body reads as a placeholder
+  DELETE FROM users WHERE name = $1 AND email <> $tag$ keep $2 $tag$
+```
+
+This closes M7's exit gate as written: *the placeholder count for every shape is
+known at build time, so a violation is a generation error, not a runtime check.*
+
+Migrating: nothing changes for a codebase whose raw queries are package-level
+vars — regenerate and they are registered. A test that hand-registers a scanner
+must now hand-register its statement too:
+
+```go
+const q = `SELECT ...`
+var Q = storm.SQL[Row](q)
+func init() { storm.RegisterStatement(q) }
+```
 ### Declared UNIONs
 
 Several tables merged into one stream, ordered and capped as a **merge** rather
@@ -150,154 +159,40 @@ The union in `examples/orders` is planned by `storm explain` (16 statements
 now), and `examples/blog` asserts the merge, the ordering, the declared branch
 filter and the cap against a real server.
 
-### Chained existence probes: `AndHaving` / `AndNotHaving`
+### Declared parameters for aggregations
 
-The upsell query — *bought Coffee, never bought Equipment* — is now one
-statement:
-
-```go
-store.CustomerHavingOrders(customer.New(), order.Category.Eq(coffee)).
-    AndNotHaving(order.Category.Eq(equipment)).
-    All(ctx, ex)
-```
-
-The token layout already allowed this and nothing used it: `MakeExists(rel,
-arity)` carries a relation id and `Lowering.Exists` takes one, but every
-generated composer passed `0` because there had only ever been one probe per
-statement. The id now selects the header — 0 positive, 1 negated — so both
-polarities live in one stream.
-
-Two positive probes are satisfied by **different** child rows, which is what
-"ordered both of these" means; `examples/blog` asserts that rather than
-describing it.
-
-**One relation per chain, enforced by the type.** Probes against two different
-relations would rebase both children past the same `runtime.ChildColBase`, and
-the composite lowering routes on that range alone — it could not tell one child
-package's fragments from the other's. `AndHaving` therefore exists only on the
-composer for the relation you started with, so "has orders but no refunds" does
-not compile rather than returning the wrong rows.
-
-Each probe takes its own binder: `bindPreds` resets the arenas it fills, so two
-probes sharing one would have the second silently overwrite the first.
-
-The composer type is now per relation rather than per relation *and* polarity —
-`AuthorArticlesProbeQuery`, returned by both `AuthorHavingArticles` and
-`AuthorNotHavingArticles`. Call sites that did not name the type are unaffected.
-
-### The anti-join: `<Parent>NotHaving<Child>`
-
-The semi-join had no negative form, so "customers who bought Coffee but never
-Equipment" — an upsell list, a dunning list, a re-engagement list — meant
-writing raw SQL for the second half and losing the composable predicate on the
-first half too.
+A `FILTER` is part of the declaration, so its condition is fixed at generate
+time — which makes *"the last thirty days"* unsayable, because that is relative
+to when the query runs. It was the one thing standing between storm and the
+churn-risk report, and the reason that query was raw SQL.
 
 ```go
-store.AuthorNotHavingArticles(author.New(), article.PublishedAt.IsNotNull())
+rate  := a.Named("PaidRate")
+since := rate.Param("Since")
+recent := rate.Count("Recent").Filter(a.Gte(&o.PlacedAt, since))
+rate.Having(a.Gt(recent, 0))
+
+rows, err := order.New().
+    Where(order.Region.Eq(r)).                       // predicates still compose
+    AllPaidRate(ctx, ex, time.Now().AddDate(0, 0, -30))
 ```
 
-One `NOT EXISTS` probe per row: no join fan-out, no `DISTINCT`, and the child
-predicates are still typed by the child's own package. It came almost free —
-the back end already had `NotExistsFrag`, and the composer is emitted from the
-same spec as the positive form.
+Declared parameters are `$1..$k` in the statement's **fixed prefix**, where the
+`FILTER` lives, and the call-site predicates are numbered from `k+1`. The type
+is inferred from the column the parameter is first compared with, so the
+generated signature cannot disagree with what it filters. The same rules as
+union parameters, and the same `schema.Param` behind both.
 
-**Read it carefully, and the generated doc comment says so at the call site.**
-`NotHaving` means *"has no child row matching these predicates"*, not *"has a
-child row that does not match"*. The two differ for any parent holding both
-kinds, and SQL spells them the same way round. With no predicates it is "has
-none". `examples/blog` asserts exactly that distinction: Grace has an article,
-it is simply not published, so she is absent from the semi-join and present in
-the anti-join.
+#### Fixed: the splicer renumbered dollars it did not own
 
-Still missing, and now written down in [docs/COMPLEX-QUERIES.md](docs/COMPLEX-QUERIES.md):
-the two cannot be **chained**. A composer returns `All` and `Count`, not a query
-the next composer can take, so "bought X and never bought Y" is two round trips
-and an intersection in Go. Chaining needs two `EXISTS` headers in one token
-stream, and the header lookup is per-statement rather than per-relation today.
+Found by the first parameterised `HAVING`. The suffix scan numbered **every**
+`$` it walked past, so a declared `$1` in a `HAVING` became `$31` and the server
+could not type the statement.
 
-### COMPLEX-QUERIES.md says where the line is, and a frame rule was too strict
-
-The eight-scenario page was the last doc showing a call-site
-`GroupBy(...).Select(...)` chain. Rewritten around the question it exists to
-answer — *which of these is a declaration, and which sends you back to SQL* —
-with the answer marked per scenario: five declarable, three not, and a table of
-what is missing and why. A page where every example happens to work says less
-than one that admits `UNION`, `NOT EXISTS`, `generate_series` and
-run-time-relative `FILTER` boundaries are not there.
-
-Writing scenario 1 found a **false refusal**: the frame rule required an
-`ORDER BY` for every window frame, but `ROWS BETWEEN UNBOUNDED PRECEDING AND
-UNBOUNDED FOLLOWING` is the whole partition however the rows are ordered — as
-deterministic without an ordering as with one. It is also how you put a
-partition total beside a per-row value, which is the most common reason to want
-a frame at all, so the rule sent the share-of-group query back to raw SQL. Now
-allowed; every other frame still requires the ordering.
-
-#### Fixed: REFERENCE.md said recursive queries were not built
-
-They are. A self-referential foreign key generates `Descend` and `Ascend`, each
-a single `WITH RECURSIVE` with a required depth bound and a path array that
-refuses a row already on it. The claim came from a grep that only matched
-methods, while these are package-level functions — a reminder that a *negative*
-claim about an API cannot be checked by a compile test the way a positive one
-can.
-
-### The reference docs describe the API that exists, and are compiled
-
-`docs/API.md`, `docs/EXAMPLE.md` and `docs/REFERENCE.md` were all marked
-*"proposed — illustrative, not implemented"* and all three documented an API
-that is not there. REFERENCE.md was the worst of them: `t.ForeignKey`,
-`t.Inverse`, `t.Plan`, `t.Set`, `user.Get(ctx, db, id)`, `Between`,
-`HasPrefix`, jsonb `Path`, a declaration-time `.Latest()`/`.Top()` on a
-relation, `Descend`/`Ascend`, `Iter` — none of which exist. It is easier to
-trust a short document than a long one with a warning on top, so it is now 309
-lines of modelling reference plus an explicit list of what is **not** built.
-
-Two test files keep them honest, because prose cannot be tested and these
-drifted for a year:
-
-- `examples/blog/apidoc_test.go` compiles every call shape API.md and
-  EXAMPLE.md show, against the generated store.
-- `docs_test.go` puts every declaration REFERENCE.md shows through
-  `storm.Build` — the same front end `storm generate` runs.
-
-A method that does not exist now fails the build, and a rename that lands in
-generated code without landing in a document fails it too.
-
-#### Fixed: an unexported mixin panicked instead of failing
-
-Writing this found it. `callMixinSchemas` called `Interface()` on an embedded
-field it could not read, while `walk` immediately below skipped unexported
-fields correctly — so embedding an unexported mixin crashed inside `reflect`
-rather than reporting anything.
-
-Silently skipping would have been worse than the panic: the mixin's `Schema`
-never runs, so the table comes out missing whatever it declared — a default, a
-version column — and nothing says so. It is now an error naming the mixin and
-the fix.
-
-### docs/API.md is now as-built, and compiled
-
-The document an evaluator reads first described an API that does not exist:
-`user.Query()` (it is `New()`), `OrderBy` (it is `Order`), `storm.Pred`,
-`storm.OnConflict`, `storm.Unit`, `storm.OrdCol`/`TextCol`/`JSONCol`/`ArrayCol`
-as package types, `user.Get(ctx, db, id)` one-liners, and a
-`GroupBy(...).Select(storm.Into[T](...))` chain that the compilation thesis
-rules out on purpose. Ten of its `storm.X` references had no such symbol.
-
-It carried an "as-built note" listing part of the drift, which is the shape of a
-document nobody can trust — the reader has to know which half is real.
-
-Rewritten against the generated API, and **`examples/blog/apidoc_test.go` now
-compiles every call shape it shows**. A method that does not exist fails the
-build; a rename that lands in generated code without landing in the document
-fails it too. Prose cannot be tested, so the shapes are.
-
-New section on declared reports — projections, aggregations and joins together —
-covering `CountDistinct`, `Compute`, `Div`, frames and the `*Over` family.
-
-`docs/REFERENCE.md` and `docs/EXAMPLE.md` are still marked as design sketches
-and still describe call shapes that do not exist. They are the next two.
+The rule is now that a sigil already carrying an ordinal is not the splicer's.
+That also fixes a latent bug nobody had hit: a declaration-time text literal
+containing a dollar — `'$5.00'` is a price, not a placeholder — was being
+renumbered into nonsense. 650k fuzz executions over `FuzzSpliceTree` green.
 
 ### Aggregation: DISTINCT, arithmetic, and window frames
 
@@ -367,59 +262,71 @@ the input's, so it has no such problem.
 Grouping BY an aggregate is also refused now — `GROUP BY` runs before
 aggregation, and the error names `Compute` as the place that expression belongs.
 
-### Only a declared statement runs — closing the escape hatch's injection vector
+### Chained existence probes: `AndHaving` / `AndNotHaving`
 
-Every ordinary storm query is structurally immune to injection: a predicate is
-a stream of compiler-generated ids, the values travel as bound arguments, and
-no caller string is present in the SQL text to escape. `storm.SQL` was the
-exception, and one detail made it sharper than it looked — `RegisterScanner`
-keys by **row type**, so a scanner declared for one query answered for *any*
-query returning that type:
+The upsell query — *bought Coffee, never bought Equipment* — is now one
+statement:
 
 ```go
-// Before: this ran, on the strength of a scanner it never declared.
-q := storm.SQL[EarnerRow](fmt.Sprintf("SELECT ... WHERE name = '%s'", userInput))
+store.CustomerHavingOrders(customer.New(), order.Category.Eq(coffee)).
+    AndNotHaving(order.Category.Eq(equipment)).
+    All(ctx, ex)
 ```
 
-`storm generate` now emits a `storm.RegisterStatement` for every statement it
-PREPAREd, and a declaration whose text is not one of them **does not run** —
-the refusal happens at the call, before the executor is reached, naming the
-fix. The check is content-addressed: a statement one byte from the one that was
-validated is a different statement and is refused with it.
+The token layout already allowed this and nothing used it: `MakeExists(rel,
+arity)` carries a relation id and `Lowering.Exists` takes one, but every
+generated composer passed `0` because there had only ever been one probe per
+statement. The id now selects the header — 0 positive, 1 negated — so both
+polarities live in one stream.
 
-The generated init lists the statements as source, not as digests, because what
-a reviewer needs from it is to see which statements are allowed to run.
+Two positive probes are satisfied by **different** child rows, which is what
+"ordered both of these" means; `examples/blog` asserts that rather than
+describing it.
 
-**`storm generate` also refuses two shapes the registry cannot vouch for:** a
-`storm.SQL` call that is not a package-level var — never discovered, PREPAREd or
-registered, so it could never have run — and a `RegisterStatement` whose text is
-computed, which would whitelist whatever that expression produces. Both fail the
-build naming the line, instead of the first request that reaches the branch.
+**One relation per chain, enforced by the type.** Probes against two different
+relations would rebase both children past the same `runtime.ChildColBase`, and
+the composite lowering routes on that range alone — it could not tell one child
+package's fragments from the other's. `AndHaving` therefore exists only on the
+composer for the relation you started with, so "has orders but no refunds" does
+not compile rather than returning the wrong rows.
 
-**The placeholder count is now proven against the server.** `maxPlaceholder`
-scans the text for the highest `$n`, so a `$1` inside a string literal or a
-`$tag$` body counted when PostgreSQL reads it as text — and every call then got
-"wants 2 arguments, got 1" for a statement that takes one. The generator
-PREPAREs each declaration and the server reports the real number, so the two are
-compared and a disagreement fails the build naming both:
+Each probe takes its own binder: `bindPreds` resets the arenas it fills, so two
+probes sharing one would have the second silently overwrite the first.
 
-```
-storm.SQLExec takes 1 parameter(s), but its text scans as 2 — a $n inside a string literal or a $tag$ body reads as a placeholder
-  DELETE FROM users WHERE name = $1 AND email <> $tag$ keep $2 $tag$
-```
+The composer type is now per relation rather than per relation *and* polarity —
+`AuthorArticlesProbeQuery`, returned by both `AuthorHavingArticles` and
+`AuthorNotHavingArticles`. Call sites that did not name the type are unaffected.
 
-This closes M7's exit gate as written: *the placeholder count for every shape is
-known at build time, so a violation is a generation error, not a runtime check.*
+### The anti-join: `<Parent>NotHaving<Child>`
 
-Migrating: nothing changes for a codebase whose raw queries are package-level
-vars — regenerate and they are registered. A test that hand-registers a scanner
-must now hand-register its statement too:
+The semi-join had no negative form, so "customers who bought Coffee but never
+Equipment" — an upsell list, a dunning list, a re-engagement list — meant
+writing raw SQL for the second half and losing the composable predicate on the
+first half too.
 
 ```go
-const q = `SELECT ...`
-var Q = storm.SQL[Row](q)
-func init() { storm.RegisterStatement(q) }
+store.AuthorNotHavingArticles(author.New(), article.PublishedAt.IsNotNull())
 ```
+
+One `NOT EXISTS` probe per row: no join fan-out, no `DISTINCT`, and the child
+predicates are still typed by the child's own package. It came almost free —
+the back end already had `NotExistsFrag`, and the composer is emitted from the
+same spec as the positive form.
+
+**Read it carefully, and the generated doc comment says so at the call site.**
+`NotHaving` means *"has no child row matching these predicates"*, not *"has a
+child row that does not match"*. The two differ for any parent holding both
+kinds, and SQL spells them the same way round. With no predicates it is "has
+none". `examples/blog` asserts exactly that distinction: Grace has an article,
+it is simply not published, so she is absent from the semi-join and present in
+the anti-join.
+
+Still missing, and now written down in [docs/COMPLEX-QUERIES.md](docs/COMPLEX-QUERIES.md):
+the two cannot be **chained**. A composer returns `All` and `Count`, not a query
+the next composer can take, so "bought X and never bought Y" is two round trips
+and an intersection in Go. Chaining needs two `EXISTS` headers in one token
+stream, and the header lookup is per-statement rather than per-relation today.
+
 ### Many-to-many: self-referential, and joins with a payload
 
 The two shapes the previous entry listed as unbuilt.
@@ -552,6 +459,111 @@ asserts. The query-side dialect seam it said "does not exist" is
 `TestNoSQLTextInCodegen`, gated by `boundaries.sh` on every CI run. M2, M3 and
 M6 were still marked incomplete while the same file records, further down, that
 all three passed.
+
+
+### Fixed: a wide table mis-routed its own predicates in a composed statement
+
+`runtime.MaxCols` was 1024 — the full token column width — but a composed
+statement (a semi- or anti-join) splits that space in half: the parent's
+columns below `ChildColBase`, the wrapped child's above. A table with 600
+filterable columns therefore passed generation and then addressed the same ids
+as its child, so the parent's predicate was assembled from the **child**
+package's fragment table. Wrong rows, no error, no symptom.
+
+Any table can be a composer's parent or child — every foreign key generates one
+— so the ceiling is the half. `MaxCols` is now `ChildColBase`, and the
+generation error explains what would otherwise have happened.
+
+### `date_trunc` units are checked at build time
+
+The unit is a string, so `date_trunc("dya", …)` is not a compile error, and the
+statement is fixed at generate time — which made generation the last place to
+catch it and PostgreSQL the first, on a query no test happened to call. Now an
+allow-list, listed in the error.
+
+### The reference docs describe the API that exists, and are compiled
+
+`docs/API.md`, `docs/EXAMPLE.md` and `docs/REFERENCE.md` were all marked
+*"proposed — illustrative, not implemented"* and all three documented an API
+that is not there. REFERENCE.md was the worst of them: `t.ForeignKey`,
+`t.Inverse`, `t.Plan`, `t.Set`, `user.Get(ctx, db, id)`, `Between`,
+`HasPrefix`, jsonb `Path`, a declaration-time `.Latest()`/`.Top()` on a
+relation, `Descend`/`Ascend`, `Iter` — none of which exist. It is easier to
+trust a short document than a long one with a warning on top, so it is now 309
+lines of modelling reference plus an explicit list of what is **not** built.
+
+Two test files keep them honest, because prose cannot be tested and these
+drifted for a year:
+
+- `examples/blog/apidoc_test.go` compiles every call shape API.md and
+  EXAMPLE.md show, against the generated store.
+- `docs_test.go` puts every declaration REFERENCE.md shows through
+  `storm.Build` — the same front end `storm generate` runs.
+
+A method that does not exist now fails the build, and a rename that lands in
+generated code without landing in a document fails it too.
+
+#### Fixed: an unexported mixin panicked instead of failing
+
+Writing this found it. `callMixinSchemas` called `Interface()` on an embedded
+field it could not read, while `walk` immediately below skipped unexported
+fields correctly — so embedding an unexported mixin crashed inside `reflect`
+rather than reporting anything.
+
+Silently skipping would have been worse than the panic: the mixin's `Schema`
+never runs, so the table comes out missing whatever it declared — a default, a
+version column — and nothing says so. It is now an error naming the mixin and
+the fix.
+
+### docs/API.md is now as-built, and compiled
+
+The document an evaluator reads first described an API that does not exist:
+`user.Query()` (it is `New()`), `OrderBy` (it is `Order`), `storm.Pred`,
+`storm.OnConflict`, `storm.Unit`, `storm.OrdCol`/`TextCol`/`JSONCol`/`ArrayCol`
+as package types, `user.Get(ctx, db, id)` one-liners, and a
+`GroupBy(...).Select(storm.Into[T](...))` chain that the compilation thesis
+rules out on purpose. Ten of its `storm.X` references had no such symbol.
+
+It carried an "as-built note" listing part of the drift, which is the shape of a
+document nobody can trust — the reader has to know which half is real.
+
+Rewritten against the generated API, and **`examples/blog/apidoc_test.go` now
+compiles every call shape it shows**. A method that does not exist fails the
+build; a rename that lands in generated code without landing in the document
+fails it too. Prose cannot be tested, so the shapes are.
+
+New section on declared reports — projections, aggregations and joins together —
+covering `CountDistinct`, `Compute`, `Div`, frames and the `*Over` family.
+
+`docs/REFERENCE.md` and `docs/EXAMPLE.md` are still marked as design sketches
+and still describe call shapes that do not exist. They are the next two.
+
+### COMPLEX-QUERIES.md says where the line is, and a frame rule was too strict
+
+The eight-scenario page was the last doc showing a call-site
+`GroupBy(...).Select(...)` chain. Rewritten around the question it exists to
+answer — *which of these is a declaration, and which sends you back to SQL* —
+with the answer marked per scenario: five declarable, three not, and a table of
+what is missing and why. A page where every example happens to work says less
+than one that admits `UNION`, `NOT EXISTS`, `generate_series` and
+run-time-relative `FILTER` boundaries are not there.
+
+Writing scenario 1 found a **false refusal**: the frame rule required an
+`ORDER BY` for every window frame, but `ROWS BETWEEN UNBOUNDED PRECEDING AND
+UNBOUNDED FOLLOWING` is the whole partition however the rows are ordered — as
+deterministic without an ordering as with one. It is also how you put a
+partition total beside a per-row value, which is the most common reason to want
+a frame at all, so the rule sent the share-of-group query back to raw SQL. Now
+allowed; every other frame still requires the ordering.
+
+#### Fixed: REFERENCE.md said recursive queries were not built
+
+They are. A self-referential foreign key generates `Descend` and `Ascend`, each
+a single `WITH RECURSIVE` with a required depth bound and a path array that
+refuses a row already on it. The claim came from a grep that only matched
+methods, while these are package-level functions — a reminder that a *negative*
+claim about an API cannot be checked by a compile test the way a positive one
+can.
 
 ## v0.4.1 — 2026-09-03
 
