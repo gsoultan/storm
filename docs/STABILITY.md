@@ -1,6 +1,6 @@
 ---
 tags: [storm, stability, semver]
-updated: 2026-08-25
+updated: 2026-09-04
 status: adopted at v0.x — the commitments below bind from v1.0.0
 ---
 
@@ -29,13 +29,38 @@ impossible; mixed-version generated trees are not a supported state.
 
 ## The stable surface
 
-1. The **declaration API**: plain-struct models, `Schema`/`Plans`/
-   `Projections` methods, field-pointer addressing, `storm.Model`,
-   `storm.Decimal`, `storm.Interval`, `storm.OneOfN`, `storm.SQL[T]`.
-2. The **generated call surface**: `New`, `Where`/`Any`/`Not`, typed column
-   handles, `Order`/`Limit`/`Offset`/`After`/`Unordered`, `All`/`AllInto`/
-   `One`/`Count`/`Exists`, `Create`/`Mutate`/`Delete`, `InsertAll`, the
-   `*Op` constructors, plan and projection types, `Having` composers.
+1. The **declaration API**: plain-struct models and field-pointer addressing;
+   the `Schema`, `Plans`, `Projections`, `Aggregates` and `Joins` methods;
+   the package-level `storm.Union` declaration; `storm.Model`, `storm.Decimal`,
+   `storm.Interval`, `storm.TstzRange`, `storm.TSVector`, `storm.TimeOfDay`,
+   `storm.UUID`, `storm.OneOfN`, `storm.AnyRef`, `storm.SQL[T]` and
+   `storm.SQLExec`.
+
+   Within `Aggregates`: `By`/`ByExpr`, `Count`/`CountOf`/`CountDistinct`,
+   `Sum`/`Avg`/`Min`/`Max`, `SumOver`/`AvgOver`/`MinOver`/`MaxOver`, `Compute`,
+   `Filter`, `Having`, `GroupingOf`, `Rollup`/`Cube`/`Sets`, the window
+   functions (`RowNumber`, `Rank`, `DenseRank`, `PercentRank`, `CumeDist`,
+   `Lag`, `Lead`, `FirstValue`, `LastValue`), `Over` with `PartitionBy`,
+   `OrderByAsc`/`OrderByDesc` and the `Rows`/`Range` frames, and the expression
+   vocabulary on `Exprs` (`DateTrunc`, `Coalesce`, `NullIf`, `Abs`, `Lower`,
+   `Upper`, `Add`/`Sub`/`Mul`/`Div`/`DivScale`, the comparisons and
+   `And`/`Or`/`Not`).
+
+   Within `Joins`: `Inner`/`Left`, `With`/`InnerWith`/`LeftWith`, `Take`,
+   `TakeFrom`, `Where`, `OrderAsc`/`OrderDesc`, `OnCols`.
+
+   Within `Union`: `From`, `Take`, `Const`, `Where`, `Param`, `OrderAsc`/
+   `OrderDesc`, `Distinct`.
+2. The **generated call surface**: `New`, `Where`/`WhereIf`/`Any`/`Not`/
+   `NotAny`, typed column handles and their per-column shorthands,
+   `Order`/`Limit`/`Offset`/`After`/`Unordered`, `All`/`AllInto`/`One`/
+   `Count`/`Exists`, `Create`/`Mutate`/`Delete`, `InsertAll`, the `*Op`
+   constructors, plan types with `ChildLimit`/`ChildTop`/`ChildOrder`,
+   projection readers (`All<Name>`, `One<Name>`), aggregation readers
+   (`All<Name>`, `All<Name>Into`), join readers (`All<Name>`), the semi- and
+   anti-join composers (`<Parent>Having<Rel>`, `<Parent>NotHaving<Rel>`,
+   `AndHaving`, `AndNotHaving`), the union readers (`<Name>`, `<Name>Into`),
+   and the self-reference traversals `Descend`/`Ascend`.
 3. The **Executor port** — four methods, budget five, changes are major.
 4. **Emitted SQL semantics** (not bytes): statement *shapes* may improve in
    minors; what a query MEANS may not.

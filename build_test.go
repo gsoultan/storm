@@ -409,3 +409,28 @@ func TestUnexportedMixinIsAnErrorNotAPanic(t *testing.T) {
 		}
 	}
 }
+
+// A model that shadows one of storm.Model's fields used to produce BOTH
+// columns, and PostgreSQL rejected the CREATE TABLE with "column specified
+// more than once".
+//
+// The DDL is a late place to find out. The model is what is wrong — Go's field
+// promotion makes the outer CreatedAt the one you read, so the embedded one is
+// invisible to the author and silently doubled in the table.
+type shadowsModel struct {
+	storm.Model
+	Name      string
+	CreatedAt time.Time // shadows storm.Model.CreatedAt
+}
+
+func TestDuplicateColumnIsRefused(t *testing.T) {
+	_, err := storm.Build(&shadowsModel{})
+	if err == nil {
+		t.Fatal("a model with two created_at columns built cleanly; its DDL cannot apply")
+	}
+	for _, want := range []string{"created_at", "twice", "storm.Model"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q:\n%v", want, err)
+		}
+	}
+}

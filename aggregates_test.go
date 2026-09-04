@@ -3,7 +3,6 @@ package storm_test
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gsoultan/storm"
 )
@@ -334,8 +333,7 @@ func TestGroupFieldNameMatchesCodegen(t *testing.T) {
 
 type winOverRow struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *winOverRow) Aggregates(a *storm.Aggregates) {
@@ -349,8 +347,7 @@ func (m *winOverRow) Aggregates(a *storm.Aggregates) {
 
 type frameBackwards struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *frameBackwards) Aggregates(a *storm.Aggregates) {
@@ -362,8 +359,7 @@ func (m *frameBackwards) Aggregates(a *storm.Aggregates) {
 
 type frameNoOrder struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *frameNoOrder) Aggregates(a *storm.Aggregates) {
@@ -375,8 +371,7 @@ func (m *frameNoOrder) Aggregates(a *storm.Aggregates) {
 
 type frameRangeOffset struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *frameRangeOffset) Aggregates(a *storm.Aggregates) {
@@ -462,8 +457,7 @@ func TestAggregateRefusesInvalidWindowsAndArithmetic(t *testing.T) {
 // want a frame at all back to raw SQL.
 type wholePartitionFrame struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *wholePartitionFrame) Aggregates(a *storm.Aggregates) {

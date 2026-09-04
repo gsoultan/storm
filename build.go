@@ -88,6 +88,11 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.validateHasMany(mi)
 	}
+	// Pass 4d: two columns of one name. Late, because .Named() can rename one
+	// into a collision and that is a user declaration.
+	for _, mi := range b.ordered {
+		b.checkDuplicateColumns(mi)
+	}
 	// Pass 4b': projections ride the same window as plans, for the same
 	// reasons.
 	for _, mi := range b.ordered {
@@ -1241,4 +1246,43 @@ func (b *builder) buildArc(mi *modelInfo, tbl *Table, f reflect.StructField,
 type arcCol struct {
 	col     *col
 	variant schema.ArcVariant
+}
+
+// checkDuplicateColumns fails a table carrying two columns of one name.
+//
+// The route that finds it is a model shadowing one of storm.Model's fields —
+// its own CreatedAt beside the embedded one. Go's field promotion makes the
+// outer field the one you read, so the embedded column is invisible to the
+// author and silently doubled in the table, and the first sign of it is
+// PostgreSQL refusing the CREATE TABLE. That is a late and confusing place to
+// learn the model is wrong, so it is refused here where the field is still
+// nameable.
+func (b *builder) checkDuplicateColumns(mi *modelInfo) {
+	seen := map[string]bool{}
+	for _, c := range mi.tbl.out.Columns {
+		if !seen[c.Name] {
+			seen[c.Name] = true
+			continue
+		}
+		hint := ""
+		if isModelColumn(c.Name) {
+			hint = "\n       storm.Model already declares " + c.Name +
+				"; a field of the same name shadows it in Go but not in the table"
+		}
+		b.errs.add(fmt.Errorf(
+			"%s declares column %s twice — PostgreSQL refuses a table with a "+
+				"repeated column, so this could not be applied%s",
+			mi.tbl.out.Name, c.Name, hint))
+		return // one report per table; the rest are the same mistake
+	}
+}
+
+// isModelColumn reports the columns storm.Model contributes, which is where a
+// shadowed field almost always comes from.
+func isModelColumn(name string) bool {
+	switch name {
+	case "id", "created_at", "updated_at":
+		return true
+	}
+	return false
 }
