@@ -10,8 +10,8 @@ The question this page exists to answer is not "is storm expressive" but
 **"where is the line?"** — which of these is a declaration, and which sends you
 back to SQL.
 
-Five of the eight are declarations today. Three are not, and saying which is
-more useful than a page of examples that all happen to work.
+Five of the eight are declarations, one is half of one, and two are not. Saying
+which is more useful than a page of examples that all happen to work.
 
 > **How the declarations differ from a query builder.** They live in
 > `Aggregates` and `Joins` methods on the model, not in a chain at the call
@@ -89,16 +89,29 @@ truncated integer division. It is the moving boundary that does not fit.
 > *"Customers who ordered from Coffee but never from Equipment — the upsell
 > list."*
 
-Half of it is generated. The semi-join takes the child's own typed predicates
-and lowers to one `EXISTS` probe per row, with no join fan-out and no
-`DISTINCT`:
+Both halves are generated now. Each takes the child's own typed predicates and
+lowers to one probe per row — no join fan-out, no `DISTINCT`:
 
 ```go
-store.CustomerHavingOrders(customer.New(), order.Category.Eq(coffee))
+bought, err := store.CustomerHavingOrders(
+    customer.New(), orderline.Category.Eq(coffee)).All(ctx, ex)
+
+never, err := store.CustomerNotHavingOrders(
+    customer.New(), orderline.Category.Eq(equipment)).All(ctx, ex)
 ```
 
-The **anti**-join is not generated — there is no `NOT EXISTS` form — so "never
-bought Y" is the half that still needs SQL.
+**The gap is composing them.** A composer returns only `All` and `Count`, not a
+query you can hand to the next one, so "bought Coffee AND never bought
+Equipment" is two round trips and an intersection in Go — or one `storm.SQL`.
+Chaining them would mean two `EXISTS` probes with two different headers in one
+token stream, and the header lookup is currently per-statement rather than
+per-relation. Worth doing; not done.
+
+**Read the anti-join carefully.** `NotHaving` means *"has no child row matching
+these predicates"*, not *"has a child row that does not match"*. The two differ
+for any customer holding both kinds of order, and SQL spells them the same way
+round — which is why the generated doc comment says so at the call site. With no
+predicates at all it means "has none".
 
 ## 4. Double-booking prevention ✅
 
@@ -210,7 +223,7 @@ Not declarable, and each for a reason rather than an oversight:
 | Missing | Why |
 |---|---|
 | `UNION` | two shapes into one row type is a shape the generator has not been asked to name |
-| `NOT EXISTS` (anti-join) | the semi-join has no negative form yet |
+| chained semi/anti-joins | a composer returns rows, not a query the next one can take |
 | set-returning functions | `generate_series` is not a scalar function |
 | run-time-relative filters | a declared `FILTER` is fixed at generate time |
 | recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |

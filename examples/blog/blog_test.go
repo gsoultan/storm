@@ -139,6 +139,31 @@ func TestTheTour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// ---- And its opposite: the anti-join. Grace HAS an article — it is just
+	// not published — so she is absent from the semi-join above and present
+	// here. That is the distinction the doc comment warns about: "has no
+	// published article" is not "has an unpublished one", and the two differ
+	// for anyone holding both.
+	if got, err := store.AuthorNotHavingArticles(
+		author.New(),
+		article.PublishedAt.IsNotNull(),
+	).Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 1 {
+		t.Fatalf("authors with no published article = %d, want 1 (Grace)", got)
+	}
+
+	// With no child predicate at all it means "has none", and both authors
+	// have written something.
+	if got, err := store.AuthorNotHavingArticles(author.New()).Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 0 {
+		t.Fatalf("authors with no articles at all = %d, want 0", got)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 {
 		t.Fatalf("%d authors have published articles, want 1 (Ada)", n)
 	}

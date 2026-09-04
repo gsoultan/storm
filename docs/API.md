@@ -249,6 +249,19 @@ n, err := store.AuthorHavingArticles(
 ).Count(ctx, ex)
 ```
 
+And its opposite, the anti-join — "authors with **no** published article":
+
+```go
+n, err := store.AuthorNotHavingArticles(
+    author.New(),
+    article.PublishedAt.IsNotNull(),
+).Count(ctx, ex)
+```
+
+`NotHaving` means "has no child matching these", not "has a child that does not
+match" — a distinction that matters for any parent holding both, and one SQL
+spells the same way round.
+
 ## 7. Declared reports: projections, aggregations, joins
 
 These are declared in the model rather than chained at the call site, and that is

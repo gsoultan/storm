@@ -572,3 +572,130 @@ func (h AuthorHavingArticlesQuery) Count(ctx context.Context, ex runtime.Executo
 	}
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
+
+// AuthorNotHavingArticles narrows q to rows with NO matching articles row — the
+// filtered anti-join, in one statement.
+//
+// Read the predicates carefully: this is "has no articles row matching
+// these", not "has a articles row that does not match". With no
+// predicates at all it is "has none". The two questions have
+// different answers whenever a parent has several children, and
+// SQL spells them the same way round.
+func AuthorNotHavingArticles(q author.Query, ps ...article.Pred) AuthorNotHavingArticlesQuery {
+	return AuthorNotHavingArticlesQuery{q: q, c: article.New().Unordered().Where(ps...)}
+}
+
+type AuthorNotHavingArticlesQuery struct {
+	q author.Query
+	c article.Query
+}
+
+var authorNotHavingArticlesLowering = func() runtime.Lowering {
+	lw := author.Lowering()
+	parentFrag := lw.Frag
+	lw.Frag = func(op, col uint32) runtime.Frag {
+		if col >= runtime.ChildColBase {
+			return article.FragOf(op, col-runtime.ChildColBase)
+		}
+		return parentFrag(op, col)
+	}
+	lw.Exists = func(uint32) string {
+		return "NOT EXISTS (SELECT 1 FROM \"articles\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"authors\".\"id\""
+	}
+	return lw
+}()
+
+var authorNotHavingArticlesCache = runtime.NewTreeCache()
+
+func (h AuthorNotHavingArticlesQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+	var buf [44]runtime.Tok
+	toks := h.q.PredToks(buf[:0])
+	parentPreds := len(toks) > 0
+	child := h.c.PredToks(nil)
+	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+	arity := uint32(0)
+	if len(child) > 0 {
+		arity = 1 // the child stream reduces to one stack entry
+	}
+	toks = append(toks, runtime.MakeExists(0, arity))
+	if parentPreds {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	}
+	if !count {
+		toks = h.q.OrderToks(toks)
+	}
+	sel, cnt, limitSfx := author.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := authorNotHavingArticlesCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return authorNotHavingArticlesCache.Put(toks, runtime.SpliceTree(prefix, toks, authorNotHavingArticlesLowering, suffix)), toks
+}
+
+// All runs the composed statement. Bind order is stream order: parent
+// values, child values, then the parent's paging.
+func (h AuthorNotHavingArticlesQuery) All(ctx context.Context, ex runtime.Executor) ([]author.Row, error) {
+	if err := h.q.Err(); err != nil {
+		return nil, err
+	}
+	if err := h.c.Err(); err != nil {
+		return nil, err
+	}
+	st, _ := h.stmt(false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := author.GetBinder()
+	defer author.PutBinder(pb)
+	cb := article.GetBinder()
+	defer article.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	args = h.q.BindPaging(pb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []author.Row
+	for rows.Next() {
+		out = append(out, author.Row{})
+		if err := author.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+// Count runs the composed count: no ordering, no paging.
+func (h AuthorNotHavingArticlesQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.q.Err(); err != nil {
+		return 0, err
+	}
+	if err := h.c.Err(); err != nil {
+		return 0, err
+	}
+	st, _ := h.stmt(true)
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := author.GetBinder()
+	defer author.PutBinder(pb)
+	cb := article.GetBinder()
+	defer article.PutBinder(cb)
+	args := h.q.BindPreds(pb, nil)
+	args = h.c.BindPreds(cb, args)
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}

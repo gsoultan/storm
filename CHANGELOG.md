@@ -14,6 +14,36 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### The anti-join: `<Parent>NotHaving<Child>`
+
+The semi-join had no negative form, so "customers who bought Coffee but never
+Equipment" — an upsell list, a dunning list, a re-engagement list — meant
+writing raw SQL for the second half and losing the composable predicate on the
+first half too.
+
+```go
+store.AuthorNotHavingArticles(author.New(), article.PublishedAt.IsNotNull())
+```
+
+One `NOT EXISTS` probe per row: no join fan-out, no `DISTINCT`, and the child
+predicates are still typed by the child's own package. It came almost free —
+the back end already had `NotExistsFrag`, and the composer is emitted from the
+same spec as the positive form.
+
+**Read it carefully, and the generated doc comment says so at the call site.**
+`NotHaving` means *"has no child row matching these predicates"*, not *"has a
+child row that does not match"*. The two differ for any parent holding both
+kinds, and SQL spells them the same way round. With no predicates it is "has
+none". `examples/blog` asserts exactly that distinction: Grace has an article,
+it is simply not published, so she is absent from the semi-join and present in
+the anti-join.
+
+Still missing, and now written down in [docs/COMPLEX-QUERIES.md](docs/COMPLEX-QUERIES.md):
+the two cannot be **chained**. A composer returns `All` and `Count`, not a query
+the next composer can take, so "bought X and never bought Y" is two round trips
+and an intersection in Go. Chaining needs two `EXISTS` headers in one token
+stream, and the header lookup is per-statement rather than per-relation today.
+
 ### COMPLEX-QUERIES.md says where the line is, and a frame rule was too strict
 
 The eight-scenario page was the last doc showing a call-site
