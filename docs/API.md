@@ -262,6 +262,19 @@ n, err := store.AuthorNotHavingArticles(
 match" — a distinction that matters for any parent holding both, and one SQL
 spells the same way round.
 
+Both chain, against the same relation, into **one** statement — which is the
+upsell query, and the reason having only one half was worth little:
+
+```go
+store.AuthorHavingArticles(author.New(), article.PublishedAt.IsNotNull()).
+    AndNotHaving(article.Title.Eq("Notes")).
+    All(ctx, ex)
+```
+
+Two positive probes are satisfied by different child rows, so `AndHaving` reads
+as "wrote both of these". Chaining across two different relations is not
+offered: the composer type is per relation, so it does not compile.
+
 ## 7. Declared reports: projections, aggregations, joins
 
 These are declared in the model rather than chained at the call site, and that is
