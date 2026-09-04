@@ -38,6 +38,9 @@ type Term struct {
 	lit   schema.Literal
 	arith schema.ArithOp
 	scale int
+	// param is the 1-based union parameter index; 0 is "not a parameter", so
+	// the zero Term stays meaningless rather than meaning parameter 0.
+	param int
 	err   error
 }
 
@@ -90,6 +93,14 @@ func lit(v any) Term {
 // DateTrunc buckets a timestamp — the reason grouping takes an expression at
 // all. `unit` is a PostgreSQL field name: "hour", "day", "month", "year".
 func (Exprs) DateTrunc(unit string, ts any) Term {
+	if !schema.DateTruncUnits[unit] {
+		return Term{err: fmt.Errorf(
+			"date_trunc unit %q is not one PostgreSQL knows — it is a string, so a "+
+				"typo is not a compile error and the statement is fixed at generate "+
+				"time, which makes this the last place to catch it\n"+
+				"       units: microseconds, milliseconds, second, minute, hour, day, "+
+				"week, month, quarter, year, decade, century, millennium", unit)}
+	}
 	return Term{kind: schema.ExprFunc, fn: "date_trunc", args: []Term{lit(unit), toTerm(ts)}}
 }
 

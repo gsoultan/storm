@@ -1,381 +1,310 @@
 ---
 tags: [storm, queries, complex]
-updated: 2026-08-27
-status: partly implemented — single-table aggregation is built (see below)
+updated: 2026-09-04
+status: as-built — the declarations here build; the gaps are marked as gaps
 ---
 
-# Complex queries, as objects
+# Eight queries a backend engineer actually gets asked for
 
-Eight queries a backend engineer actually gets asked for, none of them
-expressible in GORM or Ent without dropping to raw SQL. All string-free, all
-composable, all compiled at build time.
+The question this page exists to answer is not "is storm expressive" but
+**"where is the line?"** — which of these is a declaration, and which sends you
+back to SQL.
 
-> **What is built — all of it.** Single-table aggregation; grouping by an
-> expression (`date_trunc`, `coalesce`, `nullif`, `abs`, `lower`, `upper`);
-> `FILTER`; `HAVING`; `count(DISTINCT)`; **arithmetic** (`Add`/`Sub`/`Mul`/`Div`)
-> and computed outputs over the group; `GROUPING SETS` / `ROLLUP` / `CUBE` with
-> `GROUPING()`; window functions (`row_number`, `rank`, `dense_rank`,
-> `percent_rank`, `cume_dist`, `lag`, `lead`, `first_value`, `last_value`);
-> aggregates windowed **across the groups** (`SumOver`, `AvgOver`, `MinOver`,
-> `MaxOver`) with explicit **`ROWS`/`RANGE` frames**, which is what a moving
-> average needs; **joins projecting across tables**, inner and left; and
-> **CTEs** that materialise a declared aggregation once and join against it.
->
-> They are **declared** — in `Aggregates` and `Joins` methods on the model — not
-> composed at the call site as sketched below. The difference is deliberate: a
-> chain assembled at run time has an unbounded set of result shapes, and a shape
-> the generator never saw can have neither a scanner nor a compiled statement.
-> Call-site predicates stay dynamic because those *are* bounded.
->
-> Still `storm.SQL[T]`: recursive CTEs, and anything outside the scalar-function
-> allow-list. Both are validated against the model at generate time.
+Six of the eight are declarations, one is half, and one is not. Saying which is
+more useful than a page of examples that all happen to work.
+
+> **How the declarations differ from a query builder.** They live in
+> `Aggregates` and `Joins` methods on the model, not in a chain at the call
+> site. A `GroupBy(...).Select(...)` assembled at run time has an unbounded set
+> of result shapes, and a shape the generator never saw can have neither a
+> scanner nor a compiled statement. Call-site **predicates** stay dynamic,
+> because those are bounded. See [[API]] §7.
 
 ---
 
-## 1. SaaS revenue dashboard — MRR by plan, month over month
+## 1. SaaS revenue dashboard — MRR by plan, month over month ✅
 
 > *"Monthly recurring revenue per plan, with the change from last month, and how
-> many subscriptions were active vs. trialing."*
+> many subscriptions are active versus trialing."*
 
-Date bucketing, conditional aggregation, and a window function over an
-aggregate — the three things that usually end a query builder's usefulness.
+Date bucketing, conditional counts, and a window over an aggregate — the three
+things that usually end a query builder's usefulness.
 
 ```go
-type MRRRow struct {
-    Month     storm.Date
-    PlanName  string
-    MRRCents  int64
-    Active    int64
-    Trialing  int64
-    PrevCents storm.Null[int64]
+func (s *Subscription) Aggregates(a *storm.Aggregates) {
+    m     := a.Named("MRR")
+    month := m.ByExpr("Month", a.DateTrunc("month", &s.StartedAt))
+    m.By(&s.Plan)
+
+    mrr := m.Sum(&s.MonthlyCents, "MRRCents")
+    m.Count("Active").Filter(a.Eq(&s.Status, "active"))
+    m.Count("Trialing").Filter(a.Eq(&s.Status, "trialing"))
+
+    // Last month's MRR for the SAME plan: a window over an aggregate.
+    m.Lag(mrr, "PrevCents", a.Over().PartitionBy(&s.Plan).OrderByAsc(month))
+
+    // That month's total across every plan, beside each plan's own — the
+    // share-of-group query, with no self-join.
+    m.SumOver(mrr, "MonthTotal", a.Over().PartitionBy(month).
+        Rows(a.UnboundedPreceding(), a.UnboundedFollowing()))
 }
-
-month := storm.DateTrunc(storm.Month, sub.StartedAt)
-
-rows, err := sub.Query().
-    Join(plan.T, storm.On(sub.PlanID.EqCol(plan.ID))).
-    Where(sub.Tenant.Eq(tid), sub.StartedAt.Gte(since)).
-    GroupBy(month, plan.ID, plan.Name).
-    Select(storm.Into[MRRRow](
-        month.As(&MRRRow{}.Month),
-        plan.Name,
-        storm.Sum(sub.MonthlyCents).As(&MRRRow{}.MRRCents),
-
-        // FILTER (WHERE …) — cleaner and faster than SUM(CASE WHEN …)
-        storm.Count(sub.ID).Filter(sub.Status.Eq(StatusActive)).As(&MRRRow{}.Active),
-        storm.Count(sub.ID).Filter(sub.Status.Eq(StatusTrialing)).As(&MRRRow{}.Trialing),
-
-        // a window OVER an aggregate — last month's MRR for the same plan
-        storm.Lag(storm.Sum(sub.MonthlyCents)).
-            Over(storm.PartitionBy(plan.ID).OrderBy(month.Asc())).
-            As(&MRRRow{}.PrevCents),
-    )).
-    OrderBy(month.Desc(), plan.Name.Asc()).
-    All(ctx, db)
 ```
 
-`.As(&MRRRow{}.Month)` binds the projection to a **field pointer**, so a rename
-of `MRRRow.Month` is a compile error and a column with no field fails
-generation. `storm.Into[MRRRow]` checks the set is complete.
+The plan's *name* lives in another table, so the aggregation becomes a CTE and
+the join reads from it — computed once, not once per row:
+
+```go
+func (s *Subscription) Joins(j *storm.Joins) {
+    var p Plan
+    j.Named("MRRByPlan").
+        With("mrr", &Subscription{}, "MRR").
+        Inner(&p, &s.Plan).
+        LeftWith("mrr", j.OnCols("mrr", "plan_id", &p.ID)).
+        Take(&p.Name, "PlanName").
+        TakeFrom("mrr", "Month", "Month").
+        TakeFrom("mrr", "MRRCents", "MRRCents").
+        TakeFrom("mrr", "PrevCents", "PrevCents")
+}
+```
 
 **What it buys:** `FILTER` instead of `SUM(CASE WHEN …)`, and `LAG` over an
 aggregate — both of which GORM and Ent can only reach through raw SQL.
 
----
+## 2. Churn risk — accounts whose usage is falling ✅
 
-## 2. Churn risk — accounts whose usage is falling
+> *"Accounts whose last-30-day event count is below 60% of the 30 days before
+> that."*
 
-> *"Accounts on a paid plan whose last-30-day event count is below 60% of the
-> 30 days before that, with at least 100 events historically."*
-
-Two CTEs and a `HAVING` over a ratio. The CTE is a **variable**, not a name:
-
-```go
-recent := storm.CTE(event.Query().
-    Where(event.OccurredAt.Gte(storm.NowMinus(30 * storm.Day))).
-    GroupBy(event.AccountID).
-    Select(storm.Into[Bucket](event.AccountID, storm.Count(event.ID).As(&Bucket{}.N))))
-
-prior := storm.CTE(event.Query().
-    Where(event.OccurredAt.Between(storm.NowMinus(60*storm.Day), storm.NowMinus(30*storm.Day))).
-    GroupBy(event.AccountID).
-    Select(storm.Into[Bucket](event.AccountID, storm.Count(event.ID).As(&Bucket{}.N))))
-
-ratio := storm.Div(recent.Col.N, storm.NullIf(prior.Col.N, 0))
-
-atRisk, err := account.Query().
-    With(recent, prior).
-    Join(recent, storm.On(account.ID.EqCol(recent.Col.AccountID))).
-    Join(prior,  storm.On(account.ID.EqCol(prior.Col.AccountID))).
-    Where(account.Plan.NotEq(PlanFree), storm.Gte(prior.Col.N, 100)).
-    Having(storm.Lt(ratio, 0.6)).
-    Select(storm.Into[RiskRow](
-        account.ID, account.Name,
-        recent.Col.N.As(&RiskRow{}.Recent),
-        prior.Col.N.As(&RiskRow{}.Prior),
-        ratio.As(&RiskRow{}.Ratio),
-    )).
-    OrderBy(ratio.Asc()).
-    All(ctx, db)
-```
-
-`recent` and `prior` are ordinary Go values. Put them in a function, share them
-between the dashboard query and the alerting job, and there is one definition of
-"a 30-day bucket" in the codebase. `recent.Col.N` is typed.
-
-`storm.NullIf(prior.Col.N, 0)` is not decoration — it is the division-by-zero
-guard, and it is right there in the expression instead of in a comment.
-
----
-
-## 3. Bought X, never bought Y
-
-> *"Customers who ordered anything from Coffee but have never ordered from
-> Equipment — the upsell list."*
-
-A correlated `EXISTS` and a correlated `NOT EXISTS`. Both take a real query
-object, and both are reusable:
+A `FILTER` is part of the declaration, so its condition is fixed at generate
+time — and "the last 30 days" is relative to when the query runs. A **declared
+parameter** is what closes that gap:
 
 ```go
-func OrderedFrom(c storm.Ref[Category]) storm.Pred {
-    return storm.Exists(orderitem.Query().
-        Join(order.T,   storm.On(orderitem.OrderID.EqCol(order.ID))).
-        Join(product.T, storm.On(orderitem.ProductID.EqCol(product.ID))).
-        Where(
-            order.CustomerID.EqCol(customer.ID),   // the correlation
-            product.CategoryID.Eq(c),
-            order.Status.Eq(StatusFulfilled),
-        ))
-}
-
-upsell, err := customer.Query().
-    Where(
-        customer.Tenant.Eq(tid),
-        OrderedFrom(CategoryCoffee),
-        storm.Not(OrderedFrom(CategoryEquipment)),
-    ).
-    Load(CustomerCard).
-    All(ctx, db)
+rate  := a.Named("PaidRate")
+since := rate.Param("Since")
+rate.By(&o.Status)
+recent := rate.Count("Recent").Filter(a.Gte(&o.PlacedAt, since))
+rate.Count("RecentPaid").Filter(a.And(
+    a.Gte(&o.PlacedAt, since),
+    a.Eq(&o.Status, "paid"),
+))
+rate.Having(a.Gt(recent, 0))
 ```
 
-`OrderedFrom` is a **function returning a predicate**. That is the composability
-argument in one line: the same definition drives the upsell list, a segment
-filter, and a permission check, and renaming `product.CategoryID` breaks all
-three at compile time.
+```go
+rows, err := order.New().
+    Where(order.Region.Eq(r)).                       // call-site predicates still compose
+    AllPaidRate(ctx, ex, time.Now().AddDate(0, 0, -30))
+```
 
----
+The parameter is `$1`, in the statement's fixed prefix where the `FILTER`
+lives; the call-site predicates are numbered from `$2`. Its Go type is inferred
+from the column it is compared with.
 
-## 4. Double-booking prevention
+The ratio itself was never the obstacle: `a.Div(recent, a.NullIf(prior,
+a.Lit(0)))` is a declaration and resolves to numeric rather than truncated
+integer division.
+
+## 3. Bought X, never bought Y ✅
+
+> *"Customers who ordered from Coffee but never from Equipment — the upsell
+> list."*
+
+One statement, one `EXISTS` and one `NOT EXISTS`, both against the same
+relation and both taking the child's own typed predicates — no join fan-out, no
+`DISTINCT`:
+
+```go
+upsell, err := store.CustomerHavingOrders(
+    customer.New(), order.Category.Eq(coffee)).
+    AndNotHaving(order.Category.Eq(equipment)).
+    All(ctx, ex)
+```
+
+`AndHaving` chains too, and the probes are independent: two positive probes are
+satisfied by *different* child rows, which is what "ordered both of these" means.
+
+**The limit is one relation per chain**, and it is enforced by the type rather
+than documented. Two probes against different relations would rebase both
+children past the same `runtime.ChildColBase`, and the composite lowering routes
+on that range alone — it could not tell one child package's fragments from the
+other's. So `AndHaving` exists only on the composer for the relation you
+started with, and "has orders but no refunds" is still two round trips.
+
+**Read the anti-join carefully.** `NotHaving` means *"has no child row matching
+these predicates"*, not *"has a child row that does not match"*. The two differ
+for any customer holding both kinds of order, and SQL spells them the same way
+round — which is why the generated doc comment says so at the call site. With no
+predicates at all it means "has none".
+
+## 4. Double-booking prevention ✅
 
 > *"Is this room free for this window? And make it impossible to book it twice
 > even under concurrency."*
 
-Range overlap, plus the constraint that makes the check redundant:
-
-```go
-window := storm.TstzRange(from, to, storm.HalfOpen)
-
-conflict, err := booking.Query().
-    Where(
-        booking.Room.Eq(roomID),
-        booking.Status.NotEq(StatusCancelled),
-        booking.Period.Overlaps(window),        // && operator
-    ).
-    Exists(ctx, db)
-```
-
-The query is the friendly error. The **exclusion constraint** is the correctness
-guarantee, declared in the model so it cannot be forgotten:
+The check is a query; the *guarantee* is a constraint, and only one of those
+survives two callers arriving at once:
 
 ```go
 func (b *Booking) Schema(t *storm.Table) {
     t.Exclude(
         storm.With(&b.Room, storm.OpEq),
-        storm.With(&b.Period, storm.OpOverlaps),
-    ).Where(storm.NotEq(&b.Status, StatusCancelled))
+        storm.With(&b.During, storm.OpOverlaps),
+    )
 }
 ```
 
-That generates `EXCLUDE USING gist (room_id WITH =, period WITH &&) WHERE
-(status <> 'cancelled')`. Two concurrent bookings cannot both commit, and the
-insert returns a typed `storm.ErrExclusion` you can map to a 409.
-
-**No other Go ORM models exclusion constraints.** They are the correct answer to
-booking, scheduling, and rate-plan overlap, and they are unreachable without one.
-
----
-
-## 5. Faceted search — results and facet counts in one round trip
-
-> *"Search products, and give me the counts per category and per brand for the
-> filters the user has *not* applied yet."*
-
-The classic mistake is N+1 queries for N facets. `GROUPING SETS` does it once:
-
 ```go
-base := storm.CTE(product.Query().
-    Where(
-        product.Tenant.Eq(tid),
-        product.Search.Matches(storm.English, q),
-        storm.WhenSet(f.MinPrice, product.PriceCents.Gte),
-        storm.WhenSet(f.BrandID,  product.BrandID.Eq),
-    ))
-
-facets, err := base.Query().
-    GroupBy(storm.GroupingSets(
-        storm.Set(base.Col.CategoryID),
-        storm.Set(base.Col.BrandID),
-        storm.Set(),                             // the grand total row
-    )).
-    Select(storm.Into[Facet](
-        base.Col.CategoryID, base.Col.BrandID,
-        storm.Count(storm.Star()).As(&Facet{}.N),
-    )).
-    All(ctx, db)
-
-page, err := base.Query().
-    OrderBy(storm.TSRank(base.Col.Search, q).Desc(), base.Col.ID.Asc()).
-    Page(ctx, db, storm.After(cursor, 24))
+free, err := booking.New().
+    Where(booking.Room.Eq(roomID), booking.During.Overlaps(window)).
+    Exists(ctx, ex)
 ```
 
-`storm.WhenSet(f.MinPrice, product.PriceCents.Gte)` applies the predicate only
-when the pointer is non-nil — the dynamic-filter idiom without an `if`, and it
-still sets exactly one bit in the shape mask.
+A losing writer gets `runtime.ErrExclusionViolation` — a classified error, not a
+SQLSTATE to decode. Storing two timestamps and checking in Go loses the boundary
+cases and races anyway.
 
----
+## 5. Faceted search — results and facet counts ⚠️
 
-## 6. Permission inheritance down an org tree
+> *"Search products, and give me the counts per category and per brand."*
 
-> *"Every account reachable from this org, including sub-orgs, and which
-> ancestor granted the access."*
-
-Recursive CTE with a path and a cycle guard:
+The facets are one declaration and one pass — `GROUPING SETS`, rather than one
+query per facet:
 
 ```go
-tree := storm.RecursiveCTE[OrgNode](
-    // anchor
-    org.Query().Where(org.ID.Eq(rootID)).
-        Select(storm.Into[OrgNode](
-            org.ID, org.Name,
-            storm.Const(0).As(&OrgNode{}.Depth),
-            storm.ArrayOf(org.ID).As(&OrgNode{}.Path),
-        )),
-    // recursive term
-    func(self storm.Ref[OrgNode]) storm.Query {
-        return org.Query().
-            Join(self, storm.On(org.ParentID.EqCol(self.Col.ID))).
-            Where(
-                storm.Lt(self.Col.Depth, 10),                    // depth bound
-                storm.Not(self.Col.Path.Contains(org.ID)),        // cycle guard
-            ).
-            Select(storm.Into[OrgNode](
-                org.ID, org.Name,
-                storm.Add(self.Col.Depth, 1).As(&OrgNode{}.Depth),
-                storm.ArrayAppend(self.Col.Path, org.ID).As(&OrgNode{}.Path),
-            ))
-    },
-)
-
-rows, err := account.Query().
-    With(tree).
-    Join(tree, storm.On(account.OrgID.EqCol(tree.Col.ID))).
-    Select(storm.Into[Reachable](account.ID, account.Email, tree.Col.Name, tree.Col.Depth)).
-    OrderBy(tree.Col.Depth.Asc()).
-    All(ctx, db)
+func (p *Product) Aggregates(a *storm.Aggregates) {
+    f := a.Named("Facets")
+    f.By(&p.Category)
+    f.By(&p.Brand)
+    f.Sets([]string{"Category"}, []string{"Brand"}, nil)   // and the grand total
+    f.Count("N")
+    f.GroupingOf("CategoryIsSubtotal", &p.Category)
+}
 ```
 
-The depth bound and the cycle guard are **required** by the API — a
-`RecursiveCTE` with neither fails generation. A recursive query that can loop
-forever is not a query, it is an outage.
+```go
+facets, err := product.New().
+    Where(product.Search.Matches(q)).             // the same filter as the page
+    AllFacets(ctx, ex)
+```
 
-For the plain case, §4.7 of [[REFERENCE]] gives you `org.Query().Descend(...)`
-and this whole block is unnecessary.
+Every grouping column is nullable here, because a subtotal row carries NULL for
+what it aggregated over, and `GroupingOf` tells that NULL from one in the data.
 
----
+**The gap:** results and facets are two round trips, not one. A union could
+merge them, but a union's branches must project the **same shape** — and a
+product row and a facet count are not the same shape. Making them one means
+padding both into a widest-common row of mostly-NULL columns, which is a thing
+you can do in SQL and not a thing worth generating.
 
-## 7. Activity feed from heterogeneous sources
+## 6. Permission inheritance down an org tree ✅
+
+> *"Every org reachable from this one, including sub-orgs."*
+
+A self-referential foreign key generates two traversals, each a single
+`WITH RECURSIVE`:
+
+```go
+subtree, err := org.Descend(ctx, ex, [][16]byte{rootID}, 10)
+```
+
+The depth bound is **required**. A foreign key does not stop A pointing at B
+pointing at A, and the generated statement additionally carries a path array and
+refuses a row already on it — so a cycle in the data cannot hang the connection,
+which is the failure mode a hand-written recursive CTE usually ships with.
+
+Rows come back unordered, on purpose: a tree has no total order, and every row
+carries its `parent_id` for the caller to reassemble.
+
+## 7. Activity feed from heterogeneous sources ✅
 
 > *"One reverse-chronological feed of comments, follows, and releases."*
 
-`UNION ALL` across three shapes, typed as a sum:
+The merge is a declaration now. A union has no driving table, so it is declared
+as a package-level var rather than on one of the models
+([ADR-0008](adr/0008-union-has-no-driving-table.md)):
 
 ```go
-feed, err := storm.UnionAll[FeedItem](
-    comment.Query().Where(comment.Author.Eq(uid)).
-        Select(storm.Into[FeedItem](
-            storm.Const(KindComment).As(&FeedItem{}.Kind),
-            comment.ID, comment.CreatedAt, comment.Body.As(&FeedItem{}.Text))),
+var Activity = storm.Union("Activity", func(u *storm.UnionSpec) {
+    var o Order
+    orders := u.From(&o)
+    orders.Take(&o.PlacedAt, "At")
+    orders.Take(&o.UpdatedBy, "Actor")
+    orders.Const("Kind", "order")
+    orders.Where(storm.Exprs{}.Ne(&o.Status, "cancelled"))
 
-    follow.Query().Where(follow.Follower.Eq(uid)).
-        Join(user.T, storm.On(follow.TargetID.EqCol(user.ID))).
-        Select(storm.Into[FeedItem](
-            storm.Const(KindFollow).As(&FeedItem{}.Kind),
-            follow.ID, follow.CreatedAt, user.Name.As(&FeedItem{}.Text))),
+    var b Booking
+    bookings := u.From(&b)
+    bookings.Take(&b.CreatedAt, "At")
+    bookings.Take(&b.Guest, "Actor")
+    bookings.Const("Kind", "booking")
 
-    release.Query().Where(release.Project.In(subscribed...)).
-        Select(storm.Into[FeedItem](
-            storm.Const(KindRelease).As(&FeedItem{}.Kind),
-            release.ID, release.PublishedAt, release.Tag.As(&FeedItem{}.Text))),
-).
-    OrderBy(storm.Col(&FeedItem{}.CreatedAt).Desc()).
-    Page(ctx, db, storm.After(cursor, 50))
+    u.OrderDesc("At")
+})
 ```
 
-Every branch must project into `FeedItem` with matching types, checked at
-generation. Add a fourth source with a wrong column and the build fails, not
-the endpoint.
+```go
+recent, err := store.Activity(ctx, ex, 20)   // the 20 most recent THINGS
+```
 
----
+The ordering and the cap apply to the **merge**, which is the whole point: 20
+rows is the twenty most recent events, not twenty of each source. `Const` is how
+a row says which branch it came from — without it the sources are
+indistinguishable once merged.
 
-## 8. Gap-filled time series
+A **declared parameter** narrows it to one actor. It reaches every branch that
+names it as the same placeholder, so "this actor's feed" cannot accidentally
+mean two different actors:
+
+```go
+actor := u.Param("Actor")
+orders.Where(storm.Exprs{}.Eq(&o.UpdatedBy, actor))
+bookings.Where(storm.Exprs{}.Eq(&b.Guest, actor))
+```
+
+```go
+recent, err := store.Activity(ctx, ex, actorID, 20)
+```
+
+The parameter's Go type is inferred from the column it is compared with, so the
+signature cannot disagree with what it filters. Polymorphism helps with the
+*storage* side — `storm.OneOfN` and `storm.AnyRef` in [[REFERENCE]] §6 — but not
+with merging three tables into one stream.
+
+## 8. Gap-filled time series ❌
 
 > *"Daily signups for the last 90 days — including the days with none."*
 
-The bug in every hand-rolled version of this is that days with zero rows vanish
-and the chart lies. `generate_series` fixes it:
+**Still `storm.SQL[T]`.** `AllDaily` gives the days that *have* rows; the empty
+ones were never in the data.
 
-```go
-days := storm.GenerateSeries(storm.NowMinus(90*storm.Day), storm.Now(), storm.Day)
+Producing them needs `generate_series`, and adding it beside `date_trunc` in the
+scalar-function allow-list does not work — those are **scalar** functions, called
+on a value and returning a value, while this one returns *rows*. A row source
+that is not a table is a different thing in every layer, and every read storm
+generates today starts `FROM <table>`.
 
-series, err := days.Query().
-    LeftJoinLateral(
-        user.Query().
-            Where(user.Tenant.Eq(tid), user.CreatedAt.WithinDay(days.Col.Day)).
-            Select(storm.Into[DayCount](storm.Count(user.ID).As(&DayCount{}.N))),
-    ).
-    Select(storm.Into[Point](
-        days.Col.Day.As(&Point{}.Day),
-        storm.Coalesce(storm.Col(&DayCount{}.N), 0).As(&Point{}.N),
-    )).
-    OrderBy(days.Col.Day.Asc()).
-    All(ctx, db)
-```
+Two designs, both real work, neither started:
+[ADR-0009](adr/0009-gap-filling-needs-a-from-that-is-not-a-table.md).
 
 ---
 
-## What makes these work
+## Where the line actually is
 
-Four properties, none of which a string query has:
+Declarable: anything that is **one table's rows, grouped** — with expressions,
+`FILTER`, `HAVING`, grouping sets, windows and frames over them — plus joins
+that project across tables, and a CTE that materialises one aggregation for
+another to read. Plus the traversals: relations, semi-joins, self-references.
 
-**Composable.** `OrderedFrom(category)` is a function returning a predicate.
-`recent` is a CTE in a variable. Both cross package boundaries and get reused.
+Not declarable, and each for a reason rather than an oversight:
 
-**Checked.** `.As(&MRRRow{}.Month)` is a field pointer. Rename the field, or the
-column, and the build breaks. A projection missing a field fails generation.
+| Missing | Why |
+|---|---|
+| probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
+| set-returning functions | a row source that is not a table — [ADR-0009](adr/0009-gap-filling-needs-a-from-that-is-not-a-table.md) |
+| recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |
 
-**Testable.** A predicate is a value, so you can assert on the SQL it lowers to
-in a unit test — no database needed.
-
-**Compiled.** Every query on this page renders its SQL once per shape, at build
-time. The dashboard in §1 does not rebuild that window function on every
-request the way GORM and Bun do.
-
-## And when they do not
-
-Some SQL is not worth modelling. `storm.SQL[T]` takes it, `PREPARE`s it at
-generate time, and gives you a generated scanner — see [[EXAMPLE]] §7. Reach for
-it when the object form would be longer than the SQL, and note that even then
-you keep the typed result and the compile-time column check.
-
-The line: **if it composes or gets reused, make it an object; if it is one
-gnarly report that will never be reused, write the SQL.**
+And when a query is not declarable, `storm.SQL[T]` is not a downgrade: the
+statement is still PREPAREd against the model at generate time, the row type
+still gets a generated scanner, and a column that drifts still fails the build
+naming the column. What you lose is the composable predicate, not the typing.

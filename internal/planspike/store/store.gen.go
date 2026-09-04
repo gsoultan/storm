@@ -3204,19 +3204,62 @@ func (p UserSummaryQuery) load0(ctx context.Context, ex runtime.Executor, out []
 	return nil
 }
 
-// CommentHavingReplies narrows q to rows with at least one matching comments row — the
-// filtered semi-join, in one statement. The child predicates are typed
-// by the child's own package; ids and values meet only here.
-func CommentHavingReplies(q comment.Query, ps ...comment.Pred) CommentHavingRepliesQuery {
-	return CommentHavingRepliesQuery{q: q, c: comment.New().Unordered().Where(ps...)}
-}
-
-type CommentHavingRepliesQuery struct {
+// CommentRepliesProbeQuery is a parent query with one or more existence probes against
+// comments, combined with AND. Build it with CommentHavingReplies or
+// CommentNotHavingReplies and extend it with AndHaving/AndNotHaving.
+type CommentRepliesProbeQuery struct {
 	q comment.Query
-	c comment.Query
+	p []commentRepliesProbeQueryProbe
 }
 
-var commentHavingRepliesLowering = func() runtime.Lowering {
+type commentRepliesProbeQueryProbe struct {
+	c   comment.Query
+	neg bool
+}
+
+// CommentHavingReplies narrows q to rows with at least one matching comments row —
+// the filtered semi-join, in one statement. The child predicates are
+// typed by the child's own package; ids and values meet only here.
+func CommentHavingReplies(q comment.Query, ps ...comment.Pred) CommentRepliesProbeQuery {
+	return CommentRepliesProbeQuery{q: q}.AndHaving(ps...)
+}
+
+// CommentNotHavingReplies narrows q to rows with NO matching comments row — the
+// filtered anti-join.
+//
+// Read the predicates carefully: this is "has no comments row matching
+// these", not "has a comments row that does not match". With no predicates
+// at all it is "has none". The two questions have different answers
+// whenever a parent has several children, and SQL spells them the same
+// way round.
+func CommentNotHavingReplies(q comment.Query, ps ...comment.Pred) CommentRepliesProbeQuery {
+	return CommentRepliesProbeQuery{q: q}.AndNotHaving(ps...)
+}
+
+// AndHaving adds another EXISTS probe against comments, ANDed with the
+// ones already there.
+func (h CommentRepliesProbeQuery) AndHaving(ps ...comment.Pred) CommentRepliesProbeQuery {
+	return h.probe(false, ps...)
+}
+
+// AndNotHaving adds a NOT EXISTS probe against comments. This is how
+// "has one of these but none of those" is one statement:
+//
+//	CommentHavingReplies(q, bought).AndNotHaving(alsoBought)
+func (h CommentRepliesProbeQuery) AndNotHaving(ps ...comment.Pred) CommentRepliesProbeQuery {
+	return h.probe(true, ps...)
+}
+
+func (h CommentRepliesProbeQuery) probe(neg bool, ps ...comment.Pred) CommentRepliesProbeQuery {
+	// Copied rather than appended in place: a composer is a value, and
+	// two chains branching from one base must not share a backing array.
+	p := make([]commentRepliesProbeQueryProbe, len(h.p), len(h.p)+1)
+	copy(p, h.p)
+	h.p = append(p, commentRepliesProbeQueryProbe{c: comment.New().Unordered().Where(ps...), neg: neg})
+	return h
+}
+
+var commentRepliesProbeQueryLowering = func() runtime.Lowering {
 	lw := comment.Lowering()
 	parentFrag := lw.Frag
 	lw.Frag = func(op, col uint32) runtime.Frag {
@@ -3225,27 +3268,42 @@ var commentHavingRepliesLowering = func() runtime.Lowering {
 		}
 		return parentFrag(op, col)
 	}
-	lw.Exists = func(uint32) string {
+	// The token's relation id picks the header: 0 positive, 1 negated.
+	// Both probes are the same relation, so only the polarity varies.
+	lw.Exists = func(rel uint32) string {
+		if rel == 1 {
+			return "NOT EXISTS (SELECT 1 FROM \"comments\" AS \"_storm_e\" WHERE \"_storm_e\".\"parent_id\" = \"comments\".\"id\""
+		}
 		return "EXISTS (SELECT 1 FROM \"comments\" AS \"_storm_e\" WHERE \"_storm_e\".\"parent_id\" = \"comments\".\"id\""
 	}
 	return lw
 }()
 
-var commentHavingRepliesCache = runtime.NewTreeCache()
+var commentRepliesProbeQueryCache = runtime.NewTreeCache()
 
-func (h CommentHavingRepliesQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+func (h CommentRepliesProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
 	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
+	stack := 0
+	if len(toks) > 0 {
+		stack = 1
 	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	for _, pr := range h.p {
+		child := pr.c.PredToks(nil)
+		toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+		arity := uint32(0)
+		if len(child) > 0 {
+			arity = 1 // the child stream reduces to one stack entry
+		}
+		rel := uint32(0)
+		if pr.neg {
+			rel = 1
+		}
+		toks = append(toks, runtime.MakeExists(rel, arity))
+		stack++
+	}
+	if stack > 1 {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, uint32(stack)))
 	}
 	if !count {
 		toks = h.q.OrderToks(toks)
@@ -3255,19 +3313,45 @@ func (h CommentHavingRepliesQuery) stmt(count bool) (*runtime.Stmt, []runtime.To
 	if count {
 		prefix, suffix = cnt, ""
 	}
-	if st := commentHavingRepliesCache.Get(toks); st != nil {
+	if st := commentRepliesProbeQueryCache.Get(toks); st != nil {
 		return st, toks
 	}
-	return commentHavingRepliesCache.Put(toks, runtime.SpliceTree(prefix, toks, commentHavingRepliesLowering, suffix)), toks
+	return commentRepliesProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, commentRepliesProbeQueryLowering, suffix)), toks
 }
 
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h CommentHavingRepliesQuery) All(ctx context.Context, ex runtime.Executor) ([]comment.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
+// bind returns the arguments in STREAM order: parent predicates, then
+// each probe's, then the parent's paging. Each probe takes its own
+// binder — bindPreds resets the arenas it fills, so two probes sharing
+// one binder would have the second silently overwrite the first.
+func (h CommentRepliesProbeQuery) bind(pb *comment.Binder, paging bool) ([]any, []*comment.Binder) {
+	args := h.q.BindPreds(pb, nil)
+	cbs := make([]*comment.Binder, 0, len(h.p))
+	for _, pr := range h.p {
+		cb := comment.GetBinder()
+		cbs = append(cbs, cb)
+		args = pr.c.BindPreds(cb, args)
 	}
-	if err := h.c.Err(); err != nil {
+	if paging {
+		args = h.q.BindPaging(pb, args)
+	}
+	return args, cbs
+}
+
+func (h CommentRepliesProbeQuery) err() error {
+	if err := h.q.Err(); err != nil {
+		return err
+	}
+	for _, pr := range h.p {
+		if err := pr.c.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All runs the composed statement.
+func (h CommentRepliesProbeQuery) All(ctx context.Context, ex runtime.Executor) ([]comment.Row, error) {
+	if err := h.err(); err != nil {
 		return nil, err
 	}
 	st, _ := h.stmt(false)
@@ -3276,11 +3360,12 @@ func (h CommentHavingRepliesQuery) All(ctx context.Context, ex runtime.Executor)
 	}
 	pb := comment.GetBinder()
 	defer comment.PutBinder(pb)
-	cb := comment.GetBinder()
-	defer comment.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			comment.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return nil, err
@@ -3298,11 +3383,8 @@ func (h CommentHavingRepliesQuery) All(ctx context.Context, ex runtime.Executor)
 }
 
 // Count runs the composed count: no ordering, no paging.
-func (h CommentHavingRepliesQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
+func (h CommentRepliesProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.err(); err != nil {
 		return 0, err
 	}
 	st, _ := h.stmt(true)
@@ -3311,10 +3393,12 @@ func (h CommentHavingRepliesQuery) Count(ctx context.Context, ex runtime.Executo
 	}
 	pb := comment.GetBinder()
 	defer comment.PutBinder(pb)
-	cb := comment.GetBinder()
-	defer comment.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
+	args, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			comment.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return 0, err
@@ -3326,19 +3410,62 @@ func (h CommentHavingRepliesQuery) Count(ctx context.Context, ex runtime.Executo
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
-// OrgHavingChildren narrows q to rows with at least one matching orgs row — the
-// filtered semi-join, in one statement. The child predicates are typed
-// by the child's own package; ids and values meet only here.
-func OrgHavingChildren(q org.Query, ps ...org.Pred) OrgHavingChildrenQuery {
-	return OrgHavingChildrenQuery{q: q, c: org.New().Unordered().Where(ps...)}
-}
-
-type OrgHavingChildrenQuery struct {
+// OrgChildrenProbeQuery is a parent query with one or more existence probes against
+// orgs, combined with AND. Build it with OrgHavingChildren or
+// OrgNotHavingChildren and extend it with AndHaving/AndNotHaving.
+type OrgChildrenProbeQuery struct {
 	q org.Query
-	c org.Query
+	p []orgChildrenProbeQueryProbe
 }
 
-var orgHavingChildrenLowering = func() runtime.Lowering {
+type orgChildrenProbeQueryProbe struct {
+	c   org.Query
+	neg bool
+}
+
+// OrgHavingChildren narrows q to rows with at least one matching orgs row —
+// the filtered semi-join, in one statement. The child predicates are
+// typed by the child's own package; ids and values meet only here.
+func OrgHavingChildren(q org.Query, ps ...org.Pred) OrgChildrenProbeQuery {
+	return OrgChildrenProbeQuery{q: q}.AndHaving(ps...)
+}
+
+// OrgNotHavingChildren narrows q to rows with NO matching orgs row — the
+// filtered anti-join.
+//
+// Read the predicates carefully: this is "has no orgs row matching
+// these", not "has a orgs row that does not match". With no predicates
+// at all it is "has none". The two questions have different answers
+// whenever a parent has several children, and SQL spells them the same
+// way round.
+func OrgNotHavingChildren(q org.Query, ps ...org.Pred) OrgChildrenProbeQuery {
+	return OrgChildrenProbeQuery{q: q}.AndNotHaving(ps...)
+}
+
+// AndHaving adds another EXISTS probe against orgs, ANDed with the
+// ones already there.
+func (h OrgChildrenProbeQuery) AndHaving(ps ...org.Pred) OrgChildrenProbeQuery {
+	return h.probe(false, ps...)
+}
+
+// AndNotHaving adds a NOT EXISTS probe against orgs. This is how
+// "has one of these but none of those" is one statement:
+//
+//	OrgHavingChildren(q, bought).AndNotHaving(alsoBought)
+func (h OrgChildrenProbeQuery) AndNotHaving(ps ...org.Pred) OrgChildrenProbeQuery {
+	return h.probe(true, ps...)
+}
+
+func (h OrgChildrenProbeQuery) probe(neg bool, ps ...org.Pred) OrgChildrenProbeQuery {
+	// Copied rather than appended in place: a composer is a value, and
+	// two chains branching from one base must not share a backing array.
+	p := make([]orgChildrenProbeQueryProbe, len(h.p), len(h.p)+1)
+	copy(p, h.p)
+	h.p = append(p, orgChildrenProbeQueryProbe{c: org.New().Unordered().Where(ps...), neg: neg})
+	return h
+}
+
+var orgChildrenProbeQueryLowering = func() runtime.Lowering {
 	lw := org.Lowering()
 	parentFrag := lw.Frag
 	lw.Frag = func(op, col uint32) runtime.Frag {
@@ -3347,27 +3474,42 @@ var orgHavingChildrenLowering = func() runtime.Lowering {
 		}
 		return parentFrag(op, col)
 	}
-	lw.Exists = func(uint32) string {
+	// The token's relation id picks the header: 0 positive, 1 negated.
+	// Both probes are the same relation, so only the polarity varies.
+	lw.Exists = func(rel uint32) string {
+		if rel == 1 {
+			return "NOT EXISTS (SELECT 1 FROM \"orgs\" AS \"_storm_e\" WHERE \"_storm_e\".\"parent_id\" = \"orgs\".\"id\""
+		}
 		return "EXISTS (SELECT 1 FROM \"orgs\" AS \"_storm_e\" WHERE \"_storm_e\".\"parent_id\" = \"orgs\".\"id\""
 	}
 	return lw
 }()
 
-var orgHavingChildrenCache = runtime.NewTreeCache()
+var orgChildrenProbeQueryCache = runtime.NewTreeCache()
 
-func (h OrgHavingChildrenQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+func (h OrgChildrenProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
 	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
+	stack := 0
+	if len(toks) > 0 {
+		stack = 1
 	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	for _, pr := range h.p {
+		child := pr.c.PredToks(nil)
+		toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+		arity := uint32(0)
+		if len(child) > 0 {
+			arity = 1 // the child stream reduces to one stack entry
+		}
+		rel := uint32(0)
+		if pr.neg {
+			rel = 1
+		}
+		toks = append(toks, runtime.MakeExists(rel, arity))
+		stack++
+	}
+	if stack > 1 {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, uint32(stack)))
 	}
 	if !count {
 		toks = h.q.OrderToks(toks)
@@ -3377,19 +3519,45 @@ func (h OrgHavingChildrenQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) 
 	if count {
 		prefix, suffix = cnt, ""
 	}
-	if st := orgHavingChildrenCache.Get(toks); st != nil {
+	if st := orgChildrenProbeQueryCache.Get(toks); st != nil {
 		return st, toks
 	}
-	return orgHavingChildrenCache.Put(toks, runtime.SpliceTree(prefix, toks, orgHavingChildrenLowering, suffix)), toks
+	return orgChildrenProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, orgChildrenProbeQueryLowering, suffix)), toks
 }
 
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h OrgHavingChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([]org.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
+// bind returns the arguments in STREAM order: parent predicates, then
+// each probe's, then the parent's paging. Each probe takes its own
+// binder — bindPreds resets the arenas it fills, so two probes sharing
+// one binder would have the second silently overwrite the first.
+func (h OrgChildrenProbeQuery) bind(pb *org.Binder, paging bool) ([]any, []*org.Binder) {
+	args := h.q.BindPreds(pb, nil)
+	cbs := make([]*org.Binder, 0, len(h.p))
+	for _, pr := range h.p {
+		cb := org.GetBinder()
+		cbs = append(cbs, cb)
+		args = pr.c.BindPreds(cb, args)
 	}
-	if err := h.c.Err(); err != nil {
+	if paging {
+		args = h.q.BindPaging(pb, args)
+	}
+	return args, cbs
+}
+
+func (h OrgChildrenProbeQuery) err() error {
+	if err := h.q.Err(); err != nil {
+		return err
+	}
+	for _, pr := range h.p {
+		if err := pr.c.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All runs the composed statement.
+func (h OrgChildrenProbeQuery) All(ctx context.Context, ex runtime.Executor) ([]org.Row, error) {
+	if err := h.err(); err != nil {
 		return nil, err
 	}
 	st, _ := h.stmt(false)
@@ -3398,11 +3566,12 @@ func (h OrgHavingChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([
 	}
 	pb := org.GetBinder()
 	defer org.PutBinder(pb)
-	cb := org.GetBinder()
-	defer org.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			org.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return nil, err
@@ -3420,11 +3589,8 @@ func (h OrgHavingChildrenQuery) All(ctx context.Context, ex runtime.Executor) ([
 }
 
 // Count runs the composed count: no ordering, no paging.
-func (h OrgHavingChildrenQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
+func (h OrgChildrenProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.err(); err != nil {
 		return 0, err
 	}
 	st, _ := h.stmt(true)
@@ -3433,10 +3599,12 @@ func (h OrgHavingChildrenQuery) Count(ctx context.Context, ex runtime.Executor) 
 	}
 	pb := org.GetBinder()
 	defer org.PutBinder(pb)
-	cb := org.GetBinder()
-	defer org.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
+	args, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			org.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return 0, err
@@ -3448,19 +3616,62 @@ func (h OrgHavingChildrenQuery) Count(ctx context.Context, ex runtime.Executor) 
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
-// OrgHavingUsers narrows q to rows with at least one matching users row — the
-// filtered semi-join, in one statement. The child predicates are typed
-// by the child's own package; ids and values meet only here.
-func OrgHavingUsers(q org.Query, ps ...user.Pred) OrgHavingUsersQuery {
-	return OrgHavingUsersQuery{q: q, c: user.New().Unordered().Where(ps...)}
-}
-
-type OrgHavingUsersQuery struct {
+// OrgUsersProbeQuery is a parent query with one or more existence probes against
+// users, combined with AND. Build it with OrgHavingUsers or
+// OrgNotHavingUsers and extend it with AndHaving/AndNotHaving.
+type OrgUsersProbeQuery struct {
 	q org.Query
-	c user.Query
+	p []orgUsersProbeQueryProbe
 }
 
-var orgHavingUsersLowering = func() runtime.Lowering {
+type orgUsersProbeQueryProbe struct {
+	c   user.Query
+	neg bool
+}
+
+// OrgHavingUsers narrows q to rows with at least one matching users row —
+// the filtered semi-join, in one statement. The child predicates are
+// typed by the child's own package; ids and values meet only here.
+func OrgHavingUsers(q org.Query, ps ...user.Pred) OrgUsersProbeQuery {
+	return OrgUsersProbeQuery{q: q}.AndHaving(ps...)
+}
+
+// OrgNotHavingUsers narrows q to rows with NO matching users row — the
+// filtered anti-join.
+//
+// Read the predicates carefully: this is "has no users row matching
+// these", not "has a users row that does not match". With no predicates
+// at all it is "has none". The two questions have different answers
+// whenever a parent has several children, and SQL spells them the same
+// way round.
+func OrgNotHavingUsers(q org.Query, ps ...user.Pred) OrgUsersProbeQuery {
+	return OrgUsersProbeQuery{q: q}.AndNotHaving(ps...)
+}
+
+// AndHaving adds another EXISTS probe against users, ANDed with the
+// ones already there.
+func (h OrgUsersProbeQuery) AndHaving(ps ...user.Pred) OrgUsersProbeQuery {
+	return h.probe(false, ps...)
+}
+
+// AndNotHaving adds a NOT EXISTS probe against users. This is how
+// "has one of these but none of those" is one statement:
+//
+//	OrgHavingUsers(q, bought).AndNotHaving(alsoBought)
+func (h OrgUsersProbeQuery) AndNotHaving(ps ...user.Pred) OrgUsersProbeQuery {
+	return h.probe(true, ps...)
+}
+
+func (h OrgUsersProbeQuery) probe(neg bool, ps ...user.Pred) OrgUsersProbeQuery {
+	// Copied rather than appended in place: a composer is a value, and
+	// two chains branching from one base must not share a backing array.
+	p := make([]orgUsersProbeQueryProbe, len(h.p), len(h.p)+1)
+	copy(p, h.p)
+	h.p = append(p, orgUsersProbeQueryProbe{c: user.New().Unordered().Where(ps...), neg: neg})
+	return h
+}
+
+var orgUsersProbeQueryLowering = func() runtime.Lowering {
 	lw := org.Lowering()
 	parentFrag := lw.Frag
 	lw.Frag = func(op, col uint32) runtime.Frag {
@@ -3469,27 +3680,42 @@ var orgHavingUsersLowering = func() runtime.Lowering {
 		}
 		return parentFrag(op, col)
 	}
-	lw.Exists = func(uint32) string {
+	// The token's relation id picks the header: 0 positive, 1 negated.
+	// Both probes are the same relation, so only the polarity varies.
+	lw.Exists = func(rel uint32) string {
+		if rel == 1 {
+			return "NOT EXISTS (SELECT 1 FROM \"users\" AS \"_storm_e\" WHERE \"_storm_e\".\"org_id\" = \"orgs\".\"id\""
+		}
 		return "EXISTS (SELECT 1 FROM \"users\" AS \"_storm_e\" WHERE \"_storm_e\".\"org_id\" = \"orgs\".\"id\""
 	}
 	return lw
 }()
 
-var orgHavingUsersCache = runtime.NewTreeCache()
+var orgUsersProbeQueryCache = runtime.NewTreeCache()
 
-func (h OrgHavingUsersQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+func (h OrgUsersProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
 	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
+	stack := 0
+	if len(toks) > 0 {
+		stack = 1
 	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	for _, pr := range h.p {
+		child := pr.c.PredToks(nil)
+		toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+		arity := uint32(0)
+		if len(child) > 0 {
+			arity = 1 // the child stream reduces to one stack entry
+		}
+		rel := uint32(0)
+		if pr.neg {
+			rel = 1
+		}
+		toks = append(toks, runtime.MakeExists(rel, arity))
+		stack++
+	}
+	if stack > 1 {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, uint32(stack)))
 	}
 	if !count {
 		toks = h.q.OrderToks(toks)
@@ -3499,19 +3725,45 @@ func (h OrgHavingUsersQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	if count {
 		prefix, suffix = cnt, ""
 	}
-	if st := orgHavingUsersCache.Get(toks); st != nil {
+	if st := orgUsersProbeQueryCache.Get(toks); st != nil {
 		return st, toks
 	}
-	return orgHavingUsersCache.Put(toks, runtime.SpliceTree(prefix, toks, orgHavingUsersLowering, suffix)), toks
+	return orgUsersProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, orgUsersProbeQueryLowering, suffix)), toks
 }
 
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h OrgHavingUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]org.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
+// bind returns the arguments in STREAM order: parent predicates, then
+// each probe's, then the parent's paging. Each probe takes its own
+// binder — bindPreds resets the arenas it fills, so two probes sharing
+// one binder would have the second silently overwrite the first.
+func (h OrgUsersProbeQuery) bind(pb *org.Binder, paging bool) ([]any, []*user.Binder) {
+	args := h.q.BindPreds(pb, nil)
+	cbs := make([]*user.Binder, 0, len(h.p))
+	for _, pr := range h.p {
+		cb := user.GetBinder()
+		cbs = append(cbs, cb)
+		args = pr.c.BindPreds(cb, args)
 	}
-	if err := h.c.Err(); err != nil {
+	if paging {
+		args = h.q.BindPaging(pb, args)
+	}
+	return args, cbs
+}
+
+func (h OrgUsersProbeQuery) err() error {
+	if err := h.q.Err(); err != nil {
+		return err
+	}
+	for _, pr := range h.p {
+		if err := pr.c.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All runs the composed statement.
+func (h OrgUsersProbeQuery) All(ctx context.Context, ex runtime.Executor) ([]org.Row, error) {
+	if err := h.err(); err != nil {
 		return nil, err
 	}
 	st, _ := h.stmt(false)
@@ -3520,11 +3772,12 @@ func (h OrgHavingUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]or
 	}
 	pb := org.GetBinder()
 	defer org.PutBinder(pb)
-	cb := user.GetBinder()
-	defer user.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			user.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return nil, err
@@ -3542,11 +3795,8 @@ func (h OrgHavingUsersQuery) All(ctx context.Context, ex runtime.Executor) ([]or
 }
 
 // Count runs the composed count: no ordering, no paging.
-func (h OrgHavingUsersQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
+func (h OrgUsersProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.err(); err != nil {
 		return 0, err
 	}
 	st, _ := h.stmt(true)
@@ -3555,10 +3805,12 @@ func (h OrgHavingUsersQuery) Count(ctx context.Context, ex runtime.Executor) (in
 	}
 	pb := org.GetBinder()
 	defer org.PutBinder(pb)
-	cb := user.GetBinder()
-	defer user.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
+	args, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			user.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return 0, err
@@ -3570,19 +3822,62 @@ func (h OrgHavingUsersQuery) Count(ctx context.Context, ex runtime.Executor) (in
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
-// PostHavingComments narrows q to rows with at least one matching comments row — the
-// filtered semi-join, in one statement. The child predicates are typed
-// by the child's own package; ids and values meet only here.
-func PostHavingComments(q post.Query, ps ...comment.Pred) PostHavingCommentsQuery {
-	return PostHavingCommentsQuery{q: q, c: comment.New().Unordered().Where(ps...)}
-}
-
-type PostHavingCommentsQuery struct {
+// PostCommentsProbeQuery is a parent query with one or more existence probes against
+// comments, combined with AND. Build it with PostHavingComments or
+// PostNotHavingComments and extend it with AndHaving/AndNotHaving.
+type PostCommentsProbeQuery struct {
 	q post.Query
-	c comment.Query
+	p []postCommentsProbeQueryProbe
 }
 
-var postHavingCommentsLowering = func() runtime.Lowering {
+type postCommentsProbeQueryProbe struct {
+	c   comment.Query
+	neg bool
+}
+
+// PostHavingComments narrows q to rows with at least one matching comments row —
+// the filtered semi-join, in one statement. The child predicates are
+// typed by the child's own package; ids and values meet only here.
+func PostHavingComments(q post.Query, ps ...comment.Pred) PostCommentsProbeQuery {
+	return PostCommentsProbeQuery{q: q}.AndHaving(ps...)
+}
+
+// PostNotHavingComments narrows q to rows with NO matching comments row — the
+// filtered anti-join.
+//
+// Read the predicates carefully: this is "has no comments row matching
+// these", not "has a comments row that does not match". With no predicates
+// at all it is "has none". The two questions have different answers
+// whenever a parent has several children, and SQL spells them the same
+// way round.
+func PostNotHavingComments(q post.Query, ps ...comment.Pred) PostCommentsProbeQuery {
+	return PostCommentsProbeQuery{q: q}.AndNotHaving(ps...)
+}
+
+// AndHaving adds another EXISTS probe against comments, ANDed with the
+// ones already there.
+func (h PostCommentsProbeQuery) AndHaving(ps ...comment.Pred) PostCommentsProbeQuery {
+	return h.probe(false, ps...)
+}
+
+// AndNotHaving adds a NOT EXISTS probe against comments. This is how
+// "has one of these but none of those" is one statement:
+//
+//	PostHavingComments(q, bought).AndNotHaving(alsoBought)
+func (h PostCommentsProbeQuery) AndNotHaving(ps ...comment.Pred) PostCommentsProbeQuery {
+	return h.probe(true, ps...)
+}
+
+func (h PostCommentsProbeQuery) probe(neg bool, ps ...comment.Pred) PostCommentsProbeQuery {
+	// Copied rather than appended in place: a composer is a value, and
+	// two chains branching from one base must not share a backing array.
+	p := make([]postCommentsProbeQueryProbe, len(h.p), len(h.p)+1)
+	copy(p, h.p)
+	h.p = append(p, postCommentsProbeQueryProbe{c: comment.New().Unordered().Where(ps...), neg: neg})
+	return h
+}
+
+var postCommentsProbeQueryLowering = func() runtime.Lowering {
 	lw := post.Lowering()
 	parentFrag := lw.Frag
 	lw.Frag = func(op, col uint32) runtime.Frag {
@@ -3591,27 +3886,42 @@ var postHavingCommentsLowering = func() runtime.Lowering {
 		}
 		return parentFrag(op, col)
 	}
-	lw.Exists = func(uint32) string {
+	// The token's relation id picks the header: 0 positive, 1 negated.
+	// Both probes are the same relation, so only the polarity varies.
+	lw.Exists = func(rel uint32) string {
+		if rel == 1 {
+			return "NOT EXISTS (SELECT 1 FROM \"comments\" AS \"_storm_e\" WHERE \"_storm_e\".\"post_id\" = \"posts\".\"id\""
+		}
 		return "EXISTS (SELECT 1 FROM \"comments\" AS \"_storm_e\" WHERE \"_storm_e\".\"post_id\" = \"posts\".\"id\""
 	}
 	return lw
 }()
 
-var postHavingCommentsCache = runtime.NewTreeCache()
+var postCommentsProbeQueryCache = runtime.NewTreeCache()
 
-func (h PostHavingCommentsQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+func (h PostCommentsProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
 	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
+	stack := 0
+	if len(toks) > 0 {
+		stack = 1
 	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	for _, pr := range h.p {
+		child := pr.c.PredToks(nil)
+		toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+		arity := uint32(0)
+		if len(child) > 0 {
+			arity = 1 // the child stream reduces to one stack entry
+		}
+		rel := uint32(0)
+		if pr.neg {
+			rel = 1
+		}
+		toks = append(toks, runtime.MakeExists(rel, arity))
+		stack++
+	}
+	if stack > 1 {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, uint32(stack)))
 	}
 	if !count {
 		toks = h.q.OrderToks(toks)
@@ -3621,19 +3931,45 @@ func (h PostHavingCommentsQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok)
 	if count {
 		prefix, suffix = cnt, ""
 	}
-	if st := postHavingCommentsCache.Get(toks); st != nil {
+	if st := postCommentsProbeQueryCache.Get(toks); st != nil {
 		return st, toks
 	}
-	return postHavingCommentsCache.Put(toks, runtime.SpliceTree(prefix, toks, postHavingCommentsLowering, suffix)), toks
+	return postCommentsProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, postCommentsProbeQueryLowering, suffix)), toks
 }
 
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h PostHavingCommentsQuery) All(ctx context.Context, ex runtime.Executor) ([]post.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
+// bind returns the arguments in STREAM order: parent predicates, then
+// each probe's, then the parent's paging. Each probe takes its own
+// binder — bindPreds resets the arenas it fills, so two probes sharing
+// one binder would have the second silently overwrite the first.
+func (h PostCommentsProbeQuery) bind(pb *post.Binder, paging bool) ([]any, []*comment.Binder) {
+	args := h.q.BindPreds(pb, nil)
+	cbs := make([]*comment.Binder, 0, len(h.p))
+	for _, pr := range h.p {
+		cb := comment.GetBinder()
+		cbs = append(cbs, cb)
+		args = pr.c.BindPreds(cb, args)
 	}
-	if err := h.c.Err(); err != nil {
+	if paging {
+		args = h.q.BindPaging(pb, args)
+	}
+	return args, cbs
+}
+
+func (h PostCommentsProbeQuery) err() error {
+	if err := h.q.Err(); err != nil {
+		return err
+	}
+	for _, pr := range h.p {
+		if err := pr.c.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All runs the composed statement.
+func (h PostCommentsProbeQuery) All(ctx context.Context, ex runtime.Executor) ([]post.Row, error) {
+	if err := h.err(); err != nil {
 		return nil, err
 	}
 	st, _ := h.stmt(false)
@@ -3642,11 +3978,12 @@ func (h PostHavingCommentsQuery) All(ctx context.Context, ex runtime.Executor) (
 	}
 	pb := post.GetBinder()
 	defer post.PutBinder(pb)
-	cb := comment.GetBinder()
-	defer comment.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			comment.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return nil, err
@@ -3664,11 +4001,8 @@ func (h PostHavingCommentsQuery) All(ctx context.Context, ex runtime.Executor) (
 }
 
 // Count runs the composed count: no ordering, no paging.
-func (h PostHavingCommentsQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
+func (h PostCommentsProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.err(); err != nil {
 		return 0, err
 	}
 	st, _ := h.stmt(true)
@@ -3677,10 +4011,12 @@ func (h PostHavingCommentsQuery) Count(ctx context.Context, ex runtime.Executor)
 	}
 	pb := post.GetBinder()
 	defer post.PutBinder(pb)
-	cb := comment.GetBinder()
-	defer comment.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
+	args, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			comment.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return 0, err
@@ -3692,19 +4028,62 @@ func (h PostHavingCommentsQuery) Count(ctx context.Context, ex runtime.Executor)
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
-// UserHavingPosts narrows q to rows with at least one matching posts row — the
-// filtered semi-join, in one statement. The child predicates are typed
-// by the child's own package; ids and values meet only here.
-func UserHavingPosts(q user.Query, ps ...post.Pred) UserHavingPostsQuery {
-	return UserHavingPostsQuery{q: q, c: post.New().Unordered().Where(ps...)}
-}
-
-type UserHavingPostsQuery struct {
+// UserPostsProbeQuery is a parent query with one or more existence probes against
+// posts, combined with AND. Build it with UserHavingPosts or
+// UserNotHavingPosts and extend it with AndHaving/AndNotHaving.
+type UserPostsProbeQuery struct {
 	q user.Query
-	c post.Query
+	p []userPostsProbeQueryProbe
 }
 
-var userHavingPostsLowering = func() runtime.Lowering {
+type userPostsProbeQueryProbe struct {
+	c   post.Query
+	neg bool
+}
+
+// UserHavingPosts narrows q to rows with at least one matching posts row —
+// the filtered semi-join, in one statement. The child predicates are
+// typed by the child's own package; ids and values meet only here.
+func UserHavingPosts(q user.Query, ps ...post.Pred) UserPostsProbeQuery {
+	return UserPostsProbeQuery{q: q}.AndHaving(ps...)
+}
+
+// UserNotHavingPosts narrows q to rows with NO matching posts row — the
+// filtered anti-join.
+//
+// Read the predicates carefully: this is "has no posts row matching
+// these", not "has a posts row that does not match". With no predicates
+// at all it is "has none". The two questions have different answers
+// whenever a parent has several children, and SQL spells them the same
+// way round.
+func UserNotHavingPosts(q user.Query, ps ...post.Pred) UserPostsProbeQuery {
+	return UserPostsProbeQuery{q: q}.AndNotHaving(ps...)
+}
+
+// AndHaving adds another EXISTS probe against posts, ANDed with the
+// ones already there.
+func (h UserPostsProbeQuery) AndHaving(ps ...post.Pred) UserPostsProbeQuery {
+	return h.probe(false, ps...)
+}
+
+// AndNotHaving adds a NOT EXISTS probe against posts. This is how
+// "has one of these but none of those" is one statement:
+//
+//	UserHavingPosts(q, bought).AndNotHaving(alsoBought)
+func (h UserPostsProbeQuery) AndNotHaving(ps ...post.Pred) UserPostsProbeQuery {
+	return h.probe(true, ps...)
+}
+
+func (h UserPostsProbeQuery) probe(neg bool, ps ...post.Pred) UserPostsProbeQuery {
+	// Copied rather than appended in place: a composer is a value, and
+	// two chains branching from one base must not share a backing array.
+	p := make([]userPostsProbeQueryProbe, len(h.p), len(h.p)+1)
+	copy(p, h.p)
+	h.p = append(p, userPostsProbeQueryProbe{c: post.New().Unordered().Where(ps...), neg: neg})
+	return h
+}
+
+var userPostsProbeQueryLowering = func() runtime.Lowering {
 	lw := user.Lowering()
 	parentFrag := lw.Frag
 	lw.Frag = func(op, col uint32) runtime.Frag {
@@ -3713,27 +4092,42 @@ var userHavingPostsLowering = func() runtime.Lowering {
 		}
 		return parentFrag(op, col)
 	}
-	lw.Exists = func(uint32) string {
+	// The token's relation id picks the header: 0 positive, 1 negated.
+	// Both probes are the same relation, so only the polarity varies.
+	lw.Exists = func(rel uint32) string {
+		if rel == 1 {
+			return "NOT EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\""
+		}
 		return "EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\""
 	}
 	return lw
 }()
 
-var userHavingPostsCache = runtime.NewTreeCache()
+var userPostsProbeQueryCache = runtime.NewTreeCache()
 
-func (h UserHavingPostsQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+func (h UserPostsProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
 	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
+	stack := 0
+	if len(toks) > 0 {
+		stack = 1
 	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	for _, pr := range h.p {
+		child := pr.c.PredToks(nil)
+		toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+		arity := uint32(0)
+		if len(child) > 0 {
+			arity = 1 // the child stream reduces to one stack entry
+		}
+		rel := uint32(0)
+		if pr.neg {
+			rel = 1
+		}
+		toks = append(toks, runtime.MakeExists(rel, arity))
+		stack++
+	}
+	if stack > 1 {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, uint32(stack)))
 	}
 	if !count {
 		toks = h.q.OrderToks(toks)
@@ -3743,19 +4137,45 @@ func (h UserHavingPostsQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	if count {
 		prefix, suffix = cnt, ""
 	}
-	if st := userHavingPostsCache.Get(toks); st != nil {
+	if st := userPostsProbeQueryCache.Get(toks); st != nil {
 		return st, toks
 	}
-	return userHavingPostsCache.Put(toks, runtime.SpliceTree(prefix, toks, userHavingPostsLowering, suffix)), toks
+	return userPostsProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, userPostsProbeQueryLowering, suffix)), toks
 }
 
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h UserHavingPostsQuery) All(ctx context.Context, ex runtime.Executor) ([]user.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
+// bind returns the arguments in STREAM order: parent predicates, then
+// each probe's, then the parent's paging. Each probe takes its own
+// binder — bindPreds resets the arenas it fills, so two probes sharing
+// one binder would have the second silently overwrite the first.
+func (h UserPostsProbeQuery) bind(pb *user.Binder, paging bool) ([]any, []*post.Binder) {
+	args := h.q.BindPreds(pb, nil)
+	cbs := make([]*post.Binder, 0, len(h.p))
+	for _, pr := range h.p {
+		cb := post.GetBinder()
+		cbs = append(cbs, cb)
+		args = pr.c.BindPreds(cb, args)
 	}
-	if err := h.c.Err(); err != nil {
+	if paging {
+		args = h.q.BindPaging(pb, args)
+	}
+	return args, cbs
+}
+
+func (h UserPostsProbeQuery) err() error {
+	if err := h.q.Err(); err != nil {
+		return err
+	}
+	for _, pr := range h.p {
+		if err := pr.c.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All runs the composed statement.
+func (h UserPostsProbeQuery) All(ctx context.Context, ex runtime.Executor) ([]user.Row, error) {
+	if err := h.err(); err != nil {
 		return nil, err
 	}
 	st, _ := h.stmt(false)
@@ -3764,11 +4184,12 @@ func (h UserHavingPostsQuery) All(ctx context.Context, ex runtime.Executor) ([]u
 	}
 	pb := user.GetBinder()
 	defer user.PutBinder(pb)
-	cb := post.GetBinder()
-	defer post.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			post.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return nil, err
@@ -3786,11 +4207,8 @@ func (h UserHavingPostsQuery) All(ctx context.Context, ex runtime.Executor) ([]u
 }
 
 // Count runs the composed count: no ordering, no paging.
-func (h UserHavingPostsQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
+func (h UserPostsProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.err(); err != nil {
 		return 0, err
 	}
 	st, _ := h.stmt(true)
@@ -3799,10 +4217,12 @@ func (h UserHavingPostsQuery) Count(ctx context.Context, ex runtime.Executor) (i
 	}
 	pb := user.GetBinder()
 	defer user.PutBinder(pb)
-	cb := post.GetBinder()
-	defer post.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
+	args, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			post.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return 0, err

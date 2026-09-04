@@ -62,6 +62,11 @@ func Source(r *tooldiscover.Result) ([]byte, error) {
 	for _, m := range r.Models {
 		fmt.Fprintf(&b, "\t\t\t&%s.%s{}, // %s\n", alias[m.ImportPath], m.TypeName, m.Why)
 	}
+	// Unions travel with the models: Build takes ...any and sets them aside,
+	// because a union has no table and cannot be registered as one.
+	for _, u := range r.Unions {
+		fmt.Fprintf(&b, "\t\t\t%s.%s, // declared union\n", alias[u.ImportPath], u.VarName)
+	}
 	b.WriteString("\t\t},\n")
 	if len(r.Queries) == 0 {
 		b.WriteString("\t\tnil,\n")

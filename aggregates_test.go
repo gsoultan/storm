@@ -1,9 +1,11 @@
 package storm_test
 
 import (
+	"time"
+
+	"github.com/gsoultan/storm/schema"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gsoultan/storm"
 )
@@ -334,8 +336,7 @@ func TestGroupFieldNameMatchesCodegen(t *testing.T) {
 
 type winOverRow struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *winOverRow) Aggregates(a *storm.Aggregates) {
@@ -349,8 +350,7 @@ func (m *winOverRow) Aggregates(a *storm.Aggregates) {
 
 type frameBackwards struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *frameBackwards) Aggregates(a *storm.Aggregates) {
@@ -362,8 +362,7 @@ func (m *frameBackwards) Aggregates(a *storm.Aggregates) {
 
 type frameNoOrder struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *frameNoOrder) Aggregates(a *storm.Aggregates) {
@@ -375,8 +374,7 @@ func (m *frameNoOrder) Aggregates(a *storm.Aggregates) {
 
 type frameRangeOffset struct {
 	storm.Model
-	Total     storm.Decimal
-	CreatedAt time.Time
+	Total storm.Decimal
 }
 
 func (m *frameRangeOffset) Aggregates(a *storm.Aggregates) {
@@ -450,5 +448,142 @@ func TestAggregateRefusesInvalidWindowsAndArithmetic(t *testing.T) {
 				t.Errorf("the error does not mention %q:\n%v", tc.want, err)
 			}
 		})
+	}
+}
+
+// The share-of-group query: a per-row value beside the partition's total.
+//
+// `sum(x) OVER (PARTITION BY p ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED
+// FOLLOWING)` needs no ORDER BY — that frame is the whole partition however the
+// rows are ordered, so it is exactly as deterministic without one. The first
+// version of the frame rule refused it, which sent the most common reason to
+// want a frame at all back to raw SQL.
+type wholePartitionFrame struct {
+	storm.Model
+	Total storm.Decimal
+}
+
+func (m *wholePartitionFrame) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	day := b.ByExpr("Day", a.DateTrunc("day", &m.CreatedAt))
+	rev := b.Sum(&m.Total, "Rev")
+	b.SumOver(rev, "DayTotal", a.Over().PartitionBy(day).
+		Rows(a.UnboundedPreceding(), a.UnboundedFollowing()))
+}
+
+func TestWholePartitionFrameNeedsNoOrdering(t *testing.T) {
+	s, err := storm.Build(&wholePartitionFrame{})
+	if err != nil {
+		t.Fatalf("refused a frame that covers the whole partition: %v", err)
+	}
+	tbl := s.Table("whole_partition_frames")
+	if tbl == nil || len(tbl.Aggregates) != 1 {
+		t.Fatal("aggregate did not build")
+	}
+}
+
+// ---- declared parameters ----------------------------------------------------
+
+type paramUnused struct {
+	storm.Model
+	Status string
+	Total  storm.Decimal
+}
+
+func (m *paramUnused) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	b.Param("Since")
+	b.By(&m.Status)
+	b.Count("N")
+}
+
+type paramTwoTypes struct {
+	storm.Model
+	Status   string
+	Total    storm.Decimal
+	PlacedAt time.Time
+}
+
+func (m *paramTwoTypes) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	p := b.Param("P")
+	b.By(&m.Status)
+	b.Count("A").Filter(a.Gte(&m.PlacedAt, p)) // timestamptz
+	b.Count("B").Filter(a.Eq(&m.Status, p))    // text
+}
+
+type paramGood struct {
+	storm.Model
+	Status   string
+	PlacedAt time.Time
+}
+
+func (m *paramGood) Aggregates(a *storm.Aggregates) {
+	b := a.Named("Rates")
+	since := b.Param("Since")
+	b.By(&m.Status)
+	n := b.Count("Recent").Filter(a.Gte(&m.PlacedAt, since))
+	b.Having(a.Gt(n, 0))
+}
+
+// A declared parameter is what makes "the last thirty days" sayable: a FILTER
+// is part of the declaration, so its condition is fixed at generate time, and
+// the boundary is relative to when the query runs.
+func TestAggregateParamTypesFromTheColumn(t *testing.T) {
+	s, err := storm.Build(&paramGood{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agg := s.Table("param_goods").Aggregates[0]
+	if len(agg.Params) != 1 {
+		t.Fatalf("got %d parameter(s), want 1", len(agg.Params))
+	}
+	if got := agg.Params[0].Type.Name; got != schema.TypeTimestamptz {
+		t.Errorf("parameter type = %s, want timestamptz inferred from placed_at", got)
+	}
+}
+
+func TestAggregateParamRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model any
+		want  string
+	}{
+		{"declared and never used", &paramUnused{}, "never compares it with a column"},
+		{"compared with two types", &paramTwoTypes{}, "one argument at the call"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := storm.Build(tc.model)
+			if err == nil {
+				t.Fatal("accepted a parameter declaration that cannot generate")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error does not mention %q:\n%v", tc.want, err)
+			}
+		})
+	}
+}
+
+type badTruncUnit struct {
+	storm.Model
+	PlacedAt time.Time
+}
+
+func (m *badTruncUnit) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	b.ByExpr("Day", a.DateTrunc("dya", &m.PlacedAt)) // typo
+	b.Count("N")
+}
+
+// The unit is a string, so a typo is not a compile error — and the statement is
+// fixed at generate time, which makes generation the last place to catch it.
+// PostgreSQL's answer was a runtime error on a query no test happened to call.
+func TestDateTruncUnitIsCheckedAtBuild(t *testing.T) {
+	_, err := storm.Build(&badTruncUnit{})
+	if err == nil {
+		t.Fatal("a misspelled date_trunc unit built cleanly")
+	}
+	if !strings.Contains(err.Error(), "not one PostgreSQL knows") {
+		t.Errorf("the error does not name the problem:\n%v", err)
 	}
 }

@@ -83,3 +83,5 @@ func _assertStockItemShape(m m0.StockItem) {
 		m.Version,
 	}
 }
+
+// github.com/gsoultan/storm.UnionDecl: no shape assertion — has unexported field name.

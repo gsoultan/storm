@@ -139,6 +139,65 @@ func TestTheTour(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// ---- And its opposite: the anti-join. Grace HAS an article — it is just
+	// not published — so she is absent from the semi-join above and present
+	// here. That is the distinction the doc comment warns about: "has no
+	// published article" is not "has an unpublished one", and the two differ
+	// for anyone holding both.
+	if got, err := store.AuthorNotHavingArticles(
+		author.New(),
+		article.PublishedAt.IsNotNull(),
+	).Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 1 {
+		t.Fatalf("authors with no published article = %d, want 1 (Grace)", got)
+	}
+
+	// With no child predicate at all it means "has none", and both authors
+	// have written something.
+	if got, err := store.AuthorNotHavingArticles(author.New()).Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 0 {
+		t.Fatalf("authors with no articles at all = %d, want 0", got)
+	}
+
+	// ---- Both probes in ONE statement: "has a published article, and none
+	// titled X". This is the upsell query — bought this, never bought that —
+	// and doing it in two round trips means intersecting in Go, which is the
+	// join the database was going to do anyway.
+	//
+	// Ada has two published articles, one of them "Notes", so the second probe
+	// excludes her. Grace has no published article, so the first excludes her.
+	if got, err := store.AuthorHavingArticles(author.New(), article.PublishedAt.IsNotNull()).
+		AndNotHaving(article.Title.Eq("Notes")).
+		Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 0 {
+		t.Fatalf("published-but-not-Notes authors = %d, want 0 (Ada wrote Notes)", got)
+	}
+
+	// The same chain against a title nobody used: Ada qualifies on both probes.
+	if got, err := store.AuthorHavingArticles(author.New(), article.PublishedAt.IsNotNull()).
+		AndNotHaving(article.Title.Eq("Nothing By This Name")).
+		Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 1 {
+		t.Fatalf("published-but-not-Nothing authors = %d, want 1 (Ada)", got)
+	}
+
+	// Two POSITIVE probes, ANDed: both must match, and they may match
+	// different rows — Ada's two articles, one per probe.
+	if got, err := store.AuthorHavingArticles(author.New(), article.Title.Eq("On Engines")).
+		AndHaving(article.Title.Eq("Notes")).
+		Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 1 {
+		t.Fatalf("authors with both titles = %d, want 1 (Ada)", got)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 {
 		t.Fatalf("%d authors have published articles, want 1 (Ada)", n)
 	}
@@ -176,6 +235,46 @@ func TestTheTour(t *testing.T) {
 	m1.SetName("Ada L.")
 	if err := m1.Update(ctx, ex); err != nil {
 		t.Fatal(err)
+	}
+
+	// ---- The union: two tables merged into one reverse-chronological stream,
+	// ordered and paged as a MERGE rather than per source. Two authors and two
+	// published articles; Grace's draft is excluded by the branch's declared
+	// filter, which no call site can widen.
+	// One declared parameter reaches BOTH branches as the same $1, so this is
+	// Ada's feed: Ada herself plus her two published articles.
+	stream, err := store.Feed(ctx, ex, ada.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stream) != 3 {
+		t.Fatalf("Ada's feed has %d rows, want 3 (herself + 2 published articles)", len(stream))
+	}
+	kinds := map[string]int{}
+	for i, r := range stream {
+		kinds[r.Kind]++
+		if i > 0 && r.At.After(stream[i-1].At) {
+			t.Fatalf("feed is not descending at %d: %s after %s", i, r.At, stream[i-1].At)
+		}
+	}
+	if kinds["author"] != 1 || kinds["article"] != 2 {
+		t.Fatalf("feed kinds = %v, want 1 author and 2 articles", kinds)
+	}
+
+	// Grace's feed is Grace and nothing else: her only article is a draft, and
+	// the branch's declared filter excludes it whatever the parameter says.
+	if g, err := store.Feed(ctx, ex, grace.ID, 10); err != nil {
+		t.Fatal(err)
+	} else if len(g) != 1 || g[0].Kind != "author" {
+		t.Fatalf("Grace's feed = %+v, want just herself", g)
+	}
+
+	// The limit caps the MERGED result, not each branch — which is the whole
+	// difference between a feed and two lists the caller interleaves.
+	if page, err := store.Feed(ctx, ex, ada.ID, 2); err != nil {
+		t.Fatal(err)
+	} else if len(page) != 2 {
+		t.Fatalf("limited feed has %d rows, want 2", len(page))
 	}
 
 	// ---- Transactions are Executors you were given: the same generated code

@@ -12,6 +12,9 @@ type Result struct {
 	Module  *Module
 	Models  []Model
 	Queries []Query
+	// Unions are package-level storm.Union declarations. They reach Build as
+	// arguments alongside the models, because a union has no table to hang off.
+	Unions []Query
 	// Skipped is what matched a rule but cannot be reached. It is reported to
 	// the developer rather than failed on, because the common cause is a
 	// mixin, which is legitimate.
@@ -39,6 +42,12 @@ func (r *Result) Packages() []string {
 		if !seen[q.ImportPath] {
 			seen[q.ImportPath] = true
 			out = append(out, q.ImportPath)
+		}
+	}
+	for _, u := range r.Unions {
+		if !seen[u.ImportPath] {
+			seen[u.ImportPath] = true
+			out = append(out, u.ImportPath)
 		}
 	}
 	return out
