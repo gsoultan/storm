@@ -823,19 +823,35 @@ func (b *AggregateBuilder) resolveCond(c Cond) (schema.Cond, error) {
 	}
 }
 
+// wholePartition reports a frame that covers every row of the partition, which
+// is the one frame whose meaning does not depend on the ordering.
+func wholePartition(f *schema.Frame) bool {
+	return f.Start.Kind == schema.UnboundedPreceding &&
+		f.End.Kind == schema.UnboundedFollowing
+}
+
 func (b *AggregateBuilder) resolveWindow(w *WindowSpec) (*schema.Window, error) {
 	if w.err != nil {
 		return nil, w.err
 	}
 	out := &schema.Window{Frame: w.frame}
-	if w.frame != nil && len(w.order) == 0 {
+	if w.frame != nil && len(w.order) == 0 && !wholePartition(w.frame) {
 		// A frame counts rows in the window's order. With no ORDER BY there is
 		// no order to count in, so the frame selects an arbitrary set that can
 		// differ between runs of the same query — a wrong answer that does not
 		// look like one.
+		//
+		// UNBOUNDED PRECEDING to UNBOUNDED FOLLOWING is the exception, and it
+		// is the reason this is not a blanket rule: that frame is the whole
+		// partition however the rows are ordered, so it is exactly as
+		// deterministic without an ORDER BY as with one. It is also the way to
+		// say "the total for this partition" next to a per-row value — the
+		// share-of-group query — and refusing it would send that back to SQL.
 		return nil, errors.New(
 			"a window frame needs an ORDER BY: without one the rows have no order to " +
-				"count along, and the frame picks an arbitrary set")
+				"count along, and the frame picks an arbitrary set\n" +
+				"       (a frame of UnboundedPreceding to UnboundedFollowing is the whole " +
+				"partition and needs no ordering)")
 	}
 	for _, p := range w.partition {
 		e, err := b.resolveTerm(p)

@@ -260,8 +260,11 @@ The reads whose *shape* must be known at build time are declared on the model:
 `Plans`, `Projections`, `Aggregates` and `Joins`. [[API]] §6 and §7 cover all
 four with examples.
 
-One thing that lives only here — **n children per parent**, on the plan's query
-rather than in the declaration:
+Two things live only here.
+
+### n children per parent
+
+On the plan's query, not in the declaration:
 
 ```go
 p, err := store.CommentWithReplies().
@@ -282,12 +285,33 @@ names.
 
 It lowers to a `LATERAL` join by default, chosen by measurement rather than
 argument: measured 2026-08-24, LATERAL beat the `row_number()` form at every
-parent count and every n — 3.5× at one parent, 33× at a hundred — because the
+parent count and every n — 3.5x at one parent, 33x at a hundred — because the
 window form reads every child of every matched parent and discards the ones past
 n, so its cost tracks the total child count rather than the rows returned.
 `DISTINCT ON` is deliberately absent: it only expresses n = 1, so it would be a
 strategy that silently stopped applying when somebody changed `ChildTop(1)` to
 `ChildTop(2)`.
+
+### Walking a self-reference
+
+A model whose foreign key points at its own table gets two generated
+traversals, each a single `WITH RECURSIVE`:
+
+```go
+subtree, err := org.Descend(ctx, ex, [][16]byte{rootID}, 10)  // root + 9 levels
+chain,   err := org.Ascend(ctx, ex, [][16]byte{leafID}, 10)   // leaf -> root
+```
+
+The roots are included, at depth 1, so `maxDepth` of 1 returns exactly the
+roots. A depth bound is **required** — `ErrDepth` otherwise — because
+`parent_id` being a foreign key does not stop A pointing at B pointing at A, and
+unbounded recursion over a cycle does not return. The generated statement also
+carries an explicit path array and refuses a row already on it, so a cycle in
+the data cannot hang the connection.
+
+Rows come back in **no guaranteed order**. A tree has no total order, inventing
+one would be a lie, and every row carries its `parent_id` — so the caller
+reassembles the shape it wanted.
 
 ## 8. What is not built
 
@@ -296,8 +320,6 @@ it were:
 
 - **Streaming / `Iter`.** Reads are `All`, `One`, `Count`, `Exists`. There is no
   iterator and no cursor API.
-- **Recursive queries.** No `Descend`/`Ascend`, no generated `WITH RECURSIVE`.
-  A hierarchy walk is `storm.SQL[T]` today.
 - **Declaration-time `Latest`/`Earliest`/`Top` on a relation.** The per-parent
   limit is `ChildTop`/`ChildOrder` at the call site, as above.
 - **Call-site `GroupBy(...).Select(...)`.** Not missing — refused. An unbounded

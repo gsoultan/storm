@@ -185,3 +185,85 @@ func TestReferenceDocAnyRefRefusal(t *testing.T) {
 		t.Errorf("the error does not name the fix:\n%v", err)
 	}
 }
+
+// ---- docs/COMPLEX-QUERIES.md ------------------------------------------------
+//
+// The eight scenarios use hypothetical models, but the DECLARATIONS have to be
+// real — that page exists to say where the line is, and it is worth nothing if
+// the examples on the declarable side do not build.
+
+type cqPlan struct {
+	storm.Model
+	Name string
+}
+
+type cqSubscription struct {
+	storm.Model
+	Plan         cqPlan
+	Status       string
+	MonthlyCents int64
+	StartedAt    time.Time
+}
+
+// Scenario 1: MRR by plan, month over month.
+func (s *cqSubscription) Aggregates(a *storm.Aggregates) {
+	m := a.Named("MRR")
+	month := m.ByExpr("Month", a.DateTrunc("month", &s.StartedAt))
+	m.By(&s.Plan)
+
+	mrr := m.Sum(&s.MonthlyCents, "MRRCents")
+	m.Count("Active").Filter(a.Eq(&s.Status, "active"))
+	m.Count("Trialing").Filter(a.Eq(&s.Status, "trialing"))
+	m.Lag(mrr, "PrevCents", a.Over().PartitionBy(&s.Plan).OrderByAsc(month))
+	m.SumOver(mrr, "MonthTotal", a.Over().PartitionBy(month).
+		Rows(a.UnboundedPreceding(), a.UnboundedFollowing()))
+}
+
+func (s *cqSubscription) Joins(j *storm.Joins) {
+	var p cqPlan
+	j.Named("MRRByPlan").
+		With("mrr", &cqSubscription{}, "MRR").
+		Inner(&p, &s.Plan).
+		LeftWith("mrr", j.OnCols("mrr", "plan_id", &p.ID)).
+		Take(&p.Name, "PlanName").
+		TakeFrom("mrr", "Month", "Month").
+		TakeFrom("mrr", "MRRCents", "MRRCents").
+		TakeFrom("mrr", "PrevCents", "PrevCents")
+}
+
+// Scenario 4: the exclusion constraint that makes double-booking impossible.
+type cqBooking struct {
+	storm.Model
+	Room   int32
+	During storm.TstzRange
+}
+
+func (b *cqBooking) Schema(t *storm.Table) {
+	t.Exclude(
+		storm.With(&b.Room, storm.OpEq),
+		storm.With(&b.During, storm.OpOverlaps),
+	)
+}
+
+// Scenario 5: facet counts in one pass.
+type cqProduct struct {
+	storm.Model
+	Category string
+	Brand    string
+}
+
+func (p *cqProduct) Aggregates(a *storm.Aggregates) {
+	f := a.Named("Facets")
+	f.By(&p.Category)
+	f.By(&p.Brand)
+	f.Sets([]string{"Category"}, []string{"Brand"}, nil)
+	f.Count("N")
+	f.GroupingOf("CategoryIsSubtotal", &p.Category)
+}
+
+func TestComplexQueriesDocDeclarationsBuild(t *testing.T) {
+	_, err := storm.Build(&cqSubscription{}, &cqPlan{}, &cqBooking{}, &cqProduct{})
+	if err != nil {
+		t.Fatalf("a declaration COMPLEX-QUERIES.md documents was refused:\n%v", err)
+	}
+}
