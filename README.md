@@ -118,6 +118,31 @@ product.New().Where(product.Attrs.HasAllKeys("colour", "size_cm"))       // ?&
 stockitem.New().Where(stockitem.OnHand.NotIn(0, 1))                      // <> ALL
 customer.New().Where(customer.Email.ILike("ada@%"))                      // ILIKE
 
+// Declared reports: a GROUP BY, the expressions over it, and the window
+// frame a moving average needs. Predicates still compose at the call site.
+func (o *Order) Aggregates(a *storm.Aggregates) {
+    t     := a.Named("Trend")
+    day   := t.ByExpr("Day", a.DateTrunc("day", &o.PlacedAt))
+    since := t.Param("Since")            // "the last N days", fixed shape
+    n     := t.Count("Orders").Filter(a.Gte(&o.PlacedAt, since))
+    paid  := t.Count("Paid").Filter(a.Eq(&o.Status, "paid"))
+    rev   := t.Sum(&o.Total, "Revenue")
+
+    t.CountDistinct(&o.Customer, "Buyers")
+    t.Compute("PaidRate", a.Div(paid, a.NullIf(n, a.Lit(0))))   // numeric, not 0 or 1
+    t.AvgOver(rev, "Revenue7d", a.Over().OrderByAsc(day).
+        Rows(a.Preceding(6), a.CurrentRow()))                   // a MOVING average
+}
+
+// The anti-join, and both halves in one statement: bought this, never that.
+store.CustomerHavingOrders(customer.New(), coffee).AndNotHaving(equipment)
+
+// A UNION: several tables merged, ordered and capped as a MERGE — twenty rows
+// is the twenty most recent THINGS, not twenty of each. It has no driving
+// table, so it is declared as a var rather than a method.
+var Activity = storm.Union("Activity", func(u *storm.UnionSpec) { /* ... */ })
+recent, err := store.Activity(ctx, ex, actorID, 20)
+
 // Anything PostgreSQL can run, typed, validated against the model at
 // generate time — mismatches fail the build naming the column and the fix.
 // Only these DECLARED statements run: a statement assembled at run time is

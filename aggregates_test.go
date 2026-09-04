@@ -563,3 +563,27 @@ func TestAggregateParamRefusals(t *testing.T) {
 		})
 	}
 }
+
+type badTruncUnit struct {
+	storm.Model
+	PlacedAt time.Time
+}
+
+func (m *badTruncUnit) Aggregates(a *storm.Aggregates) {
+	b := a.Named("X")
+	b.ByExpr("Day", a.DateTrunc("dya", &m.PlacedAt)) // typo
+	b.Count("N")
+}
+
+// The unit is a string, so a typo is not a compile error — and the statement is
+// fixed at generate time, which makes generation the last place to catch it.
+// PostgreSQL's answer was a runtime error on a query no test happened to call.
+func TestDateTruncUnitIsCheckedAtBuild(t *testing.T) {
+	_, err := storm.Build(&badTruncUnit{})
+	if err == nil {
+		t.Fatal("a misspelled date_trunc unit built cleanly")
+	}
+	if !strings.Contains(err.Error(), "not one PostgreSQL knows") {
+		t.Errorf("the error does not name the problem:\n%v", err)
+	}
+}

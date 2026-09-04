@@ -14,6 +14,26 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Fixed: a wide table mis-routed its own predicates in a composed statement
+
+`runtime.MaxCols` was 1024 — the full token column width — but a composed
+statement (a semi- or anti-join) splits that space in half: the parent's
+columns below `ChildColBase`, the wrapped child's above. A table with 600
+filterable columns therefore passed generation and then addressed the same ids
+as its child, so the parent's predicate was assembled from the **child**
+package's fragment table. Wrong rows, no error, no symptom.
+
+Any table can be a composer's parent or child — every foreign key generates one
+— so the ceiling is the half. `MaxCols` is now `ChildColBase`, and the
+generation error explains what would otherwise have happened.
+
+### `date_trunc` units are checked at build time
+
+The unit is a string, so `date_trunc("dya", …)` is not a compile error, and the
+statement is fixed at generate time — which made generation the last place to
+catch it and PostgreSQL the first, on a query no test happened to call. Now an
+allow-list, listed in the error.
+
 ### Declared parameters for aggregations
 
 A `FILTER` is part of the declaration, so its condition is fixed at generate
