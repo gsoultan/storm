@@ -21,6 +21,15 @@ import (
 // wrong: `row_number() OVER (ORDER BY placed_at)` next to
 // `GROUP BY date_trunc('day', placed_at)` looks reasonable and is not.
 func validateAggregate(tbl *schema.Table, agg *schema.Aggregate) error {
+	for _, p := range agg.Params {
+		if p.Type.Name == "" {
+			return fmt.Errorf(
+				"%s: aggregate %q declares parameter %q and never compares it with "+
+					"a column — it would sit in the generated signature demanding an "+
+					"argument that reaches no statement",
+				tbl.Name, agg.Name, p.Name)
+		}
+	}
 	if len(agg.By) == 0 {
 		// No GROUP BY: the whole table is one group and every output must be
 		// an aggregate. A bare column here is the same error by another route.

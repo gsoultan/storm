@@ -14,6 +14,41 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Declared parameters for aggregations
+
+A `FILTER` is part of the declaration, so its condition is fixed at generate
+time — which makes *"the last thirty days"* unsayable, because that is relative
+to when the query runs. It was the one thing standing between storm and the
+churn-risk report, and the reason that query was raw SQL.
+
+```go
+rate  := a.Named("PaidRate")
+since := rate.Param("Since")
+recent := rate.Count("Recent").Filter(a.Gte(&o.PlacedAt, since))
+rate.Having(a.Gt(recent, 0))
+
+rows, err := order.New().
+    Where(order.Region.Eq(r)).                       // predicates still compose
+    AllPaidRate(ctx, ex, time.Now().AddDate(0, 0, -30))
+```
+
+Declared parameters are `$1..$k` in the statement's **fixed prefix**, where the
+`FILTER` lives, and the call-site predicates are numbered from `k+1`. The type
+is inferred from the column the parameter is first compared with, so the
+generated signature cannot disagree with what it filters. The same rules as
+union parameters, and the same `schema.Param` behind both.
+
+#### Fixed: the splicer renumbered dollars it did not own
+
+Found by the first parameterised `HAVING`. The suffix scan numbered **every**
+`$` it walked past, so a declared `$1` in a `HAVING` became `$31` and the server
+could not type the statement.
+
+The rule is now that a sigil already carrying an ordinal is not the splicer's.
+That also fixes a latent bug nobody had hit: a declaration-time text literal
+containing a dollar — `'$5.00'` is a price, not a placeholder — was being
+renumbered into nonsense. 650k fuzz executions over `FuzzSpliceTree` green.
+
 ### Declared UNIONs
 
 Several tables merged into one stream, ordered and capped as a **merge** rather

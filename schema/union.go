@@ -35,7 +35,7 @@ type Union struct {
 	// cannot be narrowed to one actor is not much of a feed. Declared
 	// parameters are the narrow answer: the SHAPE stays fixed, and only values
 	// vary.
-	Params []UnionParam
+	Params []Param
 
 	// Distinct selects UNION over UNION ALL.
 	//
@@ -70,8 +70,14 @@ type UnionCol struct {
 	Nullable bool
 }
 
-// UnionParam is one declared parameter.
-type UnionParam struct {
+// Param is one declared parameter: a value the CALL supplies, numbered at
+// generate time.
+//
+// Shared by unions and by aggregations. Both need the same thing for the same
+// reason — a filter fixed at generate time cannot say "the last thirty days",
+// which is relative to when the query runs — and both answer it by letting the
+// SHAPE stay fixed while a value varies.
+type Param struct {
 	// Name is the Go argument name in the generated function.
 	Name string
 	// Type is resolved from the column the parameter is first compared with:

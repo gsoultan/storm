@@ -192,7 +192,7 @@ var uParam = storm.Union("P", func(u *storm.UnionSpec) {
 // One declared parameter is one argument and one placeholder, however many
 // branches name it. Passing it per branch would invite passing two different
 // values for "the same" actor.
-func TestUnionParamIsSharedAcrossBranches(t *testing.T) {
+func TestParamIsSharedAcrossBranches(t *testing.T) {
 	s, err := storm.Build(&uPost{}, &uEvent{}, uParam)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestUnionParamIsSharedAcrossBranches(t *testing.T) {
 	}
 }
 
-func TestUnionParamRefusals(t *testing.T) {
+func TestParamRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		decl *storm.UnionDecl

@@ -1941,6 +1941,98 @@ func (q Query) AllTrendInto(ctx context.Context, ex runtime.Executor, dst []Tren
 var errTrendOrdered = errors.New(
 	"storm: Order() on an aggregation — its rows are groups, not table rows, and orders.Trend is already ordered by its grouping columns; sort the returned slice if you need another order")
 
+// PaidRateRow is the "PaidRate" aggregation over orders.
+//
+// One row per group. The grouping columns come first, in declaration
+// order, and the result is ordered by them: PostgreSQL promises no
+// order for a GROUP BY, and an unordered report shuffles between
+// requests for no reason anyone can see.
+type PaidRateRow struct {
+	Status        string
+	Recent        int64
+	RecentPaid    int64
+	RecentRevenue runtime.Null[runtime.Decimal]
+}
+
+const paidRatePrefix = `SELECT "status" AS "status", count(*) FILTER (WHERE "placed_at" >= $1) AS "recent", count(*) FILTER (WHERE ("placed_at" >= $1 AND "status" = 'paid')) AS "recent_paid", sum("total") FILTER (WHERE "placed_at" >= $1) AS "recent_revenue" FROM "orders"`
+const paidRateSuffix = ` GROUP BY "status" HAVING count(*) FILTER (WHERE "placed_at" >= $1) > 0 ORDER BY "status"`
+
+var (
+	paidRateCache       = runtime.NewTreeCache()
+	paidRateOffsetCache = runtime.NewTreeCache()
+)
+
+func paidRateStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
+	c, suffix := paidRateCache, paidRateSuffix+limitSuffix
+	if withOffset {
+		c, suffix = paidRateOffsetCache, paidRateSuffix+limitOffsetSuffix
+	}
+	if st := c.Get(toks); st != nil {
+		return st
+	}
+	// The declared parameters spell $1..$1 in the prefix, so the
+	// call-site predicates are numbered from there.
+	return c.Put(toks, runtime.SpliceTreeFrom(paidRatePrefix, toks, lowering, suffix, 1))
+}
+
+func scanPaidRate(rv [][]byte, r *PaidRateRow, sl *runtime.Slab) error {
+	var decErr error
+	r.Status = sl.Str(rv[0])
+	r.Recent = runtime.Int8(rv[1])
+	r.RecentPaid = runtime.Int8(rv[2])
+	r.RecentRevenue, decErr = runtime.NullNumeric(rv[3])
+	if decErr != nil {
+		return decErr
+	}
+	return nil
+}
+
+// AllPaidRate runs the "PaidRate" aggregation. Predicates compose exactly as on All —
+// they filter the rows that go INTO the groups, which is the WHERE clause
+// and not a HAVING. Limit and offset page the groups.
+// Declared parameters come first, in declaration order, and are
+// numbered before any call-site predicate — a FILTER lives in the
+// statement's fixed prefix, so its placeholders are known here.
+func (q Query) AllPaidRate(ctx context.Context, ex runtime.Executor, since time.Time) ([]PaidRateRow, error) {
+	var sl runtime.Slab
+	return q.AllPaidRateInto(ctx, ex, nil, &sl, since)
+}
+
+// AllPaidRateInto lets the caller own the output slice and the arena.
+func (q Query) AllPaidRateInto(ctx context.Context, ex runtime.Executor, dst []PaidRateRow, sl *runtime.Slab, since time.Time) ([]PaidRateRow, error) {
+	if err := q.Err(); err != nil {
+		return dst, err
+	}
+	if q.no > 0 {
+		return dst, errPaidRateOrdered
+	}
+	var buf [21]runtime.Tok
+	st := paidRateStmtFor(q.preds(&buf), q.offset > 0)
+	if st.Err != nil {
+		return dst, st.Err
+	}
+	sl.Reserve(st.SlabHint())
+	b := binders.Get()
+	defer putBinder(b)
+	// Declared values first: they are $1..$1, ahead of the predicates.
+	rows, err := ex.Query(ctx, st.SQL, append([]any{since}, q.bind(b)...))
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, PaidRateRow{})
+		if err := scanPaidRate(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
+	}
+	st.ObserveSlab(sl.Size())
+	return dst, rows.Err()
+}
+
+var errPaidRateOrdered = errors.New(
+	"storm: Order() on an aggregation — its rows are groups, not table rows, and orders.PaidRate is already ordered by its grouping columns; sort the returned slice if you need another order")
+
 // ByCustomerRow is the "ByCustomer" aggregation over orders.
 //
 // One row per group. The grouping columns come first, in declaration
