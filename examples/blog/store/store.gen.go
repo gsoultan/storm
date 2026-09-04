@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 
+	"time"
+
 	"github.com/gsoultan/storm/examples/blog/store/article"
 	"github.com/gsoultan/storm/examples/blog/store/author"
 	"github.com/gsoultan/storm/runtime"
@@ -655,4 +657,49 @@ func (h AuthorArticlesProbeQuery) Count(ctx context.Context, ex runtime.Executor
 		return 0, rows.Err()
 	}
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+// FeedRow is the "Feed" union: 3 column(s) merged from 2 table(s).
+//
+// A column is nullable here when ANY branch can produce NULL for it,
+// whatever the other branches' constraints say — typing it otherwise
+// would decode one branch's NULL as another branch's zero value.
+type FeedRow struct {
+	At   time.Time
+	Text string
+	Kind string
+}
+
+const feedSQL = `(SELECT "created_at" AS "at", "name" AS "text", 'author' AS "kind" FROM "authors") UNION ALL (SELECT "created_at" AS "at", "title" AS "text", 'article' AS "kind" FROM "articles" WHERE "published_at" IS NOT NULL) ORDER BY "at" DESC LIMIT $1`
+
+func scanFeed(rv [][]byte, r *FeedRow, sl *runtime.Slab) error {
+	r.At = runtime.Timestamptz(rv[0])
+	r.Text = sl.Str(rv[1])
+	r.Kind = sl.Str(rv[2])
+	return nil
+}
+
+// Feed runs the "Feed" union: every branch, merged, ordered as one, in ONE
+// round trip. n caps the merged result, not any single branch — which is
+// the difference between a feed and three lists the caller has to
+// interleave itself.
+func Feed(ctx context.Context, ex runtime.Executor, n int64) ([]FeedRow, error) {
+	var sl runtime.Slab
+	return FeedInto(ctx, ex, nil, &sl, n)
+}
+
+// FeedInto lets the caller own the output slice and the string arena.
+func FeedInto(ctx context.Context, ex runtime.Executor, dst []FeedRow, sl *runtime.Slab, n int64) ([]FeedRow, error) {
+	rows, err := ex.Query(ctx, feedSQL, []any{n})
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, FeedRow{})
+		if err := scanFeed(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
+	}
+	return dst, rows.Err()
 }

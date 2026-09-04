@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 
+	"time"
+
 	"example.com/orders/store/customer"
 	"example.com/orders/store/order"
 	"example.com/orders/store/orderline"
@@ -1282,6 +1284,51 @@ func (h OrderLinesProbeQuery) Count(ctx context.Context, ex runtime.Executor) (i
 		return 0, rows.Err()
 	}
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+// ActivityRow is the "Activity" union: 3 column(s) merged from 2 table(s).
+//
+// A column is nullable here when ANY branch can produce NULL for it,
+// whatever the other branches' constraints say — typing it otherwise
+// would decode one branch's NULL as another branch's zero value.
+type ActivityRow struct {
+	At    time.Time
+	Actor string
+	Kind  string
+}
+
+const activitySQL = `(SELECT "placed_at" AS "at", "updated_by" AS "actor", 'order' AS "kind" FROM "orders" WHERE "status" <> 'cancelled') UNION ALL (SELECT "created_at" AS "at", "guest" AS "actor", 'booking' AS "kind" FROM "bookings") ORDER BY "at" DESC LIMIT $1`
+
+func scanActivity(rv [][]byte, r *ActivityRow, sl *runtime.Slab) error {
+	r.At = runtime.Timestamptz(rv[0])
+	r.Actor = sl.Str(rv[1])
+	r.Kind = sl.Str(rv[2])
+	return nil
+}
+
+// Activity runs the "Activity" union: every branch, merged, ordered as one, in ONE
+// round trip. n caps the merged result, not any single branch — which is
+// the difference between a feed and three lists the caller has to
+// interleave itself.
+func Activity(ctx context.Context, ex runtime.Executor, n int64) ([]ActivityRow, error) {
+	var sl runtime.Slab
+	return ActivityInto(ctx, ex, nil, &sl, n)
+}
+
+// ActivityInto lets the caller own the output slice and the string arena.
+func ActivityInto(ctx context.Context, ex runtime.Executor, dst []ActivityRow, sl *runtime.Slab, n int64) ([]ActivityRow, error) {
+	rows, err := ex.Query(ctx, activitySQL, []any{n})
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, ActivityRow{})
+		if err := scanActivity(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
+	}
+	return dst, rows.Err()
 }
 
 // Raw-query scanners, registered by row type. The statements were

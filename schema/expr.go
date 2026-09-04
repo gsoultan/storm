@@ -408,6 +408,14 @@ func (l Literal) SQL() string {
 // integer literal, PostgreSQL casts the literal, and refusing them would make
 // the documented use of both functions unwritable. Anything outside one family
 // is still refused — mixing text with a number is a mistake, not a cast.
+// UnifyUnion is the type a union column takes when two branches disagree about
+// it. text next to varchar(300) is text, int4 next to int8 is int8 — the same
+// widening PostgreSQL does for a UNION, said out loud so the generated row
+// type carries the type the server will actually send.
+func UnifyUnion(a, b Type) (Type, error) {
+	return unifyAll("a union column", []Type{a, b})
+}
+
 func unifyAll(fn string, in []Type) (Type, error) {
 	out := in[0]
 	for _, t := range in[1:] {

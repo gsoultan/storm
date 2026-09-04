@@ -237,6 +237,36 @@ func TestTheTour(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// ---- The union: two tables merged into one reverse-chronological stream,
+	// ordered and paged as a MERGE rather than per source. Two authors and two
+	// published articles; Grace's draft is excluded by the branch's declared
+	// filter, which no call site can widen.
+	stream, err := store.Feed(ctx, ex, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stream) != 4 {
+		t.Fatalf("feed has %d rows, want 4 (2 authors + 2 published articles)", len(stream))
+	}
+	kinds := map[string]int{}
+	for i, r := range stream {
+		kinds[r.Kind]++
+		if i > 0 && r.At.After(stream[i-1].At) {
+			t.Fatalf("feed is not descending at %d: %s after %s", i, r.At, stream[i-1].At)
+		}
+	}
+	if kinds["author"] != 2 || kinds["article"] != 2 {
+		t.Fatalf("feed kinds = %v, want 2 of each", kinds)
+	}
+
+	// The limit caps the MERGED result, not each branch — which is the whole
+	// difference between a feed and two lists the caller interleaves.
+	if page, err := store.Feed(ctx, ex, 3); err != nil {
+		t.Fatal(err)
+	} else if len(page) != 3 {
+		t.Fatalf("limited feed has %d rows, want 3", len(page))
+	}
+
 	// ---- Transactions are Executors you were given: the same generated code
 	// runs inside one, and a rollback erases everything it did.
 	tx, err := pool.Begin(ctx)

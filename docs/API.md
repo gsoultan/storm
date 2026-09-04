@@ -337,6 +337,42 @@ Also available: `Min`/`Max`/`Avg`, `Sum`/`Min`/`Max`Over, `RowNumber`, `Rank`,
 `DenseRank`, `CumeDist`, `Lag`, `Lead`, `FirstValue`, `LastValue`, and
 `Rollup`/`Cube`/`Sets` with `GROUPING()`.
 
+**Unions** — several tables merged into one stream. A union has no driving
+table, so unlike everything else here it is declared as a package-level var
+rather than a method ([ADR-0008](adr/0008-union-has-no-driving-table.md)):
+
+```go
+var Feed = storm.Union("Feed", func(u *storm.UnionSpec) {
+    var a Author
+    authors := u.From(&a)
+    authors.Take(&a.CreatedAt, "At")
+    authors.Take(&a.Name, "Text")
+    authors.Const("Kind", "author")          // which branch a row came from
+
+    var ar Article
+    articles := u.From(&ar)
+    articles.Take(&ar.CreatedAt, "At")
+    articles.Take(&ar.Title, "Text")
+    articles.Const("Kind", "article")
+    articles.Where(storm.Exprs{}.IsNotNull(&ar.PublishedAt))
+
+    u.OrderDesc("At")
+})
+```
+
+```go
+stream, err := store.Feed(ctx, ex, 20)   // the 20 most recent THINGS
+```
+
+The ordering and the cap apply to the **merge**, not to each branch — twenty
+rows is the twenty most recent, not twenty of each. Every branch must project
+the same names in the same order; a column is nullable if **any** branch can
+produce NULL there; and `UNION ALL` is the default, because de-duplicating
+means sorting the whole result first.
+
+Only the row cap varies per call: a branch filter is declared, so a union is a
+global read. A *per-user* feed still needs `storm.SQL`.
+
 **Joins** — a read that projects across tables and returns a flat row:
 
 ```go

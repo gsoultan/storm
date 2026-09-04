@@ -56,5 +56,32 @@ func (ar *Article) Schema(t *storm.Table) {
 	t.Col(&ar.Author).OnDelete(storm.Cascade)
 }
 
+// Feed merges two tables into one reverse-chronological stream — the shape a
+// timeline actually has, and the one thing a per-table query cannot give you:
+// ordering and paging that apply to the MERGE rather than to each source.
+//
+// A union has no driving table, so it is declared here as a package-level var
+// rather than as a method on Author or Article — neither has more claim to it
+// than the other (ADR-0008). The closure runs during Build, which is what lets
+// it take field pointers into locals the way a Joins method does.
+var Feed = storm.Union("Feed", func(u *storm.UnionSpec) {
+	var a Author
+	authors := u.From(&a)
+	authors.Take(&a.CreatedAt, "At")
+	authors.Take(&a.Name, "Text")
+	authors.Const("Kind", "author")
+
+	var ar Article
+	articles := u.From(&ar)
+	articles.Take(&ar.CreatedAt, "At")
+	articles.Take(&ar.Title, "Text")
+	articles.Const("Kind", "article")
+	// A declared filter: drafts are never part of this feed, and no call site
+	// can widen that.
+	articles.Where(storm.Exprs{}.IsNotNull(&ar.PublishedAt))
+
+	u.OrderDesc("At")
+})
+
 // All is what Build and the generator consume.
-func All() []any { return []any{&Author{}, &Article{}} }
+func All() []any { return []any{&Author{}, &Article{}, Feed} }

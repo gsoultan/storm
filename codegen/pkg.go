@@ -243,6 +243,11 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	// Unions before the raw scanners, for no reason but reading order: they
+	// are the last DECLARED read, and storm.SQL is the escape hatch below.
+	for _, u := range s.Unions {
+		body.emitUnion(u)
+	}
 	body.emitRawScanners(rawScanners, sortedUnique(o.RawStatements))
 	for _, h := range having {
 		arcPkgs[h.ParentPkg] = true
@@ -260,11 +265,17 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	g.p("package %s", o.Package)
 	g.p("")
 	g.p("import (")
-	if len(plans) > 0 || len(named) > 0 || arcOwners > 0 || len(having) > 0 {
+	if len(plans) > 0 || len(named) > 0 || arcOwners > 0 || len(having) > 0 || len(s.Unions) > 0 {
 		g.p("\t%q", "context")
 		if anyToOne(plans) || anyNamedToOne(named) {
 			g.p("\t%q", "fmt")
 		}
+		g.p("")
+	}
+	// A union's row is scalars, so the context package can need "time" for a
+	// timestamp column even when nothing else there does.
+	if unionsNeedTime(s.Unions) {
+		g.p("\t%q", "time")
 		g.p("")
 	}
 	g.p("\t%q", o.Import+"/runtime")

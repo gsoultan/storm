@@ -1,6 +1,6 @@
 # ADR-0008 — UNION has no driving table, and the column-id space is the real ceiling
 
-**Status:** Proposed · 2026-09-04
+**Status:** Accepted · 2026-09-04 · **partly implemented** — see "What shipped"
 **Context for:** [COMPLEX-QUERIES](../COMPLEX-QUERIES.md) §5 and §7, [ADR-0004](0004-mongodb-as-backend.md)
 
 ## Context
@@ -154,6 +154,33 @@ its package.
 (`a.Union(b)`), and is the shape a query builder would take — but it is a
 call-site chain, so the result shape is unbounded and there is no scanner to
 generate. Same reason `GroupBy(...).Select(...)` is refused.
+
+## What shipped (2026-09-04)
+
+Built as decided, with one part of §2 deferred:
+
+- ✅ **Package-level var, resolved during Build.** `storm.Union(name, func(*UnionSpec))`,
+  passed to `Build` alongside the models and set aside there. Discovery finds
+  the var the same pass it finds `storm.SQL`.
+- ✅ **The sort key must be projected**, and a union with no ordering is
+  refused — a merged bag of rows with a `LIMIT` over it returns an arbitrary
+  subset that differs between runs.
+- ✅ **`UNION ALL` by default**, `Distinct()` to opt in.
+- ✅ **Branch filters are declared**, and cannot be widened at a call site.
+- ✅ Types widen across branches the way PostgreSQL widens them (text beside
+  varchar is text); an enum beside a varchar is refused, because the server
+  refuses it too. Nullability ORs: a column is nullable if ANY branch can
+  produce NULL there, or one branch's NULL decodes as another's zero value.
+- ❌ **Declared parameters are NOT built.** The only value a call site supplies
+  is the row cap. That means the motivating query — *this actor's* feed — is
+  still out of reach: a branch filter is a constant, so "where actor = $1"
+  cannot be said.
+
+The last point matters more than the four ticks above it. A union that cannot
+be parameterised is a global feed, and most feeds are somebody's. It was left
+out because parameters are a separable piece of work and the merge, the
+ordering and the shape checking are not — but nobody should read this ADR as
+saying the activity feed is done.
 
 ## Consequences
 
