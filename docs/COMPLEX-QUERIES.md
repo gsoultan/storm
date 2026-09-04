@@ -197,7 +197,9 @@ carries its `parent_id` for the caller to reassemble.
 > *"One reverse-chronological feed of comments, follows, and releases."*
 
 **Still `storm.SQL[T]`.** This is a `UNION ALL` of three different tables into
-one row shape, and storm generates no `UNION`. Polymorphism helps with the
+one row shape, and storm generates no `UNION`. Why that is the most expensive
+gap left, and what it would take, is
+[ADR-0008](adr/0008-union-has-no-driving-table.md). Polymorphism helps with the
 *storage* side — `storm.OneOfN` and `storm.AnyRef` in [[REFERENCE]] §6 — but not
 with merging three tables into one stream.
 
@@ -225,7 +227,7 @@ Not declarable, and each for a reason rather than an oversight:
 
 | Missing | Why |
 |---|---|
-| `UNION` | two shapes into one row type is a shape the generator has not been asked to name |
+| `UNION` | no driving table to declare it on, and one child column range — [ADR-0008](adr/0008-union-has-no-driving-table.md) |
 | probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
 | set-returning functions | `generate_series` is not a scalar function |
 | run-time-relative filters | a declared `FILTER` is fixed at generate time |
