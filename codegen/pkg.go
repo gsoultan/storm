@@ -26,6 +26,14 @@ type PackageOptions struct {
 	// from the map orders by its primary key.
 	DefaultOrder map[string][]OrderTerm
 
+	// Budgets scales the fixed per-query buffers for every package in this
+	// tree. The zero value is the measured default.
+	//
+	// Uniform across the tree by construction: a composed statement splices a
+	// child package's fragments into a parent's, and two halves sized
+	// differently would disagree about how much scratch the splice needs.
+	Budgets Budgets
+
 	// Dialect selects the back end for every package in this tree. The zero
 	// value is PostgreSQL, so an existing caller keeps its target.
 	Dialect Dialect
@@ -121,6 +129,7 @@ func Package(s *schema.Schema, o PackageOptions) (map[string][]byte, error) {
 			DefaultOrder:    o.DefaultOrder[name],
 			BatchTopColumns: batchTopColumns(s, name, names),
 			TopStrategy:     o.TopStrategy,
+			Budgets:         o.Budgets,
 		})
 		if err != nil {
 			return nil, err

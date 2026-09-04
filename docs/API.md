@@ -202,10 +202,33 @@ if f.Recent {
 rows, err := q.Order(article.CreatedAt.Desc()).All(ctx, ex, nil)
 ```
 
-`Where` is variadic AND; `Any` is OR; `Not` and `NotAny` negate. Each call
-appends a token to an inline array — a compiler-generated id for the column and
-the operator, never the value. **The assembled SQL for that combination is
-compiled once, ever**, and a warm call allocates nothing to build it.
+`Where` is variadic AND; `Any` is OR; `Not` and `NotAny` negate. `And` builds a
+conjunction and `AnyOf` ORs whole conjunctions — the shape an advanced-search
+panel produces, `(a AND b) OR (c AND d)`, which `Any` cannot say because it ORs
+single predicates. `NotAnyOf` negates that disjunction.
+
+```go
+q = q.AnyOf(
+    article.And(article.Status.Eq("published"), article.Views.Gte(1000)),
+    article.And(article.Status.Eq("featured")),
+)
+```
+
+An empty group contributes nothing, so one group per filled-in filter row needs
+no special case for the rows left blank, and a group of one predicate is that
+predicate — no parentheses the SQL did not need, and the same shape as the
+equivalent `Where`.
+
+Each call appends a token to an inline array — a compiler-generated id for the
+column and the operator, never the value. **The assembled SQL for that
+combination is compiled once, ever**, and a warm call allocates nothing to
+build it.
+
+Those arrays are fixed, which is what lets a warm call allocate nothing: about
+sixteen predicate nodes, four sort terms and six values of the commonest type.
+Past them the query returns an error rather than dropping a predicate. A screen
+that needs more regenerates with `codegen.Budgets{Scale: 2}` — every buffer
+doubles, and so does the `Query` value each builder call copies.
 
 That is also why storm has no injection surface in ordinary reads: there is no
 caller string in the statement text to escape. The values travel as bound

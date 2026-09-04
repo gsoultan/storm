@@ -605,3 +605,70 @@ func TestAggregateParamComposesWithCallSitePredicates(t *testing.T) {
 		t.Fatalf("a customer with no orders produced %d group(s)", len(rows))
 	}
 }
+
+// The whole point of ordering by a measure: the top N come back from the
+// database, not from sorting every group in Go.
+func TestTopCustomersOrdersByTheMeasureAndPagesTotally(t *testing.T) {
+	ctx := context.Background()
+	svc := orders.New(pool)
+
+	// Three customers with deliberately different totals, two of them tied,
+	// because a tie is what makes an unstable ordering visible.
+	for _, c := range []struct {
+		sku string
+		qty int32
+	}{{"SKU-TOP-A", 7}, {"SKU-TOP-B", 3}, {"SKU-TOP-C", 3}} {
+		cust, _ := seed(t, c.sku, "10.00", 100)
+		if _, err := svc.PlaceOrder(ctx, cust,
+			[]orders.LineRequest{{SKU: c.sku, Quantity: c.qty}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all, err := order.New().AllTopCustomers(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) < 3 {
+		t.Fatalf("want at least 3 groups, got %d", len(all))
+	}
+
+	// Descending by spend, which is not a grouping column and could not be a
+	// sort key before.
+	for i := 1; i < len(all); i++ {
+		prev, cur := all[i-1].Spend, all[i].Spend
+		if !prev.Valid || !cur.Valid {
+			t.Fatalf("sum over a non-empty group is NULL at row %d", i)
+		}
+		if prev.V.Float64() < cur.V.Float64() {
+			t.Fatalf("row %d spends %s, more than row %d's %s — not descending",
+				i, cur.V, i-1, prev.V)
+		}
+	}
+
+	// Paging walks every group exactly once. This is an end-to-end check that
+	// the ordering, LIMIT and OFFSET agree against a real server — NOT proof
+	// of the tiebreak: PostgreSQL's sort happens to be stable at this row
+	// count, and removing the tiebreak leaves this test green. The tiebreak is
+	// asserted where it can trip, on the emitted SQL, in
+	// compile/pgsql.TestMeasureOrderIsBrokenTiedByTheGrouping.
+	seen := map[[16]byte]int{}
+	for off := int64(0); off < int64(len(all)); off++ {
+		page, err := order.New().Limit(1).Offset(off).AllTopCustomers(ctx, ex)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) != 1 {
+			t.Fatalf("offset %d returned %d rows", off, len(page))
+		}
+		seen[page[0].CustomerID]++
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("customer %x appears on %d pages of a total ordering", id, n)
+		}
+	}
+	if len(seen) != len(all) {
+		t.Fatalf("the page walk saw %d distinct customers of %d groups", len(seen), len(all))
+	}
+}

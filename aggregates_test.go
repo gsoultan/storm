@@ -587,3 +587,96 @@ func TestDateTruncUnitIsCheckedAtBuild(t *testing.T) {
 		t.Errorf("the error does not name the problem:\n%v", err)
 	}
 }
+
+// Ordering by an output — the fixtures.
+
+type ordTop struct {
+	storm.Model
+	SKU    string
+	Amount storm.Decimal
+}
+
+func (m *ordTop) Aggregates(a *storm.Aggregates) {
+	b := a.Named("TopSKUs")
+	b.By(&m.SKU)
+	rev := b.Sum(&m.Amount, "Revenue")
+	b.OrderDesc(rev)
+}
+
+type ordUndeclared struct {
+	storm.Model
+	SKU    string
+	Amount storm.Decimal
+}
+
+func (m *ordUndeclared) Aggregates(a *storm.Aggregates) {
+	b := a.Named("A")
+	b.By(&m.SKU)
+	b.Sum(&m.Amount, "Revenue")
+	// A handle from a DIFFERENT declaration. The output exists; it is not
+	// this statement's, and PostgreSQL would say only "column does not exist".
+	other := a.Named("B")
+	other.By(&m.SKU)
+	b.OrderDesc(other.Count("N"))
+}
+
+type ordTwice struct {
+	storm.Model
+	SKU    string
+	Amount storm.Decimal
+}
+
+func (m *ordTwice) Aggregates(a *storm.Aggregates) {
+	b := a.Named("A")
+	b.By(&m.SKU)
+	rev := b.Sum(&m.Amount, "Revenue")
+	b.OrderDesc(rev).OrderAsc(rev)
+}
+
+// An ordering handle belongs to the declaration that produced it. Ordering by
+// another aggregation's output compiles in Go — the handle is a value — so the
+// check has to be storm's, at build time, where both names are still known.
+func TestAggregateOrderingIsCheckedAtBuildTime(t *testing.T) {
+	cases := []struct {
+		name  string
+		model any
+		want  []string
+	}{
+		{"handle from another aggregation", &ordUndeclared{}, []string{"different aggregation", `"N"`}},
+		{"ordered by the same output twice", &ordTwice{}, []string{"twice", `"Revenue"`}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := storm.Build(c.model); err == nil {
+				t.Fatal("accepted; the statement would name a column it does not select")
+			} else {
+				for _, want := range c.want {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error does not mention %q: %v", want, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The accepted shape, and the SQL it lowers to: the measure leads, and the
+// grouping column follows as the tiebreak that makes paging total.
+func TestOrderedAggregateBuildsAndOrdersByTheMeasure(t *testing.T) {
+	s, err := storm.Build(&ordTop{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb := s.Table("ord_tops")
+	if tb == nil {
+		t.Fatalf("no table; have %d", len(s.Tables))
+	}
+	if len(tb.Aggregates) != 1 {
+		t.Fatalf("want 1 aggregate, got %d", len(tb.Aggregates))
+	}
+	got := tb.Aggregates[0].OrderBy
+	want := []schema.AggOrder{{As: "Revenue", Desc: true}}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("OrderBy = %+v, want %+v", got, want)
+	}
+}

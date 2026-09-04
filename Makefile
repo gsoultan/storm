@@ -3,7 +3,13 @@
 # route (EHOSTUNREACH) while ping and nc sail through, and a DSN that works for
 # the shell and not for `go test` is a trap. 5433 because another project's
 # container already forwards 5432.
-DSN ?= postgres://storm:storm@127.0.0.1:5433/storm
+#
+# STORM_DSN from the environment wins, because every recipe below passes
+# STORM_DSN='$(DSN)' and would otherwise override the variable the docs, the
+# tests and the CI workflow all name. A developer who exports STORM_DSN and
+# watches `make check` authenticate against a different project's database
+# reads thirty auth failures as storm defects.
+DSN ?= $(if $(STORM_DSN),$(STORM_DSN),postgres://storm:storm@127.0.0.1:5433/storm)
 
 .PHONY: db db-stop test check bench results vet generate
 

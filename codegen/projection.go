@@ -108,7 +108,7 @@ func (g *gen) projection(name string, columns []string) {
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\tst := %sStmtFor(q.stream(&buf), q.offset > 0)", low)
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn dst, st.Err")

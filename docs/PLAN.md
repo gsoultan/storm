@@ -47,7 +47,7 @@ they are called out here so the override is deliberate.
 | M5 | Typed escape hatch | ✅ | **PASSED 2026-08-25** — the gate query (window over CTE with lateral join) fully typed against live PG; mismatches fail generation naming column and fix; validation needs a server, not a schema | *(cleared)* |
 | M6 | First adopter: `anubis/authz` | ✅ | **PASSED 2026-08-25, in one day** — whole bounded context migrated; p95 did not regress (see M6 status) | *(cleared: kill line was 3 wks or a p95 regression)* |
 | M7 | Tooling gate + hardening | ✅ | **PASSED 2026-08-24** — explain/lint/verify(-stale,-pending) shipped and tested; fuzz corpus + injection suite in CI; coverage floors enforced | *(cleared)* |
-| M8 | v1.0 release (Postgres) | ◐ | docs, examples and `docs/STABILITY.md` exist; **v0.4.1 tagged 2026-09-03**. What v1.0 still waits on is a SECOND adopter — every wrong-answer bug so far was found by exercising a path no test reached | — |
+| M8 | v1.0 release (Postgres) | ◐ | docs, examples and `docs/STABILITY.md` exist; **v0.5.0 tagged 2026-09-05**. What v1.0 still waits on is a SECOND adopter — every wrong-answer bug so far was found by exercising a path no test reached | — |
 | M9 | MySQL 8 + MariaDB | 4 | full suite green on both; seam has no leaks | seam leaked → fix `compile/` before any further target |
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
