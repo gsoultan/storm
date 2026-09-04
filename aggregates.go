@@ -616,6 +616,57 @@ func (b *AggregateBuilder) Param(name string) Term {
 // Having filters the GROUPS, after aggregation. A call-site Where filters the
 // rows that go INTO the groups; these are different questions and mixing them
 // up silently changes the answer.
+// OrderAsc and OrderDesc order the result by a declared output, replacing the
+// default ordering — the grouping columns, in declaration order.
+//
+// This is what makes a top-N report one statement. A grouped read can only be
+// ordered by something in its select list, so before an output could be the
+// sort key the only orderings available were the ones the grouping already
+// gave; "the ten products by revenue" meant fetching every product and sorting
+// in Go, which is a LIMIT the database never sees.
+//
+//	b := a.Named("TopProducts")
+//	b.By(&p.SKU)
+//	rev := b.Sum(&p.Amount, "Revenue")
+//	b.OrderDesc(rev)
+//
+//	rows, err := product.New().Limit(10).AllTopProducts(ctx, ex)
+//
+// The handle has to come from THIS aggregation: ordering by an output of
+// another one is a build error naming both, not SQL that fails on first use.
+func (b *AggregateBuilder) OrderAsc(o Out) *AggregateBuilder { return b.orderBy(o, false) }
+
+// OrderDesc orders descending — see OrderAsc.
+func (b *AggregateBuilder) OrderDesc(o Out) *AggregateBuilder { return b.orderBy(o, true) }
+
+func (b *AggregateBuilder) orderBy(o Out, desc bool) *AggregateBuilder {
+	if b.dead {
+		return b
+	}
+	// A zero Out is what a failed declaration handed back. It has already been
+	// reported; saying so again names the wrong line.
+	if o.name == "" {
+		return b
+	}
+	if o.b != b {
+		b.fail("orders by %q, which was declared on a different aggregation — "+
+			"a handle only orders the declaration that produced it", o.name)
+		return b
+	}
+	if !b.seen[o.name] {
+		b.fail("orders by %q, which is not one of its outputs", o.name)
+		return b
+	}
+	for _, e := range b.agg.OrderBy {
+		if e.As == o.name {
+			b.fail("orders by %q twice", o.name)
+			return b
+		}
+	}
+	b.agg.OrderBy = append(b.agg.OrderBy, schema.AggOrder{As: o.name, Desc: desc})
+	return b
+}
+
 func (b *AggregateBuilder) Having(c Cond) *AggregateBuilder {
 	if b.dead {
 		return b

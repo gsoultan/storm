@@ -162,3 +162,75 @@ func TestHavingIsRendered(t *testing.T) {
 		t.Errorf("clauses out of order: %s", got)
 	}
 }
+
+// An explicit ordering is what makes a top-N report one statement. Before it,
+// a grouped read could only be ordered by its grouping columns, so "the ten
+// products by revenue" had to fetch every product and sort in Go — a LIMIT the
+// database never saw.
+func TestExplicitOrderByAMeasure(t *testing.T) {
+	a := groupAgg(schema.SetsRollup, nil)
+	a.Sets = nil
+	a.OrderBy = []schema.AggOrder{{As: "N", Desc: true}}
+
+	got := pgsql.AggregateSuffix(a)
+	if !strings.Contains(got, `ORDER BY "n" DESC`) {
+		t.Fatalf(`no ORDER BY "n" DESC in %s`, got)
+	}
+	// The default ordering must be REPLACED, not appended to: leading with the
+	// grouping columns would sort by status and leave the measure a tiebreak,
+	// which is the opposite report.
+	ord := got[strings.Index(got, "ORDER BY"):]
+	if i, j := strings.Index(ord, `"n" DESC`), strings.Index(ord, `"status"`); i > j {
+		t.Fatalf("grouping column sorts before the measure: %s", got)
+	}
+}
+
+// A measure is not unique, and a top-N report is exactly the query that pages.
+// Without a total order `LIMIT 10 OFFSET 10` may return a tied group on both
+// pages and another on neither.
+func TestMeasureOrderIsBrokenTiedByTheGrouping(t *testing.T) {
+	a := groupAgg(schema.SetsRollup, nil)
+	a.Sets = nil
+	a.OrderBy = []schema.AggOrder{{As: "N", Desc: true}}
+
+	got := pgsql.AggregateSuffix(a)
+	want := `ORDER BY "n" DESC, "status", "region"`
+	if !strings.Contains(got, want) {
+		t.Fatalf("want %q in %s", want, got)
+	}
+}
+
+// A grouping column the declaration already named must not be appended twice.
+func TestOrderedGroupingColumnIsNotRepeated(t *testing.T) {
+	a := groupAgg(schema.SetsRollup, nil)
+	a.Sets = nil
+	a.OrderBy = []schema.AggOrder{{As: "Region", Desc: true}}
+
+	got := pgsql.AggregateSuffix(a)
+	ord := got[strings.Index(got, "ORDER BY"):]
+	if n := strings.Count(ord, `"region"`); n != 1 {
+		t.Fatalf(`"region" appears %d times in the ordering of %s`, n, got)
+	}
+	if !strings.Contains(got, `ORDER BY "region" DESC, "status"`) {
+		t.Fatalf("unexpected ordering: %s", got)
+	}
+}
+
+// A subtotal row's NULL is the summary of the detail below it, so it sorts
+// first — but only for a grouping column. A measure's NULL is a measure.
+func TestExplicitOrderNullsFirstOnlyForGroupings(t *testing.T) {
+	a := groupAgg(schema.SetsRollup, nil)
+	a.OrderBy = []schema.AggOrder{{As: "N", Desc: true}, {As: "Status"}}
+
+	got := pgsql.AggregateSuffix(a)
+	if strings.Contains(got, `"n" DESC NULLS FIRST`) {
+		t.Fatalf("a measure was ordered NULLS FIRST: %s", got)
+	}
+	if !strings.Contains(got, `"status" NULLS FIRST`) {
+		t.Fatalf("a grouping column lost NULLS FIRST: %s", got)
+	}
+	// The tiebreak carries the rule too.
+	if !strings.Contains(got, `"region" NULLS FIRST`) {
+		t.Fatalf("the appended tiebreak lost NULLS FIRST: %s", got)
+	}
+}

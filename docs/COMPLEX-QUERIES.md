@@ -1,6 +1,6 @@
 ---
 tags: [storm, queries, complex]
-updated: 2026-09-04
+updated: 2026-09-05
 status: as-built — the declarations here build; the gaps are marked as gaps
 ---
 
@@ -289,12 +289,81 @@ Two designs, both real work, neither started:
 
 ---
 
+## 9. Top N by a measure — "the ten customers who spend the most" ✅
+
+A grouped read can only be ordered by something in its select list, so until an
+output could be the sort key the only orderings available were the ones the
+grouping already gave. `OrderDesc` takes the handle the measure returned:
+
+```go
+func (o *Order) Aggregates(a *storm.Aggregates) {
+    top := a.Named("TopCustomers")
+    top.By(&o.Customer)
+    spend := top.Sum(&o.Total, "Spend")
+    top.Count("Orders")
+    top.OrderDesc(spend)
+}
+```
+
+```go
+rows, err := order.New().
+    Where(order.PlacedAt.Gte(monthStart)).   // call-site predicates still compose
+    Limit(10).
+    AllTopCustomers(ctx, ex)
+```
+
+```sql
+... GROUP BY "customer_id" ORDER BY "spend" DESC, "customer_id" LIMIT $2
+```
+
+**The grouping columns are appended as a tiebreak.** A measure is not unique,
+and a top-N report is exactly the query that pages: `LIMIT 10 OFFSET 10` over
+groups that tie is otherwise free to return one on both pages and another on
+neither. The handle has to come from the same declaration — ordering by another
+aggregation's output is a build error, not a column PostgreSQL cannot find.
+
+## 10. An advanced-search screen — OR across whole conditions ✅
+
+Each row of a filter panel is a field, an operator and a value, and rows within
+a group are ANDed while the groups are ORed. `Any` ORs *single* predicates and
+cannot say this; `And` builds a conjunction that `AnyOf` ORs with the others:
+
+```go
+rows, err := order.New().
+    Where(order.Region.Eq(r)).                 // ANDed with the whole disjunction
+    AnyOf(
+        order.And(order.Status.Eq("paid"), order.Total.Gte(big)),
+        order.And(order.Status.Eq("trial"), order.Total.Gte(small)),
+    ).
+    All(ctx, ex, nil)
+```
+
+```sql
+WHERE "region" = $1 AND (("status" = $2 AND "total" >= $3) OR ("status" = $4 AND "total" >= $5))
+```
+
+An empty group contributes nothing, so a screen that builds one group per
+filled-in row needs no special case for the rows left blank, and a group of one
+predicate is that predicate — the SQL carries no parentheses it did not need,
+so it caches under the same shape as the equivalent `Where`. `NotAnyOf` negates
+the disjunction. Composing one still allocates nothing.
+
+**The budgets are the limit here, not the grammar.** A generated `Query` holds
+its predicate tree in fixed buffers so a warm call can build its SQL without
+allocating — sixteen predicate nodes, four sort terms and six values of the
+commonest type by default. Past them the query returns an error rather than
+dropping a predicate. A screen that needs more regenerates with
+`codegen.Budgets{Scale: 2}`, which doubles every buffer; the cost is the size of
+the `Query` value every builder call copies.
+
 ## Where the line actually is
 
 Declarable: anything that is **one table's rows, grouped** — with expressions,
-`FILTER`, `HAVING`, grouping sets, windows and frames over them — plus joins
-that project across tables, and a CTE that materialises one aggregation for
-another to read. Plus the traversals: relations, semi-joins, self-references.
+`FILTER`, `HAVING`, grouping sets, windows and frames over them, and an
+ordering over any of it — plus joins that project across tables, and a CTE that
+materialises one aggregation for another to read. Plus the traversals:
+relations, semi-joins, self-references. At the call site, predicates compose to
+arbitrary AND/OR/NOT structure within the generated budgets.
 
 Not declarable, and each for a reason rather than an oversight:
 
@@ -303,6 +372,10 @@ Not declarable, and each for a reason rather than an oversight:
 | probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
 | set-returning functions | a row source that is not a table — [ADR-0009](adr/0009-gap-filling-needs-a-from-that-is-not-a-table.md) |
 | recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |
+| set-based `UPDATE`/`DELETE … WHERE` | writes are per row or batched per row; a bulk state transition is `storm.SQLExec` |
+| row locking — `FOR UPDATE`, `SKIP LOCKED` | a queue worker's read is `storm.SQL[T]`; the version column covers the lost update, not the queue |
+| streaming a result set | reads are `All`/`One`/`Count`/`Exists`; an export pages with `After` |
+| jsonb path extraction — `->>`, jsonpath | containment and key tests are declared; asking about a nested scalar is SQL |
 
 And when a query is not declarable, `storm.SQL[T]` is not a downgrade: the
 statement is still PREPAREd against the model at generate time, the row type

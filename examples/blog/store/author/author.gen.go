@@ -262,7 +262,7 @@ var errMixedOrder = errors.New(
 	"storm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
 
 var errTooComplex = errors.New(
-	"storm: query has more predicates than the generated buffers hold; split it, or raise the limits in codegen")
+	"storm: query has more predicates than the generated buffers hold (scale 1); split the query, or regenerate with a larger codegen.Budgets{Scale}")
 
 // push and leaf mutate through a pointer so the builder loop does not
 // copy the whole Query twice per predicate. They are only ever called on
@@ -463,6 +463,70 @@ func (q Query) NotAny(ps ...Pred) Query {
 	q.push(runtime.MakeGroup(runtime.KOr, uint32(len(ps))))
 	q.push(runtime.MakeGroup(runtime.KNot, 1))
 	q.top++
+	return q
+}
+
+// Grp is one conjunction, built by And, that AnyOf ORs with the others.
+//
+// It holds the predicates rather than tokens because the ARENA a value
+// lands in is chosen by leaf, in stream order, and a group has no stream
+// position until AnyOf gives it one.
+type Grp struct{ ps []Pred }
+
+// And groups predicates into one conjunction, so AnyOf can OR whole
+// conjunctions rather than single predicates:
+//
+//	q.AnyOf(And(Status.Eq("paid"), Total.Gt(big)),
+//	        And(Status.Eq("trial"), Total.Gt(small)))
+//
+// is (status = $1 AND total > $2) OR (status = $3 AND total > $4). Any
+// ORs single predicates and cannot say this: an advanced-search screen
+// whose rows are each a field, an operator and a value produces exactly
+// this shape, and without it the query has to be written in SQL.
+//
+// The variadic slice does not escape — AnyOf reads it and returns — so a
+// warm call still builds its SQL without allocating.
+func And(ps ...Pred) Grp { return Grp{ps: ps} }
+
+// AnyOf ORs its groups and ANDs the result with the rest of the query.
+//
+// An empty group contributes nothing, so a screen that builds one group
+// per filled-in filter row needs no special case for the rows the user
+// left blank. A group of one predicate is that predicate: the SQL carries
+// no parentheses it did not need, which keeps the statement — and so the
+// shape it is cached under — the same as the equivalent Any.
+func (q Query) AnyOf(gs ...Grp) Query {
+	n := uint32(0)
+	for i := range gs {
+		if len(gs[i].ps) == 0 {
+			continue
+		}
+		for j := range gs[i].ps {
+			q.leaf(gs[i].ps[j])
+		}
+		if len(gs[i].ps) > 1 {
+			q.push(runtime.MakeGroup(runtime.KAnd, uint32(len(gs[i].ps))))
+		}
+		n++
+	}
+	if n == 0 {
+		return q
+	}
+	if n > 1 {
+		q.push(runtime.MakeGroup(runtime.KOr, n))
+	}
+	q.top++
+	return q
+}
+
+// NotAnyOf negates the disjunction AnyOf builds: NOT ((a AND b) OR c).
+func (q Query) NotAnyOf(gs ...Grp) Query {
+	before := q.top
+	q = q.AnyOf(gs...)
+	if q.top == before {
+		return q
+	}
+	q.push(runtime.MakeGroup(runtime.KNot, 1))
 	return q
 }
 

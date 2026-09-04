@@ -20,7 +20,7 @@ migrations and **never applies DDL**.
 
 ## Status
 
-**v0.4.1 is tagged.** The read path, migrations, relations, writes, the typed
+**v0.5.0 is tagged.** The read path, migrations, relations, writes, the typed
 escape hatch and the tooling gate are built, benchmarked and hardened; the first
 adopter migrated a whole bounded context (M6) and runs on the published module.
 v0.3.0 added model discovery, declared aggregations and joins, full-text
@@ -33,10 +33,20 @@ answer: through v0.3.0, two list predicates in one query bound the same list
 twice and returned the wrong rows without erroring. **v0.4.1 fixes another, in
 every version that has had `numeric`**: a `Decimal` whose scale is not a
 multiple of four and whose value passes roughly 9.2e15 was encoded as zero, or
-as a wrapped value that looks plausible. The milestone log with
-every exit gate is [docs/PLAN.md](docs/PLAN.md), and what would still stop a
+as a wrapped value that looks plausible.
+
+**v0.5.0 closes the escape hatch's injection vector** — a `storm.SQL` statement
+now runs only if `storm generate` PREPAREd its exact text, so **upgrading
+requires regeneration** — and adds declared unions, declared parameters, the
+anti-join, many-to-many, top-N by a measure, and `AnyOf` for OR across whole
+conditions. It carries one more silent wrong answer: through v0.4.1 a table
+past 512 filterable columns built its predicates from a wrapped child's
+fragment table in a composed statement. The milestone log with
+every exit gate is [docs/PLAN.md](docs/PLAN.md), what would still stop a
 team adopting this is written down, with gates, in
-[docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md).
+[docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md), and where the
+declared surface ends is
+[docs/COMPLEX-QUERIES.md](docs/COMPLEX-QUERIES.md).
 
 Every claim below is a test or a benchmark in this repository. The quickstart
 is executable: [`examples/blog`](examples/blog) runs as a test in CI, so it

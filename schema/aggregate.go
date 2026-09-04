@@ -30,6 +30,22 @@ type Aggregate struct {
 	// subtotal row carries NULL for the columns it aggregated over.
 	Sets *GroupingSets
 
+	// OrderBy, when set, replaces the default ordering — the grouping columns
+	// in declaration order — with an explicit one over ANY declared output.
+	//
+	// It exists so a measure can be the sort key. "The ten products by
+	// revenue" orders by a sum, and the sum is not a grouping column, so
+	// without this the only orderings expressible were the ones the grouping
+	// already gave: the whole result had to come back and be sorted by the
+	// caller, which turns a LIMIT 10 into every group in the table.
+	//
+	// The terms name OUTPUTS, not expressions. PostgreSQL resolves a bare name
+	// in ORDER BY against the select list first, so ordering by the alias and
+	// ordering by the aggregate are the same plan — and the alias keeps a
+	// grouping set's subtotal NULLs visible, which repeating the expression
+	// would not.
+	OrderBy []AggOrder
+
 	// Terms are the aggregate and window expressions, in declaration order.
 	Terms []AggregateTerm
 
@@ -59,6 +75,17 @@ type GroupTerm struct {
 
 // GroupingSetsKind selects the multi-level grouping form.
 type GroupingSetsKind uint8
+
+// AggOrder is one explicit ordering term of an aggregation: a declared
+// output's name, and the direction.
+type AggOrder struct {
+	// As is the output's Go field name, which is also the SQL alias.
+	As string
+	// Desc orders descending. A report's headline measure is almost always
+	// descending, which is why the declaration says which rather than
+	// defaulting.
+	Desc bool
+}
 
 const (
 	// SetsExplicit is GROUPING SETS ((a,b),(a),()).
