@@ -161,6 +161,40 @@ func TestTheTour(t *testing.T) {
 	} else if got != 0 {
 		t.Fatalf("authors with no articles at all = %d, want 0", got)
 	}
+
+	// ---- Both probes in ONE statement: "has a published article, and none
+	// titled X". This is the upsell query — bought this, never bought that —
+	// and doing it in two round trips means intersecting in Go, which is the
+	// join the database was going to do anyway.
+	//
+	// Ada has two published articles, one of them "Notes", so the second probe
+	// excludes her. Grace has no published article, so the first excludes her.
+	if got, err := store.AuthorHavingArticles(author.New(), article.PublishedAt.IsNotNull()).
+		AndNotHaving(article.Title.Eq("Notes")).
+		Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 0 {
+		t.Fatalf("published-but-not-Notes authors = %d, want 0 (Ada wrote Notes)", got)
+	}
+
+	// The same chain against a title nobody used: Ada qualifies on both probes.
+	if got, err := store.AuthorHavingArticles(author.New(), article.PublishedAt.IsNotNull()).
+		AndNotHaving(article.Title.Eq("Nothing By This Name")).
+		Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 1 {
+		t.Fatalf("published-but-not-Nothing authors = %d, want 1 (Ada)", got)
+	}
+
+	// Two POSITIVE probes, ANDed: both must match, and they may match
+	// different rows — Ada's two articles, one per probe.
+	if got, err := store.AuthorHavingArticles(author.New(), article.Title.Eq("On Engines")).
+		AndHaving(article.Title.Eq("Notes")).
+		Count(ctx, ex); err != nil {
+		t.Fatal(err)
+	} else if got != 1 {
+		t.Fatalf("authors with both titles = %d, want 1 (Ada)", got)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

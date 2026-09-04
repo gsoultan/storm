@@ -872,19 +872,62 @@ func (p StockItemWithProductQuery) All(ctx context.Context, ex runtime.Executor)
 	return out, nil
 }
 
-// CustomerHavingOrders narrows q to rows with at least one matching orders row — the
-// filtered semi-join, in one statement. The child predicates are typed
-// by the child's own package; ids and values meet only here.
-func CustomerHavingOrders(q customer.Query, ps ...order.Pred) CustomerHavingOrdersQuery {
-	return CustomerHavingOrdersQuery{q: q, c: order.New().Unordered().Where(ps...)}
-}
-
-type CustomerHavingOrdersQuery struct {
+// CustomerOrdersProbeQuery is a parent query with one or more existence probes against
+// orders, combined with AND. Build it with CustomerHavingOrders or
+// CustomerNotHavingOrders and extend it with AndHaving/AndNotHaving.
+type CustomerOrdersProbeQuery struct {
 	q customer.Query
-	c order.Query
+	p []customerOrdersProbeQueryProbe
 }
 
-var customerHavingOrdersLowering = func() runtime.Lowering {
+type customerOrdersProbeQueryProbe struct {
+	c   order.Query
+	neg bool
+}
+
+// CustomerHavingOrders narrows q to rows with at least one matching orders row —
+// the filtered semi-join, in one statement. The child predicates are
+// typed by the child's own package; ids and values meet only here.
+func CustomerHavingOrders(q customer.Query, ps ...order.Pred) CustomerOrdersProbeQuery {
+	return CustomerOrdersProbeQuery{q: q}.AndHaving(ps...)
+}
+
+// CustomerNotHavingOrders narrows q to rows with NO matching orders row — the
+// filtered anti-join.
+//
+// Read the predicates carefully: this is "has no orders row matching
+// these", not "has a orders row that does not match". With no predicates
+// at all it is "has none". The two questions have different answers
+// whenever a parent has several children, and SQL spells them the same
+// way round.
+func CustomerNotHavingOrders(q customer.Query, ps ...order.Pred) CustomerOrdersProbeQuery {
+	return CustomerOrdersProbeQuery{q: q}.AndNotHaving(ps...)
+}
+
+// AndHaving adds another EXISTS probe against orders, ANDed with the
+// ones already there.
+func (h CustomerOrdersProbeQuery) AndHaving(ps ...order.Pred) CustomerOrdersProbeQuery {
+	return h.probe(false, ps...)
+}
+
+// AndNotHaving adds a NOT EXISTS probe against orders. This is how
+// "has one of these but none of those" is one statement:
+//
+//	CustomerHavingOrders(q, bought).AndNotHaving(alsoBought)
+func (h CustomerOrdersProbeQuery) AndNotHaving(ps ...order.Pred) CustomerOrdersProbeQuery {
+	return h.probe(true, ps...)
+}
+
+func (h CustomerOrdersProbeQuery) probe(neg bool, ps ...order.Pred) CustomerOrdersProbeQuery {
+	// Copied rather than appended in place: a composer is a value, and
+	// two chains branching from one base must not share a backing array.
+	p := make([]customerOrdersProbeQueryProbe, len(h.p), len(h.p)+1)
+	copy(p, h.p)
+	h.p = append(p, customerOrdersProbeQueryProbe{c: order.New().Unordered().Where(ps...), neg: neg})
+	return h
+}
+
+var customerOrdersProbeQueryLowering = func() runtime.Lowering {
 	lw := customer.Lowering()
 	parentFrag := lw.Frag
 	lw.Frag = func(op, col uint32) runtime.Frag {
@@ -893,27 +936,42 @@ var customerHavingOrdersLowering = func() runtime.Lowering {
 		}
 		return parentFrag(op, col)
 	}
-	lw.Exists = func(uint32) string {
+	// The token's relation id picks the header: 0 positive, 1 negated.
+	// Both probes are the same relation, so only the polarity varies.
+	lw.Exists = func(rel uint32) string {
+		if rel == 1 {
+			return "NOT EXISTS (SELECT 1 FROM \"orders\" AS \"_storm_e\" WHERE \"_storm_e\".\"customer_id\" = \"customers\".\"id\""
+		}
 		return "EXISTS (SELECT 1 FROM \"orders\" AS \"_storm_e\" WHERE \"_storm_e\".\"customer_id\" = \"customers\".\"id\""
 	}
 	return lw
 }()
 
-var customerHavingOrdersCache = runtime.NewTreeCache()
+var customerOrdersProbeQueryCache = runtime.NewTreeCache()
 
-func (h CustomerHavingOrdersQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+func (h CustomerOrdersProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
 	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
+	stack := 0
+	if len(toks) > 0 {
+		stack = 1
 	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	for _, pr := range h.p {
+		child := pr.c.PredToks(nil)
+		toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+		arity := uint32(0)
+		if len(child) > 0 {
+			arity = 1 // the child stream reduces to one stack entry
+		}
+		rel := uint32(0)
+		if pr.neg {
+			rel = 1
+		}
+		toks = append(toks, runtime.MakeExists(rel, arity))
+		stack++
+	}
+	if stack > 1 {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, uint32(stack)))
 	}
 	if !count {
 		toks = h.q.OrderToks(toks)
@@ -923,19 +981,45 @@ func (h CustomerHavingOrdersQuery) stmt(count bool) (*runtime.Stmt, []runtime.To
 	if count {
 		prefix, suffix = cnt, ""
 	}
-	if st := customerHavingOrdersCache.Get(toks); st != nil {
+	if st := customerOrdersProbeQueryCache.Get(toks); st != nil {
 		return st, toks
 	}
-	return customerHavingOrdersCache.Put(toks, runtime.SpliceTree(prefix, toks, customerHavingOrdersLowering, suffix)), toks
+	return customerOrdersProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, customerOrdersProbeQueryLowering, suffix)), toks
 }
 
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h CustomerHavingOrdersQuery) All(ctx context.Context, ex runtime.Executor) ([]customer.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
+// bind returns the arguments in STREAM order: parent predicates, then
+// each probe's, then the parent's paging. Each probe takes its own
+// binder — bindPreds resets the arenas it fills, so two probes sharing
+// one binder would have the second silently overwrite the first.
+func (h CustomerOrdersProbeQuery) bind(pb *customer.Binder, paging bool) ([]any, []*order.Binder) {
+	args := h.q.BindPreds(pb, nil)
+	cbs := make([]*order.Binder, 0, len(h.p))
+	for _, pr := range h.p {
+		cb := order.GetBinder()
+		cbs = append(cbs, cb)
+		args = pr.c.BindPreds(cb, args)
 	}
-	if err := h.c.Err(); err != nil {
+	if paging {
+		args = h.q.BindPaging(pb, args)
+	}
+	return args, cbs
+}
+
+func (h CustomerOrdersProbeQuery) err() error {
+	if err := h.q.Err(); err != nil {
+		return err
+	}
+	for _, pr := range h.p {
+		if err := pr.c.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All runs the composed statement.
+func (h CustomerOrdersProbeQuery) All(ctx context.Context, ex runtime.Executor) ([]customer.Row, error) {
+	if err := h.err(); err != nil {
 		return nil, err
 	}
 	st, _ := h.stmt(false)
@@ -944,11 +1028,12 @@ func (h CustomerHavingOrdersQuery) All(ctx context.Context, ex runtime.Executor)
 	}
 	pb := customer.GetBinder()
 	defer customer.PutBinder(pb)
-	cb := order.GetBinder()
-	defer order.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			order.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return nil, err
@@ -966,11 +1051,8 @@ func (h CustomerHavingOrdersQuery) All(ctx context.Context, ex runtime.Executor)
 }
 
 // Count runs the composed count: no ordering, no paging.
-func (h CustomerHavingOrdersQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
+func (h CustomerOrdersProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.err(); err != nil {
 		return 0, err
 	}
 	st, _ := h.stmt(true)
@@ -979,10 +1061,12 @@ func (h CustomerHavingOrdersQuery) Count(ctx context.Context, ex runtime.Executo
 	}
 	pb := customer.GetBinder()
 	defer customer.PutBinder(pb)
-	cb := order.GetBinder()
-	defer order.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
+	args, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			order.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return 0, err
@@ -994,146 +1078,62 @@ func (h CustomerHavingOrdersQuery) Count(ctx context.Context, ex runtime.Executo
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
-// CustomerNotHavingOrders narrows q to rows with NO matching orders row — the
-// filtered anti-join, in one statement.
-//
-// Read the predicates carefully: this is "has no orders row matching
-// these", not "has a orders row that does not match". With no
-// predicates at all it is "has none". The two questions have
-// different answers whenever a parent has several children, and
-// SQL spells them the same way round.
-func CustomerNotHavingOrders(q customer.Query, ps ...order.Pred) CustomerNotHavingOrdersQuery {
-	return CustomerNotHavingOrdersQuery{q: q, c: order.New().Unordered().Where(ps...)}
-}
-
-type CustomerNotHavingOrdersQuery struct {
-	q customer.Query
-	c order.Query
-}
-
-var customerNotHavingOrdersLowering = func() runtime.Lowering {
-	lw := customer.Lowering()
-	parentFrag := lw.Frag
-	lw.Frag = func(op, col uint32) runtime.Frag {
-		if col >= runtime.ChildColBase {
-			return order.FragOf(op, col-runtime.ChildColBase)
-		}
-		return parentFrag(op, col)
-	}
-	lw.Exists = func(uint32) string {
-		return "NOT EXISTS (SELECT 1 FROM \"orders\" AS \"_storm_e\" WHERE \"_storm_e\".\"customer_id\" = \"customers\".\"id\""
-	}
-	return lw
-}()
-
-var customerNotHavingOrdersCache = runtime.NewTreeCache()
-
-func (h CustomerNotHavingOrdersQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
-	var buf [44]runtime.Tok
-	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
-	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
-	}
-	if !count {
-		toks = h.q.OrderToks(toks)
-	}
-	sel, cnt, limitSfx := customer.StmtPieces()
-	prefix, suffix := sel, limitSfx
-	if count {
-		prefix, suffix = cnt, ""
-	}
-	if st := customerNotHavingOrdersCache.Get(toks); st != nil {
-		return st, toks
-	}
-	return customerNotHavingOrdersCache.Put(toks, runtime.SpliceTree(prefix, toks, customerNotHavingOrdersLowering, suffix)), toks
-}
-
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h CustomerNotHavingOrdersQuery) All(ctx context.Context, ex runtime.Executor) ([]customer.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
-	}
-	if err := h.c.Err(); err != nil {
-		return nil, err
-	}
-	st, _ := h.stmt(false)
-	if st.Err != nil {
-		return nil, st.Err
-	}
-	pb := customer.GetBinder()
-	defer customer.PutBinder(pb)
-	cb := order.GetBinder()
-	defer order.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
-	rows, err := ex.Query(ctx, st.SQL, args)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var sl runtime.Slab
-	var out []customer.Row
-	for rows.Next() {
-		out = append(out, customer.Row{})
-		if err := customer.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
-			return nil, err
-		}
-	}
-	return out, rows.Err()
-}
-
-// Count runs the composed count: no ordering, no paging.
-func (h CustomerNotHavingOrdersQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
-		return 0, err
-	}
-	st, _ := h.stmt(true)
-	if st.Err != nil {
-		return 0, st.Err
-	}
-	pb := customer.GetBinder()
-	defer customer.PutBinder(pb)
-	cb := order.GetBinder()
-	defer order.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	rows, err := ex.Query(ctx, st.SQL, args)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		return 0, rows.Err()
-	}
-	return runtime.Int8(rows.RawValues()[0]), rows.Err()
-}
-
-// OrderHavingLines narrows q to rows with at least one matching order_lines row — the
-// filtered semi-join, in one statement. The child predicates are typed
-// by the child's own package; ids and values meet only here.
-func OrderHavingLines(q order.Query, ps ...orderline.Pred) OrderHavingLinesQuery {
-	return OrderHavingLinesQuery{q: q, c: orderline.New().Unordered().Where(ps...)}
-}
-
-type OrderHavingLinesQuery struct {
+// OrderLinesProbeQuery is a parent query with one or more existence probes against
+// order_lines, combined with AND. Build it with OrderHavingLines or
+// OrderNotHavingLines and extend it with AndHaving/AndNotHaving.
+type OrderLinesProbeQuery struct {
 	q order.Query
-	c orderline.Query
+	p []orderLinesProbeQueryProbe
 }
 
-var orderHavingLinesLowering = func() runtime.Lowering {
+type orderLinesProbeQueryProbe struct {
+	c   orderline.Query
+	neg bool
+}
+
+// OrderHavingLines narrows q to rows with at least one matching order_lines row —
+// the filtered semi-join, in one statement. The child predicates are
+// typed by the child's own package; ids and values meet only here.
+func OrderHavingLines(q order.Query, ps ...orderline.Pred) OrderLinesProbeQuery {
+	return OrderLinesProbeQuery{q: q}.AndHaving(ps...)
+}
+
+// OrderNotHavingLines narrows q to rows with NO matching order_lines row — the
+// filtered anti-join.
+//
+// Read the predicates carefully: this is "has no order_lines row matching
+// these", not "has a order_lines row that does not match". With no predicates
+// at all it is "has none". The two questions have different answers
+// whenever a parent has several children, and SQL spells them the same
+// way round.
+func OrderNotHavingLines(q order.Query, ps ...orderline.Pred) OrderLinesProbeQuery {
+	return OrderLinesProbeQuery{q: q}.AndNotHaving(ps...)
+}
+
+// AndHaving adds another EXISTS probe against order_lines, ANDed with the
+// ones already there.
+func (h OrderLinesProbeQuery) AndHaving(ps ...orderline.Pred) OrderLinesProbeQuery {
+	return h.probe(false, ps...)
+}
+
+// AndNotHaving adds a NOT EXISTS probe against order_lines. This is how
+// "has one of these but none of those" is one statement:
+//
+//	OrderHavingLines(q, bought).AndNotHaving(alsoBought)
+func (h OrderLinesProbeQuery) AndNotHaving(ps ...orderline.Pred) OrderLinesProbeQuery {
+	return h.probe(true, ps...)
+}
+
+func (h OrderLinesProbeQuery) probe(neg bool, ps ...orderline.Pred) OrderLinesProbeQuery {
+	// Copied rather than appended in place: a composer is a value, and
+	// two chains branching from one base must not share a backing array.
+	p := make([]orderLinesProbeQueryProbe, len(h.p), len(h.p)+1)
+	copy(p, h.p)
+	h.p = append(p, orderLinesProbeQueryProbe{c: orderline.New().Unordered().Where(ps...), neg: neg})
+	return h
+}
+
+var orderLinesProbeQueryLowering = func() runtime.Lowering {
 	lw := order.Lowering()
 	parentFrag := lw.Frag
 	lw.Frag = func(op, col uint32) runtime.Frag {
@@ -1142,27 +1142,42 @@ var orderHavingLinesLowering = func() runtime.Lowering {
 		}
 		return parentFrag(op, col)
 	}
-	lw.Exists = func(uint32) string {
+	// The token's relation id picks the header: 0 positive, 1 negated.
+	// Both probes are the same relation, so only the polarity varies.
+	lw.Exists = func(rel uint32) string {
+		if rel == 1 {
+			return "NOT EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\""
+		}
 		return "EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\""
 	}
 	return lw
 }()
 
-var orderHavingLinesCache = runtime.NewTreeCache()
+var orderLinesProbeQueryCache = runtime.NewTreeCache()
 
-func (h OrderHavingLinesQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
+func (h OrderLinesProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
 	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
+	stack := 0
+	if len(toks) > 0 {
+		stack = 1
 	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
+	for _, pr := range h.p {
+		child := pr.c.PredToks(nil)
+		toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
+		arity := uint32(0)
+		if len(child) > 0 {
+			arity = 1 // the child stream reduces to one stack entry
+		}
+		rel := uint32(0)
+		if pr.neg {
+			rel = 1
+		}
+		toks = append(toks, runtime.MakeExists(rel, arity))
+		stack++
+	}
+	if stack > 1 {
+		toks = append(toks, runtime.MakeGroup(runtime.KAnd, uint32(stack)))
 	}
 	if !count {
 		toks = h.q.OrderToks(toks)
@@ -1172,19 +1187,45 @@ func (h OrderHavingLinesQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	if count {
 		prefix, suffix = cnt, ""
 	}
-	if st := orderHavingLinesCache.Get(toks); st != nil {
+	if st := orderLinesProbeQueryCache.Get(toks); st != nil {
 		return st, toks
 	}
-	return orderHavingLinesCache.Put(toks, runtime.SpliceTree(prefix, toks, orderHavingLinesLowering, suffix)), toks
+	return orderLinesProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix)), toks
 }
 
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h OrderHavingLinesQuery) All(ctx context.Context, ex runtime.Executor) ([]order.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
+// bind returns the arguments in STREAM order: parent predicates, then
+// each probe's, then the parent's paging. Each probe takes its own
+// binder — bindPreds resets the arenas it fills, so two probes sharing
+// one binder would have the second silently overwrite the first.
+func (h OrderLinesProbeQuery) bind(pb *order.Binder, paging bool) ([]any, []*orderline.Binder) {
+	args := h.q.BindPreds(pb, nil)
+	cbs := make([]*orderline.Binder, 0, len(h.p))
+	for _, pr := range h.p {
+		cb := orderline.GetBinder()
+		cbs = append(cbs, cb)
+		args = pr.c.BindPreds(cb, args)
 	}
-	if err := h.c.Err(); err != nil {
+	if paging {
+		args = h.q.BindPaging(pb, args)
+	}
+	return args, cbs
+}
+
+func (h OrderLinesProbeQuery) err() error {
+	if err := h.q.Err(); err != nil {
+		return err
+	}
+	for _, pr := range h.p {
+		if err := pr.c.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// All runs the composed statement.
+func (h OrderLinesProbeQuery) All(ctx context.Context, ex runtime.Executor) ([]order.Row, error) {
+	if err := h.err(); err != nil {
 		return nil, err
 	}
 	st, _ := h.stmt(false)
@@ -1193,11 +1234,12 @@ func (h OrderHavingLinesQuery) All(ctx context.Context, ex runtime.Executor) ([]
 	}
 	pb := order.GetBinder()
 	defer order.PutBinder(pb)
-	cb := orderline.GetBinder()
-	defer orderline.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return nil, err
@@ -1215,11 +1257,8 @@ func (h OrderHavingLinesQuery) All(ctx context.Context, ex runtime.Executor) ([]
 }
 
 // Count runs the composed count: no ordering, no paging.
-func (h OrderHavingLinesQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
+func (h OrderLinesProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := h.err(); err != nil {
 		return 0, err
 	}
 	st, _ := h.stmt(true)
@@ -1228,137 +1267,12 @@ func (h OrderHavingLinesQuery) Count(ctx context.Context, ex runtime.Executor) (
 	}
 	pb := order.GetBinder()
 	defer order.PutBinder(pb)
-	cb := orderline.GetBinder()
-	defer orderline.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	rows, err := ex.Query(ctx, st.SQL, args)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		return 0, rows.Err()
-	}
-	return runtime.Int8(rows.RawValues()[0]), rows.Err()
-}
-
-// OrderNotHavingLines narrows q to rows with NO matching order_lines row — the
-// filtered anti-join, in one statement.
-//
-// Read the predicates carefully: this is "has no order_lines row matching
-// these", not "has a order_lines row that does not match". With no
-// predicates at all it is "has none". The two questions have
-// different answers whenever a parent has several children, and
-// SQL spells them the same way round.
-func OrderNotHavingLines(q order.Query, ps ...orderline.Pred) OrderNotHavingLinesQuery {
-	return OrderNotHavingLinesQuery{q: q, c: orderline.New().Unordered().Where(ps...)}
-}
-
-type OrderNotHavingLinesQuery struct {
-	q order.Query
-	c orderline.Query
-}
-
-var orderNotHavingLinesLowering = func() runtime.Lowering {
-	lw := order.Lowering()
-	parentFrag := lw.Frag
-	lw.Frag = func(op, col uint32) runtime.Frag {
-		if col >= runtime.ChildColBase {
-			return orderline.FragOf(op, col-runtime.ChildColBase)
+	args, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
 		}
-		return parentFrag(op, col)
-	}
-	lw.Exists = func(uint32) string {
-		return "NOT EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\""
-	}
-	return lw
-}()
-
-var orderNotHavingLinesCache = runtime.NewTreeCache()
-
-func (h OrderNotHavingLinesQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
-	var buf [44]runtime.Tok
-	toks := h.q.PredToks(buf[:0])
-	parentPreds := len(toks) > 0
-	child := h.c.PredToks(nil)
-	toks = runtime.OffsetCols(toks, child, runtime.ChildColBase)
-	arity := uint32(0)
-	if len(child) > 0 {
-		arity = 1 // the child stream reduces to one stack entry
-	}
-	toks = append(toks, runtime.MakeExists(0, arity))
-	if parentPreds {
-		toks = append(toks, runtime.MakeGroup(runtime.KAnd, 2))
-	}
-	if !count {
-		toks = h.q.OrderToks(toks)
-	}
-	sel, cnt, limitSfx := order.StmtPieces()
-	prefix, suffix := sel, limitSfx
-	if count {
-		prefix, suffix = cnt, ""
-	}
-	if st := orderNotHavingLinesCache.Get(toks); st != nil {
-		return st, toks
-	}
-	return orderNotHavingLinesCache.Put(toks, runtime.SpliceTree(prefix, toks, orderNotHavingLinesLowering, suffix)), toks
-}
-
-// All runs the composed statement. Bind order is stream order: parent
-// values, child values, then the parent's paging.
-func (h OrderNotHavingLinesQuery) All(ctx context.Context, ex runtime.Executor) ([]order.Row, error) {
-	if err := h.q.Err(); err != nil {
-		return nil, err
-	}
-	if err := h.c.Err(); err != nil {
-		return nil, err
-	}
-	st, _ := h.stmt(false)
-	if st.Err != nil {
-		return nil, st.Err
-	}
-	pb := order.GetBinder()
-	defer order.PutBinder(pb)
-	cb := orderline.GetBinder()
-	defer orderline.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
-	args = h.q.BindPaging(pb, args)
-	rows, err := ex.Query(ctx, st.SQL, args)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var sl runtime.Slab
-	var out []order.Row
-	for rows.Next() {
-		out = append(out, order.Row{})
-		if err := order.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
-			return nil, err
-		}
-	}
-	return out, rows.Err()
-}
-
-// Count runs the composed count: no ordering, no paging.
-func (h OrderNotHavingLinesQuery) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := h.q.Err(); err != nil {
-		return 0, err
-	}
-	if err := h.c.Err(); err != nil {
-		return 0, err
-	}
-	st, _ := h.stmt(true)
-	if st.Err != nil {
-		return 0, st.Err
-	}
-	pb := order.GetBinder()
-	defer order.PutBinder(pb)
-	cb := orderline.GetBinder()
-	defer orderline.PutBinder(cb)
-	args := h.q.BindPreds(pb, nil)
-	args = h.c.BindPreds(cb, args)
+	}()
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
 		return 0, err

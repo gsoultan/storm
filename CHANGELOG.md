@@ -14,6 +14,41 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Chained existence probes: `AndHaving` / `AndNotHaving`
+
+The upsell query — *bought Coffee, never bought Equipment* — is now one
+statement:
+
+```go
+store.CustomerHavingOrders(customer.New(), order.Category.Eq(coffee)).
+    AndNotHaving(order.Category.Eq(equipment)).
+    All(ctx, ex)
+```
+
+The token layout already allowed this and nothing used it: `MakeExists(rel,
+arity)` carries a relation id and `Lowering.Exists` takes one, but every
+generated composer passed `0` because there had only ever been one probe per
+statement. The id now selects the header — 0 positive, 1 negated — so both
+polarities live in one stream.
+
+Two positive probes are satisfied by **different** child rows, which is what
+"ordered both of these" means; `examples/blog` asserts that rather than
+describing it.
+
+**One relation per chain, enforced by the type.** Probes against two different
+relations would rebase both children past the same `runtime.ChildColBase`, and
+the composite lowering routes on that range alone — it could not tell one child
+package's fragments from the other's. `AndHaving` therefore exists only on the
+composer for the relation you started with, so "has orders but no refunds" does
+not compile rather than returning the wrong rows.
+
+Each probe takes its own binder: `bindPreds` resets the arenas it fills, so two
+probes sharing one would have the second silently overwrite the first.
+
+The composer type is now per relation rather than per relation *and* polarity —
+`AuthorArticlesProbeQuery`, returned by both `AuthorHavingArticles` and
+`AuthorNotHavingArticles`. Call sites that did not name the type are unaffected.
+
 ### The anti-join: `<Parent>NotHaving<Child>`
 
 The semi-join had no negative form, so "customers who bought Coffee but never

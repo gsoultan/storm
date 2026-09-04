@@ -10,8 +10,8 @@ The question this page exists to answer is not "is storm expressive" but
 **"where is the line?"** — which of these is a declaration, and which sends you
 back to SQL.
 
-Five of the eight are declarations, one is half of one, and two are not. Saying
-which is more useful than a page of examples that all happen to work.
+Six of the eight are declarations today. Two are not, and saying which is more
+useful than a page of examples that all happen to work.
 
 > **How the declarations differ from a query builder.** They live in
 > `Aggregates` and `Joins` methods on the model, not in a chain at the call
@@ -84,28 +84,31 @@ The arithmetic itself is no longer the obstacle — `a.Div(recent,
 a.NullIf(prior, a.Lit(0)))` is a declaration and resolves to numeric, not to
 truncated integer division. It is the moving boundary that does not fit.
 
-## 3. Bought X, never bought Y ⚠️
+## 3. Bought X, never bought Y ✅
 
 > *"Customers who ordered from Coffee but never from Equipment — the upsell
 > list."*
 
-Both halves are generated now. Each takes the child's own typed predicates and
-lowers to one probe per row — no join fan-out, no `DISTINCT`:
+One statement, one `EXISTS` and one `NOT EXISTS`, both against the same
+relation and both taking the child's own typed predicates — no join fan-out, no
+`DISTINCT`:
 
 ```go
-bought, err := store.CustomerHavingOrders(
-    customer.New(), orderline.Category.Eq(coffee)).All(ctx, ex)
-
-never, err := store.CustomerNotHavingOrders(
-    customer.New(), orderline.Category.Eq(equipment)).All(ctx, ex)
+upsell, err := store.CustomerHavingOrders(
+    customer.New(), order.Category.Eq(coffee)).
+    AndNotHaving(order.Category.Eq(equipment)).
+    All(ctx, ex)
 ```
 
-**The gap is composing them.** A composer returns only `All` and `Count`, not a
-query you can hand to the next one, so "bought Coffee AND never bought
-Equipment" is two round trips and an intersection in Go — or one `storm.SQL`.
-Chaining them would mean two `EXISTS` probes with two different headers in one
-token stream, and the header lookup is currently per-statement rather than
-per-relation. Worth doing; not done.
+`AndHaving` chains too, and the probes are independent: two positive probes are
+satisfied by *different* child rows, which is what "ordered both of these" means.
+
+**The limit is one relation per chain**, and it is enforced by the type rather
+than documented. Two probes against different relations would rebase both
+children past the same `runtime.ChildColBase`, and the composite lowering routes
+on that range alone — it could not tell one child package's fragments from the
+other's. So `AndHaving` exists only on the composer for the relation you
+started with, and "has orders but no refunds" is still two round trips.
 
 **Read the anti-join carefully.** `NotHaving` means *"has no child row matching
 these predicates"*, not *"has a child row that does not match"*. The two differ
@@ -223,7 +226,7 @@ Not declarable, and each for a reason rather than an oversight:
 | Missing | Why |
 |---|---|
 | `UNION` | two shapes into one row type is a shape the generator has not been asked to name |
-| chained semi/anti-joins | a composer returns rows, not a query the next one can take |
+| probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
 | set-returning functions | `generate_series` is not a scalar function |
 | run-time-relative filters | a declared `FILTER` is fixed at generate time |
 | recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |
