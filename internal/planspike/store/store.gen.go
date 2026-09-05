@@ -25,16 +25,16 @@ import (
 // a graph write to succeed.
 var FlushOrder = map[string]int{
 	"audit_logs":   0,
-	"events":       2,
-	"orgs":         3,
-	"tags":         4,
-	"users":        5,
-	"memberships":  6,
-	"posts":        7,
-	"comments":     9,
-	"post_related": 10,
-	"post_tags":    11,
-	"attachments":  12,
+	"events":       3,
+	"orgs":         4,
+	"tags":         5,
+	"users":        6,
+	"memberships":  7,
+	"posts":        8,
+	"comments":     10,
+	"post_related": 11,
+	"post_tags":    12,
+	"attachments":  13,
 }
 
 // NewUnit stages writes across this context and flushes them in foreign-key

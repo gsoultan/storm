@@ -112,6 +112,81 @@ is a trade made deliberately and not by default. The zero value generates
 byte-identical output to before, and the overflow error now names the setting
 and the scale it was generated with.
 
+### Every index PostgreSQL has, and MySQL's own — declared, round-tripped, diffed
+
+An index could name its columns, a direction, a method and a partial predicate,
+and nothing else. The rest of what makes an index answer a question — the
+operator class that lets a btree serve `LIKE 'abc%'`, the `INCLUDE` that makes
+a read an Index Only Scan, a `gin_trgm_ops` behind `ILIKE '%abc%'`, a `brin`
+over an append-only timestamp — was raw DDL outside the model, which `storm
+verify` then reported as drift.
+
+```go
+t.Index(storm.Collate(&d.Slug, "C"), storm.NullsFirst(&d.Score)).
+    Include(&d.Title, &d.PublishedAt).With("fillfactor", "70")
+t.Index(storm.OpClass(&d.Body, "gin_trgm_ops")).Using(storm.GIN)
+t.Index(&d.Ref).Unique().NullsNotDistinct()
+```
+
+Every clause round-trips. The emitter writes them in the order
+`pg_get_indexdef` prints them, the introspection reader parses each back —
+verified against the server's own output for every form, not the
+documentation's — and the differ compares each, so a changed operator class is
+a migration. The M1 fixpoint gate now runs over a fixture that uses all of it:
+every access method, collation, both NULL placements, `INCLUDE`, storage
+parameters, `NULLS NOT DISTINCT`, and expression keys.
+
+**Fifteen declarations are refused at build time**, most of them ones the
+database would accept. PostgreSQL records only the non-default NULL placement,
+so an ascending key declared `NULLS LAST` is stored, read back without the
+clause, compared against the model, and dropped and recreated on every
+`storm diff` — a migration that never converges. That, an operator class on
+the wrong method, `INCLUDE` on a gin, a brin parameter on a btree, two indexes
+that would generate one name: each fails the build naming the fix.
+
+**MySQL gets its own forms and its own refusals.** `storm.Prefix(&m.Body,
+191)` is the only way a `TEXT` column can be indexed there at all, and a
+`TEXT` key without one is refused because MySQL refuses the `CREATE`;
+`storm.FullText` and `.Invisible()` render; a partial index, an `INCLUDE`, an
+operator class or a gin are listed by `storm portable mysql`. The PostgreSQL
+commands refuse the MySQL-only facts the same way, because a prefix index
+silently widened to the whole column is a different index with a different
+cost.
+
+**Extensions are installed `WITH SCHEMA public`.** Without that an extension
+lands in the first schema of the search path — the scratch namespace, when a
+migration is replayed or a model normalised — and vanishes with it, leaving a
+named operator class "does not exist" everywhere else while `IF NOT EXISTS` is
+satisfied by the wrong copy. Found by the round-trip test's second schema. The
+classes storm installs are qualified `public.…`; one the model qualifies
+itself is left alone, which is how a host that keeps extensions elsewhere
+declares it.
+
+### `storm diff -concurrently`: index builds that do not block writers
+
+`CREATE INDEX CONCURRENTLY` is the only index build a table with traffic can
+afford, and it cannot run inside a transaction block — which is what every
+migration runner puts a file in. So each such statement is written to a
+migration file of its own, holding that one statement under a
+`-- storm:no-transaction` marker, and `verify -pending` replays the directory
+the way a runner would: each file alone, the search path set on the session
+rather than prepended. The old replay prepended it, which made every file a
+multi-statement string, which PostgreSQL runs as one implicit transaction —
+and a correct concurrent migration would have been reported as broken. The
+test proves the refusal as well as the fix. An index on a table the same plan
+creates stays plain, inside the transaction that creates the table.
+
+### `storm import` renders indexes as declarations
+
+Every index came back as a line in the "not carried over" list — its name,
+and "re-declare with t.Index(...)". An imported schema is usually a real one,
+and a real one's indexes are where its performance lives. They now come back
+as the declarations that produce them, modifiers composed the way they read:
+
+```go
+t.Index(storm.Collate(&m.Slug, "C"), storm.NullsFirst(&m.Score)).Include(&m.Title, &m.PublishedAt).With("fillfactor", "70").Named("ix_documents_slug_c")
+```
+
 ### A column named `And` no longer emits a package that does not compile
 
 Adding `And` to the generated surface made a column of that name collide with

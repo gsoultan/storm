@@ -112,7 +112,9 @@ func unportedFacts(s *schema.Schema) []string {
 	var out []string
 	for _, t := range s.Tables {
 		for _, ix := range t.Indexes {
-			out = append(out, fmt.Sprintf("index %s on %s — re-declare with t.Index(...)", ix.Name, t.Name))
+			if _, ok := indexDecl(t, ix); !ok {
+				out = append(out, fmt.Sprintf("index %s on %s — re-declare with t.Index(...)", ix.Name, t.Name))
+			}
 		}
 		for _, ck := range t.Checks {
 			out = append(out, fmt.Sprintf("check %s on %s — re-declare with t.Check(%q)", ck.Name, t.Name, ck.Expr))
@@ -217,6 +219,14 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 	if t.Name != tableNameFor(name) {
 		schemaLines = append([]string{fmt.Sprintf("t.Name(%q)", t.Name)}, schemaLines...)
 	}
+	// Indexes come back as declarations, not as facts the reader has to
+	// re-type: an imported schema is usually a real one, and a real one's
+	// indexes are where its performance lives.
+	for _, ix := range t.Indexes {
+		if line, ok := indexDecl(t, ix); ok {
+			schemaLines = append(schemaLines, line)
+		}
+	}
 	if len(schemaLines) == 0 {
 		return
 	}
@@ -226,6 +236,155 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 	}
 	g.p("}")
 	g.p("")
+}
+
+// indexDecl renders one index as the t.Index(...) declaration that would
+// produce it, or reports that it cannot: a key on a column the model omitted
+// has no field pointer to name.
+func indexDecl(t *schema.Table, ix *schema.Index) (string, bool) {
+	keys := make([]string, 0, len(ix.Columns))
+	for _, c := range ix.Columns {
+		k, ok := indexKeyDecl(t, c)
+		if !ok {
+			return "", false
+		}
+		keys = append(keys, k)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "t.Index(%s)", strings.Join(keys, ", "))
+	if m := ix.Method; m != "" && m != "btree" {
+		fmt.Fprintf(&b, ".Using(%s)", methodConst(m))
+	}
+	if ix.Unique {
+		b.WriteString(".Unique()")
+	}
+	if ix.NullsNotDistinct {
+		b.WriteString(".NullsNotDistinct()")
+	}
+	if len(ix.Include) > 0 {
+		inc := make([]string, 0, len(ix.Include))
+		for _, col := range ix.Include {
+			if t.Column(col) == nil {
+				return "", false
+			}
+			inc = append(inc, "&m."+exportName(col))
+		}
+		fmt.Fprintf(&b, ".Include(%s)", strings.Join(inc, ", "))
+	}
+	for _, p := range ix.With {
+		fmt.Fprintf(&b, ".With(%q, %q)", p.Name, p.Value)
+	}
+	if ix.Where != "" {
+		fmt.Fprintf(&b, ".Where(%q)", ix.Where)
+	}
+	if ix.Invisible {
+		b.WriteString(".Invisible()")
+	}
+	fmt.Fprintf(&b, ".Named(%q)", ix.Name)
+	return b.String(), true
+}
+
+// indexKeyDecl renders one key with its modifiers composed inside out, the
+// way the declaration reads: storm.OpClass(storm.Desc(&m.Email), "…").
+func indexKeyDecl(t *schema.Table, c schema.IndexColumn) (string, bool) {
+	var k string
+	switch {
+	case !c.Expr:
+		if t.Column(c.Name) == nil {
+			return "", false
+		}
+		k = "&m." + exportName(c.Name)
+	default:
+		// An expression names a column somewhere inside it. The common forms
+		// are recognised; anything else is rendered over the first column the
+		// expression mentions, with %s standing for it.
+		col, expr, ok := splitExpr(t, c.Name)
+		if !ok {
+			return "", false
+		}
+		switch expr {
+		case "lower(%s)":
+			k = fmt.Sprintf("storm.Lower(&m.%s)", exportName(col))
+		case "upper(%s)":
+			k = fmt.Sprintf("storm.Upper(&m.%s)", exportName(col))
+		default:
+			k = fmt.Sprintf("storm.IndexExpr(&m.%s, %q)", exportName(col), expr)
+		}
+	}
+	if c.Desc {
+		k = fmt.Sprintf("storm.Desc(%s)", k)
+	}
+	if c.NullsLast {
+		k = fmt.Sprintf("storm.NullsLast(%s)", k)
+	}
+	if c.NullsFirst {
+		k = fmt.Sprintf("storm.NullsFirst(%s)", k)
+	}
+	if c.Collate != "" {
+		k = fmt.Sprintf("storm.Collate(%s, %q)", k, c.Collate)
+	}
+	if c.OpClass != "" {
+		k = fmt.Sprintf("storm.OpClass(%s, %q)", k, c.OpClass)
+	}
+	if c.Prefix > 0 {
+		k = fmt.Sprintf("storm.Prefix(%s, %d)", k, c.Prefix)
+	}
+	return k, true
+}
+
+// splitExpr finds the column an index expression is over and returns the
+// expression with %s in its place. The longest column name is matched first,
+// so that created_at is not mistaken for a column called at.
+func splitExpr(t *schema.Table, expr string) (col, tmpl string, ok bool) {
+	best := ""
+	for _, c := range t.Columns {
+		if len(c.Name) > len(best) && containsWord(expr, c.Name) {
+			best = c.Name
+		}
+	}
+	if best == "" {
+		return "", "", false
+	}
+	return best, strings.Replace(expr, best, "%s", 1), true
+}
+
+// containsWord reports whether name appears in expr as a whole identifier.
+func containsWord(expr, name string) bool {
+	for i := strings.Index(expr, name); i >= 0; {
+		before := i == 0 || !identByte(expr[i-1])
+		after := i+len(name) == len(expr) || !identByte(expr[i+len(name)])
+		if before && after {
+			return true
+		}
+		next := strings.Index(expr[i+1:], name)
+		if next < 0 {
+			return false
+		}
+		i += 1 + next
+	}
+	return false
+}
+
+func identByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+func methodConst(m string) string {
+	switch m {
+	case "gin":
+		return "storm.GIN"
+	case "gist":
+		return "storm.GiST"
+	case "spgist":
+		return "storm.SPGiST"
+	case "hash":
+		return "storm.Hash"
+	case "brin":
+		return "storm.BRIN"
+	case "fulltext":
+		return "storm.FullText"
+	}
+	return fmt.Sprintf("%q", m)
 }
 
 // columnFacts is what the Go type cannot say.

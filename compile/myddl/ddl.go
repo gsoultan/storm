@@ -16,6 +16,7 @@ package myddl
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/gsoultan/storm/schema"
@@ -251,6 +252,9 @@ func Check(s *schema.Schema) error {
 				"  %s: MySQL's InnoDB gives every table a hidden clustered key when none is "+
 					"declared, which nothing can then reference", t.Name))
 		}
+		for _, ix := range t.Indexes {
+			checkIndex(t, ix, &problems)
+		}
 	}
 	if len(problems) == 0 {
 		return nil
@@ -260,24 +264,135 @@ func Check(s *schema.Schema) error {
 }
 
 // CreateIndex renders a CREATE INDEX.
+//
+// What MySQL has that PostgreSQL does not — a prefix length on a key, a
+// FULLTEXT index, an INVISIBLE index — is rendered here; what it lacks is
+// refused by Check, never dropped: a partial index without its WHERE is a
+// different index, and emitting it would be a wrong answer with no symptom.
 func CreateIndex(t *schema.Table, ix *schema.Index) string {
 	var b strings.Builder
 	b.WriteString("CREATE ")
-	if ix.Unique {
+	switch {
+	case ix.Method == "fulltext":
+		b.WriteString("FULLTEXT ")
+	case ix.Unique:
 		b.WriteString("UNIQUE ")
 	}
 	b.WriteString("INDEX " + Ident(indexName(t, ix)) + " ON " + Ident(t.Name) + " (")
 	parts := make([]string, len(ix.Columns))
 	for i, c := range ix.Columns {
-		parts[i] = Ident(c.Name)
+		switch {
+		case c.Expr:
+			// A functional key part (8.0.13+). Doubly parenthesised by MySQL's
+			// grammar, to tell it from a column with a prefix length.
+			parts[i] = "(" + c.Name + ")"
+		default:
+			parts[i] = Ident(c.Name)
+			if c.Prefix > 0 {
+				parts[i] += "(" + strconv.Itoa(c.Prefix) + ")"
+			}
+		}
 		if c.Desc {
 			parts[i] += " DESC"
 		}
-		// NULLS FIRST/LAST has no MySQL spelling: NULLs always sort first in
-		// ascending order there. Dropped rather than emitted as something that
-		// will not parse; Check reports it.
 	}
-	b.WriteString(strings.Join(parts, ", ") + ");")
+	b.WriteString(strings.Join(parts, ", ") + ")")
+	if ix.Method == "hash" {
+		b.WriteString(" USING HASH")
+	}
+	if ix.Invisible {
+		b.WriteString(" INVISIBLE")
+	}
+	b.WriteString(";")
+	return b.String()
+}
+
+// checkIndex is the index half of Check.
+func checkIndex(t *schema.Table, ix *schema.Index, problems *[]string) {
+	add := func(format string, a ...any) {
+		*problems = append(*problems, fmt.Sprintf("  %s: index %s "+format, append([]any{t.Name, ix.Name}, a...)...))
+	}
+	switch ix.Method {
+	case "", "btree", "hash", "fulltext":
+	case "gin":
+		add("is a gin index, which MySQL lacks — a FULLTEXT index answers text search; JSON is indexed through a generated column")
+	case "gist", "spgist":
+		add("is a %s index, which MySQL lacks — its R-tree is the SPATIAL index over a geometry column", ix.Method)
+	case "brin":
+		add("is a brin index, which MySQL lacks — a btree on the same column is the closest, at a larger size")
+	default:
+		add("uses access method %q, which MySQL lacks", ix.Method)
+	}
+	if ix.Where != "" {
+		add("is partial (WHERE %s); MySQL has no partial index and the rows it excludes would be indexed too", ix.Where)
+	}
+	if len(ix.Include) > 0 {
+		add("carries INCLUDE columns; MySQL has no covering clause — append them as trailing keys instead")
+	}
+	if ix.NullsNotDistinct {
+		add("is NULLS NOT DISTINCT; MySQL treats every NULL in a unique key as distinct and has no clause to change it")
+	}
+	for _, p := range ix.With {
+		add("sets storage parameter %s, which MySQL has no equivalent for", p.Name)
+	}
+	for _, c := range ix.Columns {
+		if c.OpClass != "" {
+			add("gives %s the operator class %s; MySQL has no operator classes", c.Name, c.OpClass)
+		}
+		if c.Collate != "" {
+			add("collates %s as %q; MySQL takes the collation from the column, not the index", c.Name, c.Collate)
+		}
+		if c.NullsFirst || c.NullsLast {
+			add("places NULLs on %s; MySQL sorts NULLs first in ascending order and has no clause to change it", c.Name)
+		}
+		if c.Expr || ix.Method == "fulltext" {
+			continue
+		}
+		// A TEXT or BLOB key needs a length, or MySQL refuses the CREATE with
+		// "used in key specification without a key length". The model can say
+		// so with a prefix, or give the column a Size so it becomes VARCHAR.
+		if col := t.Column(c.Name); col != nil && c.Prefix == 0 && isLob(col) {
+			add("indexes %s, a %s column, without a key length — declare storm.Prefix(&m.%s, n), "+
+				"or give it a Size so it becomes VARCHAR", c.Name, lobName(col), exportish(c.Name))
+		}
+	}
+}
+
+// isLob reports whether a column becomes a LONGTEXT or LONGBLOB here.
+func isLob(c *schema.Column) bool {
+	switch c.Type.Name {
+	case schema.TypeText, schema.TypeBytea:
+		return true
+	case schema.TypeVarchar:
+		return c.Type.Size == 0
+	}
+	return false
+}
+
+func lobName(c *schema.Column) string {
+	if c.Type.Name == schema.TypeBytea {
+		return "LONGBLOB"
+	}
+	return "LONGTEXT"
+}
+
+// exportish guesses a Go field name from a column name for an error's fix,
+// which only has to be recognisable, not exact.
+func exportish(col string) string {
+	var b strings.Builder
+	up := true
+	for _, r := range col {
+		if r == '_' {
+			up = true
+			continue
+		}
+		if up {
+			b.WriteString(strings.ToUpper(string(r)))
+			up = false
+		} else {
+			b.WriteRune(r)
+		}
+	}
 	return b.String()
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/migrate"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -132,6 +133,14 @@ func TestCLI_Import(t *testing.T) {
 		"func All() []any", // ready to pass to storm.Build
 		"NOT CARRIED OVER", // and it says what it could not express
 		"EnumValues",       // the enum came with its labels
+		// Indexes come back as the declarations that produce them, modifiers
+		// and all, rather than as a list of names to re-type.
+		`t.Index(storm.OpClass(&m.Title, "text_pattern_ops"))`,
+		`t.Index(storm.Collate(&m.Slug, "C"), storm.NullsFirst(&m.Score)).Include(&m.Title, &m.PublishedAt).With("fillfactor", "70").Named("ix_documents_slug_c")`,
+		`t.Index(storm.OpClass(&m.Meta, "jsonb_path_ops")).Using(storm.GIN)`,
+		`t.Index(&m.Ref).Unique().NullsNotDistinct()`,
+		`t.Index(storm.IndexExpr(&m.Score, "%s + 1"))`,
+		`t.Index(storm.Upper(&m.Title), storm.NullsLast(storm.Desc(&m.PublishedAt)))`,
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("imported model is missing %q:\n%s", want, truncate(got))
@@ -505,3 +514,128 @@ func TestCLI_RawQueryArityIsProvenAtGenerateTime(t *testing.T) {
 		}
 	}
 }
+
+// The concurrent form is the one a deployment with traffic can afford, and
+// it cannot run inside a transaction block — which is exactly what a
+// migration runner puts each file in. So each such statement gets a file of
+// its own, and the replay behind verify -pending has to apply it the way a
+// runner would: as one statement, alone.
+func TestCLI_DiffConcurrentlyWritesEachIndexAlone(t *testing.T) {
+	ctx := context.Background()
+	ns := namespace(t, "cli_conc")
+
+	// First the table, without its index: a plain diff, applied.
+	withModels(t, []any{&noteV1{}})
+	out := t.TempDir()
+	if err := run([]string{"diff", "init", "-dsn", dsn(t), "-schema", ns, "-out", out}); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(out, "*.up.sql"))
+	if len(files) != 1 {
+		t.Fatalf("a plain diff wrote %d files, want 1", len(files))
+	}
+	first, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySQL(t, ns, string(first))
+
+	// Now the table is live. The model gains an index on it, and a whole new
+	// table with an index of its own.
+	withModels(t, []any{&noteV2{}, &brandNew{}})
+	if err := run([]string{"diff", "add_idx", "-dsn", dsn(t), "-schema", ns, "-out", out, "-concurrently"}); err != nil {
+		t.Fatal(err)
+	}
+	files, _ = filepath.Glob(filepath.Join(out, "*.up.sql"))
+	var alone []string
+	for _, f := range files[1:] {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(b)
+		switch {
+		case strings.Contains(body, "CONCURRENTLY"):
+			alone = append(alone, f)
+			if !strings.Contains(body, migrate.NoTransactionMarker) {
+				t.Errorf("%s: a concurrent statement without the marker", filepath.Base(f))
+			}
+			if n := strings.Count(body, "CREATE INDEX"); n != 1 {
+				t.Errorf("%s: %d statements in a file that must hold one", filepath.Base(f), n)
+			}
+			if !strings.Contains(body, `CONCURRENTLY "ix_notes_note" ON "notes"`) {
+				t.Errorf("%s: the concurrent index is not the one on the live table:\n%s", filepath.Base(f), body)
+			}
+		default:
+			// The new table and its index travel together, in a transaction.
+			if !strings.Contains(body, `CREATE TABLE "brand_news"`) ||
+				!strings.Contains(body, `CREATE INDEX "ix_brand_news_tag"`) {
+				t.Errorf("%s: the new table's index should be plain, beside its table:\n%s", filepath.Base(f), body)
+			}
+		}
+	}
+	if len(alone) != 1 {
+		t.Fatalf("want exactly one concurrent file, got %d of %d", len(alone), len(files))
+	}
+
+	// The replay applies every file — the concurrent one outside a
+	// transaction — and finds nothing left to do.
+	if err := run([]string{"verify", "-pending", "-dsn", dsn(t), "-out", out}); err != nil {
+		t.Fatalf("verify -pending: %v", err)
+	}
+
+	// And the proof that the replay's shape matters: the same file, prefixed
+	// with a SET the way the old replay did it, is a multi-statement string —
+	// one implicit transaction — and PostgreSQL refuses the concurrent build
+	// inside it. A replay written that way reports a correct migration as
+	// broken.
+	c, err := pgx.Connect(ctx, dsn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(ctx)
+	scratch := "cli_conc_proof"
+	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE") }()
+	if _, err := c.Exec(ctx, "SET search_path TO "+scratch+"; "+string(first)); err != nil {
+		t.Fatal(err)
+	}
+	conc, err := os.ReadFile(alone[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Exec(ctx, "SET search_path TO "+scratch+"; "+string(conc))
+	if err == nil || !strings.Contains(err.Error(), "transaction block") {
+		t.Fatalf("a concurrent build inside a multi-statement string should be refused, got: %v", err)
+	}
+}
+
+// noteV1 and noteV2 are the same table before and after it gains an index;
+// two Go types because a test cannot edit a model between runs.
+type noteV1 struct {
+	storm.Model
+	Note string
+}
+
+func (m *noteV1) Schema(t *storm.Table) { t.Name("notes") }
+
+type noteV2 struct {
+	storm.Model
+	Note string
+}
+
+func (m *noteV2) Schema(t *storm.Table) {
+	t.Name("notes")
+	t.Index(&m.Note)
+}
+
+// brandNew does not exist when the concurrent diff runs, so its index is a
+// plain one inside the transaction that creates the table.
+type brandNew struct {
+	storm.Model
+	Tag string
+}
+
+func (m *brandNew) Schema(t *storm.Table) { t.Index(&m.Tag) }
