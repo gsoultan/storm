@@ -76,10 +76,24 @@ func (e Pool) Batch(ctx context.Context, ops []runtime.BatchOp, each func(int, r
 // drainBatch walks a batch's results in order, shared by Pool and Tx — the
 // discipline (consume strictly in order, close each result before requesting
 // the next, always Close the batch) is identical whoever sent it.
+//
+// A nil `each` means the caller only wants to know whether the batch
+// succeeded, which a bulk insert or upsert usually does. It used to be a nil
+// function CALL — the first statement's result took the connection down with
+// it, and the symptom was the whole test binary hanging rather than an error
+// naming the batch. The callback is now normalised once, here, so no branch
+// below has to remember.
 func drainBatch(br pgx.BatchResults, ops []runtime.BatchOp, each func(int, runtime.Rows, int64, error) error) error {
 	// Close must happen even on an early return: an unclosed batch leaves the
 	// connection with unread results and poisons it for the next borrower.
 	defer br.Close()
+
+	if each == nil {
+		// The results still have to be drained in order — skipping them
+		// desyncs the connection — so the default reports the first error and
+		// stops, which is what a caller who passed nil means by "did it work".
+		each = func(_ int, _ runtime.Rows, _ int64, err error) error { return err }
+	}
 
 	for i, op := range ops {
 		if !op.WantRows {

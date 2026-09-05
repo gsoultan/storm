@@ -1534,6 +1534,11 @@ const insPrefix = "INSERT INTO \"attachments\""
 const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"filename\", \"post_id\", \"comment_id\", \"user_id\""
 
 var insCache = runtime.NewMaskCache()
+
+// insOpCache is the batch path's, keyed the same way. Separate because
+// the statements differ by their RETURNING and one cache would hand a
+// batch the statement that asks for rows back.
+var insOpCache = runtime.NewMaskCache()
 var updCache = runtime.NewMaskCache()
 
 // Masks reports how many distinct UPDATE shapes have compiled.
@@ -1686,12 +1691,54 @@ func (n *Ins) SetUserIDNull() {
 	n.set |= iUserID
 }
 
-// upsertTails builds the ON CONFLICT tail for one target, given the
-// insert mask — an upsert must only overwrite the columns the caller
-// assigned, or it silently reverts every column it did not.
-var upsertTails = []func(uint64) string{
-	func(mask uint64) string {
-		set := make([]string, 0, 5)
+// The conflict encoding. One byte holds both which unique index an
+// upsert names and what it does on collision, so the insert statement
+// cache stays keyed by one mask and one byte:
+//
+//	0        no ON CONFLICT clause
+//	1        ON CONFLICT DO NOTHING, on any unique index
+//	2+2*i    target i, DO UPDATE
+//	3+2*i    target i, DO NOTHING
+const conflictAny = 1
+
+// upsertTail builds the ON CONFLICT clause for one encoded conflict
+// and one insert mask.
+//
+// The mask is what makes an upsert correct: it overwrites only the
+// columns the caller ASSIGNED. Assigning every column would revert
+// each one the caller left out to its default, on the row that
+// already exists — a silent data loss that reads as an upsert working.
+func upsertTail(conflict uint8, mask uint64) string {
+	if conflict == conflictAny {
+		return " ON CONFLICT DO NOTHING"
+	}
+	spec, i := conflictSpecs[(conflict-2)/2], (conflict-2)/2
+	if conflict%2 == 1 {
+		return spec + " DO NOTHING"
+	}
+	set := assignable(i, mask)
+	if len(set) == 0 {
+		// Nothing to overwrite. DO UPDATE SET with an empty list is not
+		// SQL, and leaving the row alone is what the caller asked for.
+		return spec + " DO NOTHING"
+	}
+	return spec + " DO UPDATE SET " + joinAssign(set)
+}
+
+// conflictSpecs is one inference specification per target, in
+// declaration order. A PARTIAL unique index carries its predicate:
+// PostgreSQL infers the index from the keys and the predicate
+// together, and without it the insert fails at run time — on the first
+// row that collides, which a test inserting distinct rows never sees.
+var conflictSpecs = []string{
+	" ON CONFLICT (\"id\")",
+}
+
+// assignable is the columns target i may overwrite, given the mask.
+func assignable(i uint8, mask uint64) []string {
+	set := make([]string, 0, 5)
+	switch i {
+	case 0:
 		if mask&(1<<2) != 0 {
 			set = append(set, "updated_at")
 		}
@@ -1707,21 +1754,37 @@ var upsertTails = []func(uint64) string{
 		if mask&(1<<6) != 0 {
 			set = append(set, "user_id")
 		}
-		return onConflictID(set)
-	},
-}
-
-func onConflictID(set []string) string {
-	switch len(set) {
-	case 0:
-		return " ON CONFLICT (\"id\") DO NOTHING"
 	}
-	return " ON CONFLICT (\"id\") DO UPDATE SET " + joinAssign(set)
+	return set
 }
 
-// OnConflictID upserts on the unique key (id).
+// OnConflictID upserts on the unique index over (id).
+//
+// The row that already exists keeps every column this insert did
+// not assign. Follow with DoNothing() to leave it untouched
+// entirely.
 func (n *Ins) OnConflictID() *Ins {
-	n.conflict = 1
+	n.conflict = 2
+	return n
+}
+
+// DoNothing makes the insert a no-op when the row is already there —
+// the idempotent insert, and the commonest upsert there is.
+//
+// On its own it names no index, so ANY unique violation is the no-op:
+//
+//	n.DoNothing()                  // ON CONFLICT DO NOTHING
+//	n.OnConflictID().DoNothing()  // only on that one index
+//
+// Insert then returns runtime.ErrNoRows when nothing was written,
+// because DO NOTHING suppresses the RETURNING row: there is no row to
+// return, and reporting a zero-valued one as inserted would be a lie.
+func (n *Ins) DoNothing() *Ins {
+	if n.conflict < 2 {
+		n.conflict = conflictAny
+		return n
+	}
+	n.conflict |= 1
 	return n
 }
 
@@ -1749,7 +1812,7 @@ var assignFor = map[string]string{
 func assignExcluded(c string) string { return assignFor[c] }
 
 func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
-	// The conflict target is part of the statement, so it must be part of
+	// The conflict clause is part of the statement, so it must be part of
 	// the key. Packing it above the column bits keeps one cache for both.
 	key := mask | uint64(conflict)<<nInsertable
 	if st := insCache.Get(key); st != nil {
@@ -1763,7 +1826,7 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 	}
 	suffix := insReturning
 	if conflict > 0 {
-		suffix = upsertTails[conflict-1](mask) + insReturning
+		suffix = upsertTail(conflict, mask) + insReturning
 	}
 	return insCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
@@ -1812,6 +1875,11 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
 			return out, err
+		}
+		if n.conflict != 0 && n.conflict%2 == 1 {
+			// DO NOTHING suppresses RETURNING, so no row means the row was
+			// already there — the success case of an idempotent insert.
+			return out, runtime.ErrConflict
 		}
 		return out, runtime.ErrNoRow
 	}
@@ -1952,6 +2020,76 @@ func InsertOp(r Row) runtime.BatchOp {
 	args = append(args, r.CommentID.Arg())
 	args = append(args, r.UserID.Arg())
 	return runtime.BatchOp{SQL: st.SQL, Args: args}
+}
+
+// Op is this Ins as a queueable statement, conflict clause and all —
+// the bulk upsert.
+//
+// InsertOp above takes a Row and writes every column, so a thousand of
+// them share one statement. This takes the BUILDER, so it carries the
+// mask and the ON CONFLICT the caller chose: ingesting a batch that
+// should overwrite what is already there, or skip it, needs both and
+// could otherwise only be done one round trip at a time.
+//
+// One statement per distinct (mask, conflict) pair, cached like every
+// other. Assign the same columns on every row of a batch and it stays
+// one; vary them and it is one per shape, which is the cost of asking.
+//
+// WantRows is false, as for InsertOp: a batch reports counts. A DO
+// NOTHING that skipped a row is a zero in that count — the batch
+// cannot say which rows were skipped, only how many.
+func (n *Ins) Op() (runtime.BatchOp, error) {
+	if n.set == 0 {
+		return runtime.BatchOp{}, runtime.ErrNothingAssigned
+	}
+	st := stmtForInsertNoReturn(n.set, n.conflict)
+	if st.Err != nil {
+		return runtime.BatchOp{}, st.Err
+	}
+	args := make([]any, 0, st.NArg)
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.ID)
+		case 1:
+			args = append(args, n.row.CreatedAt)
+		case 2:
+			args = append(args, n.row.UpdatedAt)
+		case 3:
+			args = append(args, n.row.Filename)
+		case 4:
+			args = append(args, n.row.PostID.Arg())
+		case 5:
+			args = append(args, n.row.CommentID.Arg())
+		case 6:
+			args = append(args, n.row.UserID.Arg())
+		}
+	}
+	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
+}
+
+// stmtForInsertNoReturn is stmtForInsert without RETURNING, for the
+// batch path. Its own cache: the two differ by a suffix, and sharing
+// one would hand a batch the statement that asks for rows back.
+func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
+	key := mask | uint64(conflict)<<nInsertable
+	if st := insOpCache.Get(key); st != nil {
+		return st
+	}
+	cols := make([]string, 0, nInsertable)
+	for i := 0; i < nInsertable; i++ {
+		if mask&(1<<uint(i)) != 0 {
+			cols = append(cols, insCols[i])
+		}
+	}
+	suffix := ""
+	if conflict > 0 {
+		suffix = upsertTail(conflict, mask)
+	}
+	return insOpCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // UpdateOp is this Mut's update as a queueable statement.

@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
@@ -196,6 +197,18 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	}
 	g.p(")")
 	g.p("")
+	if len(ins)+8 > 64 {
+		// stmtForInsert packs the conflict byte above the column bits of a
+		// uint64 key. Past this the byte overflows and two different conflict
+		// clauses share one cache entry — the second insert would run the
+		// first's statement, which is a wrong write with no symptom.
+		g.err = fmt.Errorf(
+			"codegen: table %s has %d insertable columns; the insert statement cache "+
+				"keys a %d-bit mask plus a conflict byte in one uint64, so 56 is the ceiling\n"+
+				"       split the table, or drop columns from the insert path",
+			g.t.Name, len(ins), len(ins))
+		return
+	}
 	g.p("const nInsertable = %d", len(ins))
 	g.p("")
 	g.p("// insCols is the quoted column name for each insert bit.")
@@ -214,6 +227,11 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	g.p("const insReturning = %q", pgsql.ReturningClause(allReadable(g.t)))
 	g.p("")
 	g.p("var insCache = runtime.NewMaskCache()")
+	g.p("")
+	g.p("// insOpCache is the batch path's, keyed the same way. Separate because")
+	g.p("// the statements differ by their RETURNING and one cache would hand a")
+	g.p("// batch the statement that asks for rows back.")
+	g.p("var insOpCache = runtime.NewMaskCache()")
 	g.p("var updCache = runtime.NewMaskCache()")
 	g.p("")
 	g.p("// Masks reports how many distinct UPDATE shapes have compiled.")
@@ -285,70 +303,146 @@ func mutAssign(c colInfo) string {
 // that into a compile error, and renaming a constraint in the model breaks the
 // call site instead of production.
 func (g *gen) upsertTargets(ins []colInfo) {
-	keys := uniqueKeys(g.t)
-	if len(keys) == 0 {
-		g.p("// No upsert methods: %s declares no unique key, so there is no", g.t.Name)
-		g.p("// conflict target. Add one to the model to get OnConflict...().")
-		g.p("")
-		g.p("var upsertTails []func(uint64) string")
+	targets := conflictTargets(g.t)
+	g.p("// The conflict encoding. One byte holds both which unique index an")
+	g.p("// upsert names and what it does on collision, so the insert statement")
+	g.p("// cache stays keyed by one mask and one byte:")
+	g.p("//")
+	g.p("//\t0        no ON CONFLICT clause")
+	g.p("//\t1        ON CONFLICT DO NOTHING, on any unique index")
+	g.p("//\t2+2*i    target i, DO UPDATE")
+	g.p("//\t3+2*i    target i, DO NOTHING")
+	g.p("const conflictAny = 1")
+	g.p("")
+	if len(targets) == 0 {
+		g.p("// No OnConflict methods: %s declares no unique constraint and no", g.t.Name)
+		g.p("// unique index, so there is nothing an insert could conflict ON.")
+		g.p("// DoNothing() still works — it names no index.")
+		g.p("//")
+		g.p("// Declare one to get them: t.Unique(&m.Field), t.Index(...).Unique(),")
+		g.p("// or a primary key.")
+		g.p("func upsertTail(conflict uint8, mask uint64) string {")
+		g.p("\tif conflict == conflictAny {")
+		g.p("\t\treturn %q", pgsql.ConflictAny+pgsql.ConflictDoNothing)
+		g.p("\t}")
+		g.p("\treturn \"\"")
+		g.p("}")
 		g.p("")
 		return
 	}
-	if len(keys) > 255 {
-		g.err = fmt.Errorf("codegen: table %s has %d unique keys; the conflict target is a uint8", g.t.Name, len(keys))
+	// 2+2*i has to fit a uint8, so the last usable target index is 126.
+	if len(targets) > 126 {
+		g.err = fmt.Errorf(
+			"codegen: table %s has %d unique constraints and indexes; the conflict target is one byte",
+			g.t.Name, len(targets))
 		return
 	}
 
-	// The assignable set is every updatable column, chosen from the mask at
-	// compile time so an upsert only overwrites what the caller actually set.
 	upd := updatable(g.t)
-	g.p("// upsertTails builds the ON CONFLICT tail for one target, given the")
-	g.p("// insert mask — an upsert must only overwrite the columns the caller")
-	g.p("// assigned, or it silently reverts every column it did not.")
-	g.p("var upsertTails = []func(uint64) string{")
-	for _, k := range keys {
-		g.p("\tfunc(mask uint64) string {")
-		g.p("\t\tset := make([]string, 0, %d)", len(upd))
-		for _, c := range upd {
-			// Only columns that are both insertable and updatable can be
-			// assigned from EXCLUDED.
-			idx := insertIndex(ins, c.Name())
-			if idx < 0 {
-				continue
-			}
-			g.p("\t\tif mask&(1<<%d) != 0 {", idx)
-			g.p("\t\t\tset = append(set, %q)", c.Name())
-			g.p("\t\t}")
-		}
-		g.p("\t\treturn onConflict%s(set)", exportKeyName(k))
-		g.p("\t},")
+	g.p("// upsertTail builds the ON CONFLICT clause for one encoded conflict")
+	g.p("// and one insert mask.")
+	g.p("//")
+	g.p("// The mask is what makes an upsert correct: it overwrites only the")
+	g.p("// columns the caller ASSIGNED. Assigning every column would revert")
+	g.p("// each one the caller left out to its default, on the row that")
+	g.p("// already exists — a silent data loss that reads as an upsert working.")
+	g.p("func upsertTail(conflict uint8, mask uint64) string {")
+	g.p("\tif conflict == conflictAny {")
+	g.p("\t\treturn %q", pgsql.ConflictAny+pgsql.ConflictDoNothing)
+	g.p("\t}")
+	g.p("\tspec, i := conflictSpecs[(conflict-2)/2], (conflict-2)/2")
+	g.p("\tif conflict%%2 == 1 {")
+	g.p("\t\treturn spec + %q", pgsql.ConflictDoNothing)
+	g.p("\t}")
+	g.p("\tset := assignable(i, mask)")
+	g.p("\tif len(set) == 0 {")
+	g.p("\t\t// Nothing to overwrite. DO UPDATE SET with an empty list is not")
+	g.p("\t\t// SQL, and leaving the row alone is what the caller asked for.")
+	g.p("\t\treturn spec + %q", pgsql.ConflictDoNothing)
+	g.p("\t}")
+	g.p("\treturn spec + %q + joinAssign(set)", pgsql.ConflictDoUpdate)
+	g.p("}")
+	g.p("")
+
+	g.p("// conflictSpecs is one inference specification per target, in")
+	g.p("// declaration order. A PARTIAL unique index carries its predicate:")
+	g.p("// PostgreSQL infers the index from the keys and the predicate")
+	g.p("// together, and without it the insert fails at run time — on the first")
+	g.p("// row that collides, which a test inserting distinct rows never sees.")
+	g.p("var conflictSpecs = []string{")
+	for _, ct := range targets {
+		g.p("\t%q,", pgsql.ConflictSpec(ct.Keys, ct.Where))
 	}
 	g.p("}")
 	g.p("")
-	for i, k := range keys {
-		name := exportKeyName(k)
-		g.p("func onConflict%s(set []string) string {", name)
-		g.p("\tswitch len(set) {")
-		g.p("\tcase 0:")
-		g.p("\t\treturn %q", pgsql.ConflictNothing(k))
-		g.p("\t}")
-		g.p("\treturn %q + joinAssign(set)", pgsql.ConflictHead(k))
-		g.p("}")
-		g.p("")
-		g.p("// OnConflict%s upserts on the unique key (%s).", name, joinStr(k, ", "))
-		g.p("func (n *Ins) OnConflict%s() *Ins {", name)
-		g.p("\tn.conflict = %d", i+1)
+
+	g.p("// assignable is the columns target i may overwrite, given the mask.")
+	g.p("func assignable(i uint8, mask uint64) []string {")
+	g.p("\tset := make([]string, 0, %d)", len(upd))
+	g.p("\tswitch i {")
+	for i, ct := range targets {
+		g.p("\tcase %d:", i)
+		cols := assignableFor(ct, upd, ins)
+		if len(cols) == 0 {
+			g.p("\t\t// Every updatable column is part of this key.")
+		}
+		for _, c := range cols {
+			g.p("\t\tif mask&(1<<%d) != 0 {", insertIndex(ins, c.Name()))
+			g.p("\t\t\tset = append(set, %q)", c.Name())
+			g.p("\t\t}")
+		}
+	}
+	g.p("\t}")
+	g.p("\treturn set")
+	g.p("}")
+	g.p("")
+
+	for i, ct := range targets {
+		where := ""
+		if ct.Where != "" {
+			where = ", where " + ct.Where
+		}
+		g.p("// OnConflict%s upserts on the unique index over (%s%s).",
+			ct.Suffix, keyList(ct.Keys), where)
+		g.p("//")
+		g.p("// The row that already exists keeps every column this insert did")
+		g.p("// not assign. Follow with DoNothing() to leave it untouched")
+		g.p("// entirely.")
+		g.p("func (n *Ins) OnConflict%s() *Ins {", ct.Suffix)
+		g.p("\tn.conflict = %d", 2+2*i)
 		g.p("\treturn n")
 		g.p("}")
 		g.p("")
 	}
+
+	g.p("// DoNothing makes the insert a no-op when the row is already there —")
+	g.p("// the idempotent insert, and the commonest upsert there is.")
+	g.p("//")
+	g.p("// On its own it names no index, so ANY unique violation is the no-op:")
+	g.p("//")
+	g.p("//\tn.DoNothing()                  // ON CONFLICT DO NOTHING")
+	g.p("//\tn.OnConflict%s().DoNothing()  // only on that one index", targets[0].Suffix)
+	g.p("//")
+	g.p("// Insert then returns runtime.ErrNoRows when nothing was written,")
+	g.p("// because DO NOTHING suppresses the RETURNING row: there is no row to")
+	g.p("// return, and reporting a zero-valued one as inserted would be a lie.")
+	g.p("func (n *Ins) DoNothing() *Ins {")
+	g.p("\tif n.conflict < 2 {")
+	g.p("\t\tn.conflict = conflictAny")
+	g.p("\t\treturn n")
+	g.p("\t}")
+	g.p("\tn.conflict |= 1")
+	g.p("\treturn n")
+	g.p("}")
+	g.p("")
+
 	g.p("// joinAssign renders the DO UPDATE SET list for the columns the caller")
 	g.p("// assigned. The punctuation comes from the back end, never from here.")
 	g.p("func joinAssign(set []string) string {")
 	g.p("\tout := \"\"")
 	g.p("\tfor i, c := range set {")
 	g.p("\t\tif i > 0 {")
-	g.p("\t\t\tout += %q", pgsql.ConflictAssignSep)
+	g.p("\t\t\tout += %q", ", ")
 	g.p("\t\t}")
 	g.p("\t\tout += assignExcluded(c)")
 	g.p("\t}")
@@ -356,7 +450,7 @@ func (g *gen) upsertTargets(ins []colInfo) {
 	g.p("}")
 	g.p("")
 	g.p("var assignFor = map[string]string{")
-	for _, c := range upd {
+	for _, c := range updatable(g.t) {
 		if insertIndex(ins, c.Name()) < 0 {
 			continue
 		}
@@ -368,19 +462,109 @@ func (g *gen) upsertTargets(ins []colInfo) {
 	g.p("")
 }
 
-// uniqueKeys is every unique column set an upsert may target: the primary key
-// plus each declared UNIQUE constraint. Expression-based unique indexes are
-// excluded — a conflict target cannot name one by column.
-func uniqueKeys(t *schema.Table) [][]string {
-	var out [][]string
+// keyList renders an inference specification for a doc comment.
+func keyList(keys []pgsql.ConflictKey) string {
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k.Name
+	}
+	return strings.Join(parts, ", ")
+}
+
+// conflictTarget is one thing an INSERT can conflict on: a unique constraint
+// or a unique index, with the keys PostgreSQL infers it from.
+type conflictTarget struct {
+	Suffix string              // the OnConflict<Suffix> method name
+	Keys   []pgsql.ConflictKey // the inference specification
+	Where  string              // a partial index's predicate; "" for none
+}
+
+// conflictTargets is everything an insert can name in ON CONFLICT.
+//
+// A unique INDEX counts, not only a unique constraint — which is the whole
+// point, because the two forms storm generates for the commonest upsert are
+// indexes: t.Unique(storm.Lower(&u.Email)) becomes a unique index, since a
+// PostgreSQL UNIQUE constraint cannot hold an expression, and so does
+// t.Index(...).Unique(). Reading constraints alone left case-insensitive
+// email — the canonical upsert target — with no OnConflict method at all,
+// and no message saying why.
+func conflictTargets(t *schema.Table) []conflictTarget {
+	var out []conflictTarget
 	if len(t.PrimaryKey) > 0 {
-		out = append(out, t.PrimaryKey)
+		out = append(out, conflictTarget{
+			Suffix: exportKeyName(t.PrimaryKey), Keys: plainKeys(t.PrimaryKey),
+		})
 	}
 	for _, u := range t.Uniques {
 		if len(u.Columns) == 0 {
 			continue
 		}
-		out = append(out, u.Columns)
+		out = append(out, conflictTarget{
+			Suffix: exportKeyName(u.Columns), Keys: plainKeys(u.Columns),
+		})
+	}
+	for _, ix := range t.Indexes {
+		// Only a unique btree can be inferred. The build already refuses a
+		// unique index on any other method, so this is a guard and not a
+		// silent drop.
+		if !ix.Unique || (ix.Method != "" && ix.Method != "btree") {
+			continue
+		}
+		ct := conflictTarget{Where: ix.Where}
+		names := make([]string, 0, len(ix.Columns))
+		for _, c := range ix.Columns {
+			ct.Keys = append(ct.Keys, pgsql.ConflictKey{
+				Name: c.Name, Expr: c.Expr, Collate: c.Collate, OpClass: c.OpClass,
+			})
+			names = append(names, c.Name)
+		}
+		ct.Suffix = exportKeyName(names)
+		out = append(out, ct)
+	}
+	// Two declarations can name the same columns — a unique constraint and a
+	// unique index over one column, say — and would generate one method twice.
+	// The first wins, because it is the one the model declared first.
+	seen := map[string]bool{}
+	uniq := out[:0]
+	for _, ct := range out {
+		if seen[ct.Suffix] {
+			continue
+		}
+		seen[ct.Suffix] = true
+		uniq = append(uniq, ct)
+	}
+	return uniq
+}
+
+func plainKeys(cols []string) []pgsql.ConflictKey {
+	out := make([]pgsql.ConflictKey, len(cols))
+	for i, c := range cols {
+		out[i] = pgsql.ConflictKey{Name: c}
+	}
+	return out
+}
+
+// assignableFor is the columns an upsert on this target may overwrite: every
+// updatable, insertable column that is not part of the conflict key itself.
+//
+// Assigning a key column from EXCLUDED is legal and pointless — the values
+// are equal, that is why the row conflicted — except when the key is an
+// expression, where `lower(email)` matching does NOT mean the emails are
+// equal and overwriting is exactly what the caller means. So only plain key
+// columns are held back.
+func assignableFor(ct conflictTarget, upd, ins []colInfo) []colInfo {
+	key := map[string]bool{}
+	for _, k := range ct.Keys {
+		if !k.Expr {
+			key[k.Name] = true
+		}
+	}
+	out := make([]colInfo, 0, len(upd))
+	for _, c := range upd {
+		if key[c.Name()] || insertIndex(ins, c.Name()) < 0 {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
 }
@@ -394,12 +578,34 @@ func insertIndex(ins []colInfo, name string) int {
 	return -1
 }
 
+// exportKeyName builds the OnConflict method's suffix. An expression key —
+// lower(email) — has to become an identifier, so everything that is not one
+// is dropped after separating the words it joined: lower(email) reads
+// LowerEmail.
 func exportKeyName(cols []string) string {
 	out := ""
 	for _, c := range cols {
-		out += exportName(c)
+		out += exportName(identify(c))
 	}
 	return out
+}
+
+// identify turns an expression into an underscore-separated identifier.
+func identify(s string) string {
+	var b strings.Builder
+	prevSep := true
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'):
+			b.WriteByte(c)
+			prevSep = false
+		case !prevSep:
+			b.WriteByte('_')
+			prevSep = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 // insType emits the masked insert builder.
@@ -449,7 +655,7 @@ func (g *gen) insType(ins []colInfo) {
 
 	g.upsertTargets(ins)
 	g.p("func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {")
-	g.p("\t// The conflict target is part of the statement, so it must be part of")
+	g.p("\t// The conflict clause is part of the statement, so it must be part of")
 	g.p("\t// the key. Packing it above the column bits keeps one cache for both.")
 	g.p("\tkey := mask | uint64(conflict)<<nInsertable")
 	g.p("\tif st := insCache.Get(key); st != nil {")
@@ -463,7 +669,7 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\t}")
 	g.p("\tsuffix := insReturning")
 	g.p("\tif conflict > 0 {")
-	g.p("\t\tsuffix = upsertTails[conflict-1](mask) + insReturning")
+	g.p("\t\tsuffix = upsertTail(conflict, mask) + insReturning")
 	g.p("\t}")
 	g.p("\treturn insCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
@@ -503,6 +709,11 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\tif !rows.Next() {")
 	g.p("\t\tif err := rows.Err(); err != nil {")
 	g.p("\t\t\treturn out, err")
+	g.p("\t\t}")
+	g.p("\t\tif n.conflict != 0 && n.conflict%%2 == 1 {")
+	g.p("\t\t\t// DO NOTHING suppresses RETURNING, so no row means the row was")
+	g.p("\t\t\t// already there — the success case of an idempotent insert.")
+	g.p("\t\t\treturn out, runtime.ErrConflict")
 	g.p("\t\t}")
 	g.p("\t\treturn out, runtime.ErrNoRow")
 	g.p("\t}")
@@ -693,6 +904,67 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 		g.p("\targs = append(args, %s)", writeArg(c, "r."+exportName(c.Name())))
 	}
 	g.p("\treturn runtime.BatchOp{SQL: st.SQL, Args: args}")
+	g.p("}")
+	g.p("")
+
+	g.p("// Op is this Ins as a queueable statement, conflict clause and all —")
+	g.p("// the bulk upsert.")
+	g.p("//")
+	g.p("// InsertOp above takes a Row and writes every column, so a thousand of")
+	g.p("// them share one statement. This takes the BUILDER, so it carries the")
+	g.p("// mask and the ON CONFLICT the caller chose: ingesting a batch that")
+	g.p("// should overwrite what is already there, or skip it, needs both and")
+	g.p("// could otherwise only be done one round trip at a time.")
+	g.p("//")
+	g.p("// One statement per distinct (mask, conflict) pair, cached like every")
+	g.p("// other. Assign the same columns on every row of a batch and it stays")
+	g.p("// one; vary them and it is one per shape, which is the cost of asking.")
+	g.p("//")
+	g.p("// WantRows is false, as for InsertOp: a batch reports counts. A DO")
+	g.p("// NOTHING that skipped a row is a zero in that count — the batch")
+	g.p("// cannot say which rows were skipped, only how many.")
+	g.p("func (n *Ins) Op() (runtime.BatchOp, error) {")
+	g.p("\tif n.set == 0 {")
+	g.p("\t\treturn runtime.BatchOp{}, runtime.ErrNothingAssigned")
+	g.p("\t}")
+	g.p("\tst := stmtForInsertNoReturn(n.set, n.conflict)")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn runtime.BatchOp{}, st.Err")
+	g.p("\t}")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\tfor i := 0; i < nInsertable; i++ {")
+	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range ins {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\treturn runtime.BatchOp{SQL: st.SQL, Args: args}, nil")
+	g.p("}")
+	g.p("")
+	g.p("// stmtForInsertNoReturn is stmtForInsert without RETURNING, for the")
+	g.p("// batch path. Its own cache: the two differ by a suffix, and sharing")
+	g.p("// one would hand a batch the statement that asks for rows back.")
+	g.p("func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {")
+	g.p("\tkey := mask | uint64(conflict)<<nInsertable")
+	g.p("\tif st := insOpCache.Get(key); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\tcols := make([]string, 0, nInsertable)")
+	g.p("\tfor i := 0; i < nInsertable; i++ {")
+	g.p("\t\tif mask&(1<<uint(i)) != 0 {")
+	g.p("\t\t\tcols = append(cols, insCols[i])")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tsuffix := \"\"")
+	g.p("\tif conflict > 0 {")
+	g.p("\t\tsuffix = upsertTail(conflict, mask)")
+	g.p("\t}")
+	g.p("\treturn insOpCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
 	g.p("")
 
