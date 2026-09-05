@@ -316,9 +316,57 @@ func (b *Booking) Schema(t *storm.Table) {
 }
 
 // All returns every model in the fixture, in registration order.
+// Document exercises every index clause the emitter, the introspection reader
+// and the differ have to agree on: operator classes, collation, NULLS FIRST on
+// an ascending key, INCLUDE, storage parameters, NULLS NOT DISTINCT, expression
+// keys, and every access method. Nothing seeds it; it exists so the round trip
+// is a fixpoint over the whole grammar rather than over the two clauses the
+// other fixtures happened to use.
+type Document struct {
+	storm.Model
+	Slug        string
+	Title       string
+	Body        string
+	Meta        Prefs
+	Tags        []string
+	Score       *int32
+	Ref         *string
+	PublishedAt time.Time
+}
+
+func (d *Document) Schema(t *storm.Table) {
+	t.Col(&d.Slug).Size(200)
+	t.Col(&d.Meta).Default("'{}'")
+	t.Col(&d.Tags).Default("'{}'")
+
+	// A covering index under the C collation, which is what lets a plain
+	// btree serve LIKE 'abc%'. NULLS FIRST is the non-default placement on an
+	// ascending key, and fillfactor leaves room for in-place updates.
+	t.Index(storm.Collate(&d.Slug, "C"), storm.NullsFirst(&d.Score)).
+		Include(&d.Title, &d.PublishedAt).
+		With("fillfactor", "70").
+		Named("ix_documents_slug_c")
+	// The operator-class route to the same LIKE, on another column.
+	t.Index(storm.OpClass(&d.Title, "text_pattern_ops"))
+	// gin over jsonb restricted to containment; gin over text[] by default.
+	t.Index(storm.OpClass(&d.Meta, "jsonb_path_ops")).Using(storm.GIN)
+	t.Index(&d.Tags).Using(storm.GIN)
+	// Trigram search behind ILIKE '%abc%'. Installs pg_trgm.
+	t.Index(storm.OpClass(&d.Body, "gin_trgm_ops")).Using(storm.GIN).With("fastupdate", "off")
+	// brin for an append-only timestamp; hash for equality and nothing else.
+	t.Index(&d.PublishedAt).Using(storm.BRIN).With("pages_per_range", "32")
+	t.Index(&d.Slug).Using(storm.Hash).Named("ix_documents_slug_hash")
+	// An expression key beside a descending one with the non-default NULLs.
+	t.Index(storm.Upper(&d.Title), storm.NullsLast(storm.Desc(&d.PublishedAt))).
+		Named("ix_documents_title_upper")
+	t.Index(storm.IndexExpr(&d.Score, "%s + 1")).Named("ix_documents_score_next")
+	// At most one document may have no ref (PostgreSQL 15+).
+	t.Index(&d.Ref).Unique().NullsNotDistinct()
+}
+
 func All() []any {
 	return []any{
 		&Org{}, &User{}, &Profile{}, &Post{}, &Comment{}, &Booking{}, &Attachment{}, &Event{},
-		&AuditLog{}, &Tag{}, &Membership{},
+		&AuditLog{}, &Tag{}, &Membership{}, &Document{},
 	}
 }

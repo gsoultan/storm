@@ -5,6 +5,8 @@
 package pgddl
 
 import (
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -34,7 +36,15 @@ func NeedsBtreeGist(s *schema.Schema) bool {
 
 // BtreeGistDDL installs btree_gist, safely under concurrency — see the
 // comment at its use in Create.
-const BtreeGistDDL = "DO $storm$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist; " +
+//
+// Installed WITH SCHEMA public, explicitly. Without it an extension lands in
+// the first schema of the search path — which, when a migration is replayed
+// into a scratch namespace or a model is normalised through one, is the
+// scratch schema, and the operator classes vanish with it. A named operator
+// class is then "does not exist" from any other schema, and IF NOT EXISTS is
+// satisfied by the wrong copy. public is where PostgreSQL's own default puts
+// extensions, and it is on every default search path.
+const BtreeGistDDL = "DO $storm$ BEGIN CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public; " +
 	"EXCEPTION WHEN unique_violation OR duplicate_object THEN NULL; END $storm$;"
 
 func Create(s *schema.Schema) string {
@@ -47,6 +57,9 @@ func Create(s *schema.Schema) string {
 		// two deploy replicas would do. The emitted SQL has to be safe
 		// wherever and however concurrently it is applied.
 		b.WriteString(BtreeGistDDL + "\n\n")
+	}
+	if NeedsPgTrgm(s) {
+		b.WriteString(PgTrgmDDL + "\n\n")
 	}
 	for _, e := range s.Enums {
 		b.WriteString(CreateEnum(e))
@@ -143,32 +156,189 @@ func ColumnDef(c *schema.Column) string {
 }
 
 // CreateIndex renders a CREATE INDEX.
+//
+// The clauses come in the order pg_get_indexdef prints them, so that what the
+// emitter writes and what introspection reads back are the same shape and the
+// round trip is a fixpoint: keys, INCLUDE, NULLS NOT DISTINCT, WITH, WHERE.
 func CreateIndex(t *schema.Table, ix *schema.Index) string {
+	return createIndex(t, ix, false)
+}
+
+// CreateIndexConcurrently renders a CREATE INDEX CONCURRENTLY: the build
+// that does not block writes to the table while it runs, which on a table
+// with traffic is the only build a deployment can afford. It cannot run
+// inside a transaction block, so a migration that carries one has to be
+// applied as a single statement outside one — see migrate.Change.NoTransaction.
+func CreateIndexConcurrently(t *schema.Table, ix *schema.Index) string {
+	return createIndex(t, ix, true)
+}
+
+// DropIndexConcurrently renders a DROP INDEX CONCURRENTLY, with the same
+// constraint.
+func DropIndexConcurrently(name string) string {
+	return "DROP INDEX CONCURRENTLY " + Ident(name) + ";"
+}
+
+func createIndex(t *schema.Table, ix *schema.Index, concurrently bool) string {
 	var b strings.Builder
 	b.WriteString("CREATE ")
 	if ix.Unique {
 		b.WriteString("UNIQUE ")
 	}
-	b.WriteString("INDEX " + Ident(ix.Name) + " ON " + Ident(t.Name))
+	b.WriteString("INDEX ")
+	if concurrently {
+		b.WriteString("CONCURRENTLY ")
+	}
+	b.WriteString(Ident(ix.Name) + " ON " + Ident(t.Name))
 	if m := ix.Method; m != "" && m != "btree" {
 		b.WriteString(" USING " + m)
 	}
 	keys := make([]string, len(ix.Columns))
 	for i, c := range ix.Columns {
-		k := maybeIdent(c.Name, c.Expr)
-		if c.Desc {
-			k += " DESC"
-		}
-		if c.NullsLast {
-			k += " NULLS LAST"
-		}
-		keys[i] = k
+		keys[i] = IndexKey(c)
 	}
 	b.WriteString(" (" + strings.Join(keys, ", ") + ")")
+	if len(ix.Include) > 0 {
+		b.WriteString(" INCLUDE (" + identList(ix.Include) + ")")
+	}
+	if ix.NullsNotDistinct {
+		b.WriteString(" NULLS NOT DISTINCT")
+	}
+	if len(ix.With) > 0 {
+		params := make([]string, len(ix.With))
+		for i, p := range ix.With {
+			params[i] = p.Name + " = " + p.Value
+		}
+		b.WriteString(" WITH (" + strings.Join(params, ", ") + ")")
+	}
 	if ix.Where != "" {
 		b.WriteString(" WHERE " + ix.Where)
 	}
 	b.WriteString(";")
+	return b.String()
+}
+
+// IndexKey renders one key: the column or expression, then its collation,
+// operator class, direction and NULL placement — pg_get_indexdef's order.
+//
+// An expression is always parenthesised. `lower(email)` would parse bare, but
+// `n + 1` would not, and one rule that is always right beats a rule that has
+// to recognise a function call.
+func IndexKey(c schema.IndexColumn) string {
+	k := Ident(c.Name)
+	if c.Expr {
+		k = "(" + c.Name + ")"
+	}
+	if c.Collate != "" {
+		k += " COLLATE " + Ident(c.Collate)
+	}
+	if c.OpClass != "" {
+		k += " " + qualifiedOpClass(c.OpClass)
+	}
+	if c.Desc {
+		k += " DESC"
+	}
+	switch {
+	case c.NullsFirst:
+		k += " NULLS FIRST"
+	case c.NullsLast:
+		k += " NULLS LAST"
+	}
+	return k
+}
+
+// qualifiedOpClass names an operator class so that it resolves from ANY
+// schema. One from an extension storm installs itself is in public, by the
+// install above, and is qualified as such; one the model already qualified —
+// extensions.gin_trgm_ops on a host that keeps them there — is left alone,
+// and the install storm emits is a no-op against the copy that exists.
+func qualifiedOpClass(class string) string {
+	if IsTrgmOpClass(class) {
+		return "public." + class
+	}
+	return class
+}
+
+// NeedsPgTrgm reports whether any index asks for a trigram operator class,
+// which lives in the pg_trgm extension.
+func NeedsPgTrgm(s *schema.Schema) bool {
+	for _, t := range s.Tables {
+		for _, ix := range t.Indexes {
+			for _, c := range ix.Columns {
+				if IsTrgmOpClass(c.OpClass) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// IsTrgmOpClass reports whether an UNQUALIFIED operator class comes from
+// pg_trgm. A qualified one is the model's own statement of where it lives.
+func IsTrgmOpClass(class string) bool {
+	return class == "gin_trgm_ops" || class == "gist_trgm_ops"
+}
+
+// PgTrgmDDL installs pg_trgm, wrapped the same way as btree_gist and for the
+// same reason: IF NOT EXISTS races with itself under concurrent appliers.
+const PgTrgmDDL = "DO $storm$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public; " +
+	"EXCEPTION WHEN unique_violation OR duplicate_object THEN NULL; END $storm$;"
+
+// Check refuses what the model says that PostgreSQL cannot: the index facts
+// that exist for MySQL's sake. Silently dropping them would leave a TEXT
+// column's prefix index — the only way MySQL indexes such a column at all —
+// as a whole-value index here, which is a different index with a different
+// cost, and an invisible index visible.
+func Check(s *schema.Schema) error {
+	var problems []string
+	for _, t := range s.Tables {
+		for _, ix := range t.Indexes {
+			switch ix.Method {
+			case "fulltext", "spatial":
+				problems = append(problems, fmt.Sprintf(
+					"  %s: index %s is a MySQL %s index — PostgreSQL's full-text search is a tsvector column with a gin index",
+					t.Name, ix.Name, strings.ToUpper(ix.Method)))
+			}
+			if ix.Invisible {
+				problems = append(problems, fmt.Sprintf(
+					"  %s: index %s is INVISIBLE, which PostgreSQL has no equivalent for — drop it, or leave it visible",
+					t.Name, ix.Name))
+			}
+			for _, c := range ix.Columns {
+				if c.Prefix > 0 {
+					problems = append(problems, fmt.Sprintf(
+						"  %s: index %s indexes a %d-character prefix of %s, which PostgreSQL cannot — "+
+							"index the whole column, or an expression: storm.IndexExpr(&m.%s, \"left(%%s, %d)\")",
+						t.Name, ix.Name, c.Prefix, c.Name, exportish(c.Name), c.Prefix))
+				}
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return fmt.Errorf("this model does not port to PostgreSQL:\n%s", strings.Join(problems, "\n"))
+}
+
+// exportish guesses a Go field name from a column name for an error's fix,
+// which only has to be recognisable, not exact.
+func exportish(col string) string {
+	var b strings.Builder
+	up := true
+	for _, r := range col {
+		if r == '_' {
+			up = true
+			continue
+		}
+		if up {
+			b.WriteString(strings.ToUpper(string(r)))
+			up = false
+		} else {
+			b.WriteRune(r)
+		}
+	}
 	return b.String()
 }
 
