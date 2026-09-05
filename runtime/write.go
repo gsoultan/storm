@@ -157,6 +157,23 @@ func SpliceInsert(prefix string, p InsertParts, cols []string, placeholder, suff
 // caller meant and is never what they said.
 var ErrNothingAssigned = errors.New("storm: insert with no columns assigned")
 
+// ErrConflict is returned by an insert that asked for DoNothing and found the
+// row already there.
+//
+// It is its own error rather than ErrNoRow because the two mean opposite
+// things about whether the caller has a problem: DO NOTHING suppresses the
+// RETURNING row, so "no row" is the SUCCESS case of an idempotent insert, and
+// a caller that treats it as a failure retries forever.
+//
+//	row, err := n.OnConflictEmail().DoNothing().Insert(ctx, ex)
+//	switch {
+//	case errors.Is(err, runtime.ErrConflict):
+//	        // already there; row is zero
+//	case err != nil:
+//	        return err
+//	}
+var ErrConflict = errors.New("storm: the row already exists and DoNothing was asked for")
+
 // ErrChildLimit is returned when a relation load reached its child limit.
 //
 // A partial relation load is worse than a failed one: every count computed from

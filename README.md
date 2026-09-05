@@ -38,8 +38,12 @@ as a wrapped value that looks plausible.
 **v0.5.0 closes the escape hatch's injection vector** — a `storm.SQL` statement
 now runs only if `storm generate` PREPAREd its exact text, so **upgrading
 requires regeneration** — and adds declared unions, declared parameters, the
-anti-join, many-to-many, top-N by a measure, and `AnyOf` for OR across whole
-conditions. It carries one more silent wrong answer: through v0.4.1 a table
+anti-join, many-to-many, top-N by a measure, `AnyOf` for OR across whole
+conditions, and **every index PostgreSQL has** — operator classes, collations,
+`INCLUDE`, partial, expression, `NULLS NOT DISTINCT`, storage parameters, all
+six access methods, `CONCURRENTLY` in migrations — plus MySQL's prefix,
+`FULLTEXT` and invisible forms, each refused on the target that lacks it.
+It carries one more silent wrong answer: through v0.4.1 a table
 past 512 filterable columns built its predicates from a wrapped child's
 fragment table in a composed statement. The milestone log with
 every exit gate is [docs/PLAN.md](docs/PLAN.md), what would still stop a

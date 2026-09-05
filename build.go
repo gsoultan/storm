@@ -129,6 +129,11 @@ func Build(models ...any) (*schema.Schema, error) {
 		}
 	}
 
+	// Pass 6: refuse the index declarations the database would accept and
+	// then fail to remember, or accept and fail to create. Named separately
+	// from pass 5 because it has to see the foreign-key indexes too.
+	b.validateIndexes()
+
 	if err := b.errs.err(); err != nil {
 		return nil, err
 	}

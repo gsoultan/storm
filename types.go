@@ -102,13 +102,21 @@ const (
 	NoAction   Action = "NO ACTION"
 )
 
-// Index methods.
+// Index methods. PostgreSQL has six; MySQL has BTREE and HASH plus two of its
+// own. Using one the target lacks fails generation naming both.
 const (
-	BTree = "btree"
-	GIN   = "gin"
-	GiST  = "gist"
-	Hash  = "hash"
-	BRIN  = "brin"
+	BTree  = "btree"
+	GIN    = "gin"
+	GiST   = "gist"
+	SPGiST = "spgist"
+	Hash   = "hash"
+	BRIN   = "brin"
+
+	// FullText is MySQL's full-text index over text columns — its answer to
+	// the tsvector column a PostgreSQL model would declare instead.
+	FullText = "fulltext"
+	// Spatial is MySQL's R-tree over a geometry column.
+	Spatial = "spatial"
 )
 
 // RawSQL is a raw SQL fragment. It is the one deliberate escape from the typed

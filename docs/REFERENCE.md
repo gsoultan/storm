@@ -96,12 +96,79 @@ func (u *User) Schema(t *storm.Table) {
 |---|---|
 | `t.PrimaryKey(&a, &b)` | a natural or composite key, instead of `storm.Model` |
 | `t.Unique(&a, &b)` | a composite unique constraint |
-| `t.Index(&a, storm.Desc(&b))` | an index; `storm.Desc` orders a key descending |
+| `t.Index(&a, storm.Desc(&b))` | an index; `storm.Desc` orders a key descending — every clause is in §2a |
 | `t.Check(storm.RawSQL(...))` | a check constraint |
 | `t.Exclude(...)` | an exclusion constraint — see §5 |
 | `t.Through(&field, &JoinModel{})` | many-to-many with a payload — see §4 |
 | `t.Name(s)` | override the derived table name |
 | `t.Comment(s)` | a `COMMENT ON TABLE` |
+
+### 2a. Indexes — every clause PostgreSQL has, and MySQL's own
+
+An index is declared once and carries every fact the database can hold about
+it. Each fact round-trips: the emitter writes it, introspection reads it back,
+and the differ compares it — so a changed operator class is a migration, not a
+silent difference.
+
+```go
+func (d *Document) Schema(t *storm.Table) {
+    // A covering index under the C collation, which is what lets a plain
+    // btree serve LIKE 'abc%'; fillfactor leaves room for in-place updates.
+    t.Index(storm.Collate(&d.Slug, "C"), storm.NullsFirst(&d.Score)).
+        Include(&d.Title, &d.PublishedAt).
+        With("fillfactor", "70")
+
+    t.Index(storm.OpClass(&d.Title, "text_pattern_ops"))                   // the opclass route to the same LIKE
+    t.Index(storm.OpClass(&d.Meta, "jsonb_path_ops")).Using(storm.GIN)     // a smaller gin that answers only @>
+    t.Index(storm.OpClass(&d.Body, "gin_trgm_ops")).Using(storm.GIN)       // ILIKE '%abc%'; installs pg_trgm
+    t.Index(&d.PublishedAt).Using(storm.BRIN).With("pages_per_range", "32") // append-only timestamps
+    t.Index(storm.IndexExpr(&d.Score, "%s + 1")).Named("ix_score_next")     // an expression key
+    t.Index(&d.Ref).Unique().NullsNotDistinct()                             // at most one NULL (PostgreSQL 15+)
+}
+```
+
+**On the index**
+
+| | |
+|---|---|
+| `.Using(m)` | `storm.BTree` (default), `storm.Hash`, `storm.GIN`, `storm.GiST`, `storm.SPGiST`, `storm.BRIN`; for MySQL, `storm.FullText` |
+| `.Unique()` | a unique index — btree only |
+| `.NullsNotDistinct()` | a unique index treats NULLs as equal (PostgreSQL 15+) |
+| `.Include(&a, &b)` | covering columns in the leaf entries — btree, gist, spgist |
+| `.With(name, value)` | a storage parameter: `fillfactor`, `deduplicate_items`, `fastupdate`, `gin_pending_list_limit`, `pages_per_range`, `autosummarize`, `buffering` — checked against the method |
+| `.Where(storm.RawSQL(...))` | a partial index |
+| `.Invisible()` | hidden from the planner, still maintained (MySQL 8.0+) |
+| `.Named(s)` | override the derived name; required when two indexes cover the same columns |
+
+**On a key** — each takes a field pointer or another key, so they compose in
+any order:
+
+| | |
+|---|---|
+| `storm.Desc(k)` | descending |
+| `storm.NullsLast(k)` / `storm.NullsFirst(k)` | the non-default NULL placement: LAST on a descending key, FIRST on an ascending one — the default placement is refused, because PostgreSQL does not record it and every diff would recreate the index |
+| `storm.OpClass(k, "text_pattern_ops")` | an operator class; the classes storm knows are checked against the method |
+| `storm.Collate(k, "C")` | a collation for this key |
+| `storm.Lower(f)` / `storm.Upper(f)` | `lower(col)` / `upper(col)` |
+| `storm.IndexExpr(f, "date_trunc('day', %s)")` | any expression over the column; `%s` is the column, and it must be IMMUTABLE |
+| `storm.Prefix(f, n)` | the first `n` characters (MySQL) — the only way a `TEXT` column can be indexed there |
+
+What each target lacks is refused at generate time, naming the alternative:
+PostgreSQL has no prefix or invisible index; MySQL has no partial index, no
+`INCLUDE`, no operator classes, no gin/gist/brin. `storm portable mysql` lists
+every such index. A `TEXT` key without a prefix is refused for MySQL too,
+because MySQL refuses the `CREATE`.
+
+**Extensions.** A trigram class needs `pg_trgm`, an exclusion constraint needs
+`btree_gist`; the DDL installs each `WITH SCHEMA public`, guarded against a
+concurrent applier, and qualifies the classes it installed. A host that keeps
+extensions elsewhere declares the class qualified — `"extensions.gin_trgm_ops"`
+— and storm's install is a no-op against the copy that exists.
+
+**Foreign keys are indexed for you.** Every foreign key column gets a btree
+unless an index you declared already leads with it. PostgreSQL does not do
+this, and a child table without one turns every relation load and every
+cascading delete into a sequential scan.
 
 ## 3. Mixins are embedded structs
 

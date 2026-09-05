@@ -244,6 +244,34 @@ type Index struct {
 	Unique  bool
 	Method  string // "btree" when empty
 	Where   string // partial-index predicate; "" for none
+
+	// Include are the non-key columns carried in the index's leaf entries
+	// (INCLUDE), so a read that touches only the key and these is answered
+	// from the index alone — the covering index. They take part in no
+	// ordering and no uniqueness check. PostgreSQL: btree, gist and spgist.
+	Include []string
+
+	// NullsNotDistinct makes a UNIQUE index treat NULLs as equal, so at most
+	// one row may leave the key NULL (PostgreSQL 15+). The SQL default, and
+	// the only behaviour before 15, is that every NULL is distinct from every
+	// other — which is rarely what "unique" was meant to say.
+	NullsNotDistinct bool
+
+	// With are the storage parameters in declaration order: fillfactor on a
+	// btree that takes updates, fastupdate on a gin, pages_per_range on a
+	// brin. Rendered as WITH (name = value).
+	With []StorageParam
+
+	// Invisible hides the index from the planner while keeping it maintained
+	// (MySQL 8.0+), which is how an index is dropped safely: hide it, watch
+	// the plans, then drop it. PostgreSQL has no equivalent and refuses it.
+	Invisible bool
+}
+
+// StorageParam is one index storage parameter, e.g. fillfactor = 70.
+type StorageParam struct {
+	Name  string
+	Value string
 }
 
 // IndexColumn is one index key. Expr distinguishes lower(email) from a column
@@ -253,6 +281,30 @@ type IndexColumn struct {
 	Expr      bool
 	Desc      bool
 	NullsLast bool
+
+	// NullsFirst puts NULLs before every value on an ASCENDING key — where a
+	// DESC key already puts them, so the two are never both set. Only the
+	// non-default placement is recorded: an ascending key's NULLS LAST and a
+	// descending key's NULLS FIRST are what PostgreSQL does anyway, and it
+	// does not remember having been told.
+	NullsFirst bool
+
+	// OpClass is the operator class, "" for the type's default. It is what
+	// makes an index answer a question its default class cannot:
+	// text_pattern_ops for LIKE 'abc%' under a non-C collation,
+	// jsonb_path_ops for a gin that only answers @>, gin_trgm_ops for a
+	// trigram index behind ILIKE '%abc%'. PostgreSQL only.
+	OpClass string
+
+	// Collate overrides the column's collation for this key, e.g. "C" so a
+	// plain btree can serve a prefix LIKE. PostgreSQL only.
+	Collate string
+
+	// Prefix indexes only the first n characters of the key (MySQL), which is
+	// the only way a TEXT or BLOB column can be indexed there at all.
+	// PostgreSQL has no prefix index; an expression key on left(col, n) is
+	// the equivalent and is refused rather than silently widened.
+	Prefix int
 }
 
 // ForeignKey is a referential constraint.
@@ -357,13 +409,7 @@ func (t *Table) normalize() {
 		if ix.Method == "" {
 			ix.Method = "btree"
 		}
-		if ix.Name == "" {
-			cols := make([]string, len(ix.Columns))
-			for j, c := range ix.Columns {
-				cols[j] = c.Name
-			}
-			ix.Name = genName("ix", t.Name, cols...)
-		}
+		ix.Name = t.IndexName(ix)
 		t.Indexes[i] = ix
 	}
 	for i, fk := range t.ForeignKeys {
@@ -397,6 +443,22 @@ func (t *Table) normalize() {
 	slices.SortStableFunc(t.ForeignKeys, func(a, b *ForeignKey) int { return cmp.Compare(a.Name, b.Name) })
 	slices.SortStableFunc(t.Checks, func(a, b *Check) int { return cmp.Compare(a.Name, b.Name) })
 	slices.SortStableFunc(t.Excludes, func(a, b *Exclude) int { return cmp.Compare(a.Name, b.Name) })
+}
+
+// IndexName is the name an index will have once normalised: the declared one,
+// or one derived from the table and the key columns. Exposed so a declaration
+// can be checked for a name collision BEFORE normalisation assigns the names —
+// two indexes over the same columns, one btree and one hash, would otherwise
+// be discovered by the second CREATE failing on the first.
+func (t *Table) IndexName(ix *Index) string {
+	if ix.Name != "" {
+		return ix.Name
+	}
+	cols := make([]string, len(ix.Columns))
+	for j, c := range ix.Columns {
+		cols[j] = c.Name
+	}
+	return genName("ix", t.Name, cols...)
 }
 
 // genName builds a deterministic constraint name, truncated to Postgres' 63
