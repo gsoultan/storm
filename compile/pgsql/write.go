@@ -112,16 +112,61 @@ func CopyTarget(table string, cols []string) (string, []string) {
 // with VALUES(), MSSQL has MERGE with a different shape entirely — which is
 // exactly why it lives here and not in codegen.
 
-// ConflictNothing means "insert if absent, otherwise leave it alone". That is a
-// real intent, not a degenerate case of an update.
-func ConflictNothing(conflict []string) string {
-	return conflictTarget(conflict) + " DO NOTHING"
+// ConflictSpec renders the inference specification: the keys of the unique
+// index a conflict is expected on, and — for a PARTIAL index — its predicate.
+//
+// The predicate is not decoration. PostgreSQL infers the index from the keys
+// AND the predicate together, and omitting it on a partial index is
+// SQLSTATE 42P10, "there is no unique or exclusion constraint matching the ON
+// CONFLICT specification" — at run time, on the first row that conflicts,
+// which is a code path a test that inserts distinct rows never reaches.
+func ConflictSpec(keys []ConflictKey, where string) string {
+	var b strings.Builder
+	b.WriteString(" ON CONFLICT (")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		if k.Expr {
+			b.WriteString("(" + k.Name + ")")
+		} else {
+			b.WriteString(Ident(k.Name))
+		}
+		// A collation or an operator class is part of what identifies the
+		// index, and two unique indexes over one column can differ by nothing
+		// else. Emitted so the inference cannot be ambiguous.
+		if k.Collate != "" {
+			b.WriteString(" COLLATE " + Ident(k.Collate))
+		}
+		if k.OpClass != "" {
+			b.WriteString(" " + k.OpClass)
+		}
+	}
+	b.WriteString(")")
+	if where != "" {
+		b.WriteString(" WHERE " + where)
+	}
+	return b.String()
 }
 
-// ConflictHead introduces the assignment list.
-func ConflictHead(conflict []string) string {
-	return conflictTarget(conflict) + " DO UPDATE SET "
+// ConflictKey is one key of an inference specification.
+type ConflictKey struct {
+	Name    string
+	Expr    bool
+	Collate string
+	OpClass string
 }
+
+// ConflictAny is "any unique constraint" — legal only with DO NOTHING, which
+// is what makes it useful: an insert that is a no-op if the row is already
+// there, whichever key it collides on.
+const ConflictAny = " ON CONFLICT"
+
+// ConflictDoNothing means "insert if absent, otherwise leave it alone".
+const ConflictDoNothing = " DO NOTHING"
+
+// ConflictDoUpdate introduces the assignment list.
+const ConflictDoUpdate = " DO UPDATE SET "
 
 // ExcludedAssign assigns one column from the rejected row.
 func ExcludedAssign(col string) string {
@@ -130,19 +175,6 @@ func ExcludedAssign(col string) string {
 
 // ConflictAssignSep joins assignments.
 const ConflictAssignSep = ", "
-
-func conflictTarget(conflict []string) string {
-	var b strings.Builder
-	b.WriteString(" ON CONFLICT (")
-	for i, c := range conflict {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(Ident(c))
-	}
-	b.WriteString(")")
-	return b.String()
-}
 
 // InsertParts is the punctuation an INSERT needs when its column list is not
 // known until run time.

@@ -44,6 +44,37 @@ NULLS NOT DISTINCT WITH (fillfactor='70') WHERE (deleted_at IS NULL)`;
 arithmetic doubly wrapped, function calls bare; `(n NULLS FIRST, ts DESC)`.
 The parser tests in `schema/pg/parse_test.go` hold these strings verbatim.
 
+## Upsert follows the index grammar (2026-09-05)
+
+`conflictTargets` in codegen/write.go reads the primary key, UNIQUE
+constraints AND **unique btree indexes** — because `t.Unique(storm.Lower(...))`
+becomes an INDEX (a PG UNIQUE constraint cannot hold an expression), so
+case-insensitive email had no OnConflict method before. A PARTIAL unique index
+carries its predicate into the spec: without it, SQLSTATE 42P10 at run time on
+the first colliding row (probe-verified, not read).
+
+Conflict encoding is one byte: 0 none, 1 bare DO NOTHING, 2+2i target i DO
+UPDATE, 3+2i target i DO NOTHING. The insert cache key is
+`mask | conflict<<nInsertable` in a uint64, so **56 insertable columns is the
+ceiling** and generation refuses more — past it two conflict clauses share a
+cache entry.
+
+A plain key column is NOT assigned from EXCLUDED (equal on both sides); an
+expression key's column IS (lower(email) matching ≠ emails equal).
+
+## The nil-callback batch hang (2026-09-05)
+
+`Executor.Batch(ctx, ops, each)` — every implementation called `each`
+unconditionally, so `nil` took the connection down and the symptom was a HUNG
+PROCESS, not an error. `drainBatch` now normalises nil to "return the first
+error"; results are still drained in order or the connection desyncs. Found by
+writing `Ins.Op()`'s bulk-upsert test, which hung 600s before printing.
+
 ## Not built, deliberately
-- `spatial` (no geometry column type to index), per-extension schema config
-  (write the qualified class instead), invalid-index detection in introspection.
+- `spatial` — needs a geometry/geography COLUMN type first (PostGIS), which
+  the model has none of; the index method is the last step, not the first.
+- per-extension schema config (write the qualified class instead)
+- invalid-index detection (introspection reads the definition, not indisvalid,
+  so a failed CONCURRENTLY build reads as drift)
+- `ON CONFLICT ... DO UPDATE ... WHERE` (conditional upsert, "only if newer")
+- `ON CONFLICT ON CONSTRAINT <name>` — inference by keys covers it

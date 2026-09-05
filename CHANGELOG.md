@@ -176,6 +176,65 @@ and a correct concurrent migration would have been reported as broken. The
 test proves the refusal as well as the fix. An index on a table the same plan
 creates stays plain, inside the transaction that creates the table.
 
+### Upsert: every unique index is a conflict target, and `DoNothing` exists
+
+`ON CONFLICT` could only name a primary key or a declared `UNIQUE`
+**constraint**. That left out the two forms storm generates for the commonest
+upsert there is, because both are **indexes**: `t.Unique(storm.Lower(&u.Email))`
+becomes a unique index — a PostgreSQL `UNIQUE` constraint cannot hold an
+expression — and so does `t.Index(...).Unique()`. Case-insensitive email, the
+canonical upsert target, had no `OnConflict` method at all and no message
+saying why.
+
+A partial unique index carries its predicate into the specification, which is
+not decoration: PostgreSQL infers the index from the keys **and** the
+predicate, and without it the insert fails with SQLSTATE 42P10 at run time, on
+the first row that actually collides — a path a test inserting distinct rows
+never reaches. Verified against the server rather than the documentation.
+
+```go
+n.OnConflictLowerEmail()              // ON CONFLICT ((lower(email))) DO UPDATE SET …
+n.OnConflictTenantSlug()              // ON CONFLICT ("tenant", "slug") WHERE deleted_at IS NULL
+```
+
+**`DoNothing()`.** The idempotent insert was reachable only by accident —
+`DO NOTHING` was emitted when the caller happened to assign no updatable
+column. On its own it names no index, so any unique violation is the no-op;
+after an `OnConflict…` it is that one index. It returns the new
+`runtime.ErrConflict` when the row was already there, because `DO NOTHING`
+suppresses `RETURNING` and "no row" is the SUCCESS case of an idempotent
+insert: a caller that reads it as a failure retries forever.
+
+**A key column is no longer assigned from `EXCLUDED`** — it is equal on both
+sides, which is why the row conflicted. An expression key's column still is:
+`lower(email)` matching does not make the emails equal, and the spelling the
+caller sent is the one they meant to store.
+
+**Bulk upsert.** `InsertOp(row)` writes every column of a `Row` and cannot
+conflict, so ingesting a batch that should overwrite what is already there
+could only be done one round trip at a time. `n.Op()` is the builder as a
+queueable statement, mask and conflict clause intact, on its own statement
+cache because the batch form has no `RETURNING`.
+
+Generation now also refuses a table with more than 56 insertable columns: the
+insert statement cache keys the column mask and the conflict byte in one
+`uint64`, and past that the byte overflows and two different conflict clauses
+share a cache entry — the second insert running the first's statement, which
+is a wrong write with no symptom.
+
+### Fixed: a batch with no callback hung the connection
+
+`Executor.Batch` takes a per-statement callback, and every implementation
+called it unconditionally. A caller who only wants to know whether a bulk
+insert worked — which is most of them, and now every caller of `Ins.Op()` —
+passes nil, and the first result took the connection down with it. The symptom
+was a hung process, not an error naming the batch.
+
+`nil` is now part of the port's promise: the results are still drained in
+order, because anything else desynchronises the connection, and the first
+error is returned. Found by writing the bulk-upsert test, which hung for ten
+minutes before anything printed.
+
 ### `storm import` renders indexes as declarations
 
 Every index came back as a line in the "not carried over" list — its name,
