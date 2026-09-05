@@ -224,6 +224,20 @@ func (o *Order) Aggregates(a *storm.Aggregates) {
 	facets.Sum(&o.Total, "Revenue")
 	facets.GroupingOf("StatusIsSubtotal", &o.Status)
 
+	// Top-N by a MEASURE. A grouped read can only be ordered by something in
+	// its select list, and until an output could be the sort key the only
+	// orderings available were the ones the grouping already gave — so "the
+	// customers who have spent the most" meant reading every customer's total
+	// and sorting them in Go, which is a LIMIT the database never sees.
+	//
+	// The grouping column is appended as a tiebreak, so paging this report is
+	// total even where two customers have spent the same.
+	top := a.Named("TopCustomers")
+	top.By(&o.Customer)
+	spend := top.Sum(&o.Total, "Spend")
+	top.Count("Orders")
+	top.OrderDesc(spend)
+
 	// Arithmetic, DISTINCT, and a framed window — the three things a report
 	// asks for that used to end in raw SQL.
 	trend := a.Named("Trend")

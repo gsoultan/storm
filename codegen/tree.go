@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -196,10 +197,10 @@ func anyPredDecl(slot string) string {
 
 // anyDecl is a list slot's field declaration: an ARENA of lists, indexed by
 // the slot's cursor in token order, exactly like the scalar arenas above it.
-func anyDecl(slot string) string {
+func anyDecl(slot string, n int) string {
 	for _, sl := range anySlotTable {
 		if sl.name == slot {
-			return fmt.Sprintf("%s [%d][]%s", sl.name, maxAny, sl.elem)
+			return fmt.Sprintf("%s [%d][]%s", sl.name, n, sl.elem)
 		}
 	}
 	return ""
@@ -294,12 +295,45 @@ const (
 	maxAny = 3
 )
 
+// itoaBudget renders the scale for the overflow message, so the error names
+// the setting it was generated with rather than a knob whose value the reader
+// then has to go and find.
+func itoaBudget(scale int) string {
+	if scale < 1 {
+		scale = 1
+	}
+	return strconv.Itoa(scale)
+}
+
+// budget scales one of the constants above by Options.Budgets.Scale.
+//
+// The numbers are relative to each other by measurement — a text predicate is
+// commoner than a jsonb one, a list predicate rarer than a scalar — so one
+// factor moves them together and keeps the shape the measurement found. It is
+// applied here, in the one place a buffer size is decided, so no emitter can
+// size a buffer the bind loop disagrees with.
+// streamBuf is the scratch a caller passes to preds/stream: every predicate
+// token, every order token, and the one group token that ANDs the top level.
+func (g *gen) streamBuf() int { return g.budget(maxToks) + g.budget(maxOrder) + 1 }
+
+// composedBuf is the scratch a COMPOSED statement needs: a parent's stream and
+// a wrapped child's, plus the group tokens that join them.
+func (g *gen) composedBuf() int { return 2*(g.budget(maxToks)+g.budget(maxOrder)) + 4 }
+
+func (g *gen) budget(n int) int {
+	s := g.o.Budgets.Scale
+	if s < 1 {
+		s = 1
+	}
+	return n * s
+}
+
 func (g *gen) treeQuery() {
 	g.p("// Query is a value type: composing one allocates nothing. Predicates")
 	g.p("// are a postfix token stream, so disjunction and negation are")
 	g.p("// representable — a per-column operator mask cannot express either.")
 	g.p("type Query struct {")
-	g.p("\ttoks [%d]runtime.Tok", maxToks)
+	g.p("\ttoks [%d]runtime.Tok", g.budget(maxToks))
 	g.p("\tnt   uint8")
 	g.p("\ttop  uint8 // top-level conjuncts, ANDed at compile time")
 	g.p("")
@@ -310,13 +344,13 @@ func (g *gen) treeQuery() {
 	// on every copy. Measured, not aesthetic — see slotsFor.
 	for _, ar := range arenaTable {
 		if ts.arenas[ar.name] {
-			g.p("\t"+ar.decl, ar.max)
+			g.p("\t"+ar.decl, g.budget(ar.max))
 		}
 	}
 	g.p("\t%s uint8", strings.Join(ts.cursors, ", "))
 	g.p("")
 	for _, slot := range ts.anyList {
-		g.p("\t%s", anyDecl(slot))
+		g.p("\t%s", anyDecl(slot, g.budget(maxAny)))
 	}
 	if cs := ts.anyCursors(); len(cs) > 0 {
 		g.p("\t%s uint8", strings.Join(cs, ", "))
@@ -325,7 +359,7 @@ func (g *gen) treeQuery() {
 	g.p("\t// Order terms live in their own buffer and are appended to the stream")
 	g.p("\t// after the predicate tree. Sharing one buffer would let a Where after")
 	g.p("\t// an Order interleave the two, and the stream's order is its meaning.")
-	g.p("\totoks [%d]runtime.Tok", maxOrder)
+	g.p("\totoks [%d]runtime.Tok", g.budget(maxOrder))
 	g.p("\tno    uint8")
 	g.p("")
 	g.p("\tlimit  int64")
@@ -505,8 +539,9 @@ func (g *gen) treeQuery() {
 		"gives up the index walk that makes keyset pagination worth doing")
 	g.p("")
 	g.p("var errTooComplex = errors.New(")
-	g.p("\t%q)", "storm: query has more predicates than the generated buffers hold; "+
-		"split it, or raise the limits in codegen")
+	g.p("\t%q)", "storm: query has more predicates than the generated buffers hold "+
+		"(scale "+itoaBudget(g.o.Budgets.Scale)+
+		"); split the query, or regenerate with a larger codegen.Budgets{Scale}")
 	g.p("")
 	g.p("// push and leaf mutate through a pointer so the builder loop does not")
 	g.p("// copy the whole Query twice per predicate. They are only ever called on")
@@ -524,7 +559,7 @@ func (g *gen) treeQuery() {
 	g.p("// preds returns the predicate stream with top-level conjuncts ANDed.")
 	g.p("// A count uses this: ordering a scalar is wasted work, and including the")
 	g.p("// terms would compile a second statement per ordering for no difference.")
-	g.p("func (q Query) preds(buf *[%d]runtime.Tok) []runtime.Tok {", maxToks+maxOrder+1)
+	g.p("func (q Query) preds(buf *[%d]runtime.Tok) []runtime.Tok {", g.streamBuf())
 	g.p("\tn := copy(buf[:], q.toks[:q.nt])")
 	g.p("\tif q.top > 1 {")
 	g.p("\t\tbuf[n] = runtime.MakeGroup(runtime.KAnd, uint32(q.top))")
@@ -535,7 +570,7 @@ func (g *gen) treeQuery() {
 	g.p("")
 	g.p("// stream is the predicates followed by the ordering — the whole statement")
 	g.p("// key. Order tokens go last so a splicer can find the boundary by kind.")
-	g.p("func (q Query) stream(buf *[%d]runtime.Tok) []runtime.Tok {", maxToks+maxOrder+1)
+	g.p("func (q Query) stream(buf *[%d]runtime.Tok) []runtime.Tok {", g.streamBuf())
 	g.p("\tn := len(q.preds(buf))")
 	g.p("\tif q.no == 0 {")
 	g.p("\t\tif q.noOrder {")
@@ -626,6 +661,70 @@ func (g *gen) treePreds() {
 	g.p("\treturn q")
 	g.p("}")
 	g.p("")
+	g.p("// Grp is one conjunction, built by And, that AnyOf ORs with the others.")
+	g.p("//")
+	g.p("// It holds the predicates rather than tokens because the ARENA a value")
+	g.p("// lands in is chosen by leaf, in stream order, and a group has no stream")
+	g.p("// position until AnyOf gives it one.")
+	g.p("type Grp struct{ ps []Pred }")
+	g.p("")
+	g.p("// And groups predicates into one conjunction, so AnyOf can OR whole")
+	g.p("// conjunctions rather than single predicates:")
+	g.p("//")
+	g.p("//\tq.AnyOf(And(Status.Eq(\"paid\"), Total.Gt(big)),")
+	g.p("//\t        And(Status.Eq(\"trial\"), Total.Gt(small)))")
+	g.p("//")
+	g.p("// is (status = $1 AND total > $2) OR (status = $3 AND total > $4). Any")
+	g.p("// ORs single predicates and cannot say this: an advanced-search screen")
+	g.p("// whose rows are each a field, an operator and a value produces exactly")
+	g.p("// this shape, and without it the query has to be written in SQL.")
+	g.p("//")
+	g.p("// The variadic slice does not escape — AnyOf reads it and returns — so a")
+	g.p("// warm call still builds its SQL without allocating.")
+	g.p("func And(ps ...Pred) Grp { return Grp{ps: ps} }")
+	g.p("")
+	g.p("// AnyOf ORs its groups and ANDs the result with the rest of the query.")
+	g.p("//")
+	g.p("// An empty group contributes nothing, so a screen that builds one group")
+	g.p("// per filled-in filter row needs no special case for the rows the user")
+	g.p("// left blank. A group of one predicate is that predicate: the SQL carries")
+	g.p("// no parentheses it did not need, which keeps the statement — and so the")
+	g.p("// shape it is cached under — the same as the equivalent Any.")
+	g.p("func (q Query) AnyOf(gs ...Grp) Query {")
+	g.p("\tn := uint32(0)")
+	g.p("\tfor i := range gs {")
+	g.p("\t\tif len(gs[i].ps) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tfor j := range gs[i].ps {")
+	g.p("\t\t\tq.leaf(gs[i].ps[j])")
+	g.p("\t\t}")
+	g.p("\t\tif len(gs[i].ps) > 1 {")
+	g.p("\t\t\tq.push(runtime.MakeGroup(runtime.KAnd, uint32(len(gs[i].ps))))")
+	g.p("\t\t}")
+	g.p("\t\tn++")
+	g.p("\t}")
+	g.p("\tif n == 0 {")
+	g.p("\t\treturn q")
+	g.p("\t}")
+	g.p("\tif n > 1 {")
+	g.p("\t\tq.push(runtime.MakeGroup(runtime.KOr, n))")
+	g.p("\t}")
+	g.p("\tq.top++")
+	g.p("\treturn q")
+	g.p("}")
+	g.p("")
+	g.p("// NotAnyOf negates the disjunction AnyOf builds: NOT ((a AND b) OR c).")
+	g.p("func (q Query) NotAnyOf(gs ...Grp) Query {")
+	g.p("\tbefore := q.top")
+	g.p("\tq = q.AnyOf(gs...)")
+	g.p("\tif q.top == before {")
+	g.p("\t\treturn q")
+	g.p("\t}")
+	g.p("\tq.push(runtime.MakeGroup(runtime.KNot, 1))")
+	g.p("\treturn q")
+	g.p("}")
+	g.p("")
 
 	// leaf: store the value in its arena, append the token.
 	g.p("// leaf records one predicate: its value goes to the arena for its type,")
@@ -649,7 +748,7 @@ func (g *gen) treePreds() {
 			}
 			cur := anyCursor(slot)
 			g.p("\t\tcase %d:", i)
-			g.p("\t\t\tif int(q.%s) >= %d {", cur, maxAny)
+			g.p("\t\t\tif int(q.%s) >= %d {", cur, g.budget(maxAny))
 			g.p("\t\t\t\tq.over = true")
 			g.p("\t\t\t\treturn")
 			g.p("\t\t\t}")
@@ -682,7 +781,7 @@ func (g *gen) treePreds() {
 			return
 		}
 		g.p("\tcase %d:", i)
-		g.p("\t\tif int(q.%s) >= %d {", cur, max)
+		g.p("\t\tif int(q.%s) >= %d {", cur, g.budget(max))
 		g.p("\t\t\tq.over = true")
 		g.p("\t\t\treturn")
 		g.p("\t\t}")
@@ -730,18 +829,18 @@ func (g *gen) treeBind() {
 	g.p("\tvals   []any")
 	for _, ar := range arenaTable {
 		if ts.arenas[ar.name] {
-			g.p("\t"+ar.decl, ar.max)
+			g.p("\t"+ar.decl, g.budget(ar.max))
 		}
 	}
 	for _, slot := range ts.anyList {
-		g.p("\t%s", anyDecl(slot))
+		g.p("\t%s", anyDecl(slot, g.budget(maxAny)))
 	}
 	g.p("\tlimit  int64")
 	g.p("\toffset int64")
 	g.p("}")
 	g.p("")
 	g.p("var binders = runtime.NewPool(func() *binder {")
-	g.p("\treturn &binder{vals: make([]any, 0, %d)}", maxToks+1)
+	g.p("\treturn &binder{vals: make([]any, 0, %d)}", g.budget(maxToks)+1)
 	g.p("})")
 	g.p("")
 	g.p("// Binder is the pooled argument buffer.")

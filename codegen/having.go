@@ -124,7 +124,7 @@ func (g *gen) emitHaving(np havingSpec) {
 	g.p("")
 
 	g.p("func (h %s) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {", q)
-	g.p("	var buf [%d]runtime.Tok", 2*(maxToks+maxOrder)+4)
+	g.p("	var buf [%d]runtime.Tok", g.composedBuf())
 	g.p("	toks := h.q.PredToks(buf[:0])")
 	g.p("	stack := 0")
 	g.p("	if len(toks) > 0 {")

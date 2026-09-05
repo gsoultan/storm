@@ -36,6 +36,10 @@ type Options struct {
 	// DefaultTopStrategy, which is chosen by measurement.
 	TopStrategy TopStrategy
 
+	// Budgets scales the fixed per-query buffers. The zero value is the
+	// measured default.
+	Budgets Budgets
+
 	// DefaultOrder is the ordering a query with no Order() gets; empty means
 	// the primary key.
 	//
@@ -44,6 +48,32 @@ type Options struct {
 	// that is not filterable is a generation error rather than SQL that fails
 	// on first use.
 	DefaultOrder []OrderTerm
+}
+
+// Budgets scales the fixed-size buffers a generated Query carries: the
+// predicate token tree, the ordering terms, and one value arena per column
+// type.
+//
+// They are bounded because a Query is a value, copied into every builder call,
+// and a warm call has to build its SQL without allocating — which a slice
+// cannot promise. Past a bound the query returns an error rather than dropping
+// a predicate, so the limit is a limit and not a lie. The defaults hold about
+// sixteen predicate nodes, four sort terms and six values of the commonest
+// type, which covers the filter screens measured when they were chosen.
+//
+// A screen that needs more should raise this rather than split the query. It
+// was previously reachable only by editing storm's own source, which is not a
+// knob an adopter has.
+type Budgets struct {
+	// Scale multiplies every buffer. 0 and 1 both mean the default; 2 doubles
+	// each one, and so on.
+	//
+	// One factor rather than a size per buffer: the numbers are proportional
+	// to how often each kind of predicate appears, and scaling them together
+	// keeps that shape. The cost is the Query struct — bench pins its size,
+	// and doubling the budgets roughly doubles what every builder call copies,
+	// which is a trade worth making deliberately and not by default.
+	Scale int
 }
 
 // OrderTerm is one default ordering term.
@@ -91,6 +121,20 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 				t.Name, c.Name, c.Type.SQL(), o.Dialect, o.Dialect)
 		}
 	}
+	// A column whose exported name is one the generator already uses produces a
+	// package that does not compile, and the error names a line of generated
+	// code rather than the model that caused it. Refused here, where the fix
+	// is a rename in the model or `t.Col(&m.X).As("...")`.
+	for _, c := range cols {
+		if n := exportName(c.Name()); reservedNames[n] {
+			return nil, fmt.Errorf(
+				"codegen: table %s column %s generates the identifier %s, which the "+
+					"generated package already declares — rename the column, or give it "+
+					"another Go field name",
+				t.Name, c.Name(), n)
+		}
+	}
+
 	g := &gen{s: s, t: t, o: o, cols: cols, dec: decodersFor(o.Dialect, o.Import)}
 	g.header()
 	g.rowType()
@@ -241,6 +285,21 @@ func (o opDef) list() bool {
 		return true
 	}
 	return false
+}
+
+// reservedNames are the package-level identifiers every generated table
+// package declares. A column handle is a package-level var of the same kind,
+// so a column named "and" would redeclare And.
+//
+// Enumerated rather than derived: deriving it would mean rendering the package
+// twice, and the list changing is exactly the moment someone should think
+// about whether a new export earns a name this common.
+var reservedNames = map[string]bool{
+	"Query": true, "Pred": true, "Grp": true, "Sort": true, "Row": true,
+	"Ins": true, "Mut": true, "And": true, "New": true, "Create": true,
+	"Mutate": true, "Insert": true, "InsertAll": true, "Delete": true,
+	"InsertOp": true, "DeleteOp": true, "Masks": true, "Inserts": true,
+	"Shapes": true, "ShapeFlushes": true, "WhenSet": true,
 }
 
 var ops = []opDef{
@@ -502,7 +561,7 @@ func (g *gen) compile() {
 	g.p("// PredToks appends this query's predicate stream to dst: top-level")
 	g.p("// conjuncts reduced to one entry, order excluded.")
 	g.p("func (q Query) PredToks(dst []runtime.Tok) []runtime.Tok {")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\treturn append(dst, q.preds(&buf)...)")
 	g.p("}")
 	g.p("")
@@ -537,13 +596,13 @@ func (g *gen) compile() {
 	g.p("// Shape is a fingerprint of this query's structure — equal shapes share a")
 	g.p("// compiled statement. Values do not contribute, which is the point.")
 	g.p("func (q Query) Shape() uint64 {")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\treturn runtime.HashToks(q.stream(&buf))")
 	g.p("}")
 	g.p("")
 	g.p("// SQL returns the compiled text for this query's structure.")
 	g.p("func (q Query) SQL() string {")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\treturn stmtFor(q.stream(&buf), q.offset > 0).SQL")
 	g.p("}")
 	g.p("")
@@ -608,7 +667,7 @@ func (g *gen) terminals() {
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\tst := stmtFor(q.stream(&buf), q.offset > 0)")
 	g.p("\tif st.Err != nil {")
 	g.p("\t\t// A malformed token stream is a code-generation bug. Executing it")
@@ -650,7 +709,7 @@ func (g *gen) terminals() {
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn 0, err")
 	g.p("\t}")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\tst := countStmtFor(q.preds(&buf))")
 	g.p("\tif st.Err != nil {")
 	g.p("\t\t// A malformed token stream is a code-generation bug. Executing it")
@@ -684,7 +743,7 @@ func (g *gen) terminals() {
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn false, err")
 	g.p("\t}")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\tst := existsStmtFor(q.preds(&buf))")
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn false, st.Err")
@@ -701,7 +760,7 @@ func (g *gen) terminals() {
 	g.p("")
 	g.p("// Prepare resolves the structure and binds arguments without executing.")
 	g.p("func (q Query) Prepare(b *Binder) (string, []any) {")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\treturn stmtFor(q.stream(&buf), q.offset > 0).SQL, q.bind(b)")
 	g.p("}")
 	g.p("")

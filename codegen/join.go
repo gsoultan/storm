@@ -118,7 +118,7 @@ func (g *gen) join(j *schema.Join) {
 	g.p("\tif q.no > 0 {")
 	g.p("\t\treturn dst, err%sOrdered", j.Name)
 	g.p("\t}")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\tst := %sStmtFor(q.preds(&buf), q.offset > 0)", low)
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn dst, st.Err")

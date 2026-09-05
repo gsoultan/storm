@@ -118,7 +118,7 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tif q.no > 0 {")
 	g.p("\t\treturn dst, err%sOrdered", name)
 	g.p("\t}")
-	g.p("\tvar buf [%d]runtime.Tok", maxToks+maxOrder+1)
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	// preds, NOT stream: stream appends the query's DEFAULT ordering, and a
 	// grouped read may only order by its grouping columns. Splicing the
 	// default in produced `... ORDER BY "id" GROUP BY "status" ...` — a syntax

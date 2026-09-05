@@ -287,7 +287,7 @@ var errMixedOrder = errors.New(
 	"storm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
 
 var errTooComplex = errors.New(
-	"storm: query has more predicates than the generated buffers hold; split it, or raise the limits in codegen")
+	"storm: query has more predicates than the generated buffers hold (scale 1); split the query, or regenerate with a larger codegen.Budgets{Scale}")
 
 // push and leaf mutate through a pointer so the builder loop does not
 // copy the whole Query twice per predicate. They are only ever called on
@@ -511,6 +511,70 @@ func (q Query) NotAny(ps ...Pred) Query {
 	q.push(runtime.MakeGroup(runtime.KOr, uint32(len(ps))))
 	q.push(runtime.MakeGroup(runtime.KNot, 1))
 	q.top++
+	return q
+}
+
+// Grp is one conjunction, built by And, that AnyOf ORs with the others.
+//
+// It holds the predicates rather than tokens because the ARENA a value
+// lands in is chosen by leaf, in stream order, and a group has no stream
+// position until AnyOf gives it one.
+type Grp struct{ ps []Pred }
+
+// And groups predicates into one conjunction, so AnyOf can OR whole
+// conjunctions rather than single predicates:
+//
+//	q.AnyOf(And(Status.Eq("paid"), Total.Gt(big)),
+//	        And(Status.Eq("trial"), Total.Gt(small)))
+//
+// is (status = $1 AND total > $2) OR (status = $3 AND total > $4). Any
+// ORs single predicates and cannot say this: an advanced-search screen
+// whose rows are each a field, an operator and a value produces exactly
+// this shape, and without it the query has to be written in SQL.
+//
+// The variadic slice does not escape — AnyOf reads it and returns — so a
+// warm call still builds its SQL without allocating.
+func And(ps ...Pred) Grp { return Grp{ps: ps} }
+
+// AnyOf ORs its groups and ANDs the result with the rest of the query.
+//
+// An empty group contributes nothing, so a screen that builds one group
+// per filled-in filter row needs no special case for the rows the user
+// left blank. A group of one predicate is that predicate: the SQL carries
+// no parentheses it did not need, which keeps the statement — and so the
+// shape it is cached under — the same as the equivalent Any.
+func (q Query) AnyOf(gs ...Grp) Query {
+	n := uint32(0)
+	for i := range gs {
+		if len(gs[i].ps) == 0 {
+			continue
+		}
+		for j := range gs[i].ps {
+			q.leaf(gs[i].ps[j])
+		}
+		if len(gs[i].ps) > 1 {
+			q.push(runtime.MakeGroup(runtime.KAnd, uint32(len(gs[i].ps))))
+		}
+		n++
+	}
+	if n == 0 {
+		return q
+	}
+	if n > 1 {
+		q.push(runtime.MakeGroup(runtime.KOr, n))
+	}
+	q.top++
+	return q
+}
+
+// NotAnyOf negates the disjunction AnyOf builds: NOT ((a AND b) OR c).
+func (q Query) NotAnyOf(gs ...Grp) Query {
+	before := q.top
+	q = q.AnyOf(gs...)
+	if q.top == before {
+		return q
+	}
+	q.push(runtime.MakeGroup(runtime.KNot, 1))
 	return q
 }
 
@@ -1835,6 +1899,90 @@ func (q Query) AllFacetsInto(ctx context.Context, ex runtime.Executor, dst []Fac
 
 var errFacetsOrdered = errors.New(
 	"storm: Order() on an aggregation — its rows are groups, not table rows, and orders.Facets is already ordered by its grouping columns; sort the returned slice if you need another order")
+
+// TopCustomersRow is the "TopCustomers" aggregation over orders.
+//
+// One row per group. The grouping columns come first, in declaration
+// order, and the result is ordered by them: PostgreSQL promises no
+// order for a GROUP BY, and an unordered report shuffles between
+// requests for no reason anyone can see.
+type TopCustomersRow struct {
+	CustomerID [16]byte
+	Spend      runtime.Null[runtime.Decimal]
+	Orders     int64
+}
+
+const topCustomersPrefix = `SELECT "customer_id" AS "customer_id", sum("total") AS "spend", count(*) AS "orders" FROM "orders"`
+const topCustomersSuffix = ` GROUP BY "customer_id" ORDER BY "spend" DESC, "customer_id"`
+
+var (
+	topCustomersCache       = runtime.NewTreeCache()
+	topCustomersOffsetCache = runtime.NewTreeCache()
+)
+
+func topCustomersStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
+	c, suffix := topCustomersCache, topCustomersSuffix+limitSuffix
+	if withOffset {
+		c, suffix = topCustomersOffsetCache, topCustomersSuffix+limitOffsetSuffix
+	}
+	if st := c.Get(toks); st != nil {
+		return st
+	}
+	return c.Put(toks, runtime.SpliceTree(topCustomersPrefix, toks, lowering, suffix))
+}
+
+func scanTopCustomers(rv [][]byte, r *TopCustomersRow, sl *runtime.Slab) error {
+	var decErr error
+	copy(r.CustomerID[:], rv[0])
+	r.Spend, decErr = runtime.NullNumeric(rv[1])
+	if decErr != nil {
+		return decErr
+	}
+	r.Orders = runtime.Int8(rv[2])
+	return nil
+}
+
+// AllTopCustomers runs the "TopCustomers" aggregation. Predicates compose exactly as on All —
+// they filter the rows that go INTO the groups, which is the WHERE clause
+// and not a HAVING. Limit and offset page the groups.
+func (q Query) AllTopCustomers(ctx context.Context, ex runtime.Executor) ([]TopCustomersRow, error) {
+	var sl runtime.Slab
+	return q.AllTopCustomersInto(ctx, ex, nil, &sl)
+}
+
+// AllTopCustomersInto lets the caller own the output slice and the arena.
+func (q Query) AllTopCustomersInto(ctx context.Context, ex runtime.Executor, dst []TopCustomersRow, sl *runtime.Slab) ([]TopCustomersRow, error) {
+	if err := q.Err(); err != nil {
+		return dst, err
+	}
+	if q.no > 0 {
+		return dst, errTopCustomersOrdered
+	}
+	var buf [21]runtime.Tok
+	st := topCustomersStmtFor(q.preds(&buf), q.offset > 0)
+	if st.Err != nil {
+		return dst, st.Err
+	}
+	sl.Reserve(st.SlabHint())
+	b := binders.Get()
+	defer putBinder(b)
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, TopCustomersRow{})
+		if err := scanTopCustomers(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {
+			return dst, err
+		}
+	}
+	st.ObserveSlab(sl.Size())
+	return dst, rows.Err()
+}
+
+var errTopCustomersOrdered = errors.New(
+	"storm: Order() on an aggregation — its rows are groups, not table rows, and orders.TopCustomers is already ordered by its grouping columns; sort the returned slice if you need another order")
 
 // TrendRow is the "Trend" aggregation over orders.
 //
