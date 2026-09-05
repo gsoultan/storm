@@ -12,7 +12,7 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.5.0 — 2026-09-05
 
 **Upgrading requires regeneration.** `storm.SQL` statements are now pinned to
 the text `storm generate` PREPAREd, and the check is fail-closed: a declaration
@@ -24,6 +24,109 @@ string could reach SQL text. After it: unions, declared parameters, a much
 larger aggregation surface, the anti-join, many-to-many, and seven correctness
 fixes. The four reference documents were rewritten as-built and are now
 compiled by tests, because all four described an API that did not exist.
+
+**One of those fixes is a silent wrong answer** and is the reason this is
+tagged rather than left on `main`: through v0.4.1 a table past 512 filterable
+columns addressed the same column ids as a wrapped child in a composed
+statement, and built the parent's predicate from the child package's fragment
+table. Wrong rows, no error. See *a wide table mis-routed its own predicates*
+below.
+
+Two gaps in the declared surface also close here, both of the same shape —
+something a real screen asks for every day that the generated API could not
+say, so the query left the typed path for SQL.
+
+### Top N by a measure: `OrderAsc` / `OrderDesc` on an aggregation
+
+A grouped read was ordered by its grouping columns and nothing else, so an
+output could never be the sort key. "The ten customers who spend the most"
+meant reading every customer's total and sorting them in Go — a `LIMIT` the
+database never saw, and a report that got slower with the table.
+
+```go
+top := a.Named("TopCustomers")
+top.By(&o.Customer)
+spend := top.Sum(&o.Total, "Spend")
+top.OrderDesc(spend)
+```
+
+```sql
+... GROUP BY "customer_id" ORDER BY "spend" DESC, "customer_id"
+```
+
+**The grouping columns are appended as a tiebreak**, which is the part that is
+easy to leave out and expensive to debug. A measure is not unique and a top-N
+report is exactly the query that pages: `LIMIT 10 OFFSET 10` over tied groups
+is otherwise free to return one group on both pages and another on neither.
+PostgreSQL promises nothing about the order of equal keys, and at small row
+counts it looks stable — which is why the tiebreak is asserted on the emitted
+SQL, where the assertion can fail, and not on a live page walk, where at
+fixture size it cannot. The live test says so rather than implying otherwise.
+
+Ordering names an OUTPUT, not an expression: PostgreSQL resolves a bare name in
+`ORDER BY` against the select list first, so the alias and the aggregate are
+the same plan, and a grouping set's subtotal NULLs stay visible where repeating
+the expression would lose them. The handle has to come from the same
+declaration — ordering by another aggregation's output is a build error naming
+both, not a column the server cannot find.
+
+### `And` and `AnyOf`: OR across whole conditions
+
+`Any` ORs single predicates. An advanced-search panel — each row a field, an
+operator and a value, rows ANDed within a group and the groups ORed — produces
+`(a AND b) OR (c AND d)`, which had no expression in the generated API at all.
+
+```go
+q.AnyOf(
+    order.And(order.Status.Eq("paid"), order.Total.Gte(big)),
+    order.And(order.Status.Eq("trial"), order.Total.Gte(small)),
+)
+```
+
+Nothing new was needed in the runtime: the predicate stream has been a postfix
+token stream with arity-carrying group tokens since M2, and a `KOr` over `KAnd`
+groups is what it was already able to represent. The generated builder was the
+only thing that could not say it.
+
+An empty group contributes nothing, so a screen that builds one group per
+filled-in row needs no special case for the rows left blank. A group of one
+predicate is that predicate — no parentheses the SQL did not need, so it caches
+under the same shape as the equivalent `Where`. `NotAnyOf` negates the
+disjunction, and over nothing it is not a `NOT` with no operand. Composing one
+allocates nothing, asserted with `AllocsPerRun` rather than argued: a group is
+a slice, and a slice is the thing that usually escapes.
+
+### The query budgets are an option, not a source edit
+
+A generated `Query` holds its predicate tree in fixed arrays, which is what
+lets a warm call build its SQL without allocating. Past them the query returns
+an error rather than dropping a predicate — but the error said "raise the
+limits in codegen", and editing storm's source is not a knob an adopter has.
+
+`codegen.Budgets{Scale: 2}` doubles every buffer: predicate tokens, sort terms,
+and each per-type value arena. One factor rather than a size per buffer,
+because the numbers are proportional to how often each kind of predicate
+appears and scaling them together keeps the shape the measurement found. The
+cost is the `Query` value every builder call copies, which `bench` pins, so it
+is a trade made deliberately and not by default. The zero value generates
+byte-identical output to before, and the overflow error now names the setting
+and the scale it was generated with.
+
+### A column named `And` no longer emits a package that does not compile
+
+Adding `And` to the generated surface made a column of that name collide with
+it. The collision was always possible — a column named `Query` or `Row` had
+the same problem — and it surfaced as a compile error against a line of
+generated code rather than the model that caused it. Generation now refuses a
+column whose exported name is one the package already declares, naming the
+table, the column and the identifier.
+
+### Fixed: `make check` could authenticate against another project's database
+
+Every recipe passed `STORM_DSN='$(DSN)'`, which overrode the `STORM_DSN` the
+docs, the tests and CI all name. A developer who exported it watched thirty
+auth failures across the wire-format, migration and round-trip suites and read
+them as storm defects. The environment now wins.
 
 ### Only a declared statement runs — closing the escape hatch's injection vector
 

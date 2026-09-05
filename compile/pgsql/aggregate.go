@@ -54,6 +54,47 @@ func AggregateSuffix(agg *schema.Aggregate) string {
 		writeCond(&b, *agg.Having)
 	}
 
+	// An explicit ordering replaces the default entirely. It may name a
+	// measure, which the default cannot: the default exists to make a grouped
+	// read deterministic, and "by revenue, descending" is a different job.
+	if len(agg.OrderBy) > 0 {
+		b.WriteString(" ORDER BY ")
+		for i, o := range agg.OrderBy {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(Ident(ColumnCase(o.As)))
+			if o.Desc {
+				b.WriteString(" DESC")
+			}
+			// Same NULLS FIRST rule as the default, and only for a grouping
+			// column: a subtotal row's NULL is the summary of the detail below
+			// it, not a missing value to be swept to one end.
+			if agg.Sets != nil && isGrouping(agg, o.As) {
+				b.WriteString(" NULLS FIRST")
+			}
+		}
+		// Every grouping column not already named is appended as a tiebreak.
+		//
+		// A measure is not unique. `ORDER BY revenue DESC LIMIT 10 OFFSET 10`
+		// over groups that tie is free to return a row on both pages and
+		// another on neither — PostgreSQL makes no promise about the order of
+		// equal keys, and a top-N report is exactly the query that pages. The
+		// grouping columns ARE unique per row of a grouped read, so appending
+		// them costs nothing at the top of the sort and makes paging total.
+		for _, g := range agg.By {
+			if named(agg.OrderBy, g.As) {
+				continue
+			}
+			b.WriteString(", ")
+			b.WriteString(Ident(ColumnCase(g.As)))
+			if agg.Sets != nil {
+				b.WriteString(" NULLS FIRST")
+			}
+		}
+		return b.String()
+	}
+
 	if len(agg.By) > 0 {
 		b.WriteString(" ORDER BY ")
 		for i, g := range agg.By {
@@ -73,6 +114,27 @@ func AggregateSuffix(agg *schema.Aggregate) string {
 		}
 	}
 	return b.String()
+}
+
+// named reports whether an ordering already mentions an output.
+func named(order []schema.AggOrder, as string) bool {
+	for _, o := range order {
+		if o.As == as {
+			return true
+		}
+	}
+	return false
+}
+
+// isGrouping reports whether an output name is one of the grouping columns
+// rather than a measure.
+func isGrouping(agg *schema.Aggregate, as string) bool {
+	for _, g := range agg.By {
+		if g.As == as {
+			return true
+		}
+	}
+	return false
 }
 
 // ColumnCase turns an exported Go identifier into snake_case, matching the

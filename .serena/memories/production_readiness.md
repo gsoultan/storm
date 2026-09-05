@@ -110,10 +110,19 @@ gap's camouflage:**
 
 ## Dev environment (this machine, 2026-08-25)
 Go binaries get EHOSTUNREACH dialing the Apple container's 192.168.64.x IP
-(macOS local-network privacy; nc/ping fine). **storm-pg now publishes
-127.0.0.1:5433** (5432 is another project's forward). Run tests with
-`STORM_DSN=postgres://storm:storm@127.0.0.1:5433/storm`; the Makefile's
-container-IP DSN derivation is broken for Go on this machine.
+(macOS local-network privacy; nc/ping fine). The Makefile's container-IP DSN
+derivation is broken for Go on this machine, so it publishes on loopback.
+
+**PORT DRIFT, re-checked 2026-09-04: the Makefile's default :5433 is WRONG on
+this machine.** `storm-pg` is gone; the storm database now lives in
+**`storm-orders` on 127.0.0.1:5434** (storm/storm/storm), while :5433 is
+`argus-postgres` (argus/argus/argus). Running `make check` with the default DSN
+authenticates against another project's database and produces ~30 test failures
+that read like storm defects but are all SQLSTATE 28P01. Run:
+`make check DSN='postgres://storm:storm@127.0.0.1:5434/storm'` — and note that
+exporting `STORM_DSN` does NOT work, because every Makefile recipe sets
+`STORM_DSN='$(DSN)'` itself and overrides the environment. With the right DSN
+the whole gate is green (race suite, every coverage floor, `storm explain`).
 
 ## Perf pass (2026-08-25): the Query struct diet
 **A value type's size is part of its API.** Type-coverage work emitted every

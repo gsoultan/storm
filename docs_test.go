@@ -261,8 +261,29 @@ func (p *cqProduct) Aggregates(a *storm.Aggregates) {
 	f.GroupingOf("CategoryIsSubtotal", &p.Category)
 }
 
+// COMPLEX-QUERIES.md §9: top N by a measure.
+type cqCustomer struct {
+	storm.Model
+	Name string
+}
+
+type cqOrder struct {
+	storm.Model
+	Customer cqCustomer
+	Total    storm.Decimal
+}
+
+func (o *cqOrder) Aggregates(a *storm.Aggregates) {
+	top := a.Named("TopCustomers")
+	top.By(&o.Customer)
+	spend := top.Sum(&o.Total, "Spend")
+	top.Count("Orders")
+	top.OrderDesc(spend)
+}
+
 func TestComplexQueriesDocDeclarationsBuild(t *testing.T) {
-	_, err := storm.Build(&cqSubscription{}, &cqPlan{}, &cqBooking{}, &cqProduct{})
+	_, err := storm.Build(&cqSubscription{}, &cqPlan{}, &cqBooking{}, &cqProduct{},
+		&cqOrder{}, &cqCustomer{})
 	if err != nil {
 		t.Fatalf("a declaration COMPLEX-QUERIES.md documents was refused:\n%v", err)
 	}
