@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gsoultan/storm/internal/planspike/store/org"
 	"github.com/gsoultan/storm/internal/planspike/store/user"
 	"github.com/gsoultan/storm/runtime"
 )
@@ -17,10 +18,10 @@ import (
 func TestUpsert_OnAnExpressionUniqueIndex(t *testing.T) {
 	ctx := context.Background()
 	ex, _ := db(t)
-	org := anyOrgID(t, ctx, ex)
+	org := upsertOrg(t, ctx, ex, "expr")
 
 	n := user.Create()
-	n.SetEmail("Casing@Example.com")
+	n.SetEmail("Casing@upsert-expr.invalid")
 	n.SetName("First")
 	n.SetStatus("active")
 	n.SetOrgID(org)
@@ -31,7 +32,7 @@ func TestUpsert_OnAnExpressionUniqueIndex(t *testing.T) {
 
 	// A different spelling of the same address: lower(email) collides.
 	up := user.Create()
-	up.SetEmail("CASING@EXAMPLE.COM")
+	up.SetEmail("CASING@UPSERT-EXPR.INVALID")
 	up.SetName("Second")
 	up.SetOrgID(org)
 	up.OnConflictLowerEmail()
@@ -54,7 +55,7 @@ func TestUpsert_OnAnExpressionUniqueIndex(t *testing.T) {
 	}
 	// And the expression key ITSELF is overwritten, unlike a plain key
 	// column: lower(email) matching does not mean the emails are equal.
-	if got.Email != "CASING@EXAMPLE.COM" {
+	if got.Email != "CASING@UPSERT-EXPR.INVALID" {
 		t.Errorf("Email = %q — an expression key must be assignable, or the "+
 			"casing the caller sent is silently discarded", got.Email)
 	}
@@ -65,10 +66,10 @@ func TestUpsert_OnAnExpressionUniqueIndex(t *testing.T) {
 func TestUpsert_DoNothingIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	ex, _ := db(t)
-	org := anyOrgID(t, ctx, ex)
+	org := upsertOrg(t, ctx, ex, "idem")
 
 	n := user.Create()
-	n.SetEmail("idem@example.com")
+	n.SetEmail("idem@upsert-idem.invalid")
 	n.SetName("Original")
 	n.SetStatus("active")
 	n.SetOrgID(org)
@@ -94,7 +95,7 @@ func TestUpsert_DoNothingIsIdempotent(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := c.make()
-			m.SetEmail("idem@example.com")
+			m.SetEmail("idem@upsert-idem.invalid")
 			m.SetName("Ignored")
 			m.SetStatus("suspended")
 			m.SetOrgID(org)
@@ -124,10 +125,10 @@ func TestUpsert_DoNothingIsIdempotent(t *testing.T) {
 func TestUpsert_InBatch(t *testing.T) {
 	ctx := context.Background()
 	ex, counter := db(t)
-	org := anyOrgID(t, ctx, ex)
+	org := upsertOrg(t, ctx, ex, "batch")
 
 	n := user.Create()
-	n.SetEmail("batch@example.com")
+	n.SetEmail("one@upsert-batch.invalid")
 	n.SetName("Before")
 	n.SetStatus("active")
 	n.SetOrgID(org)
@@ -138,9 +139,9 @@ func TestUpsert_InBatch(t *testing.T) {
 
 	ops := make([]runtime.BatchOp, 0, 3)
 	for _, c := range []struct{ email, name string }{
-		{"batch@example.com", "After"}, // conflicts: updates
-		{"batch2@example.com", "New2"}, // does not: inserts
-		{"batch3@example.com", "New3"},
+		{"one@upsert-batch.invalid", "After"}, // conflicts: updates
+		{"two@upsert-batch.invalid", "New2"},  // does not: inserts
+		{"three@upsert-batch.invalid", "New3"},
 	} {
 		m := user.Create()
 		m.SetEmail(c.email)
@@ -172,7 +173,7 @@ func TestUpsert_InBatch(t *testing.T) {
 	if after.Status != "active" {
 		t.Errorf("Status = %q — the batched upsert reverted a column it was never given", after.Status)
 	}
-	for _, e := range []string{"batch2@example.com", "batch3@example.com"} {
+	for _, e := range []string{"two@upsert-batch.invalid", "three@upsert-batch.invalid"} {
 		if n, err := user.New().EmailEq(e).Count(ctx, ex); err != nil || n != 1 {
 			t.Errorf("%s: count = %d, err = %v; a non-conflicting row must insert", e, n, err)
 		}
@@ -207,14 +208,30 @@ func TestUpsert_BatchSharesOneStatement(t *testing.T) {
 	}
 }
 
-func anyOrgID(t *testing.T, ctx context.Context, ex runtime.Executor) [16]byte {
+// upsertOrg gives each test an org of its own.
+//
+// Borrowing a seeded one and adding users to it breaks every test that counts
+// them — TestPlan_TwoRoundTrips asserts 500 per org — and only under
+// -shuffle=on, when the order happens to put the writer first. The fixture is
+// shared in BOTH directions, which is the mistake m2mAuthor above already
+// documents and this test made again.
+func upsertOrg(t *testing.T, ctx context.Context, ex runtime.Executor, name string) [16]byte {
 	t.Helper()
-	rows, err := user.New().Limit(1).All(ctx, ex, nil)
+	no := org.Create()
+	no.SetName("upsert-" + name)
+	o, err := no.Insert(ctx, ex)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) == 0 {
-		t.Fatal("no seeded users to borrow an org from")
-	}
-	return rows[0].OrgID
+	t.Cleanup(func() {
+		rows, err := user.New().OrgIDEq(o.ID).All(ctx, ex, nil)
+		if err != nil {
+			return
+		}
+		for _, r := range rows {
+			_ = user.Delete(ctx, ex, r.ID)
+		}
+		_ = org.Delete(ctx, ex, o.ID)
+	})
+	return o.ID
 }
