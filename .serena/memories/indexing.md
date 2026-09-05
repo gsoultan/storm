@@ -70,6 +70,20 @@ PROCESS, not an error. `drainBatch` now normalises nil to "return the first
 error"; results are still drained in order or the connection desyncs. Found by
 writing `Ins.Op()`'s bulk-upsert test, which hung 600s before printing.
 
+## The shared-fixture trap, hit again (2026-09-05)
+
+`internal/planspike` seeds ONE fixture for the whole package and tests assert
+counts over it (`TestPlan_TwoRoundTrips`: 500 users per org). A test that
+borrows a seeded org and inserts users breaks it — only under `-shuffle=on`,
+and only in CI, because local ordering happened to put the reader first. My
+upsert tests did exactly this, and also collided on `batch%d@example.com`
+with `TestBatch_MixedStatementsIsOneRoundTrip`.
+
+`m2mAuthor` in m2m_test.go already documents the rule in a comment ("a shared
+fixture is shared in both directions") — read it before adding a writing test
+here. Rule: create your own org, namespace emails to the test, clean up in
+`t.Cleanup`. Run `-race -shuffle=on` at least three times before pushing.
+
 ## Not built, deliberately
 - `spatial` — needs a geometry/geography COLUMN type first (PostGIS), which
   the model has none of; the index method is the last step, not the first.
