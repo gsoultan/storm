@@ -213,7 +213,9 @@ func (t *Table) Index(cols ...any) *IndexBuilder {
 func (t *Table) indexCol(c any) schema.IndexColumn {
 	if ic, ok := c.(IndexColumn); ok {
 		return schema.IndexColumn{
-			Name: ic.name(t), Expr: ic.expr != "", Desc: ic.desc, NullsLast: ic.nullsLast,
+			Name: ic.name(t), Expr: ic.expr != "", Desc: ic.desc,
+			NullsLast: ic.nullsLast, NullsFirst: ic.nullsFirst,
+			OpClass: ic.opClass, Collate: ic.collate, Prefix: ic.prefix,
 		}
 	}
 	col, err := t.resolve(c)
@@ -391,10 +393,52 @@ type IndexBuilder struct {
 	ix *schema.Index
 }
 
+// Using selects the access method: storm.BTree (the default), storm.Hash,
+// storm.GIN, storm.GiST, storm.SPGiST, storm.BRIN — or, for a MySQL target,
+// storm.FullText. A method the target lacks fails generation naming both.
 func (b *IndexBuilder) Using(method string) *IndexBuilder { b.ix.Method = method; return b }
 func (b *IndexBuilder) Unique() *IndexBuilder             { b.ix.Unique = true; return b }
 func (b *IndexBuilder) Where(e Expr) *IndexBuilder        { b.ix.Where = string(e); return b }
 func (b *IndexBuilder) Named(n string) *IndexBuilder      { b.ix.Name = n; return b }
+
+// Include adds non-key columns to the index's leaf entries, so a read that
+// touches only the key and these is answered from the index alone — the
+// covering index, and an Index Only Scan with zero heap fetches. They take
+// part in no ordering and no uniqueness check.
+//
+//	t.Index(&o.Customer, storm.Desc(&o.PlacedAt)).Include(&o.Status, &o.Total)
+//
+// btree, gist and spgist carry them; gin, hash and brin cannot.
+func (b *IndexBuilder) Include(fields ...any) *IndexBuilder {
+	for _, f := range fields {
+		col, err := b.t.resolve(f)
+		if err != nil {
+			b.t.errs.add(err)
+			continue
+		}
+		b.ix.Include = append(b.ix.Include, col.sc.Name)
+	}
+	return b
+}
+
+// NullsNotDistinct makes a unique index treat NULLs as equal, so at most one
+// row may leave the key NULL (PostgreSQL 15+). SQL's default is that every
+// NULL is distinct from every other, which lets a "unique" nullable column
+// hold any number of them.
+func (b *IndexBuilder) NullsNotDistinct() *IndexBuilder { b.ix.NullsNotDistinct = true; return b }
+
+// With sets a storage parameter: fillfactor on a btree that takes updates in
+// place, fastupdate on a gin, pages_per_range on a brin. Which parameters a
+// method accepts is checked at build time.
+func (b *IndexBuilder) With(name, value string) *IndexBuilder {
+	b.ix.With = append(b.ix.With, schema.StorageParam{Name: name, Value: value})
+	return b
+}
+
+// Invisible hides the index from the planner while keeping it maintained
+// (MySQL 8.0+): the safe way to drop an index is to hide it first and watch
+// the plans. PostgreSQL has no equivalent and refuses the declaration.
+func (b *IndexBuilder) Invisible() *IndexBuilder { b.ix.Invisible = true; return b }
 
 // ExcludeBuilder configures an exclusion constraint.
 type ExcludeBuilder struct {
@@ -410,10 +454,24 @@ func (b *ExcludeBuilder) Named(n string) *ExcludeBuilder      { b.ex.Name = n; r
 
 // IndexColumn is a field reference with ordering or an expression applied.
 type IndexColumn struct {
-	field     any
-	expr      string // "%s" is replaced by the column name
-	desc      bool
-	nullsLast bool
+	field      any
+	expr       string // "%s" is replaced by the column name
+	desc       bool
+	nullsLast  bool
+	nullsFirst bool
+	opClass    string
+	collate    string
+	prefix     int
+}
+
+// asKey accepts either a bare field pointer or a key that already has
+// modifiers, so the modifiers compose in any order:
+// storm.OpClass(storm.Lower(&u.Email), "text_pattern_ops").
+func asKey(key any) IndexColumn {
+	if ic, ok := key.(IndexColumn); ok {
+		return ic
+	}
+	return IndexColumn{field: key}
 }
 
 func (ic IndexColumn) name(t *Table) string {
@@ -428,7 +486,31 @@ func (ic IndexColumn) name(t *Table) string {
 	if ic.expr == "" {
 		return c.sc.Name
 	}
-	return fmt.Sprintf(ic.expr, c.sc.Name)
+	return stripOuterParens(fmt.Sprintf(ic.expr, c.sc.Name))
+}
+
+// stripOuterParens removes one enclosing pair of parentheses from an
+// expression key. The emitter adds its own, and PostgreSQL prints the
+// expression back without any it did not need — so "(score + 1)" declared
+// here would read back as "score + 1", compare unequal, and be dropped and
+// recreated on every diff.
+func stripOuterParens(s string) string {
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return s
+	}
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 && i != len(s)-1 {
+				return s
+			}
+		}
+	}
+	return s[1 : len(s)-1]
 }
 
 // Desc orders an index key descending.
@@ -437,11 +519,52 @@ func Desc(field any) IndexColumn { return IndexColumn{field: field, desc: true} 
 // Asc is the default; provided for symmetry.
 func Asc(field any) IndexColumn { return IndexColumn{field: field} }
 
-// NullsLast puts NULLs at the end of an index key.
-func NullsLast(ic IndexColumn) IndexColumn { ic.nullsLast = true; return ic }
+// NullsLast puts NULLs at the end of a DESCENDING key, where they would
+// otherwise come first. On an ascending key it is already the default, and
+// the declaration is refused rather than recorded as a fact the database
+// will not remember.
+func NullsLast(key any) IndexColumn { ic := asKey(key); ic.nullsLast = true; return ic }
+
+// NullsFirst puts NULLs before every value on an ASCENDING key. A descending
+// key already does, and saying so is refused for the same reason as above.
+func NullsFirst(key any) IndexColumn { ic := asKey(key); ic.nullsFirst = true; return ic }
+
+// OpClass sets the key's operator class — what makes an index answer a
+// question its default class cannot:
+//
+//	storm.OpClass(&u.Email, "text_pattern_ops")   // LIKE 'abc%' under any collation
+//	storm.OpClass(&u.Prefs, "jsonb_path_ops")     // a smaller gin that answers only @>
+//	storm.OpClass(&u.Name, "gin_trgm_ops")        // ILIKE '%abc%' — installs pg_trgm
+//
+// Which classes a method accepts is checked at build time for the classes
+// storm knows; an unknown one is passed through for the server to judge.
+func OpClass(key any, class string) IndexColumn { ic := asKey(key); ic.opClass = class; return ic }
+
+// Collate overrides the column's collation for this key. "C" is the one that
+// matters: under it a plain btree serves a prefix LIKE without an opclass.
+func Collate(key any, collation string) IndexColumn {
+	ic := asKey(key)
+	ic.collate = collation
+	return ic
+}
+
+// Prefix indexes only the first n characters of a text or binary column —
+// the only way MySQL can index a TEXT or BLOB column at all, and refused for
+// PostgreSQL, which has no prefix index.
+func Prefix(field any, n int) IndexColumn { ic := asKey(field); ic.prefix = n; return ic }
 
 // Lower indexes lower(col) — the usual answer for case-insensitive uniqueness.
 func Lower(field any) IndexColumn { return IndexColumn{field: field, expr: "lower(%s)"} }
+
+// Upper indexes upper(col).
+func Upper(field any) IndexColumn { return IndexColumn{field: field, expr: "upper(%s)"} }
+
+// IndexExpr indexes an expression over the column, with %s standing for the
+// column name — date_trunc('day', %s) for a daily report's key, left(%s, 8)
+// for a prefix, (%s->>'country') for a jsonb attribute. The expression has to
+// be IMMUTABLE, which is PostgreSQL's rule and not storm's: the server refuses
+// the index otherwise, at apply time, naming the function.
+func IndexExpr(field any, expr string) IndexColumn { return IndexColumn{field: field, expr: expr} }
 
 // ---- exclusion operators ----
 

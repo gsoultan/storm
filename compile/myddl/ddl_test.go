@@ -171,3 +171,83 @@ func TestEnumBecomesNative(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
+
+func lobTable() *schema.Table {
+	return &schema.Table{Name: "docs", PrimaryKey: []string{"id"}, Columns: []*schema.Column{
+		col("id", schema.TypeUUID),
+		col("body", schema.TypeText),
+		{Name: "slug", Type: schema.Type{Name: schema.TypeVarchar, Size: 200}, NotNull: true},
+		col("score", schema.TypeInt4),
+	}}
+}
+
+// MySQL's own index forms: a prefix length, a FULLTEXT index, a HASH, a
+// functional key part, and an INVISIBLE index.
+func TestCreateIndex_MySQLForms(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		ix   *schema.Index
+		want string
+	}{
+		{"prefix", &schema.Index{Name: "i", Columns: []schema.IndexColumn{{Name: "body", Prefix: 191}}},
+			"CREATE INDEX `i` ON `docs` (`body`(191));"},
+		{"fulltext", &schema.Index{Name: "i", Method: "fulltext", Columns: []schema.IndexColumn{{Name: "body"}}},
+			"CREATE FULLTEXT INDEX `i` ON `docs` (`body`);"},
+		{"hash", &schema.Index{Name: "i", Method: "hash", Columns: []schema.IndexColumn{{Name: "slug"}}},
+			"CREATE INDEX `i` ON `docs` (`slug`) USING HASH;"},
+		{"functional key part", &schema.Index{Name: "i", Columns: []schema.IndexColumn{{Name: "lower(slug)", Expr: true}}},
+			"CREATE INDEX `i` ON `docs` ((lower(slug)));"},
+		{"invisible unique desc", &schema.Index{Name: "i", Unique: true, Invisible: true,
+			Columns: []schema.IndexColumn{{Name: "slug", Desc: true}}},
+			"CREATE UNIQUE INDEX `i` ON `docs` (`slug` DESC) INVISIBLE;"},
+	} {
+		if got := myddl.CreateIndex(lobTable(), c.ix); got != c.want {
+			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
+		}
+	}
+}
+
+// What PostgreSQL says that MySQL cannot do, and the one thing MySQL demands
+// that PostgreSQL does not: a key length on a TEXT column. Each is refused
+// rather than dropped, because an index without its WHERE is a different
+// index and a TEXT key without a length is a CREATE that fails.
+func TestCheck_RefusesWhatMySQLLacksAndDemandsAKeyLength(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		ix   *schema.Index
+		want string
+	}{
+		{"gin", &schema.Index{Name: "i", Method: "gin", Columns: []schema.IndexColumn{{Name: "slug"}}}, "gin"},
+		{"brin", &schema.Index{Name: "i", Method: "brin", Columns: []schema.IndexColumn{{Name: "score"}}}, "brin"},
+		{"partial", &schema.Index{Name: "i", Where: "score > 0", Columns: []schema.IndexColumn{{Name: "score"}}}, "partial"},
+		{"include", &schema.Index{Name: "i", Include: []string{"score"}, Columns: []schema.IndexColumn{{Name: "slug"}}}, "INCLUDE"},
+		{"nulls not distinct", &schema.Index{Name: "i", Unique: true, NullsNotDistinct: true, Columns: []schema.IndexColumn{{Name: "slug"}}}, "NULLS NOT DISTINCT"},
+		{"opclass", &schema.Index{Name: "i", Columns: []schema.IndexColumn{{Name: "slug", OpClass: "text_pattern_ops"}}}, "operator class"},
+		{"collation", &schema.Index{Name: "i", Columns: []schema.IndexColumn{{Name: "slug", Collate: "C"}}}, "collat"},
+		{"nulls placement", &schema.Index{Name: "i", Columns: []schema.IndexColumn{{Name: "score", Desc: true, NullsLast: true}}}, "NULLs"},
+		{"storage parameter", &schema.Index{Name: "i", With: []schema.StorageParam{{Name: "fillfactor", Value: "70"}}, Columns: []schema.IndexColumn{{Name: "slug"}}}, "fillfactor"},
+		{"text key without a length", &schema.Index{Name: "i", Columns: []schema.IndexColumn{{Name: "body"}}}, "key length"},
+	} {
+		s := &schema.Schema{Tables: []*schema.Table{lobTable()}}
+		s.Tables[0].Indexes = []*schema.Index{c.ix}
+		err := myddl.Check(s)
+		if err == nil {
+			t.Errorf("%s: accepted", c.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: error does not mention %q:\n%v", c.name, c.want, err)
+		}
+	}
+	// And the forms MySQL does have pass: a prefixed TEXT key, a FULLTEXT over
+	// TEXT, a VARCHAR key with no length.
+	s := &schema.Schema{Tables: []*schema.Table{lobTable()}}
+	s.Tables[0].Indexes = []*schema.Index{
+		{Name: "a", Columns: []schema.IndexColumn{{Name: "body", Prefix: 191}}},
+		{Name: "b", Method: "fulltext", Columns: []schema.IndexColumn{{Name: "body"}}},
+		{Name: "c", Columns: []schema.IndexColumn{{Name: "slug"}}, Invisible: true},
+	}
+	if err := myddl.Check(s); err != nil {
+		t.Fatalf("MySQL's own forms were refused: %v", err)
+	}
+}
