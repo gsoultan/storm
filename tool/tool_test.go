@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/internal/testmodel"
 )
 
@@ -312,4 +313,28 @@ func firstImports(src string) string {
 	}
 	j := strings.Index(src[i:], ")")
 	return src[i : i+j+1]
+}
+
+type prefixed struct {
+	storm.Model
+	Body string
+}
+
+func (m *prefixed) Schema(t *storm.Table) { t.Index(storm.Prefix(&m.Body, 191)) }
+
+// A prefix length is what MySQL needs to index a TEXT column and what
+// PostgreSQL has no way to say. Emitting the index without it would be a
+// different index; the PostgreSQL commands refuse the model instead, naming
+// the expression that means the same thing.
+func TestCLI_RefusesMySQLOnlyIndexFactsForPostgres(t *testing.T) {
+	withModels(t, []any{&prefixed{}})
+	err := run([]string{"ddl"})
+	if err == nil {
+		t.Fatal("ddl emitted a PostgreSQL index for a MySQL prefix declaration")
+	}
+	for _, want := range []string{"prefix", "left(%s, 191)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q:\n%v", want, err)
+		}
+	}
 }

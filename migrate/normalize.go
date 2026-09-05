@@ -85,6 +85,20 @@ func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schem
 // normalising the model through a scratch namespace first so expressions are
 // compared in the form PostgreSQL actually stores.
 func For(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema) (Plan, error) {
+	return ForWith(ctx, c, target, want, Options{})
+}
+
+// Options adjusts how a plan is rendered, not what it contains.
+type Options struct {
+	// Concurrently builds and drops indexes on tables that already exist
+	// with CREATE/DROP INDEX CONCURRENTLY, which does not block the table's
+	// writers. Each such change is marked NoTransaction, because that form
+	// cannot run inside a transaction block.
+	Concurrently bool
+}
+
+// ForWith is For with Options.
+func ForWith(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema, o Options) (Plan, error) {
 	norm, err := Normalize(ctx, c, "", want)
 	if err != nil {
 		return Plan{}, err
@@ -94,11 +108,17 @@ func For(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema) (
 		return Plan{}, fmt.Errorf("introspect %s: %w", target, err)
 	}
 	plan := Diff(cur, norm)
+	if o.Concurrently {
+		plan = plan.Concurrently(cur)
+	}
 	// A plan that creates an exclusion constraint needs btree_gist FIRST. On a
 	// long-lived dev database something installed the extension years ago; on
 	// a fresh production database the migration is the first thing that ever
 	// ran, and without this line it fails there and nowhere else. IF NOT
 	// EXISTS makes it free where the extension already lives.
+	if !plan.Empty() && pgddl.NeedsPgTrgm(want) {
+		plan.Changes = append([]Change{{SQL: pgddl.PgTrgmDDL}}, plan.Changes...)
+	}
 	if !plan.Empty() && pgddl.NeedsBtreeGist(want) {
 		plan.Changes = append([]Change{{SQL: pgddl.BtreeGistDDL}}, plan.Changes...)
 	}
