@@ -437,9 +437,68 @@ na := author.Create()
 na.SetName("Ada")
 na.SetEmail("ada@example.com")
 ada, err := na.Insert(ctx, ex)      // id and created_at come back filled
-
-na.OnConflictEmail()                // ON CONFLICT (email) — generated per unique index
 ```
+
+### Upsert — `ON CONFLICT`
+
+One `OnConflict…` method per **unique constraint and unique index**, including
+the expression and partial ones. `t.Unique(storm.Lower(&a.Email))` becomes a
+unique index, because a PostgreSQL `UNIQUE` constraint cannot hold an
+expression, so case-insensitive email is `OnConflictLowerEmail`.
+
+```go
+na.OnConflictLowerEmail()                 // ON CONFLICT ((lower(email))) DO UPDATE SET …
+na.OnConflictTenantSlug()                 // a partial index carries its WHERE
+na.DoNothing()                            // ON CONFLICT DO NOTHING — any unique index
+na.OnConflictLowerEmail().DoNothing()     // …only on that one
+```
+
+**The update assigns only the columns you set.** An upsert that assigned every
+column would revert each one you left out to its default, on the row that
+already exists — a silent data loss that reads as an upsert working. A key
+column is never assigned from `EXCLUDED`, because it is equal on both sides;
+an expression key's column is, because `lower(email)` matching does not make
+the emails equal.
+
+`DoNothing` returns `runtime.ErrConflict` when the row was already there:
+`DO NOTHING` suppresses `RETURNING`, so "no row" is the success case of an
+idempotent insert and has to be distinguishable from a real absence.
+
+```go
+row, err := na.DoNothing().Insert(ctx, ex)
+switch {
+case errors.Is(err, runtime.ErrConflict):   // already there; row is zero
+case err != nil:
+        return err
+}
+```
+
+**In bulk**, `n.Op()` is the builder as a queueable statement, conflict clause
+and all — the bulk upsert, one round trip for the batch:
+
+```go
+ops := make([]runtime.BatchOp, 0, len(rows))
+for _, r := range rows {
+        n := author.Create()
+        n.SetEmail(r.Email)
+        n.SetName(r.Name)
+        n.OnConflictLowerEmail()
+        op, err := n.Op()
+        if err != nil {
+                return err
+        }
+        ops = append(ops, op)
+}
+err := ex.Batch(ctx, ops, nil)   // nil: report the first error, that is all
+```
+
+`InsertOp(row)` is the other form: it writes every column of a `Row` and cannot
+conflict, so a thousand of them share one statement. `Op()` carries the mask,
+so assign the same columns on every row of a batch and it stays one statement
+too.
+
+A `COPY` bulk load (`InsertAll`) cannot upsert: PostgreSQL's `COPY` has no
+`ON CONFLICT`. Load into a staging table and upsert from it, or use a batch.
 
 Update is the same idea: only what you assigned is written.
 

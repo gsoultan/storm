@@ -308,9 +308,10 @@ func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		if t == nil {
 			continue
 		}
-		cols, where := parseIndexDef(def)
+		d := parseIndexDef(def)
 		t.Indexes = append(t.Indexes, &schema.Index{
-			Name: name, Columns: cols, Unique: unique, Method: method, Where: where,
+			Name: name, Columns: d.Columns, Unique: unique, Method: method, Where: d.Where,
+			Include: d.Include, NullsNotDistinct: d.NullsNotDistinct, With: d.With,
 		})
 	}
 	return rows.Err()

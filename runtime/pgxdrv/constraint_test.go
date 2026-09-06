@@ -3,6 +3,7 @@ package pgxdrv_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -247,5 +248,64 @@ func TestNilRangePointerIsNull(t *testing.T) {
 	}
 	if !runtime.Bool(rows.RawValues()[0]) {
 		t.Error("a nil *TstzRange did not bind as NULL")
+	}
+}
+
+// A caller who only wants to know whether a bulk insert worked passes no
+// callback. That used to be a nil function call: the first result took the
+// connection with it and the symptom was a hung test binary rather than an
+// error naming the batch — which is the worst way to learn that an
+// implementation of a port assumed something the port did not promise.
+func TestBatch_NilCallbackDrainsAndReportsTheFirstError(t *testing.T) {
+	dsn := os.Getenv("STORM_DSN")
+	if dsn == "" {
+		t.Skip("STORM_DSN unset")
+	}
+	ctx := context.Background()
+	pool, err := pgxdrv.NewPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ex := pgxdrv.Pool{P: pool}
+
+	ns := fmt.Sprintf("storm_nilbatch_%d", os.Getpid())
+	mustExec(t, pool, `DROP SCHEMA IF EXISTS `+ns+` CASCADE; CREATE SCHEMA `+ns)
+	defer pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+ns+` CASCADE`)
+	mustExec(t, pool, `SET search_path TO `+ns+`;
+		CREATE TABLE nb (id int PRIMARY KEY, n int NOT NULL);`)
+
+	ins := func(id, n int) runtime.BatchOp {
+		return runtime.BatchOp{
+			SQL:  `INSERT INTO ` + ns + `.nb (id, n) VALUES ($1, $2)`,
+			Args: []any{id, n},
+		}
+	}
+
+	// The happy path: three statements, no callback, no error.
+	ops := []runtime.BatchOp{
+		ins(1, 10),
+		ins(2, 20),
+		{SQL: `UPDATE ` + ns + `.nb SET n = n + 1 WHERE id = $1`, Args: []any{1}},
+	}
+	if err := ex.Batch(ctx, ops, nil); err != nil {
+		t.Fatalf("a batch with no callback: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT n FROM `+ns+`.nb WHERE id = 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 11 {
+		t.Errorf("n = %d, want 11 — the batch did not apply", n)
+	}
+
+	// And an error still surfaces rather than being swallowed with the
+	// callback that used to report it.
+	err = ex.Batch(ctx, []runtime.BatchOp{ins(3, 30), ins(1, 99)}, nil)
+	if err == nil {
+		t.Fatal("a duplicate key in a batch with no callback was swallowed")
+	}
+	if !errors.Is(err, runtime.ErrUniqueViolation) {
+		t.Errorf("err = %v, want a classified unique violation", err)
 	}
 }
