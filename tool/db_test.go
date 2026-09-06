@@ -639,3 +639,77 @@ type brandNew struct {
 }
 
 func (m *brandNew) Schema(t *storm.Table) { t.Index(&m.Tag) }
+
+// -dsn is documented as an alternative to $STORM_DSN, and every command took
+// it except this one: verify -stale re-read the environment, so a caller who
+// passed the flag got a refusal naming -dsn as the fix. Found by upgrading a
+// real adopter, which passes the flag because its own tooling does.
+func TestCLI_VerifyStaleTakesTheDSNFlag(t *testing.T) {
+	withModels(t, testmodel.All())
+	prevQ := RawQueries
+	RawQueries = testmodel.Queries()
+	t.Cleanup(func() { RawQueries = prevQ })
+
+	liveDSN := dsn(t)
+	dir := filepath.Join(moduleScratch(t, "clistaledsn"), "store")
+	if err := run([]string{"generate", dir, "-dsn", liveDSN}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The environment deliberately does NOT carry it, so the flag is the only
+	// way the command can reach a server.
+	prev := os.Getenv("STORM_DSN")
+	os.Unsetenv("STORM_DSN")
+	t.Cleanup(func() { os.Setenv("STORM_DSN", prev) })
+
+	if err := run([]string{"verify", "-stale", dir, "-dsn", liveDSN}); err != nil {
+		t.Fatalf("verify -stale ignored -dsn: %v", err)
+	}
+	// And with neither, the refusal is still the right one.
+	if err := run([]string{"verify", "-stale", dir}); err == nil {
+		t.Fatal("verify -stale validated raw queries with no server at all")
+	} else if !strings.Contains(err.Error(), "-dsn") {
+		t.Errorf("the refusal does not name the flag: %v", err)
+	}
+}
+
+// A migrations directory holding files under another naming convention
+// replayed nothing, and the diff that followed reported the WHOLE model as
+// pending — which reads as "you forgot a migration" and invites a storm diff
+// that recreates tables the database already has. Found by pointing
+// verify -pending at a real adopter whose files are 0001_foundation.sql.
+//
+// An EMPTY directory is the other case and keeps the old message: everything
+// really is pending there, and storm diff really is the fix.
+func TestCLI_VerifyPendingSaysWhenItSkippedEveryFile(t *testing.T) {
+	withModels(t, testmodel.All())
+	live := dsn(t)
+
+	nearly := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nearly, "0001_foundation.sql"), []byte("SELECT 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := run([]string{"verify", "-pending", "-dsn", live, "-out", nearly})
+	if err == nil {
+		t.Fatal("a directory of .sql files was reported as carrying every change")
+	}
+	for _, want := range []string{"no migrations replayed", "*.up.sql", "0001_foundation.sql"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q: %v", want, err)
+		}
+	}
+	// It must NOT read as a missing migration, which is the reading that
+	// leads to recreating tables that already exist.
+	if strings.Contains(err.Error(), "storm diff") {
+		t.Errorf("skipped files are reported as a missing migration: %v", err)
+	}
+
+	// The empty directory is untouched: everything IS pending there.
+	err = run([]string{"verify", "-pending", "-dsn", live, "-out", t.TempDir()})
+	if err == nil {
+		t.Fatal("an empty migrations directory cannot carry the model")
+	}
+	if !strings.Contains(err.Error(), "storm diff") {
+		t.Errorf("an empty directory lost the fix it should name: %v", err)
+	}
+}

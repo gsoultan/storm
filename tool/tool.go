@@ -260,7 +260,7 @@ func run(args []string) error {
 			if err != nil {
 				return err
 			}
-			return verifyStale(dir, model, against)
+			return verifyStale(*dsn, dir, model, against)
 		}
 		return verify(*dsn, *ns, model)
 
@@ -687,12 +687,15 @@ func diff(dsn, ns, out, name string, model *schema.Schema, allowDestructive, con
 //
 // It compares bytes rather than regenerating in place, so a CI run cannot
 // "fix" the problem by rewriting the tree it was asked to check.
-func verifyStale(dir string, model *schema.Schema, against RawSchema) error {
+func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema) error {
 	dir, rel, hostMod, err := resolveOutDir(dir)
 	if err != nil {
 		return err
 	}
-	scanners, statements, err := prepareRawQueries(os.Getenv("STORM_DSN"), model, against)
+	// The dsn the caller gave, not the environment. -dsn already defaults to
+	// $STORM_DSN, so reading the variable here instead ignored the flag: the
+	// refusal named -dsn as the fix for someone who had just passed it.
+	scanners, statements, err := prepareRawQueries(dsn, model, against)
 	if err != nil {
 		return err
 	}
@@ -768,6 +771,24 @@ func verifyPending(dsn, out string, model *schema.Schema) error {
 	files, err := filepath.Glob(filepath.Join(out, "*.up.sql"))
 	if err != nil {
 		return err
+	}
+	// A directory holding .sql files that are not *.up.sql replays NOTHING,
+	// and the diff that follows then reports the whole model as pending —
+	// which reads as "you forgot a migration" and invites a `storm diff` that
+	// recreates tables the database already has.
+	//
+	// Only when files were SKIPPED, though. An empty directory really does
+	// mean everything is pending and `storm diff` really is the fix, which is
+	// the first thing a new project sees.
+	if len(files) == 0 {
+		if other, _ := filepath.Glob(filepath.Join(out, "*.sql")); len(other) > 0 {
+			return fmt.Errorf(
+				"no migrations replayed: storm reads %s, and %d file(s) in that directory "+
+					"do not match — e.g. %s\n"+
+					"       replaying nothing would report your whole model as pending; "+
+					"point -out elsewhere, or rename them to *.up.sql",
+				filepath.Join(out, "*.up.sql"), len(other), filepath.Base(other[0]))
+		}
 	}
 	sort.Strings(files) // the numbered prefix is the replay order
 	// The search path is set once, on the session, and NOT prepended to each
