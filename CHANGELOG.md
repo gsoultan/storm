@@ -12,7 +12,12 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.6.1 — 2026-09-06
+
+**Nothing to regenerate.** The only Go change since v0.6.0 is under `tool/` —
+`codegen`, `compile`, `schema` and `runtime` are untouched — so `storm
+generate` emits the same bytes and only the two verify commands behave
+differently.
 
 ### Fixed: two tooling defects an adopter upgrade found
 
