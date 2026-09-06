@@ -43,9 +43,12 @@ conditions, and **every index PostgreSQL has** — operator classes, collations,
 `INCLUDE`, partial, expression, `NULLS NOT DISTINCT`, storage parameters, all
 six access methods, `CONCURRENTLY` in migrations — plus MySQL's prefix,
 `FULLTEXT` and invisible forms, each refused on the target that lacks it.
-It carries one more silent wrong answer: through v0.4.1 a table
+Upsert follows: **every unique index is a conflict target**, including the
+expression and partial ones, with `DoNothing()` and a bulk form.
+It carries two more silent failures: through v0.4.1 a table
 past 512 filterable columns built its predicates from a wrapped child's
-fragment table in a composed statement. The milestone log with
+fragment table in a composed statement, and a `Batch` given no callback hung
+the connection instead of reporting an error. The milestone log with
 every exit gate is [docs/PLAN.md](docs/PLAN.md), what would still stop a
 team adopting this is written down, with gates, in
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md), and where the
