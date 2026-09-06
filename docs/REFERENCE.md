@@ -401,9 +401,10 @@ it were:
   is generated per column type and is listed in [[API]] §3.
 - **Set-based `UPDATE`/`DELETE … WHERE`.** Writes are per row, or batched per
   row. A bulk state transition or a purge is `storm.SQLExec`.
-- **Row locking.** No `FOR UPDATE`, no `SKIP LOCKED`. A version column makes a
-  stale writer lose loudly, which is the lost update; a queue worker that wants
-  to claim a row uses `storm.SQL[T]`.
+- **`FOR NO KEY UPDATE` and `FOR KEY SHARE`.** The other four lock forms are
+  built — see [[API]] §8. These two exist for the deadlock between updating a
+  parent row and inserting a child that references it, and a caller who has it
+  knows the exact SQL they want.
 - **Package-level `user.Get(ctx, db, id)` one-liners.** It is
   `user.New().IDEq(id).One(ctx, ex)`, plus a generated shorthand per column.
 - **MySQL at run time.** There is a MySQL DDL back end, but it is not a runtime

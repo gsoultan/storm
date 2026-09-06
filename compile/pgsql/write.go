@@ -186,3 +186,147 @@ const ConflictAssignSep = ", "
 func InsertParts() (open, sep, mid, close string) {
 	return " (", ", ", ") VALUES (", ")"
 }
+
+// Row locking.
+
+// LockMode is a row-level lock: a strength, and what to do when the row is
+// already locked. The zero value locks nothing.
+//
+// Two strengths rather than PostgreSQL's four. FOR NO KEY UPDATE and FOR KEY
+// SHARE exist for the deadlock between a parent update and a child insert,
+// which is real and rare, and every caller who has it knows the exact SQL
+// they want — so they get storm.SQL rather than four more methods on every
+// generated table.
+type LockMode uint8
+
+// The lock modes, in the order the generated cache array is indexed.
+const (
+	LockNone LockMode = iota
+	LockUpdate
+	LockUpdateNoWait
+	LockUpdateSkipLocked
+	LockShare
+	LockShareNoWait
+	LockShareSkipLocked
+	numLockModes
+)
+
+// NumLockModes is how many lock states a generated Query can be in, including
+// none — the width of its statement-cache array.
+const NumLockModes = int(numLockModes)
+
+// LockName is the Go method that selects this mode. The name is the API's,
+// but it is derived from the clause, so the two live together and a mode
+// added here cannot be forgotten there.
+func LockName(m LockMode) string {
+	switch m {
+	case LockUpdate:
+		return "ForUpdate"
+	case LockUpdateNoWait:
+		return "ForUpdateNoWait"
+	case LockUpdateSkipLocked:
+		return "ForUpdateSkipLocked"
+	case LockShare:
+		return "ForShare"
+	case LockShareNoWait:
+		return "ForShareNoWait"
+	case LockShareSkipLocked:
+		return "ForShareSkipLocked"
+	}
+	return ""
+}
+
+// LockDoc is what the mode does, for the generated method's doc comment.
+// It lives here because it describes THIS back end's locking, and the
+// generator is not allowed to know any.
+func LockDoc(m LockMode) string {
+	switch m {
+	case LockUpdate:
+		return "takes the strongest row lock, waiting for anyone who already holds it."
+	case LockUpdateNoWait:
+		return "fails immediately rather than wait for a lock someone else holds."
+	case LockUpdateSkipLocked:
+		return "steps over the rows another transaction has locked. This is the " +
+			"queue claim, and the one form that returns FEWER rows than Limit " +
+			"asks for: that is the point of it, not a fault."
+	case LockShare:
+		return "blocks writers while letting other readers share the lock."
+	case LockShareNoWait:
+		return "is the shared lock, failing rather than waiting."
+	case LockShareSkipLocked:
+		return "is the shared lock, stepping over rows another transaction holds."
+	}
+	return ""
+}
+
+// LockNotes is what a caller has to know before locking anything on this back
+// end, for the generated doc comment.
+func LockNotes() []string {
+	return []string{
+		"A lock is held to the end of the TRANSACTION, so one taken outside a",
+		"transaction is released before the next statement runs and protects",
+		"nothing — pass a pgxdrv.Tx, not a pool.",
+		"",
+		"Locking is refused on Count and Exists, and on the declared",
+		"aggregations and joins. The server rejects a row lock combined with an",
+		"aggregate, a grouping, a DISTINCT or a set operation, and on the",
+		"nullable side of an outer join; refusing at the call site names the",
+		"rule, where the server would name a SQLSTATE.",
+		"",
+		"The two weakest strengths are deliberately absent. They exist for the",
+		"deadlock between updating a parent row and inserting a child that",
+		"references it, which is real and rare, and a caller who has it knows",
+		"the exact SQL they want — storm.SQL gives it to them typed.",
+	}
+}
+
+// LockRefusedGrouped and LockRefusedJoined are why this back end will not
+// take a row lock on a declared aggregation or join. They live here for the
+// same reason LockDoc does: which shapes refuse a lock is the back end's
+// rule, and the generator is not allowed to know one.
+func LockRefusedGrouped() string {
+	return "storm: a grouped read cannot be row-locked — the server refuses a row " +
+		"lock with a GROUP BY, and locking the rows a group summarises is not " +
+		"what the caller asked for; lock the base read instead"
+}
+
+// LockRefusedJoined is the same for a declared join.
+func LockRefusedJoined() string {
+	return "storm: a declared join cannot be row-locked — the server refuses a row " +
+		"lock on the nullable side of an outer join, and which side a lock would " +
+		"take is not something the call site says; lock the base read instead"
+}
+
+// LockRefusedCounted and LockRefusedProbed are the same for the two scalar
+// terminals.
+func LockRefusedCounted() string {
+	return "storm: a locked read cannot be counted — the server refuses a row lock " +
+		"with an aggregate; count first, then lock the rows you take"
+}
+
+// LockRefusedProbed is the existence probe's.
+func LockRefusedProbed() string {
+	return "storm: a locked read cannot be an existence probe — locking a row to " +
+		"answer a boolean is a row nobody reads; use One() with the same lock"
+}
+
+// LockSuffix is the clause, which goes at the very END of the statement:
+// after LIMIT and OFFSET, which is both what the grammar requires and what
+// makes it a suffix the splicer can append without knowing anything about it.
+func LockSuffix(m LockMode) string {
+	switch m {
+	case LockUpdate:
+		return " FOR UPDATE"
+	case LockUpdateNoWait:
+		return " FOR UPDATE NOWAIT"
+	case LockUpdateSkipLocked:
+		return " FOR UPDATE SKIP LOCKED"
+	case LockShare:
+		return " FOR SHARE"
+	case LockShareNoWait:
+		return " FOR SHARE NOWAIT"
+	case LockShareSkipLocked:
+		return " FOR SHARE SKIP LOCKED"
+	}
+	return ""
+}

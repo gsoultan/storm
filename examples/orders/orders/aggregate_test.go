@@ -672,3 +672,30 @@ func TestTopCustomersOrdersByTheMeasureAndPagesTotally(t *testing.T) {
 		t.Fatalf("the page walk saw %d distinct customers of %d groups", len(seen), len(all))
 	}
 }
+
+// A grouped read and a declared join cannot be row-locked: the server refuses
+// a row lock with a GROUP BY, and refuses one on the nullable side of an outer
+// join. Refusing at the call site names the rule; the server names a SQLSTATE
+// on a query that had already been written and shipped.
+func TestLockIsRefusedOnDeclaredReads(t *testing.T) {
+	ctx := context.Background()
+
+	if _, err := order.New().ForUpdate().AllByStatus(ctx, ex); err == nil {
+		t.Error("a locked aggregation was accepted; the server refuses it")
+	} else if !strings.Contains(err.Error(), "GROUP BY") {
+		t.Errorf("the refusal does not name the rule: %v", err)
+	}
+	if _, err := order.New().ForUpdate().AllVsLifetime(ctx, ex); err == nil {
+		t.Error("a locked join was accepted")
+	} else if !strings.Contains(err.Error(), "outer join") {
+		t.Errorf("the refusal does not name the rule: %v", err)
+	}
+
+	// Unlocked, both still work — the guard is not refusing everything.
+	if _, err := order.New().AllByStatus(ctx, ex); err != nil {
+		t.Fatalf("an unlocked aggregation was refused: %v", err)
+	}
+	if _, err := order.New().AllVsLifetime(ctx, ex); err != nil {
+		t.Fatalf("an unlocked join was refused: %v", err)
+	}
+}
