@@ -31,6 +31,15 @@ var (
 	// concurrency control looks like when it works.
 	ErrSerializationFailure = errors.New("storm: serialization failure — retry the transaction")
 	ErrDeadlock             = errors.New("storm: deadlock detected — retry the transaction")
+
+	// ErrLockNotAvailable (55P03) is a NOWAIT read finding the row already
+	// locked. It is the ANSWER that form of the query asks for, not a
+	// failure: the caller said they would rather be told at once than wait.
+	//
+	// Deliberately NOT retryable. A serialization failure means "run the same
+	// transaction again and it may work"; this means "someone else has the
+	// row", and an automatic retry loop on it is a spin.
+	ErrLockNotAvailable = errors.New("storm: the row is locked by another transaction")
 )
 
 // ConstraintError names which constraint refused a statement.

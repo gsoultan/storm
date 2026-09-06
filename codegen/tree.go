@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/gsoultan/storm/compile/pgsql"
 )
 
 // Tree-shaped query emission.
@@ -362,6 +364,11 @@ func (g *gen) treeQuery() {
 	g.p("\totoks [%d]runtime.Tok", g.budget(maxOrder))
 	g.p("\tno    uint8")
 	g.p("")
+	g.p("\t// lock is the row-lock mode: 0 none, then pgsql.LockMode order.")
+	g.p("\t// It is part of the STATEMENT, so it selects the cache as well as")
+	g.p("\t// the suffix.")
+	g.p("\tlock uint8")
+	g.p("")
 	g.p("\tlimit  int64")
 	g.p("\toffset int64")
 	g.p("\t// over records that the query outgrew its fixed buffers. Terminals")
@@ -494,6 +501,8 @@ func (g *gen) treeQuery() {
 	g.p("// cursor without an order is a position in nothing.")
 	g.p("func (q Query) Unordered() Query { q.noOrder = true; return q }")
 	g.p("")
+	g.lockMethods()
+	g.p("")
 	g.p("// Sort is one ORDER BY term, produced by a column handle: Email.Asc().")
 	g.p("type Sort runtime.Tok")
 	g.p("")
@@ -537,6 +546,12 @@ func (g *gen) treeQuery() {
 	g.p("\t%q)", "storm: After() needs every ORDER BY term in the same direction; "+
 		"a mixed ordering has no single row comparison, and expanding it into ORs "+
 		"gives up the index walk that makes keyset pagination worth doing")
+	g.p("")
+	g.p("var errCountLocked = errors.New(")
+	g.p("\t%q)", pgsql.LockRefusedCounted())
+	g.p("")
+	g.p("var errExistsLocked = errors.New(")
+	g.p("\t%q)", pgsql.LockRefusedProbed())
 	g.p("")
 	g.p("var errTooComplex = errors.New(")
 	g.p("\t%q)", "storm: query has more predicates than the generated buffers hold "+
@@ -955,5 +970,34 @@ func (g *gen) treeBind() {
 	g.p("\tb.vals = v")
 	g.p("\treturn v")
 	g.p("}")
+	g.p("")
+}
+
+// lockMethods emits the row-lock builders.
+//
+// Six methods rather than one taking a mode: the same reason a column has
+// Asc/Desc/AscNullsFirst/DescNullsLast rather than Order(dir, nulls). There is
+// no invalid state to construct, and the call site says what it does.
+//
+// Every word of SQL in what it emits — the clause, the method name derived
+// from it, and the prose explaining it — comes from the back end. The
+// generator knows there are modes and nothing about what they mean.
+func (g *gen) lockMethods() {
+	g.p("// Row locking.")
+	g.p("//")
+	for _, line := range pgsql.LockNotes() {
+		if line == "" {
+			g.p("//")
+			continue
+		}
+		g.p("// %s", line)
+	}
+	for m := 1; m < pgsql.NumLockModes; m++ {
+		mode := pgsql.LockMode(m)
+		g.p("")
+		g.p("// %s locks the rows this query returns, and %s",
+			pgsql.LockName(mode), pgsql.LockDoc(mode))
+		g.p("func (q Query) %s() Query { q.lock = %d; return q }", pgsql.LockName(mode), m)
+	}
 	g.p("")
 }

@@ -118,6 +118,9 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tif q.no > 0 {")
 	g.p("\t\treturn dst, err%sOrdered", name)
 	g.p("\t}")
+	g.p("\tif q.lock != 0 {")
+	g.p("\t\treturn dst, err%sLocked", name)
+	g.p("\t}")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	// preds, NOT stream: stream appends the query's DEFAULT ordering, and a
 	// grouped read may only order by its grouping columns. Splicing the
@@ -151,6 +154,9 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tst.ObserveSlab(sl.Size())")
 	g.p("\treturn dst, rows.Err()")
 	g.p("}")
+	g.p("")
+	g.p("var err%sLocked = errors.New(", name)
+	g.p("\t%q)", pgsql.LockRefusedGrouped())
 	g.p("")
 	g.p("var err%sOrdered = errors.New(", name)
 	g.p("\t%q)", "storm: Order() on an aggregation — its rows are groups, not table rows, "+

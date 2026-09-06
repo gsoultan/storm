@@ -439,6 +439,48 @@ na.SetEmail("ada@example.com")
 ada, err := na.Insert(ctx, ex)      // id and created_at come back filled
 ```
 
+### Row locking
+
+```go
+jobs, err := job.New().
+        Where(job.Status.Eq("queued")).
+        Order(job.CreatedAt.Asc()).
+        Limit(10).
+        ForUpdateSkipLocked().
+        All(ctx, tx, nil)          // tx, not a pool — see below
+```
+
+| | |
+|---|---|
+| `.ForUpdate()` | take the lock, waiting for whoever holds it |
+| `.ForUpdateNoWait()` | fail at once instead: `runtime.ErrLockNotAvailable` |
+| `.ForUpdateSkipLocked()` | step over locked rows — the queue claim |
+| `.ForShare()` / `.ForShareNoWait()` / `.ForShareSkipLocked()` | the shared lock |
+
+**Pass a transaction.** A row lock is held to the end of the *transaction*, so
+one taken on a pool is released before the next statement runs and protects
+nothing. `pgxdrv.Tx{T: tx}` is an `Executor` and every generated surface takes
+it unchanged.
+
+**`SkipLocked` returns fewer rows than `Limit` asked for.** That is the point
+of it: two workers claiming ten rows each from one table get twenty different
+rows and neither waits.
+
+**`ErrLockNotAvailable` is not retryable.** `runtime.Retryable` is true for a
+serialization failure and a deadlock, which mean "run the transaction again";
+a held lock means "someone else has the row", and a retry loop on it is a spin.
+
+Locking is refused on `Count` and `Exists`, and on declared aggregations and
+joins — the server rejects a row lock with an aggregate, a `GROUP BY`, a
+`DISTINCT` or a set operation, and on the nullable side of an outer join. The
+refusal names the rule at the call site rather than arriving as a SQLSTATE from
+a query already in production.
+
+`FOR NO KEY UPDATE` and `FOR KEY SHARE` are deliberately absent. They exist for
+the deadlock between updating a parent row and inserting a child that
+references it, which is real and rare; a caller who has it knows the exact SQL
+they want, and `storm.SQL` gives it to them typed.
+
 ### Upsert — `ON CONFLICT`
 
 One `OnConflict…` method per **unique constraint and unique index**, including

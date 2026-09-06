@@ -41,6 +41,8 @@ func classify(err error) error {
 		kind = runtime.ErrSerializationFailure
 	case "40P01":
 		kind = runtime.ErrDeadlock
+	case "55P03":
+		kind = runtime.ErrLockNotAvailable
 	default:
 		return err
 	}
