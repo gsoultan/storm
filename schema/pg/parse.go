@@ -83,53 +83,121 @@ func parseExclude(name, def string) *schema.Exclude {
 	return ex
 }
 
-// parseIndexDef reads a CREATE INDEX statement back into key columns and an
-// optional partial predicate.
-func parseIndexDef(def string) ([]schema.IndexColumn, string) {
-	open := strings.Index(def, " USING ")
-	if open < 0 {
-		return nil, ""
-	}
-	open = strings.Index(def[open:], "(")
-	if open < 0 {
-		return nil, ""
-	}
-	open += strings.Index(def, " USING ")
-	body, after := balanced(def, open)
+// indexDef is what pg_get_indexdef says about an index beyond its name,
+// uniqueness and access method: the keys, and the optional clauses that follow
+// them in the order PostgreSQL prints them —
+//
+//	(keys) INCLUDE (...) NULLS NOT DISTINCT WITH (...) WHERE (...)
+type indexDef struct {
+	Columns          []schema.IndexColumn
+	Include          []string
+	NullsNotDistinct bool
+	With             []schema.StorageParam
+	Where            string
+}
 
-	var cols []schema.IndexColumn
+// parseIndexDef reads a CREATE INDEX statement back into the IR.
+func parseIndexDef(def string) indexDef {
+	var d indexDef
+	u := strings.Index(def, " USING ")
+	if u < 0 {
+		return d
+	}
+	open := strings.Index(def[u:], "(")
+	if open < 0 {
+		return d
+	}
+	body, after := balanced(def, u+open)
 	for _, part := range splitList(body) {
-		c := schema.IndexColumn{}
-		p := strings.TrimSpace(part)
-		if strings.HasSuffix(p, " NULLS LAST") {
-			c.NullsLast = true
-			p = strings.TrimSpace(strings.TrimSuffix(p, " NULLS LAST"))
-		} else if strings.HasSuffix(p, " NULLS FIRST") {
-			p = strings.TrimSpace(strings.TrimSuffix(p, " NULLS FIRST"))
-		}
-		if strings.HasSuffix(p, " DESC") {
-			c.Desc = true
-			p = strings.TrimSpace(strings.TrimSuffix(p, " DESC"))
-		} else if strings.HasSuffix(p, " ASC") {
-			p = strings.TrimSpace(strings.TrimSuffix(p, " ASC"))
-		}
-		// Trailing operator classes (text_pattern_ops, etc).
-		if sp := strings.LastIndexByte(p, ' '); sp > 0 && strings.HasSuffix(p, "_ops") {
-			p = strings.TrimSpace(p[:sp])
-		}
-		if strings.ContainsAny(p, "()") {
-			c.Name, c.Expr = unwrap(p), true
-		} else {
-			c.Name = unquote(p)
-		}
-		cols = append(cols, c)
+		d.Columns = append(d.Columns, parseIndexKey(part))
 	}
 
-	where := ""
-	if k := strings.Index(after, "WHERE "); k >= 0 {
-		where = unwrap(strings.TrimSpace(after[k+len("WHERE "):]))
+	after = strings.TrimSpace(after)
+	if strings.HasPrefix(after, "INCLUDE ") {
+		inner, rest := balanced(after, strings.Index(after, "("))
+		d.Include = splitList(inner)
+		after = strings.TrimSpace(rest)
 	}
-	return cols, where
+	if strings.HasPrefix(after, "NULLS NOT DISTINCT") {
+		d.NullsNotDistinct = true
+		after = strings.TrimSpace(strings.TrimPrefix(after, "NULLS NOT DISTINCT"))
+	}
+	if strings.HasPrefix(after, "WITH ") {
+		inner, rest := balanced(after, strings.Index(after, "("))
+		for _, kv := range splitList(inner) {
+			name, value, _ := strings.Cut(kv, "=")
+			d.With = append(d.With, schema.StorageParam{
+				Name:  strings.TrimSpace(name),
+				Value: unquoteLit(strings.TrimSpace(value)),
+			})
+		}
+		after = strings.TrimSpace(rest)
+	}
+	if k := strings.Index(after, "WHERE "); k >= 0 {
+		d.Where = unwrap(strings.TrimSpace(after[k+len("WHERE "):]))
+	}
+	return d
+}
+
+// parseIndexKey reads one key. The trailing clauses come off in reverse print
+// order — NULLS placement, direction, operator class, collation — and what is
+// left is the column or expression.
+//
+// Only the non-default placement is printed: an ascending key's NULLS LAST and
+// a descending key's NULLS FIRST are the defaults, and PostgreSQL does not
+// print what it would have done anyway. So a DESC key reads back with neither
+// flag, and that is the shape the model is held to.
+func parseIndexKey(part string) schema.IndexColumn {
+	c := schema.IndexColumn{}
+	p := strings.TrimSpace(part)
+	switch {
+	case strings.HasSuffix(p, " NULLS LAST"):
+		c.NullsLast = true
+		p = strings.TrimSpace(strings.TrimSuffix(p, " NULLS LAST"))
+	case strings.HasSuffix(p, " NULLS FIRST"):
+		c.NullsFirst = true
+		p = strings.TrimSpace(strings.TrimSuffix(p, " NULLS FIRST"))
+	}
+	switch {
+	case strings.HasSuffix(p, " DESC"):
+		c.Desc = true
+		p = strings.TrimSpace(strings.TrimSuffix(p, " DESC"))
+	case strings.HasSuffix(p, " ASC"):
+		p = strings.TrimSpace(strings.TrimSuffix(p, " ASC"))
+	}
+	// The operator class is the last token when there is one. Every built-in
+	// and contrib class ends in _ops. One from a schema outside the search
+	// path is printed qualified — public.gin_trgm_ops — and whether it is
+	// depends on the search path of the connection that asked, not on the
+	// index, so the qualifier is dropped: the class is compared by its bare
+	// name, and where it lives is the emitter's business.
+	if sp := strings.LastIndexByte(p, ' '); sp > 0 &&
+		strings.HasSuffix(p, "_ops") && !strings.ContainsAny(p[sp:], "()") {
+		c.OpClass = p[sp+1:]
+		if dot := strings.LastIndexByte(c.OpClass, '.'); dot >= 0 {
+			c.OpClass = c.OpClass[dot+1:]
+		}
+		p = strings.TrimSpace(p[:sp])
+	}
+	if i := strings.LastIndex(p, " COLLATE "); i >= 0 {
+		c.Collate = unquote(strings.TrimSpace(p[i+len(" COLLATE "):]))
+		p = strings.TrimSpace(p[:i])
+	}
+	if strings.ContainsAny(p, "()") {
+		c.Name, c.Expr = unwrap(p), true
+	} else {
+		c.Name = unquote(p)
+	}
+	return c
+}
+
+// unquoteLit strips the single quotes pg_get_indexdef puts around a storage
+// parameter value: fillfactor='70' is the number 70 to the model.
+func unquoteLit(s string) string {
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		return strings.ReplaceAll(s[1:len(s)-1], "''", "'")
+	}
+	return s
 }
 
 // balanced returns the text inside the parenthesised group starting at open,

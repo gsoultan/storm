@@ -67,6 +67,11 @@ type Executor interface {
 	// Exactly one of rows and affected is meaningful per op, chosen by
 	// BatchOp.WantRows: rows is nil when the op wanted a count, and affected is
 	// zero when it wanted rows.
+	//
+	// each may be nil, and a bulk insert or upsert usually passes nil: the
+	// results are still drained in order — anything else desyncs the
+	// connection — and the first error is returned. An implementation that
+	// called a nil each would take the connection down with it.
 	Batch(ctx context.Context, ops []BatchOp, each func(i int, rows Rows, affected int64, err error) error) error
 }
 

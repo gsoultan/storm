@@ -22,7 +22,22 @@ type Change struct {
 	Destructive bool
 	// Why explains a destructive step, and is emitted as a comment.
 	Why string
+	// NoTransaction means the statement cannot run inside a transaction
+	// block — CREATE INDEX CONCURRENTLY — and so cannot share a migration
+	// file with anything else under a runner that wraps each file in one.
+	// The tool writes each such change to a file of its own, and SQL marks it.
+	NoTransaction bool
+
+	// What the change creates or drops, when it is an index: enough to render
+	// it again in the concurrent form once the plan knows the table is live.
+	table     *schema.Table
+	index     *schema.Index
+	dropIndex string
 }
+
+// NoTransactionMarker is the comment SQL puts above a change that must run
+// outside a transaction block, for a migration runner to act on.
+const NoTransactionMarker = "-- storm:no-transaction"
 
 // Plan is an ordered set of changes.
 type Plan struct {
@@ -49,9 +64,37 @@ func (p Plan) SQL() string {
 		if c.Destructive {
 			b.WriteString("-- storm:destructive " + c.Why + "\n")
 		}
+		if c.NoTransaction {
+			b.WriteString(NoTransactionMarker + "\n")
+		}
 		b.WriteString(c.SQL + "\n")
 	}
 	return b.String()
+}
+
+// Concurrently rewrites the index builds and drops on tables that already
+// exist in `live` into their CONCURRENTLY forms, which do not block the
+// table's writers while they run. An index on a table the same plan creates
+// is left alone: nothing writes to a table that does not exist yet, and the
+// concurrent build could not share its transaction anyway.
+//
+// The rewritten changes are marked NoTransaction, because that is the price:
+// CREATE INDEX CONCURRENTLY cannot run inside a transaction block, so each
+// has to be applied as a single statement outside one.
+func (p Plan) Concurrently(live *schema.Schema) Plan {
+	out := Plan{Changes: make([]Change, 0, len(p.Changes))}
+	for _, c := range p.Changes {
+		switch {
+		case c.index != nil && c.table != nil && live != nil && live.Table(c.table.Name) != nil:
+			c.SQL = pgddl.CreateIndexConcurrently(c.table, c.index)
+			c.NoTransaction = true
+		case c.dropIndex != "":
+			c.SQL = pgddl.DropIndexConcurrently(c.dropIndex)
+			c.NoTransaction = true
+		}
+		out.Changes = append(out.Changes, c)
+	}
+	return out
 }
 
 // Diff computes the changes that take `from` to `to`. Both are normalised
@@ -163,32 +206,32 @@ func diffTable(p *Plan, old, cur *schema.Table) {
 
 	diffNamed(p, cur, old.Uniques, cur.Uniques,
 		func(u *schema.Unique) string { return u.Name },
-		func(u *schema.Unique) string {
-			return "ALTER TABLE " + q + " ADD CONSTRAINT " + pgddl.Ident(u.Name) +
-				" UNIQUE (" + identList(u.Columns) + ");"
+		func(u *schema.Unique) Change {
+			return Change{SQL: "ALTER TABLE " + q + " ADD CONSTRAINT " + pgddl.Ident(u.Name) +
+				" UNIQUE (" + identList(u.Columns) + ");"}
 		},
-		func(u *schema.Unique) string {
-			return "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(u.Name) + ";"
+		func(u *schema.Unique) Change {
+			return Change{SQL: "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(u.Name) + ";"}
 		},
 		func(a, b *schema.Unique) bool { return eq(a.Columns, b.Columns) },
 		"unique constraint")
 
 	diffNamed(p, cur, old.Checks, cur.Checks,
 		func(c *schema.Check) string { return c.Name },
-		func(c *schema.Check) string {
-			return "ALTER TABLE " + q + " ADD CONSTRAINT " + pgddl.Ident(c.Name) + " CHECK (" + c.Expr + ");"
+		func(c *schema.Check) Change {
+			return Change{SQL: "ALTER TABLE " + q + " ADD CONSTRAINT " + pgddl.Ident(c.Name) + " CHECK (" + c.Expr + ");"}
 		},
-		func(c *schema.Check) string {
-			return "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(c.Name) + ";"
+		func(c *schema.Check) Change {
+			return Change{SQL: "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(c.Name) + ";"}
 		},
 		func(a, b *schema.Check) bool { return canonical(a.Expr) == canonical(b.Expr) },
 		"check constraint")
 
 	diffNamed(p, cur, old.ForeignKeys, cur.ForeignKeys,
 		func(f *schema.ForeignKey) string { return f.Name },
-		func(f *schema.ForeignKey) string { return pgddl.AddForeignKey(cur, f) },
-		func(f *schema.ForeignKey) string {
-			return "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(f.Name) + ";"
+		func(f *schema.ForeignKey) Change { return Change{SQL: pgddl.AddForeignKey(cur, f)} },
+		func(f *schema.ForeignKey) Change {
+			return Change{SQL: "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(f.Name) + ";"}
 		},
 		func(a, b *schema.ForeignKey) bool {
 			return eq(a.Columns, b.Columns) && a.RefTable == b.RefTable &&
@@ -198,11 +241,17 @@ func diffTable(p *Plan, old, cur *schema.Table) {
 
 	diffNamed(p, cur, old.Indexes, cur.Indexes,
 		func(i *schema.Index) string { return i.Name },
-		func(i *schema.Index) string { return pgddl.CreateIndex(cur, i) },
-		func(i *schema.Index) string { return "DROP INDEX " + pgddl.Ident(i.Name) + ";" },
+		func(i *schema.Index) Change {
+			return Change{SQL: pgddl.CreateIndex(cur, i), table: cur, index: i}
+		},
+		func(i *schema.Index) Change {
+			return Change{SQL: "DROP INDEX " + pgddl.Ident(i.Name) + ";", dropIndex: i.Name}
+		},
 		func(a, b *schema.Index) bool {
 			return a.Unique == b.Unique && a.Method == b.Method &&
-				canonical(a.Where) == canonical(b.Where) && sameKeys(a.Columns, b.Columns)
+				canonical(a.Where) == canonical(b.Where) && sameKeys(a.Columns, b.Columns) &&
+				eq(a.Include, b.Include) && a.NullsNotDistinct == b.NullsNotDistinct &&
+				sameParams(a.With, b.With)
 		},
 		"index")
 }
@@ -241,7 +290,7 @@ func diffColumn(p *Plan, q string, old, cur *schema.Column) {
 
 // diffNamed is the add/drop/replace loop shared by every named constraint kind.
 func diffNamed[T any](p *Plan, t *schema.Table, old, cur []T,
-	name func(T) string, add func(T) string, drop func(T) string,
+	name func(T) string, add func(T) Change, drop func(T) Change,
 	same func(a, b T) bool, kind string) {
 
 	byName := map[string]T{}
@@ -253,22 +302,21 @@ func diffNamed[T any](p *Plan, t *schema.Table, old, cur []T,
 		seen[name(c)] = true
 		o, ok := byName[name(c)]
 		if !ok {
-			p.add(Change{SQL: add(c)})
+			p.add(add(c))
 			continue
 		}
 		if !same(o, c) {
 			// Postgres cannot alter these in place; drop and recreate.
-			p.add(Change{SQL: drop(o)})
-			p.add(Change{SQL: add(c)})
+			p.add(drop(o))
+			p.add(add(c))
 		}
 	}
 	for _, o := range old {
 		if !seen[name(o)] {
-			p.add(Change{
-				SQL:         drop(o),
-				Destructive: true,
-				Why:         kind + " " + name(o) + " on " + t.Name + " is no longer in the model",
-			})
+			d := drop(o)
+			d.Destructive = true
+			d.Why = kind + " " + name(o) + " on " + t.Name + " is no longer in the model"
+			p.add(d)
 		}
 	}
 }
@@ -325,7 +373,34 @@ func sameKeys(a, b []schema.IndexColumn) bool {
 	}
 	for i := range a {
 		if canonical(a[i].Name) != canonical(b[i].Name) ||
-			a[i].Desc != b[i].Desc || a[i].NullsLast != b[i].NullsLast {
+			a[i].Desc != b[i].Desc || a[i].NullsLast != b[i].NullsLast ||
+			a[i].NullsFirst != b[i].NullsFirst ||
+			bareOpClass(a[i].OpClass) != bareOpClass(b[i].OpClass) || a[i].Collate != b[i].Collate ||
+			a[i].Prefix != b[i].Prefix {
+			return false
+		}
+	}
+	return true
+}
+
+// bareOpClass strips a schema qualifier: the model may say where a class
+// lives, the server prints that only when it is off the search path, and the
+// two are the same class either way.
+func bareOpClass(class string) string {
+	if dot := strings.LastIndexByte(class, '.'); dot >= 0 {
+		return class[dot+1:]
+	}
+	return class
+}
+
+// sameParams compares storage parameters by name and value, in order: the
+// order is the model's and the database prints it back the same way.
+func sameParams(a, b []schema.StorageParam) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name || a[i].Value != b[i].Value {
 			return false
 		}
 	}

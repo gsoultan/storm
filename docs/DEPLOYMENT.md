@@ -135,3 +135,54 @@ Two storm-side signals are worth exporting as gauges next to it:
 - `runtime.CountingExecutor` wraps any executor and counts round trips. It is
   how storm asserts its own N+1 guarantees, and it works the same way in your
   tests: load a plan, assert the count is what the plan promised.
+
+## Indexes on a live table
+
+`storm diff -concurrently` builds and drops indexes on tables that already
+exist with `CREATE INDEX CONCURRENTLY` and `DROP INDEX CONCURRENTLY`, which do
+not block the table's writers while they run. On a table with traffic that is
+the only build a deployment can afford: a plain `CREATE INDEX` holds a lock
+that blocks every INSERT, UPDATE and DELETE for the duration.
+
+The price is that the concurrent form **cannot run inside a transaction
+block**, and a migration runner wraps each file in one — or runs a
+multi-statement file as one implicit transaction, which PostgreSQL refuses the
+same way. So each such statement is written to a migration file of its own,
+holding exactly that one statement, marked:
+
+```
+-- storm:no-transaction
+-- this statement cannot run inside a transaction block: apply this file on its own, outside one
+CREATE INDEX CONCURRENTLY "ix_orders_customer_id" ON "orders" ("customer_id");
+```
+
+Tell your runner. goose reads `-- +goose NO TRANSACTION`; golang-migrate runs a
+single-statement file correctly without being told; Atlas and Flyway have a
+per-file setting. `storm verify -pending` replays the directory the same way —
+each file as one statement, the search path set on the session rather than
+prepended — so a directory that verifies is one a runner can apply.
+
+An index on a table the same plan creates is left plain: nothing writes to a
+table that does not exist yet, and it stays inside the transaction that creates
+the table.
+
+A concurrent build that fails — a duplicate under a unique index, a cancelled
+statement — leaves an **invalid** index behind that PostgreSQL will not use.
+`storm verify` reports it as drift, because introspection reads the definition
+and not the validity flag; drop it and re-run the migration.
+
+## Extensions
+
+Two features need an extension: an exclusion constraint needs `btree_gist`, and
+a trigram operator class (`gin_trgm_ops`, `gist_trgm_ops`) needs `pg_trgm`. The
+DDL installs each one `WITH SCHEMA public`, wrapped so that two appliers
+running the same migration at once do not race each other on `IF NOT EXISTS`,
+and qualifies the operator classes it installed as `public.…` so they resolve
+under any search path — including the scratch namespaces `verify -pending` and
+the model normalisation use.
+
+A host that keeps extensions in a schema of its own — Supabase's `extensions`,
+say — declares the class qualified, `storm.OpClass(&d.Body,
+"extensions.gin_trgm_ops")`; the install storm emits is then a no-op against
+the copy that already exists. Introspection compares operator classes by their
+bare name, so where the class lives never shows up as drift.
