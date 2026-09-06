@@ -88,6 +88,11 @@ type Query struct {
 	otoks [4]runtime.Tok
 	no    uint8
 
+	// lock is the row-lock mode: 0 none, then pgsql.LockMode order.
+	// It is part of the STATEMENT, so it selects the cache as well as
+	// the suffix.
+	lock uint8
+
 	limit  int64
 	offset int64
 	// over records that the query outgrew its fixed buffers. Terminals
@@ -228,6 +233,41 @@ func (q *Query) cursor(col uint32, r Row) {
 // cursor without an order is a position in nothing.
 func (q Query) Unordered() Query { q.noOrder = true; return q }
 
+// Row locking.
+//
+// A lock is held to the end of the TRANSACTION, so one taken outside a
+// transaction is released before the next statement runs and protects
+// nothing — pass a pgxdrv.Tx, not a pool.
+//
+// Locking is refused on Count and Exists, and on the declared
+// aggregations and joins. The server rejects a row lock combined with an
+// aggregate, a grouping, a DISTINCT or a set operation, and on the
+// nullable side of an outer join; refusing at the call site names the
+// rule, where the server would name a SQLSTATE.
+//
+// The two weakest strengths are deliberately absent. They exist for the
+// deadlock between updating a parent row and inserting a child that
+// references it, which is real and rare, and a caller who has it knows
+// the exact SQL they want — storm.SQL gives it to them typed.
+
+// ForUpdate locks the rows this query returns, and takes the strongest row lock, waiting for anyone who already holds it.
+func (q Query) ForUpdate() Query { q.lock = 1; return q }
+
+// ForUpdateNoWait locks the rows this query returns, and fails immediately rather than wait for a lock someone else holds.
+func (q Query) ForUpdateNoWait() Query { q.lock = 2; return q }
+
+// ForUpdateSkipLocked locks the rows this query returns, and steps over the rows another transaction has locked. This is the queue claim, and the one form that returns FEWER rows than Limit asks for: that is the point of it, not a fault.
+func (q Query) ForUpdateSkipLocked() Query { q.lock = 3; return q }
+
+// ForShare locks the rows this query returns, and blocks writers while letting other readers share the lock.
+func (q Query) ForShare() Query { q.lock = 4; return q }
+
+// ForShareNoWait locks the rows this query returns, and is the shared lock, failing rather than waiting.
+func (q Query) ForShareNoWait() Query { q.lock = 5; return q }
+
+// ForShareSkipLocked locks the rows this query returns, and is the shared lock, stepping over rows another transaction holds.
+func (q Query) ForShareSkipLocked() Query { q.lock = 6; return q }
+
 // Sort is one ORDER BY term, produced by a column handle: Email.Asc().
 type Sort runtime.Tok
 
@@ -268,6 +308,12 @@ var errAfterUnordered = errors.New(
 
 var errMixedOrder = errors.New(
 	"storm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
+
+var errCountLocked = errors.New(
+	"storm: a locked read cannot be counted — the server refuses a row lock with an aggregate; count first, then lock the rows you take")
+
+var errExistsLocked = errors.New(
+	"storm: a locked read cannot be an existence probe — locking a row to answer a boolean is a row nobody reads; use One() with the same lock")
 
 var errTooComplex = errors.New(
 	"storm: query has more predicates than the generated buffers hold (scale 1); split the query, or regenerate with a larger codegen.Budgets{Scale}")
@@ -672,6 +718,32 @@ const existsSuffix = ` LIMIT 1`
 const limitSuffix = ` LIMIT $`
 const limitOffsetSuffix = ` LIMIT $ OFFSET $`
 
+// lockSuffix is the row-lock clause per mode, indexed by Query.lock.
+// It goes at the very END of the statement — after LIMIT and OFFSET,
+// which is what the grammar requires.
+var lockSuffix = [7]string{
+	``,
+	` FOR UPDATE`,
+	` FOR UPDATE NOWAIT`,
+	` FOR UPDATE SKIP LOCKED`,
+	` FOR SHARE`,
+	` FOR SHARE NOWAIT`,
+	` FOR SHARE SKIP LOCKED`,
+}
+
+// lockCaches holds one compiled-statement cache per (lock, offset)
+// pair. The lock is part of the STATEMENT, so it has to be part of the
+// key; a program that never locks never touches the locked entries and
+// they stay the empty maps they start as.
+var lockCaches = func() [7][2]*runtime.TreeCache {
+	var cs [7][2]*runtime.TreeCache
+	for i := range cs {
+		cs[i][0], cs[i][1] = runtime.NewTreeCache(), runtime.NewTreeCache()
+	}
+	cs[0][0], cs[0][1] = cache, offsetCache
+	return cs
+}()
+
 // orderTable is every ordering this table can express, lowered at build
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
@@ -976,11 +1048,13 @@ func ShapeFlushes() int {
 // stmtFor compiles a read. LIMIT and LIMIT/OFFSET are different
 // statements with different placeholder counts, so they get different
 // caches rather than a sentinel token muddying the key.
-func stmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
-	c, suffix := cache, limitSuffix
+func stmtFor(toks []runtime.Tok, withOffset bool, lock uint8) *runtime.Stmt {
+	i, suffix := 0, limitSuffix
 	if withOffset {
-		c, suffix = offsetCache, limitOffsetSuffix
+		i, suffix = 1, limitOffsetSuffix
 	}
+	c := lockCaches[lock][i]
+	suffix += lockSuffix[lock]
 	if st := c.Get(toks); st != nil {
 		return st
 	}
@@ -1067,7 +1141,7 @@ func (q Query) Shape() uint64 {
 // SQL returns the compiled text for this query's structure.
 func (q Query) SQL() string {
 	var buf [21]runtime.Tok
-	return stmtFor(q.stream(&buf), q.offset > 0).SQL
+	return stmtFor(q.stream(&buf), q.offset > 0, q.lock).SQL
 }
 
 // Scan decodes one row from raw wire bytes into r, copying text into sl.
@@ -1230,7 +1304,7 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 		return dst, err
 	}
 	var buf [21]runtime.Tok
-	st := stmtFor(q.stream(&buf), q.offset > 0)
+	st := stmtFor(q.stream(&buf), q.offset > 0, q.lock)
 	if st.Err != nil {
 		// A malformed token stream is a code-generation bug. Executing it
 		// would run a query whose filter is not the one that was asked for.
@@ -1271,6 +1345,9 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 	if err := q.Err(); err != nil {
 		return 0, err
 	}
+	if q.lock != 0 {
+		return 0, errCountLocked
+	}
 	var buf [21]runtime.Tok
 	st := countStmtFor(q.preds(&buf))
 	if st.Err != nil {
@@ -1305,6 +1382,9 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 	if err := q.Err(); err != nil {
 		return false, err
 	}
+	if q.lock != 0 {
+		return false, errExistsLocked
+	}
 	var buf [21]runtime.Tok
 	st := existsStmtFor(q.preds(&buf))
 	if st.Err != nil {
@@ -1323,7 +1403,7 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 // Prepare resolves the structure and binds arguments without executing.
 func (q Query) Prepare(b *Binder) (string, []any) {
 	var buf [21]runtime.Tok
-	return stmtFor(q.stream(&buf), q.offset > 0).SQL, q.bind(b)
+	return stmtFor(q.stream(&buf), q.offset > 0, q.lock).SQL, q.bind(b)
 }
 
 // insertSQL does not vary: the column list is fixed by the table, so

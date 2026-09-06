@@ -38,8 +38,11 @@ and `Row` always had it and failed as a compile error against generated code.
 ## `storm.SQL[T]`/`SQLExec` stay PREPARE-verified at generate time)
 
 - **set-based `UPDATE`/`DELETE … WHERE`** — writes are per row or batched per row
-- **row locking** (`FOR UPDATE`, `SKIP LOCKED`) — the version column covers the
-  lost update, not the queue-worker claim
+- ~~row locking~~ **BUILT 2026-09-05**: `ForUpdate/NoWait/SkipLocked` and the
+  three `ForShare` forms, keyed into the statement cache. Refused on Count,
+  Exists, aggregates and joins (server rejects each — probed). 55P03 →
+  `runtime.ErrLockNotAvailable`, NOT Retryable. `FOR NO KEY UPDATE` / `FOR KEY
+  SHARE` stay raw.
 - **streaming/`Iter`** — `All` materialises; an export pages with `After`
 - **jsonb path extraction** (`->>`, jsonpath) — containment/key tests only
 - **probes across two DIFFERENT relations** — one child column range; the split

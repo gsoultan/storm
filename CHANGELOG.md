@@ -12,6 +12,65 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Row locking — `FOR UPDATE`, `SKIP LOCKED`, `NOWAIT`
+
+The last gap with correctness stakes rather than convenience. A queue worker
+claiming jobs, or a read-modify-write inside a transaction, had to leave the
+typed path for `storm.SQL`.
+
+```go
+jobs, err := job.New().
+        Where(job.Status.Eq("queued")).
+        Order(job.CreatedAt.Asc()).
+        Limit(10).
+        ForUpdateSkipLocked().
+        All(ctx, tx, nil)
+```
+
+Six methods — `ForUpdate`, `ForUpdateNoWait`, `ForUpdateSkipLocked`, and the
+three `ForShare` forms — rather than one taking a mode, for the reason a column
+has `Asc`/`Desc`/`AscNullsFirst`/`DescNullsLast`: there is no invalid state to
+construct and the call site says what it does.
+
+**The lock is part of the statement**, so it is part of the cache key: each
+mode compiles its own statement rather than sharing one and differing by a
+suffix nobody keyed on. Composing one still allocates nothing.
+
+**`SkipLocked` returns fewer rows than `Limit` asked for**, which is the point:
+two workers claiming ten each from one table get twenty different rows and
+neither waits. Proven with two real concurrent transactions — removing the
+clause makes the second worker block and the test hang, which is the only way
+that assertion could have teeth.
+
+**`NOWAIT` gets a classified error.** SQLSTATE 55P03 is now
+`runtime.ErrLockNotAvailable`, and deliberately **not** `Retryable`: a
+serialization failure means "run the transaction again", a held lock means
+"someone else has the row", and an automatic retry loop on the second is a
+spin.
+
+**Locking is refused where the server would refuse it** — on `Count`, `Exists`,
+declared aggregations and declared joins. PostgreSQL rejects a row lock with an
+aggregate, a `GROUP BY`, a `DISTINCT` or a set operation, and on the nullable
+side of an outer join; each was probed against a server rather than read from
+the documentation. The refusal names the rule at the call site, where the
+server would name a SQLSTATE on a query already in production.
+
+A lock is held to the end of the **transaction**, so one taken on a pool is
+released before the next statement runs and protects nothing. Said in the
+generated doc comment, because it is the mistake that makes locking look like
+it works.
+
+`FOR NO KEY UPDATE` and `FOR KEY SHARE` are deliberately absent — the
+parent-update/child-insert deadlock is real and rare, and a caller who has it
+knows the exact SQL they want.
+
+Every word of SQL in this feature — the clause, the method names derived from
+it, the prose in the generated doc comments and the refusal messages — comes
+from `compile/pgsql`. The dialect-seam test caught three attempts to keep it in
+`codegen` and was right each time.
+
 ## v0.5.0 — 2026-09-05
 
 **Upgrading requires regeneration.** `storm.SQL` statements are now pinned to
