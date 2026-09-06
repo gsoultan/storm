@@ -12,6 +12,43 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Fixed: the MySQL dialect emitted code that could not compile
+
+`codegen.PackageOptions.Dialect` has offered `DialectMySQL` since v0.3.0, and
+the package it generated **had never been built by anything**. The dialect
+tests assert the emitted TEXT calls `mydec`, and passed throughout while the
+result referenced a decoder family it did not import, called a generic that
+exists only in `runtime`, and assigned a three-value `Decimal` to one variable.
+
+Four breaks, each fixed and each independently caught by the new gate:
+
+- **The family import was never emitted.** A file calling `mydec.Bool` imported
+  only `runtime`.
+- **`Nullable` was prefixed with the family package.** It is generic over a
+  decoder and returns the row's `runtime.Null[T]` — dialect-neutral, and the
+  only name that is. `mydec.Nullable` does not exist and never did.
+- **`mydec.Decimal` returned `(int64, int32, error)`** where the row field is a
+  `runtime.Decimal`. It now returns the type the scanner assigns, with the
+  digit parsing kept behind it so it can still be tested on its own.
+- **Fallible decoders were called as infallible.** MySQL's temporal types read
+  a leading length and can be handed one that does not match; PostgreSQL's read
+  a fixed width and cannot. The emitter now asks the family instead of
+  assuming, and `mydec` gained the `Null*` wrappers a fallible decoder needs,
+  since `Nullable` takes one that cannot fail.
+
+**`codegen.TestMySQLGeneratedPackageCompiles` is the gate.** It generates a
+MySQL-portable model and runs `go build` on the result — verified to fail on
+each of the four breaks separately. This is R9 answered as far as it can be
+without a driver: a seam with one implementation is a hypothesis, and one whose
+second implementation does not build is a worse one, because the tests read as
+though it does.
+
+**What this does not buy.** The generated MySQL read path builds; it has never
+decoded a byte, because there is no driver to hand it one. See
+[docs/PLAN.md](docs/PLAN.md) M9 for what remains, which is all of it.
+
 ## v0.6.1 — 2026-09-06
 
 **Nothing to regenerate.** The only Go change since v0.6.0 is under `tool/` —
