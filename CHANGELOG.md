@@ -12,6 +12,33 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Fixed: two tooling defects an adopter upgrade found
+
+Both came out of moving `anubis` from v0.2.0 to v0.6.0 — the first time four
+releases of surface met a real repository rather than a fixture.
+
+**`verify -stale` ignored its own `-dsn` flag.** It re-read `$STORM_DSN`
+directly, so a caller who passed the flag got a refusal naming `-dsn` as the
+fix for something they had just done. Every other command threads the flag
+through; this one had a copy of the lookup instead. `-dsn` already defaults to
+the environment variable, so the fix is to use the value the dispatcher
+already holds.
+
+**`verify -pending` reported a whole model as pending when it had replayed
+nothing.** storm reads `*.up.sql`; a migrations directory kept by hand or by
+another tool commonly holds `0001_name.sql`, which matches nothing. The replay
+then applied no migrations, the diff against an empty scratch schema wanted
+every table, and the message said "model changed without a migration — run
+`storm diff`" — which invites a migration that recreates tables the database
+already has.
+
+It now names what it skipped, and only in that case: an **empty** directory
+still says `storm diff`, because there everything really is pending and that
+really is the fix. The existing test caught the first attempt at this, which
+had flattened both cases into one message.
+
 ## v0.6.0 — 2026-09-06
 
 **Additive.** Generated code from v0.5.0 keeps compiling against this module —
