@@ -353,6 +353,44 @@ tripled, shapes stayed at 1 and flushes at 0. Nothing accumulates per request;
 the RSS climb is pages Go has not returned. Absolute memory numbers need a
 longer, quieter run before they mean much — the comparison is the signal.
 
+### P3 CLOSED 2026-09-06. No kill criterion fires.
+
+The final in-window reading, against a live server under load. The row is in
+`anubis/docs/soak-storm.md` beside the one from 2026-09-01, which is the point
+of keeping a column of them.
+
+| signal | criterion | measured |
+|---|---|---|
+| authorize p95 through the repository | past the 2 ms budget | **161 µs** — and 241 µs for the same query through raw pgx |
+| shapes per generated package | grows with traffic instead of plateauing | **1 → 1**, flushes **0 → 0**, over four rounds at ~12,000 decisions/s |
+| resident memory | no plateau | idle 264 MB → **583, 653, 653, 656** under load → **310** quiet |
+| `storm verify -stale` in CI | drift | clean |
+
+Each is decisive rather than marginal. The p95 has **twelve times** the
+headroom the budget allows and improved on the previous reading (181 µs);
+shapes at 1 under twelve thousand decisions a second is P1.1 answered in the
+wild, since nothing on that path mints a statement from request data; and RSS
+plateaus at round two and falls back when quiet, which is a ceiling and not a
+ramp.
+
+**Read the memory column carefully.** 213.8 MB on 2026-09-01 and 309.5 MB
+today are two *different processes*, not one growing. The series inside a
+single run is the signal; the column of absolutes across runs is not, and
+reading it as growth is the mistake the recorder's own output warns about.
+
+**What this soak does NOT vouch for.** anubis pins `storm v0.2.0`. Everything
+in v0.3.0 through v0.6.0 — declared aggregations and joins, unions, the
+statement pinning, the index grammar, upsert on unique indexes, row locking —
+has never run under this workload. The soak closes the question it was asked,
+which is whether the *migration* holds up under real traffic; it says nothing
+about the surface added since, and the second adopter that M8 waits on is
+still the only thing that would.
+
+The kill criterion is retired rather than left open: it named a v0.1.1 it has
+long outlived, and re-reading it against every future tag would be a gate that
+cannot fail. A regression on any of these four signals is now an ordinary bug
+report with a number, not a standing window.
+
 **The tag went out first (2026-08-26), so the remedy changed.** `v0.1.0` was
 cut on the day the four P0/P1/P2 gates closed rather than at the end of the
 soak window. That is the owner's call and it is defensible — the gates that

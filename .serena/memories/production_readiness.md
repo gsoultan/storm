@@ -4,6 +4,24 @@
 the absence of any adopter are what block it. Full checklist in `docs/PLAN.md`
 §"Production readiness".
 
+## P3 (the anubis soak) CLOSED 2026-09-06 — no kill criterion fires
+
+Final in-window reading (window was 2026-08-25 → 2026-09-08). Run it with
+`ANUBIS_DB_URL='postgres://anubis:anubis@localhost:7449/anubis?sslmode=disable'
+./scripts/soak-load.sh 4` from ~/projects/anubis — it starts a server, loads
+it, and calls soak-record.sh at the end so RSS is read from a LIVE process.
+
+authorize p95 **161µs** vs a 2 ms budget (and vs 241µs through raw pgx);
+shapes **1 → 1**, flushes **0 → 0** at ~12,000 decisions/s over four rounds;
+RSS idle 264 → 583/653/653/656 under load → **310 quiet** (plateau, not ramp);
+rgen clean. Detail in storm's `docs/PRODUCTION-READINESS.md` §P3.
+
+**Two traps in reading it.** (1) RSS across READINGS is different processes —
+213.8 MB vs 309.5 MB is not growth; only the within-run series is a signal.
+(2) **anubis pins storm v0.2.0**, so the soak vouches for the migration and
+for nothing added in v0.3.0–v0.6.0. The second adopter (M8) is still the only
+thing that would.
+
 ## The blocker nobody would guess — NOW CLOSED for numeric and jsonb
 **`numeric` shipped 2026-08-24 as `storm.Decimal`** (exact, two words, no
 allocation, stdlib-only; 18 significant digits, with a GENERATION error past
