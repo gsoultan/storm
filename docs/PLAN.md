@@ -49,6 +49,12 @@ they are called out here so the override is deliberate.
 | M7 | Tooling gate + hardening | ✅ | **PASSED 2026-08-24** — explain/lint/verify(-stale,-pending) shipped and tested; fuzz corpus + injection suite in CI; coverage floors enforced | *(cleared)* |
 | M8 | v1.0 release (Postgres) | ◐ | docs, examples and `docs/STABILITY.md` exist; **v0.6.1 tagged 2026-09-06**. What v1.0 still waits on is a SECOND adopter — every wrong-answer bug so far was found by exercising a path no test reached | — |
 | M9 | MySQL 8 + MariaDB | 4 | full suite green on both; seam has no leaks | seam leaked → fix `compile/` before any further target |
+
+**M9 scoped 2026-09-06, and the seam's second implementation now compiles.** ADR-0007 named three needs. Two were already met and nobody had checked: `runtime/mydec` exists, and `codegen` is parameterised at the decode site. The third — a wire-level MySQL client — is untouched and is the whole remaining cost.
+
+Checking the first two found that the MySQL dialect had **never been compiled**. It emitted calls to a decoder family it did not import, a generic that exists only in `runtime`, and a `Decimal` whose three return values were assigned to one variable. The dialect tests asserted the emitted TEXT and passed throughout. `codegen.TestMySQLGeneratedPackageCompiles` is now the gate, and it fails on each of those three independently.
+
+What that does and does not buy: the generated MySQL read path **builds**. It has never decoded a byte, because there is no driver to hand it one. `go-sql-driver/mysql` decodes result rows into `driver.Value` before storm can see them, so satisfying the four-method port on top of it would cost one boxing allocation per column per row — the interpreter design ADR-0007 exists to refuse. M9 therefore remains a driver project: a fork that exposes the binary result rows, or an implementation of the protocol subset storm needs. That is the estimate to make before starting, not after.
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |

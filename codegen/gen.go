@@ -226,6 +226,13 @@ func (g *gen) header() {
 	g.p("\t%q", "time")
 	g.p("")
 	g.p("\t%q", g.o.Import+"/runtime")
+	// The decoder family, when it is not `runtime` itself. Emitting the calls
+	// without the import produced a package that could not compile at all —
+	// and nothing caught it, because the dialect tests assert the emitted TEXT
+	// and no MySQL package had ever been built.
+	if imp := g.dec.family(); imp != "" {
+		g.p("\t%q", imp)
+	}
 	g.p(")")
 	g.p("")
 	g.p("var (")
