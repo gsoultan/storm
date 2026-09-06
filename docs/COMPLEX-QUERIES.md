@@ -373,7 +373,6 @@ Not declarable, and each for a reason rather than an oversight:
 | set-returning functions | a row source that is not a table — [ADR-0009](adr/0009-gap-filling-needs-a-from-that-is-not-a-table.md) |
 | recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |
 | set-based `UPDATE`/`DELETE … WHERE` | writes are per row or batched per row; a bulk state transition is `storm.SQLExec` |
-| row locking — `FOR UPDATE`, `SKIP LOCKED` | a queue worker's read is `storm.SQL[T]`; the version column covers the lost update, not the queue |
 | streaming a result set | reads are `All`/`One`/`Count`/`Exists`; an export pages with `After` |
 | jsonb path extraction — `->>`, jsonpath | containment and key tests are declared; asking about a nested scalar is SQL |
 
