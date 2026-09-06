@@ -12,7 +12,12 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.6.0 — 2026-09-06
+
+**Additive.** Generated code from v0.5.0 keeps compiling against this module —
+nothing it calls changed shape. Regenerate to *get* the lock methods, since
+they are generated; until you do, `storm verify -stale` will say so, which is
+the same bargain every other regeneration makes.
 
 ### Row locking — `FOR UPDATE`, `SKIP LOCKED`, `NOWAIT`
 

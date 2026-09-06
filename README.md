@@ -20,7 +20,7 @@ migrations and **never applies DDL**.
 
 ## Status
 
-**v0.5.0 is tagged.** The read path, migrations, relations, writes, the typed
+**v0.6.0 is tagged.** The read path, migrations, relations, writes, the typed
 escape hatch and the tooling gate are built, benchmarked and hardened; the first
 adopter migrated a whole bounded context (M6) and runs on the published module.
 v0.3.0 added model discovery, declared aggregations and joins, full-text
@@ -48,7 +48,14 @@ expression and partial ones, with `DoNothing()` and a bulk form.
 It carries two more silent failures: through v0.4.1 a table
 past 512 filterable columns built its predicates from a wrapped child's
 fragment table in a composed statement, and a `Batch` given no callback hung
-the connection instead of reporting an error. The milestone log with
+the connection instead of reporting an error.
+
+**v0.6.0 adds row locking** — `ForUpdate`, `ForUpdateSkipLocked`,
+`ForUpdateNoWait` and the three `ForShare` forms — so a queue worker's claim
+and a read-modify-write inside a transaction stay on the typed path. The lock
+is part of the statement and so part of its cache key, `SKIP LOCKED` is proven
+against two concurrent transactions, and a locked read is refused wherever
+PostgreSQL refuses one. The milestone log with
 every exit gate is [docs/PLAN.md](docs/PLAN.md), what would still stop a
 team adopting this is written down, with gates, in
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md), and where the
