@@ -70,7 +70,20 @@ builds and `codegen.Version()` reports `v0.6.2`.
 **v0.6.1 tagged 2026-09-06** (two verify fixes found by upgrading anubis off
 v0.2.0 — the adopter-upgrade exercise works, do it again after each release).
 
-**anubis is on v0.6.3 as of 2026-09-07** (anubis#15) — the upgrade finally
+**anubis is on v0.7.0 as of 2026-09-07** — branch `chore/storm-v0.7.0`, NOT yet
+merged or pushed. The upgrade found **nothing**: builds, vets, `verify -stale`
+clean after regeneration, and `scripts/ci/backend-suite.sh` all green (migrate →
+regenerate → `git diff --exit-code` → integration + e2e + fuzz + audit), against
+**PostgreSQL 18.4** where storm's own suite runs on 17. The only change in three
+generated files was the version stamp, which is the release note's upgrade claim
+confirmed on a real adopter rather than inferred from a diffstat. `verify
+-pending` (1) and drift (59) are byte-identical to v0.6.3 — both are the
+documented consequence of rmodel being a PROJECTION of one table, not a
+regression; measure the baseline before reading either as one. Pre-existing and
+unrelated: `TestConfiguredFollowsTheFile` in `internal/platform/config` fails on
+v0.6.3 too.
+
+**Previously: anubis was on v0.6.3** (anubis#15) — the upgrade finally
 LANDED; before this it was an unpushed local branch while `dev` stayed on
 v0.2.0. It cost two storm releases and found two Go-toolchain consequences in
 anubis (`go mod tidy`, and protoc-gen-go reformatting doc comments because it
