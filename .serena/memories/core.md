@@ -70,8 +70,8 @@ builds and `codegen.Version()` reports `v0.6.2`.
 **v0.6.1 tagged 2026-09-06** (two verify fixes found by upgrading anubis off
 v0.2.0 — the adopter-upgrade exercise works, do it again after each release).
 
-**anubis is on v0.7.0 as of 2026-09-07** — branch `chore/storm-v0.7.0`, NOT yet
-merged or pushed. The upgrade found **nothing**: builds, vets, `verify -stale`
+**anubis is on v0.7.0 as of 2026-09-07** — **anubis#17**, open against `dev`,
+rebased onto it and re-verified there. The upgrade found **nothing**: builds, vets, `verify -stale`
 clean after regeneration, and `scripts/ci/backend-suite.sh` all green (migrate →
 regenerate → `git diff --exit-code` → integration + e2e + fuzz + audit), against
 **PostgreSQL 18.4** where storm's own suite runs on 17. The only change in three
