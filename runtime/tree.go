@@ -527,9 +527,17 @@ const placeholderSigil = '$'
 // followed by an ordinal, which is Postgres and MSSQL but not MySQL's bare `?`
 // or Oracle's `:name`. P1b moved the read path's SQL text into compile/pgsql
 // and stopped there: the right carrier for placeholder policy is not knowable
-// from one back end, and inventing one now would be guessing. M9 decides it,
-// with two implementations in hand. Until then this is the one Postgres
-// assumption left inside runtime/, and it is written down rather than hidden.
+// from one back end, and inventing one now would be guessing. Until it lands
+// this is the one Postgres assumption left inside runtime/, and it is written
+// down rather than hidden.
+//
+// The carrier is now DECIDED: a Placeholder field on Lowering, whose zero
+// value is Postgres, carrying a sigil and whether an ordinal follows it. See
+// docs/adr/0010. It is deliberately not implemented yet — the suffix scanner
+// below numbers bare sigils and guards against `'$5.00'`, and MySQL's
+// equivalent hazard is a `?` inside a string literal, which cannot be settled
+// without a server to run the result against. A second implementation nothing
+// executes is what R9 already cost this project once.
 func takesArg(f Frag) bool {
 	return len(f.A) > 0 && f.A[len(f.A)-1] == '$'
 }
