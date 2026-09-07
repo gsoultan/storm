@@ -120,19 +120,36 @@ func Model(s *schema.Schema, o ModelOptions) ([]byte, error) {
 func unportedFacts(s *schema.Schema) []string {
 	var out []string
 	for _, t := range s.Tables {
+		// Columns first, because a dropped COLUMN is the only thing in this
+		// list that loses data.
+		//
+		// The header promises "what did not survive the round trip is listed
+		// here" and then printed "Nothing was dropped: every construct in this
+		// schema is expressible" over a model that had silently omitted an
+		// int4[] column — visible only as a comment inside the struct, forty
+		// lines down. The first `storm diff` then proposed DROP COLUMN on live
+		// data. A header an adopter trusts is worse than no header when it is
+		// wrong.
+		for _, c := range t.Columns {
+			if goKind(c) == kindUnsupported {
+				out = append(out, fmt.Sprintf(
+					"column %s.%s is %s, which storm has no Go type for — it is OMITTED, "+
+						"and a diff will propose dropping it until you give it one with .Raw(...)",
+					t.Name, c.Name, c.Type.SQL()))
+			}
+		}
 		for _, ix := range t.Indexes {
 			if _, ok := indexDecl(s, t, ix); !ok {
 				out = append(out, fmt.Sprintf("index %s on %s — re-declare with t.Index(...)", ix.Name, t.Name))
 			}
 		}
-		for _, ck := range t.Checks {
-			out = append(out, fmt.Sprintf("check %s on %s — re-declare with t.Check(%q)", ck.Name, t.Name, ck.Expr))
-		}
 		for _, ex := range t.Excludes {
 			out = append(out, fmt.Sprintf("exclusion constraint %s on %s — re-declare with t.Exclude(...)", ex.Name, t.Name))
 		}
 		for _, u := range t.Uniques {
-			out = append(out, fmt.Sprintf("unique %s on %s — re-declare with t.Unique(...)", u.Name, t.Name))
+			if _, ok := uniqueDecl(t, u); !ok {
+				out = append(out, fmt.Sprintf("unique %s on %s — re-declare with t.Unique(...)", u.Name, t.Name))
+			}
 		}
 	}
 	sort.Strings(out)
@@ -203,6 +220,13 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 				} else {
 					g.p("\t%s *%s", field, modelName(target))
 				}
+				// The name first: a constraint storm would have called
+				// something else has to be stated, or the first migration
+				// renames it for nothing.
+				if fk.Name != "" && fk.Name != t.FKName(fk) {
+					schemaLines = append(schemaLines, fmt.Sprintf(
+						"t.Col(&m.%s).ConstraintName(%q)", field, fk.Name))
+				}
 				if c := actionConst(fk.OnDelete); c != "" {
 					schemaLines = append(schemaLines, fmt.Sprintf(
 						"t.Col(&m.%s).OnDelete(storm.%s)", field, c))
@@ -231,6 +255,22 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 	// Indexes come back as declarations, not as facts the reader has to
 	// re-type: an imported schema is usually a real one, and a real one's
 	// indexes are where its performance lives.
+	// Uniques and checks are DECLARATIONS, not guesses: the schema holds the
+	// exact columns and the exact expression. Listing them as "not carried
+	// over" meant every imported model needed hand-editing before its first
+	// verify would pass, for facts storm can already say.
+	for _, u := range t.Uniques {
+		if line, ok := uniqueDecl(t, u); ok {
+			schemaLines = append(schemaLines, line)
+		}
+	}
+	for _, ck := range t.Checks {
+		if ck.Name != "" && ck.Name != t.CheckName(ck) {
+			schemaLines = append(schemaLines, fmt.Sprintf("t.CheckNamed(%q, %q)", ck.Name, ck.Expr))
+		} else {
+			schemaLines = append(schemaLines, fmt.Sprintf("t.Check(%q)", ck.Expr))
+		}
+	}
 	for _, ix := range t.Indexes {
 		if line, ok := indexDecl(s, t, ix); ok {
 			schemaLines = append(schemaLines, line)
@@ -419,7 +459,23 @@ func columnFacts(c *schema.Column) string {
 	if n := c.Type.Size; n > 0 {
 		fmt.Fprintf(&b, ".Size(%d)", n)
 	}
-	if c.Default != "" && !isIdentityDefault(c.Default) {
+	if c.Serial {
+		b.WriteString(".Serial()")
+	}
+	if c.Identity {
+		b.WriteString(".Identity()")
+	}
+	// Every default, unconditionally.
+	//
+	// This used to skip gen_random_uuid() and now(), on the grounds that
+	// storm.Model supplies them — but a column the embed supplies never
+	// reaches here: modelType drops the Model triple before calling this. So
+	// the filter only ever fired where it was wrong. A table with an id and a
+	// created_at but no updated_at does not embed Model and lost both
+	// defaults; a table that DOES embed it lost the default on any other
+	// column that happened to be now(), like agents.last_seen_at. Importing
+	// argus proposed DROP DEFAULT on eleven columns for this reason.
+	if c.Default != "" {
 		fmt.Fprintf(&b, ".Default(%q)", c.Default)
 	}
 	if c.Version {
@@ -429,16 +485,6 @@ func columnFacts(c *schema.Column) string {
 		b.WriteString(".Immutable()")
 	}
 	return b.String()
-}
-
-// isIdentityDefault skips defaults storm.Model already supplies, so an imported
-// model does not restate them and then diff against itself.
-func isIdentityDefault(d string) bool {
-	switch strings.ToLower(strings.TrimSpace(d)) {
-	case "gen_random_uuid()", "now()", "current_timestamp":
-		return true
-	}
-	return false
 }
 
 // importGoType is the Go type for an imported column. Nullable scalars become
@@ -466,12 +512,18 @@ func importGoType(c *schema.Column) string {
 	if c.Type.Enum {
 		base = exportName(c.Type.Name)
 	}
-	// A slice carries its own null: nil is SQL NULL, and an empty non-nil
-	// slice is a real empty value — a distinction storm keeps deliberately.
-	// Wrapping one in a pointer invents a second way to say nothing, and
-	// storm.Build refuses the result. This tested only bytea, so a nullable
-	// jsonb imported as *storm.JSON and a nullable text[] as *[]string.
-	if c.NotNull || c.Type.Array || goKind(c) == kindBytes || goKind(c) == kindJSONB {
+	// The pointer is how a model says nullable, and it stays that way for
+	// jsonb and for arrays.
+	//
+	// A first pass here dropped it for every slice, reasoning that a slice
+	// already carries nil. storm does not read it that way: isNullable treats
+	// []byte as nullable and T[] as not, so `storm.JSON` and `[]string` both
+	// mean NOT NULL. Dropping the pointer therefore did not simplify a
+	// declaration, it changed one — a nullable jsonb column came back NOT NULL
+	// and the first verify against the source database proposed SET NOT NULL
+	// on live data. What `*storm.JSON` actually needed was for inferType to
+	// know the type at all, which is the other half of this release.
+	if c.NotNull || goKind(c) == kindBytes {
 		return base
 	}
 	return "*" + base
@@ -595,4 +647,28 @@ func actionConst(a schema.Action) string {
 		return "SetDefault"
 	}
 	return "" // NoAction, and anything unrecognised
+}
+
+// uniqueDecl renders a unique constraint as the declaration that produces it,
+// with the name pinned when storm would have chosen a different one.
+//
+// An expression-based unique is refused rather than guessed: the columns list
+// holds raw SQL there, and a wrong field pointer is a model that does not
+// compile. Those stay in the NOT CARRIED OVER list where a human sees them.
+func uniqueDecl(t *schema.Table, u *schema.Unique) (string, bool) {
+	cols := make([]string, 0, len(u.Columns))
+	for _, c := range u.Columns {
+		if t.Column(c) == nil {
+			return "", false
+		}
+		cols = append(cols, "&m."+exportName(c))
+	}
+	if len(cols) == 0 {
+		return "", false
+	}
+	list := strings.Join(cols, ", ")
+	if u.Name != "" && u.Name != t.UniqueName(u) {
+		return fmt.Sprintf("t.UniqueNamed(%q, %s)", u.Name, list), true
+	}
+	return fmt.Sprintf("t.Unique(%s)", list), true
 }
