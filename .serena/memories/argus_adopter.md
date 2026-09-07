@@ -34,9 +34,39 @@ usable — compiling, building, verifying. `scripts/check/outsider.sh` now
 compiles the imported model and hands it to `storm.Build`, and it caught a
 defect in this very work the day it was written.
 
-**Not started: the migration itself.** M8 wants a bounded context moved onto
-storm, the way anubis/authz was (see [[m6_first_adopter]]) — generated queries
-replacing hand-written pgx, with p95 held. Modelling the schema is step one of
-several. argus also has uncommitted work in `internal/gateway`; leave it alone.
+**Migration STARTED 2026-09-07 — argus#6, draft, off `upgrade-path`.** Branch
+`feat/storm-adoption`. Based on `upgrade-path` and not `main` because
+`008_email_case.sql` changes the very constraint the model encodes, and the dev
+database already has it.
+
+Wired in: `rmodel` (projection; `migrations/` stays the source of truth),
+`cmd/stormgen`, generated `rgen` for all 11 tables, and `storm verify` in
+`scripts/check.sh` — the drift check is the point of adopting a generator.
+
+**`Sessions` is the one query moved**, chosen because its filter was the
+optional-filter pattern (`($1 = '' OR state = $1)`). Measured, 1,865 rows,
+filtering for the single active session:
+
+| | plan | time |
+|---|---|---|
+| custom plan | both forms | 0.020 ms |
+| generic plan | hand-written | 6.457 ms |
+| generic plan | storm | 0.801 ms |
+
+**In the common case there is NO difference** — PostgreSQL replans a prepared
+statement against actual values and specialises the optional filter itself. The
+8× only appears under a generic plan, and it is the per-row cost of a four-term
+boolean over one equality, not index choice (both filter 1,864 rows). Say it
+that way; the looser claim is not supported.
+
+Two findings the migration produced rather than the code:
+- **A missing FK index.** `sessions.asset_id` had none, so asset deletion
+  seq-scanned sessions. `009_sessions_asset_id_index.sql`.
+- **`timestamptz` decodes as UTC**, not the connection's zone. Same instant,
+  visible in the JSON. Asserted deliberately in the parity test.
+
+Twelve store methods still use hand-written pgx; the rest is mechanical.
+
+argus is the user's ACTIVE repo — check the branch before touching it.
 
 See [[core]], [[production_readiness]].
