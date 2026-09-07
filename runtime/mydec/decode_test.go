@@ -157,13 +157,13 @@ func TestDecimalIsParsedFromText(t *testing.T) {
 		{"-0.10", -10, 2},
 		{"+3.5", 35, 1},
 	} {
-		uns, scale, err := mydec.Decimal([]byte(c.in))
+		d, err := mydec.Decimal([]byte(c.in))
 		if err != nil {
 			t.Errorf("%s: %v", c.in, err)
 			continue
 		}
-		if uns != c.uns || scale != c.scale {
-			t.Errorf("%s → %d/%d, want %d/%d", c.in, uns, scale, c.uns, c.scale)
+		if d.Unscaled != c.uns || d.Scale != c.scale {
+			t.Errorf("%s → %d/%d, want %d/%d", c.in, d.Unscaled, d.Scale, c.uns, c.scale)
 		}
 	}
 }
@@ -171,10 +171,10 @@ func TestDecimalIsParsedFromText(t *testing.T) {
 // Too many digits is an error, not a wrap. Same ceiling and same reasoning as
 // the PostgreSQL family.
 func TestDecimalRefusesOverflow(t *testing.T) {
-	if _, _, err := mydec.Decimal([]byte("1234567890123456789")); err == nil {
+	if _, err := mydec.Decimal([]byte("1234567890123456789")); err == nil {
 		t.Error("19 significant digits were accepted")
 	}
-	if _, _, err := mydec.Decimal([]byte("12.x")); err == nil {
+	if _, err := mydec.Decimal([]byte("12.x")); err == nil {
 		t.Error("a non-digit was accepted")
 	}
 }
@@ -201,7 +201,7 @@ func TestDecodersDoNotAllocate(t *testing.T) {
 		_ = mydec.Float8(i8)
 		_ = mydec.UUID(dt)
 		_, _ = mydec.DateTime(dt)
-		_, _, _ = mydec.Decimal(dec)
+		_, _ = mydec.Decimal(dec)
 	}); got != 0 {
 		t.Errorf("decoders allocate %.0f time(s) per row; the budget is 0", got)
 	}

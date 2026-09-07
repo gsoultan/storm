@@ -312,9 +312,40 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 		if k == kindUUID {
 			return fmt.Sprintf("copy(r.%s[:], rv[%d])", f, i)
 		}
+		// A family whose decoder for this kind returns an error has to be
+		// called as one. MySQL's temporal types read a leading length and can
+		// be handed one that does not match; PostgreSQL's read a fixed width
+		// and cannot, so the same kind is fallible in one family and not the
+		// other, and the emitter has to ask rather than assume.
+		if d.fallible[k] {
+			return fmt.Sprintf("r.%s, decErr = %s(rv[%d])", f, dec, i)
+		}
 		return fmt.Sprintf("r.%s = %s(rv[%d])", f, dec, i)
 	}
+	// Nullable takes a decoder that cannot fail. A fallible one needs the
+	// family's own Null wrapper, which pairs the NULL test with the error.
+	if d.fallible[k] {
+		return fmt.Sprintf("r.%s, decErr = %s(rv[%d])", f, d.q(nullName(k)), i)
+	}
 	return fmt.Sprintf("r.%s = "+d.q("Nullable")+"(rv[%d], %s)", f, i, dec)
+}
+
+// nullName is the family's nullable wrapper for a kind whose decoder is
+// fallible: NullNumeric for numeric, NullTimestamptz for a timestamp, and so
+// on. The name is the kind's decoder with Null in front, which is the
+// convention both families already follow.
+func nullName(k kind) string {
+	switch k {
+	case kindNumeric:
+		return "NullNumeric"
+	case kindTimestamptz:
+		return "NullTimestamptz"
+	case kindDate:
+		return "NullDate"
+	case kindTimeOfDay:
+		return "NullTimeOfDay"
+	}
+	return "Nullable"
 }
 
 // opApplies decides whether an operator is legal on a column, so the generated

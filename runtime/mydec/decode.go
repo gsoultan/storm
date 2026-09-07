@@ -17,6 +17,8 @@
 package mydec
 
 import (
+	"github.com/gsoultan/storm/runtime"
+
 	"encoding/binary"
 	"errors"
 	"math"
@@ -176,7 +178,16 @@ func Duration(b []byte) (time.Duration, error) {
 // length-encoded string of digits, not a packed number. So this parses digits,
 // which is also why it cannot overflow silently the way a fixed-width read
 // could: too many significant digits is an error, not a truncation.
-func Decimal(b []byte) (unscaled int64, scale int32, err error) {
+func Decimal(b []byte) (runtime.Decimal, error) {
+	u, sc, err := decimalParts(b)
+	return runtime.Decimal{Unscaled: u, Scale: sc}, err
+}
+
+// decimalParts is the parse. Kept separate from Decimal so the digit handling
+// can be tested on its own, and so the returned value is assembled in exactly
+// one place — a scanner assigns it straight into the row's field, and a
+// mismatch there is a compile error rather than a wrong number.
+func decimalParts(b []byte) (unscaled int64, scale int32, err error) {
 	if len(b) == 0 {
 		return 0, 0, nil
 	}
@@ -238,4 +249,39 @@ func UUID(b []byte) [16]byte {
 		copy(out[:], b[:16])
 	}
 	return out
+}
+
+// ---- null wrappers ----------------------------------------------------------
+
+// A NULL arrives as a nil slice in both families, so the test is the same and
+// only the decoder behind it differs. These exist so a generated scanner names
+// one package for its family rather than mixing two, while the Null[T] it
+// produces is the row's type either way.
+
+// NullText reads a nullable text column into the caller's arena.
+func NullText(b []byte, s *runtime.Slab) runtime.Null[string] {
+	if b == nil {
+		return runtime.Null[string]{}
+	}
+	return runtime.Null[string]{V: s.Str(b), Valid: true}
+}
+
+// NullJSON reads a nullable JSON column.
+func NullJSON(b []byte, s *runtime.Slab) runtime.Null[runtime.JSON] {
+	if b == nil {
+		return runtime.Null[runtime.JSON]{}
+	}
+	return runtime.Null[runtime.JSON]{V: runtime.JSON(runtime.JSONB(b, s)), Valid: true}
+}
+
+// NullNumeric reads a nullable DECIMAL.
+func NullNumeric(b []byte) (runtime.Null[runtime.Decimal], error) {
+	if b == nil {
+		return runtime.Null[runtime.Decimal]{}, nil
+	}
+	d, err := Decimal(b)
+	if err != nil {
+		return runtime.Null[runtime.Decimal]{}, err
+	}
+	return runtime.Null[runtime.Decimal]{V: d, Valid: true}, nil
 }
