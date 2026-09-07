@@ -20,7 +20,7 @@ migrations and **never applies DDL**.
 
 ## Status
 
-**v0.6.4 is tagged.** The read path, migrations, relations, writes, the typed
+**v0.6.5 is tagged.** The read path, migrations, relations, writes, the typed
 escape hatch and the tooling gate are built, benchmarked and hardened; the first
 adopter migrated a whole bounded context (M6) and runs on the published module.
 v0.3.0 added model discovery, declared aggregations and joins, full-text

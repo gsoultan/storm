@@ -21,6 +21,14 @@ CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
 single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
 sequence**, which deliberately runs writes (M4) before relations (M3).
 
+**v0.6.5 tagged 2026-09-07** — an imported model can be VERIFIED. argus went
+from `verify` failing outright → 26 pending changes → **2**, neither a defect
+(`int4[]` has no Go type, and storm indexes every FK where argus does not).
+Serial is now an IR fact distinct from Identity; constraint names are carried;
+uniques and checks are emitted rather than listed as lost; every default is
+emitted. It also corrected v0.6.4's nullable-slice change, which had made a
+nullable jsonb NOT NULL — caught only by running verify against a real
+database, which is the whole argument for [[argus_adopter]].
 **v0.6.4 tagged 2026-09-07** — `storm import` could not import. Eight defects
 found by pointing the on-ramp at argus, a database it had never seen, as step
 one of the second-adopter exercise. It refused to run in a module with no
