@@ -48,11 +48,26 @@ they are called out here so the override is deliberate.
 | M6 | First adopter: `anubis/authz` | ✅ | **PASSED 2026-08-25, in one day** — whole bounded context migrated; p95 did not regress (see M6 status) | *(cleared: kill line was 3 wks or a p95 regression)* |
 | M7 | Tooling gate + hardening | ✅ | **PASSED 2026-08-24** — explain/lint/verify(-stale,-pending) shipped and tested; fuzz corpus + injection suite in CI; coverage floors enforced | *(cleared)* |
 | M8 | v1.0 release (Postgres) | ◐ | docs, examples and `docs/STABILITY.md` exist; **v0.6.5 tagged 2026-09-07**. What v1.0 still waits on is a SECOND adopter — every wrong-answer bug so far was found by exercising a path no test reached | — |
-| M9 | MySQL 8 + MariaDB | 4 | full suite green on both; seam has no leaks | seam leaked → fix `compile/` before any further target |
+| M9 | MySQL 8 + MariaDB | 4 | full suite green on both, **including the JSON_TABLE batch loader on MariaDB**; seam has no leaks | seam leaked → fix `compile/` before any further target |
 
 **M9 scoped 2026-09-06, and the seam's second implementation now compiles.** ADR-0007 named three needs. Two were already met and nobody had checked: `runtime/mydec` exists, and `codegen` is parameterised at the decode site. The third — a wire-level MySQL client — is untouched and is the whole remaining cost.
 
 Checking the first two found that the MySQL dialect had **never been compiled**. It emitted calls to a decoder family it did not import, a generic that exists only in `runtime`, and a `Decimal` whose three return values were assigned to one variable. The dialect tests asserted the emitted TEXT and passed throughout. `codegen.TestMySQLGeneratedPackageCompiles` is now the gate, and it fails on each of those three independently.
+
+**R9's two open questions are now answered, 2026-09-07 — see
+[ADR-0010](adr/0010-the-in-list-and-the-placeholder-cross-to-mysql.md).** The
+one that could have sunk M9 was `In`: it lowers to `= ANY($1)`, one placeholder
+for a whole list, and MySQL's `IN (?,?,?)` has value-dependent arity — a shape
+key bounded by request data rather than by the program, which is storm being an
+interpreter with extra steps. `JSON_TABLE(?, '$[*]' ...)` crosses it: one bound
+JSON value, statement text independent of list length, and `Index lookup using
+ix_user` in the plan on MySQL 8.4.11. One PREPARE served lists of 3, 12 and 0.
+The placeholder carrier is decided too (a `Placeholder` field on
+`runtime.Lowering`) and deliberately not implemented, because its suffix
+scanner cannot be settled without a server to run the result against.
+
+M9 is therefore still a driver project and only that — but the risk that the
+driver would arrive to find the loader unbuildable is retired.
 
 What that does and does not buy: the generated MySQL read path **builds**. It has never decoded a byte, because there is no driver to hand it one. `go-sql-driver/mysql` decodes result rows into `driver.Value` before storm can see them, so satisfying the four-method port on top of it would cost one boxing allocation per column per row — the interpreter design ADR-0007 exists to refuse. M9 therefore remains a driver project: a fork that exposes the binary result rows, or an implementation of the protocol subset storm needs. That is the estimate to make before starting, not after.
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |

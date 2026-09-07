@@ -22,10 +22,19 @@ caught three real leaks the very next commit.
 placeholder is `$` + ordinal. That is Postgres and MSSQL, not MySQL's `?` or
 Oracle's `:name`. Documented at `takesArg`. M9 decides the carrier.
 
-**The trap M9 will hit:** `In` lowers to `= ANY($1)` — one placeholder for a
-whole list, which is what makes the relation batch loader two round trips.
-MySQL's `IN (?, ?, ?)` has **value-dependent arity**, so the shape key would
-stop being value-independent. That does not carry over.
+**The trap M9 would have hit — RETIRED 2026-09-07, measured.** `In` lowers to
+`= ANY($1)`: one placeholder for a whole list, which is what makes the relation
+batch loader two round trips. MySQL has no array type, and `IN (?, ?, ?)` has
+value-dependent arity, so the shape key would stop being value-independent —
+storm would be an interpreter with extra steps.
+
+`JSON_TABLE(?, '$[*]' COLUMNS (v BIGINT PATH '$'))` is the crossing. One bound
+JSON value, one placeholder, statement text independent of list length. Proven
+on MySQL 8.4.11: `Index lookup on p using ix_user` in the plan, and one PREPARE
+serving lists of 3, 12 and 0 with correct counts. The empty list is what
+settles it against arity-bucketing — `IN ()` is a syntax error in MySQL and
+`JSON_TABLE` simply returns no rows. **MariaDB untested; JSON_TABLE arrived in
+10.6.** See docs/adr/0010.
 
 ## Generation is per *context*, one package per *table*
 `codegen.Package` renders every table and returns path → contents. It **writes
