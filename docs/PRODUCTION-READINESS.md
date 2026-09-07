@@ -378,13 +378,22 @@ today are two *different processes*, not one growing. The series inside a
 single run is the signal; the column of absolutes across runs is not, and
 reading it as growth is the mistake the recorder's own output warns about.
 
-**What this soak does NOT vouch for.** anubis pins `storm v0.2.0`. Everything
-in v0.3.0 through v0.6.0 — declared aggregations and joins, unions, the
-statement pinning, the index grammar, upsert on unique indexes, row locking —
-has never run under this workload. The soak closes the question it was asked,
-which is whether the *migration* holds up under real traffic; it says nothing
-about the surface added since, and the second adopter that M8 waits on is
-still the only thing that would.
+**What this soak does NOT vouch for.** It was measured against a `storm v0.2.0`
+pin. Everything in v0.3.0 through v0.6.0 — declared aggregations and joins,
+unions, statement pinning, the index grammar, upsert on unique indexes, row
+locking — had never run outside storm's own fixtures.
+
+**Half of that closed on 2026-09-07**, when anubis moved to v0.6.3
+(anubis#15). That surface now compiles against a real repository and passes
+its CI: enforcement gates, race suite, and integration + e2e + fuzz smoke
+against a fresh database. What it has *not* done is carry sustained load. The
+four signals above — p95, shapes, flushes, RSS — were recorded from a binary
+that did not contain it, so they say nothing about it either way. **Re-running
+the soak on the new pin is the next reading worth taking**, and it is cheap:
+anubis's own `scripts/soak-load.sh` and `scripts/soak-record.sh` are already
+there, and `anubis/docs/soak-storm.md` is the column the row goes into.
+
+The second adopter M8 waits on is a separate question and still open.
 
 The kill criterion is retired rather than left open: it named a v0.1.1 it has
 long outlived, and re-reading it against every future tag would be a gate that
