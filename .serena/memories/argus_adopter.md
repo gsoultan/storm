@@ -13,13 +13,13 @@ index (`lower(email)`), a natural `TEXT` primary key, `ON DELETE SET NULL`.
 
 **Status 2026-09-07: schema modelled, not migrated.** `storm import` against the
 live database produces a model that compiles, `storm.Build` accepts (11 tables),
-and `storm verify` reports **2** pending changes, neither a defect:
+and `storm verify` reports **1** pending change — `CREATE INDEX` on
+`sessions.asset_id`, because storm indexes every foreign key and argus does
+not. An opinion, not a defect. The header now truthfully reads "Nothing was
+dropped: every construct in this schema is expressible".
 
-- `agents.ssh_ports` is `int4[]`, which storm has no Go type for. `int8[]`,
-  `text[]`, `uuid[]` and `numeric[]` exist; this one does not. Now DISCLOSED in
-  the NOT CARRIED OVER header rather than silently dropped.
-- storm indexes every foreign key; argus has no index on `sessions.asset_id`.
-  An addition, and a thing storm is deliberately opinionated about.
+Progression across the releases it forced, same database every time:
+`verify` failed outright → 26 → 5 → 2 → 1 (v0.6.4, v0.6.5, v0.6.6).
 
 **What it cost storm: two releases and ~12 defects**, none of which any test in
 storm's own repository could have found, because every one needed a schema
