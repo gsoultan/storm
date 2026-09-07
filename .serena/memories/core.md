@@ -7,7 +7,8 @@ not deployed. Zero CGO. Driver deps isolated one-per-adapter (`pgx/v5` in
 **Postgres first**, then MySQL/MariaDB → SQL Server → Oracle → MongoDB. The
 dialect is a *compile-time parameter*: for an interpreter multi-dialect is a
 runtime tax, for a compiler it is a build-time cost. **Model-first** — one Go
-schema, generated query API, generated migrations storm never applies.
+schema, generated query API, generated migrations. No CLI command applies one;
+`migrate.Auto` does, opt-in, since 2026-09-07 — see [[automigrate]].
 
 **Thesis:** every other Go ORM builds SQL at runtime; storm builds it at compile
 time, *including the dynamic queries*. A dynamic query has a bounded set of
@@ -167,6 +168,8 @@ landed; read [[decisions]] for what changed and why — the rewrites carry the
 reasoning.
 
 ## Related memories
+- [[automigrate]] — `migrate.Auto`, why ADR-0001 was amended rather than upheld,
+  and the two concurrency defects its own tests found
 - [[m0_results]] — the spike result and the three findings that amended the plan
 - [[decisions]] — the four load-bearing ADRs and what was rejected
 - [[boundaries]] — the scope line

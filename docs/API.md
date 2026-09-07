@@ -101,8 +101,37 @@ $ storm watch ./store           # regenerate on save
 ```
 
 `storm diff` writes a migration and **never applies one** — that is
-[ADR-0001](adr/0001-model-first-migration-mediated-ddl.md), and no runtime code
-path can alter a schema.
+[ADR-0001](adr/0001-schema-source-of-truth.md), and it holds for every command
+in the CLI.
+
+### Automigrate
+
+For the databases whose cost of being wrong is low — tests, local development,
+ephemeral environments, CI, single-instance deployments — `migrate.Auto` applies
+the same plan directly:
+
+```go
+s, err := storm.Build(model.All()...)
+if err != nil {
+        return err
+}
+res, err := migrate.AutoPool(ctx, pool, s, migrate.AutoOptions{Logf: log.Printf})
+if err != nil {
+        return err // *migrate.DestructiveError if a step could lose data
+}
+log.Printf("storm: %d migration step(s) applied", len(res.Applied))
+```
+
+It is opt-in in three separate ways: a package you import, a function you call,
+and — for anything that can lose data — an `AllowDestructive` you set after
+reading the steps in the returned `*DestructiveError`. It takes a session
+advisory lock so replicas starting together apply the plan once, computes the
+plan *after* taking it so late replicas find nothing to do, applies every
+transactional step in one transaction, and bounds `lock_timeout` so a queued
+`ALTER TABLE` cannot stall the table's other readers.
+
+`storm diff` remains the right path for a production database with data in it.
+See [ADR-0001's amendment](adr/0001-schema-source-of-truth.md#amendment-2026-09-07--automigrate).
 
 ## 3. Typed columns, not strings
 

@@ -6,7 +6,8 @@ more than the originals.
 
 - **0001 Model-first, migration-mediated DDL.** *(rewritten; originally
   database-first.)* The Go model is the source of truth. storm emits a numbered,
-  forward-only, **reviewable** migration and **never applies one**. The original
+  forward-only, **reviewable** migration and no CLI command applies one
+  (**amended 2026-09-07**: `migrate.Auto` does — see [[automigrate]]). The original
   ADR conflated *where schema is declared* with *who applies DDL* — only the
   second is dangerous. Forced by the new targets: **Mongo has no schema to
   introspect**, and five hand-maintained migration sets never stay in sync.
@@ -40,8 +41,11 @@ reviewable file listing every load pattern — which `storm lint --plans` can co
 in round trips.
 
 ## Rejected — do not rebuild (reasoning > verdict)
-- **Runtime DDL / AutoMigrate** — silent production schema change. Emitting a
-  migration is fine; *applying* one from library code is not.
+- **Runtime DDL / AutoMigrate *as GORM does it*** — silent production schema
+  change. **Partially reversed 2026-09-07**: the danger is *silent*, not
+  *applied*, and `migrate.Auto` applies DDL without being any of implicit,
+  unserialised, partial, or destructive-by-default. See [[automigrate]] for the
+  five properties and the two defects the concurrency tests found.
 - **Ambient persistence context + lazy loading** — root cause of nearly every
   Hibernate pathology. A field access that might do I/O makes performance
   unreviewable.
@@ -155,8 +159,10 @@ statement too. See `internal/planspike/sqlquery_test.go` for the shape (SQL as a
 `const` so declaration and registration cannot drift).
 
 Not covered, deliberately: `storm.RawSQL` in check constraints and generated
-columns still reaches DDL verbatim — mitigated by ADR-0001, storm never applies
-DDL, so it is reviewed schema and not request data.
+columns still reaches DDL verbatim — mitigated by ADR-0001: it is reviewed
+schema and not request data. Note that `migrate.Auto` (2026-09-07) applies that
+same DDL without a human reading it, so the mitigation there is that the model
+is still source code, not that a person saw the SQL.
 
 ## Aggregation: DISTINCT, arithmetic, window frames (2026-09-03)
 

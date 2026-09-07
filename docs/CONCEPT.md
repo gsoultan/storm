@@ -129,14 +129,15 @@ load that is not provably bounded in round trips.
 (ANALYZE, BUFFERS)"* as a **perf veto** enforced by review. An ORM that enforces
 it mechanically is worth more than one that is 5% faster.
 
-### 8. The model is the source of truth; storm never applies DDL
+### 8. The model is the source of truth; applying DDL is opt-in
 
 Schema is a plain Go struct (ADR-0001) — no DSL; `*T` means nullable,
 `OrgID`+`Org *Org` means a foreign key, `[]Post` means has-many. From one model
 storm generates the query API
 *and* a numbered, forward-only, **reviewable** migration file — which your
-existing runner applies. There is no `AutoMigrate` and no library code path that
-can alter a schema.
+existing runner applies. No `storm` command applies DDL, and nothing applies it
+implicitly; `migrate.Auto` is the one code path that can alter a schema, and
+only when an adopter calls it.
 
 One canonical model is the only workable answer once five SQL dialects and a
 document store are targets: five hand-maintained migration sets never stay in
@@ -153,9 +154,14 @@ an existing schema.
 
 The reasoning matters more than the verdicts.
 
-**Runtime DDL / AutoMigrate.** The failure mode is silent production schema
-change. storm *emits* migrations from the model but never applies one — the
-distinction ADR-0001's first draft missed, and the whole of the danger.
+**Runtime DDL / AutoMigrate — *as GORM does it*.** The failure mode is silent
+production schema change, and the operative word is **silent**: DDL on a path
+you did not think about, a column dropped because a field went away, success
+reported. storm rejects that, not the applying itself — `migrate.Auto` applies
+DDL but is never implicit, never unserialised, never partial, and never
+destructive without being told (ADR-0001, amended 2026-09-07). The distinction
+ADR-0001's first draft missed was *where the schema is declared* versus *who
+applies DDL*; the second draft missed *who applies it* versus *how*.
 
 **Ambient persistence context with lazy loading.** The root cause of nearly all
 Hibernate pain. A field access that might issue I/O makes performance

@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-08-28
+updated: 2026-09-07
 ---
 
 # Changelog
@@ -11,6 +11,87 @@ may change with a minor bump; what is promised, and for how long, is
 
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
+
+## Unreleased
+
+### `migrate.Auto` — automigrate, and the ADR that had to be amended for it
+
+storm can now apply its own DDL: `migrate.Auto(ctx, conn, s, opts)` and
+`migrate.AutoPool(ctx, pool, s, opts)` diff the live schema against the model
+and apply the result. ADR-0001 forbade exactly this, and the amendment is in the
+ADR rather than in a commit message, because the reasoning is the interesting
+part: the ban said "silent production schema change", and the load-bearing word
+was **silent**. Applying DDL is not the danger; applying it implicitly,
+unserialised, in part, and without a gate on data loss is. So each of those is
+answered instead of the whole thing being refused:
+
+- **Never implicit.** No `init`, no hook, no path a query reaches. A function
+  you call, in a package you import on purpose.
+- **Never destructive by accident.** A plan containing a drop, a narrowing, or
+  a NOT NULL with no default returns `*DestructiveError` and applies **nothing**
+  — not the destructive steps minus the rest, nothing. `AllowDestructive` opts
+  in after you have read them off the error.
+- **Never twice.** A session advisory lock, and the plan is computed *after*
+  taking it, so replicas that queued re-diff against the winner's work and find
+  nothing to do. Four processes starting together apply one migration.
+- **Never in part.** Every transactional step shares one transaction, which
+  PostgreSQL supports for DDL.
+- **Never a lock queue.** `lock_timeout` defaults to 3s on every step, because
+  the outage an `ALTER TABLE` causes is the *wait*: while it queues for its
+  ACCESS EXCLUSIVE lock, every query arriving behind it queues too. There is
+  deliberately no default `statement_timeout` — waiting blocks other sessions,
+  running long only costs the migration.
+- **Never observable afterwards.** `search_path` and `lock_timeout` are restored
+  before returning, on a context detached from the caller's so a cancellation
+  cannot skip it. `AutoPool` pins one connection for the whole migration —
+  the advisory lock is session-scoped, so a migration spread across pooled
+  connections would not hold it at all — and that connection goes back to the
+  pool as it came.
+
+`storm diff` is unchanged and is still the recommended path for a production
+database with data in it. No CLI command applies DDL.
+
+**Two defects the tests found, both in the concurrency the feature exists for.**
+`CREATE SCHEMA IF NOT EXISTS` is not atomic — it reads the catalog and then
+inserts, so four processes arriving together all found the namespace missing and
+three failed on `pg_namespace_nspname_index`. It had been placed *before* the
+lock on the reasoning that it was idempotent, which it is; "idempotent" and
+"safe to race" are different properties and `IF NOT EXISTS` only claims the
+first. And the concurrent-index path set `lock_timeout` on the *session*,
+because a `CREATE INDEX CONCURRENTLY` has no transaction to scope a `SET LOCAL`
+to — through `AutoPool` that setting rode the connection back into the pool and
+stayed there.
+
+**A third defect, found by an enum.** PostgreSQL runs `ALTER TYPE ... ADD VALUE`
+inside a transaction quite happily but refuses to let anything *use* the new
+label until that transaction commits (SQLSTATE 55P04, "unsafe use of new
+value"). A model change as ordinary as adding a status and defaulting a column
+to it therefore could not be one transaction, and failed every time. Auto now
+commits enum-label additions first, on their own, then everything else as one
+transaction, then the concurrent index builds. Committing the labels separately
+costs nothing that was ever available: PostgreSQL has no `DROP VALUE`, so there
+was no rollback to give up.
+
+> **`storm diff` has the same latent defect and is NOT fixed here.** It writes
+> the `ADD VALUE` and the step that uses it into one `.up.sql`, and a runner
+> that wraps a file in a transaction — golang-migrate does — will fail on it.
+> `Change.addsEnumValue` now carries the fact, so the fix is to give those steps
+> a file of their own exactly as `NoTransaction` steps already get one.
+
+**Verified against two schemas storm did not write.** argus's ten hand-written
+SQL migrations were applied to a scratch database, introspected into the IR, and
+`Auto` rebuilt the whole ten-table schema from nothing — round trip clean, and
+idempotent on a second call. anubis's real model (the one shipping on v0.6.3)
+applies, verifies clean and is idempotent. That is the exercise that found the
+defects in v0.6.4 and v0.6.5, and it is the only evidence worth much.
+
+**A boundary rewritten rather than quietly widened.** `migrate/` was exempt from
+the "pgx lives in `runtime/pgxdrv`" rule because it was build-time code, and it
+is not any more. The narrower property that replaced it is now machine-checked:
+`scripts/check/boundaries.sh` fails the build if pgx reaches the *root* package's
+dependency closure, so `import "github.com/gsoultan/storm"` still links no
+driver and automigrate stays something an adopter opts into. Verified to trip
+both ways.
 
 ## v0.6.7 — 2026-09-07
 

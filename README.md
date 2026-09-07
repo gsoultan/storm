@@ -9,7 +9,8 @@ not deployed. Zero CGO; the driver lives behind a four-method port.
 **Model-first:** one plain Go struct per table — no tags, no DSL. Everything
 the type cannot say goes in a `Schema` method using **field pointers**, so the
 editor enforces names and refactors follow them. storm emits reviewable
-migrations and **never applies DDL**.
+migrations and **applies none of them** — unless you call `migrate.Auto`, the
+opt-in automigrate for databases whose cost of being wrong is low.
 
 > **Renamed from `raorm` (2026-08-27).** The module path is now
 > `github.com/gsoultan/storm`, and **v0.2.0 is the first usable version under

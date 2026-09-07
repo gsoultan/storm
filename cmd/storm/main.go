@@ -18,7 +18,9 @@
 // exactly as before. Discovery is an addition, not a replacement — a module
 // that has one is left alone.
 //
-// storm never applies DDL. Every command either prints SQL or exits non-zero.
+// No command here applies DDL: each either prints SQL, writes a migration file,
+// or exits non-zero. Applying is `migrate.Auto`, which is a library call an
+// adopter makes deliberately — never something the CLI does for them.
 package main
 
 import (

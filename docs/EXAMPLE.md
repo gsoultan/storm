@@ -114,8 +114,10 @@ For the schema itself:
 $ storm diff create_blog        # writes db/migrations/0001_create_blog.up.sql
 ```
 
-storm **never applies DDL** ([ADR-0001](adr/0001-model-first-migration-mediated-ddl.md)).
-It writes a migration you review and run with whatever you already use.
+`storm diff` **applies nothing** ([ADR-0001](adr/0001-schema-source-of-truth.md)).
+It writes a migration you review and run with whatever you already use. If this
+database is a test, a laptop, or an ephemeral environment, `migrate.Auto` will
+apply the same plan for you — see [API.md](API.md#automigrate).
 
 ## 3. Query
 
