@@ -107,9 +107,33 @@ func (d Dialect) supports(c *schema.Column) bool {
 // PostgreSQL and `mydec.DateTime` for MySQL, because the two do not merely
 // disagree about bytes — MySQL packs a datetime component-wise with a leading
 // length, so it is a different function taking a different shape.
+// neutral names resolve to `runtime` whatever the family, because they are not
+// decoders: Nullable is generic over one, and the Null[T] it returns is the
+// row's field type. Prefixing them with the family package produced calls to
+// functions that do not exist — mydec.Nullable — which no assertion on the
+// emitted TEXT could catch, and which nothing compiled until a gate did.
+var neutralDecoders = map[string]bool{"Nullable": true}
+
 func (d decoders) q(name string) string {
+	if neutralDecoders[name] {
+		return "runtime." + name
+	}
 	if n, ok := d.fn[name]; ok {
 		return d.pkg + "." + n
 	}
 	return d.pkg + "." + name
+}
+
+// needsRuntime reports whether a generated file must import `runtime` in
+// addition to its own decoder family. Always: the Row types, the token stream
+// and the executor port all live there, whichever family decodes the bytes.
+func (d decoders) needsRuntime() bool { return true }
+
+// family is the import a generated file needs for its decoders, or "" when
+// that is `runtime` itself.
+func (d decoders) family() string {
+	if d.pkg == "runtime" {
+		return ""
+	}
+	return d.imp
 }

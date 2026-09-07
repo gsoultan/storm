@@ -27,6 +27,12 @@ v0.2.0 — the adopter-upgrade exercise works, do it again after each release).
 grammar, upsert on every unique index, top-N, AnyOf, budgets, statement
 pinning). Both verified from the module proxy by a fresh outside module.
 
+**R9 update 2026-09-06:** the dialect seam's MySQL side had NEVER been
+compiled — text assertions only — and did not build (missing import, a
+neutral generic prefixed with the family package, Decimal arity, fallible
+decoders called as infallible). Fixed; `codegen.TestMySQLGeneratedPackageCompiles`
+is the gate. M9's remaining cost is the wire-level driver, nothing else.
+
 See [[indexing]] for the index grammar and the three server behaviours it had to learn (2026-09-05).
 See [[query_expressiveness]] for where the declared query surface ends and what
 is deliberately left to `storm.SQL[T]` (updated v0.5.0, 2026-09-05).
