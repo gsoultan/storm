@@ -366,25 +366,34 @@ and there is no `OFFSET` and no cursor — a hard blocker for any list endpoint
 | **Ent benchmark** — needs its own codegen step | M0 scope | **✅ done 2026-08-25** — Get 159 allocs, Scan1000 23,016 (GORM-class); its one-table client is 164K generated code. `bench/RESULTS.md` |
 | **Unix-socket re-benchmark** | M0 finding #3 | **✅ done 2026-08-25** — host PG 17.11 on a pure socket, ~22µs round trips: Get **0.99×** raw pgx, Scan1000 ~0.97×. The thesis gate survives 4× better resolution. `bench/RESULTS.md` |
 
-**Unix socket — why it is still open.** `make db` runs Postgres in an Apple
-container reachable only over TCP, and there is no local Postgres on the dev
-machine (`brew list | grep postgres` is empty). Measuring storm's overhead
-against a ~64 µs round trip is measuring the network, so the ≤ 1.15×
-wall-clock gate passed *without discriminating* — and it will keep doing so
-until this runs over a socket. Unblocking it is:
+> **Both rows above are closed.** What follows is the record of why each debt
+> sat open, kept because the reasoning outlives the debt. It is history, not a
+> live blocker — and it read in the present tense until 2026-09-07, which is
+> its own lesson: a status table and the prose beneath it drift apart silently,
+> and the prose is what people actually read.
+
+**Unix socket — why it was open.** `make db` runs Postgres in an Apple container
+reachable only over TCP, and there was no local Postgres on the dev machine
+(`brew list | grep postgres` was empty). Measuring storm's overhead against a
+~64 µs round trip is measuring the network, so the ≤ 1.15× wall-clock gate was
+passing *without discriminating*. Closed 2026-08-25 by installing one:
 
 ```console
 brew install postgresql@17 && brew services start postgresql@17
 STORM_DSN='postgres:///storm?host=/tmp' make bench
 ```
 
-Do not close this by re-running the container benchmark and reporting a better
-number. The measurement is the point, not the number.
+It was closed the way the note demanded — by taking the measurement, not by
+re-running the container benchmark and reporting a better number. At ~22 µs
+round trips the gate had 4× the resolution and still held: Get 0.99× raw pgx,
+Scan1000 ~0.97×. A gate that cannot fail is not evidence, and this one could
+not have failed until it ran over a socket.
 
-**Ent.** Every other rival is already in `bench/` (sqlc, Bun, GORM against raw
-pgx). Ent needs `entgo.io/ent` in `go.mod` plus a real `go generate` step, so it
-is the only one that cannot be added by writing a `_test.go` file — which is why
-it keeps being the one left out.
+**Ent — why it was the last rival in.** Every other one goes in by writing a
+`_test.go` file (sqlc, Bun, GORM against raw pgx). Ent needs `entgo.io/ent` in
+`go.mod` plus a real `go generate` step, which is why it kept being deferred.
+Closed 2026-08-25, and the numbers repaid the setup: Get 159 allocs, Scan1000
+23,016, a one-table client of 164K generated code.
 
 ---
 
@@ -812,8 +821,11 @@ Written as a checklist because "production ready" is not one property.
    benchmarks miss — and testing the CLI in one sitting found three defects,
    two able to lose data. That is the rate to expect, and it does not fall
    until someone runs it against a real workload.
-3. **No release, no API stability policy** (M8). Nothing is tagged and nothing
-   is promised.
+3. ~~No release, no API stability policy (M8). Nothing is tagged and nothing
+   is promised.~~ **v0.1.0 shipped 2026-08-26; v0.6.3 is current (2026-09-07).**
+   `docs/STABILITY.md` says what is promised and for how long, and every
+   release since has been verified from the module proxy by a module outside
+   this repository.
 4. ~~No `storm lint`, no `storm explain`.~~ **Both shipped 2026-08-24**, plus
    `verify -pending` (ADR-0001's third mode: "changed the model, no migration"
    as a CI failure that prints its own fix). lint budgets every named plan's
@@ -821,8 +833,14 @@ Written as a checklist because "production ready" is not one property.
    issue via GENERIC_PLAN — a validity gate on any database, a seq-scan gate
    only where statistics exist, and the doc says which is which. M7's tooling
    gate is closed; the fuzz corpus and injection suite closed earlier.
-5. **Postgres only, and the dialect seam is unproven.** It exists and is
-   CI-enforced, but a seam with one implementation is a hypothesis. M9 tests it.
+5. **Postgres only, and the dialect seam is still unproven — but for a
+   narrower reason than this said.** It exists and is CI-enforced. As of
+   v0.6.2 the second implementation also *compiles*, which it had never done:
+   `codegen.TestMySQLGeneratedPackageCompiles` gates that now. It has never
+   decoded a byte, because no driver exists to hand it one. A seam with one
+   working implementation is a hypothesis; the difference is that the
+   hypothesis is now about the wire, not about whether the code builds. M9
+   tests it.
 6. ~~No transaction helper.~~ **`pgxdrv.Tx` shipped 2026-08-24.** The doctrine
    is now a capability: `Tx{T: tx}` runs every generated surface — queries,
    plans, COPY, a Unit flush — inside one pgx transaction unchanged, proven by
