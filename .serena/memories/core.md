@@ -21,6 +21,10 @@ CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
 single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
 sequence**, which deliberately runs writes (M4) before relations (M3).
 
+**v0.6.6 tagged 2026-09-07** — `int4[]`. It was the last gap in argus's
+schema, and `storm verify` there is now at **ONE** pending change: `CREATE
+INDEX` on a foreign key, which is storm's opinion, not a defect. Across three
+releases against the same live database: failed outright → 26 → 5 → 2 → 1.
 **v0.6.5 tagged 2026-09-07** — an imported model can be VERIFIED. argus went
 from `verify` failing outright → 26 pending changes → **2**, neither a defect
 (`int4[]` has no Go type, and storm indexes every FK where argus does not).
