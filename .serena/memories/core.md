@@ -21,6 +21,15 @@ CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
 single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
 sequence**, which deliberately runs writes (M4) before relations (M3).
 
+**v0.6.4 tagged 2026-09-07** — `storm import` could not import. Eight defects
+found by pointing the on-ramp at argus, a database it had never seen, as step
+one of the second-adopter exercise. It refused to run in a module with no
+models (the only kind it serves), then emitted a model that did not parse, then
+one that did not compile, then one `storm.Build` refused. The gate had only
+ever checked that the output PARSES; it compiles and Builds it now, and caught
+a ninth defect the same day. **Open: BIGSERIAL does not round-trip** — it comes
+back as a literal `nextval()` default that cannot apply to a scratch schema.
+See [[argus_adopter]].
 **v0.6.3 tagged 2026-09-07** (generated code did not pass `go vet` — the
 shape assertion's unkeyed literal, which is the check itself, is what vet
 reports for an imported struct type; a local defined type keeps both. Shipped
