@@ -21,6 +21,10 @@ CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
 single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
 sequence**, which deliberately runs writes (M4) before relations (M3).
 
+**v0.6.2 tagged 2026-09-07** (the MySQL dialect's generated package could not
+compile; `codegen.TestMySQLGeneratedPackageCompiles` is the gate. Postgres
+output unchanged, measured). Verified from the proxy: a fresh outside module
+builds and `codegen.Version()` reports `v0.6.2`.
 **v0.6.1 tagged 2026-09-06** (two verify fixes found by upgrading anubis off
 v0.2.0 — the adopter-upgrade exercise works, do it again after each release).
 **v0.6.0 tagged 2026-09-06** (row locking). v0.5.0 tagged 2026-09-05 (index
