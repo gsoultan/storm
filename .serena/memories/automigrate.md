@@ -59,10 +59,16 @@ everything else (one transaction) → `CREATE INDEX CONCURRENTLY` (no transactio
 last). Committing labels separately costs nothing that existed: there is no
 `DROP VALUE`, so there was never a rollback to give up.
 
-**`storm diff` has the same defect and it is NOT fixed** (as of 2026-09-07): it
-writes `ADD VALUE` and the step using it into one `.up.sql`, and golang-migrate
-wraps a file in a transaction. `Change.addsEnumValue` carries the fact; the fix
-is a file of its own, exactly as `NoTransaction` steps already get one.
+**`storm diff` had the same defect and it is fixed too** (v0.7.0): it wrote
+`ADD VALUE` and the step using it into one `.up.sql`, and golang-migrate wraps a
+file in a transaction — so storm was generating migrations no runner could run.
+Each label now gets its own file, numbered first. **Behaviour change**: such a
+diff writes one more file than before. `Change.AddsEnumValue()` is the exported
+predicate.
+
+The test worth copying: apply every generated file the way golang-migrate does —
+alone, in a transaction. Asserting on file *names* would have missed this; a
+file storm wrote that cannot survive that is not a migration.
 
 ## Verified against schemas storm did not write
 

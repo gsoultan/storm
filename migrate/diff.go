@@ -110,6 +110,14 @@ func (p Plan) Concurrently(live *schema.Schema) Plan {
 	return out
 }
 
+// AddsEnumValue reports whether this step is an ALTER TYPE ... ADD VALUE.
+//
+// Anything applying a Plan has to keep such a step out of the transaction that
+// USES the new label: PostgreSQL runs the addition inside a transaction but
+// refuses the use until it commits (SQLSTATE 55P04). migrate.Auto gives them a
+// leading transaction of their own; `storm diff` gives them a file of their own.
+func (c Change) AddsEnumValue() bool { return c.addsEnumValue }
+
 // Diff computes the changes that take `from` to `to`. Both are normalised
 // first, so the result does not depend on declaration order.
 func Diff(from, to *schema.Schema) Plan {
