@@ -22,6 +22,20 @@ CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
 single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
 sequence**, which deliberately runs writes (M4) before relations (M3).
 
+**v0.7.0 tagged 2026-09-07** — **automigrate**. `migrate.Auto` / `AutoPool`
+apply DDL from a running process, and ADR-0001 carries a dated amendment saying
+why the ban did not survive contact: the danger it named was *silent* schema
+change, and implicit / unserialised / partial / destructive-by-default are each
+separately fixable. Advisory lock, plan computed AFTER taking it, one
+transaction, `lock_timeout` 3s, no default `statement_timeout`. Three defects
+found by its own tests, all in the concurrency the feature exists for — see
+[[automigrate]], which is worth reading before touching `migrate/`. It also
+fixed a defect **older than this work**: `storm diff` wrote an enum label and
+the statement using it into one file, which no runner wrapping a file in a
+transaction could apply. Verified against argus's ten hand-written migrations
+(rebuilt from nothing) and anubis's real model. `migrate/` stopped being
+build-time-only, so the pgx boundary is now machine-checked at the ROOT
+package instead of asserted in a comment.
 **v0.6.6 tagged 2026-09-07** — `int4[]`. It was the last gap in argus's
 schema, and `storm verify` there is now at **ONE** pending change: `CREATE
 INDEX` on a foreign key, which is storm's opinion, not a defect. Across three
