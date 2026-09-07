@@ -11,7 +11,8 @@ import (
 // _assertBookingShape fails to compile if m0.Booking gains, loses, renames or
 // reorders a field. Regenerate: `storm generate`.
 func _assertBookingShape(m m0.Booking) {
-	_ = m0.Booking{
+	type shape m0.Booking
+	_ = shape{
 		m.Model,
 		m.Room,
 		m.Guest,
@@ -22,7 +23,8 @@ func _assertBookingShape(m m0.Booking) {
 // _assertCustomerShape fails to compile if m0.Customer gains, loses, renames or
 // reorders a field. Regenerate: `storm generate`.
 func _assertCustomerShape(m m0.Customer) {
-	_ = m0.Customer{
+	type shape m0.Customer
+	_ = shape{
 		m.Model,
 		m.Email,
 		m.Name,
@@ -33,7 +35,8 @@ func _assertCustomerShape(m m0.Customer) {
 // _assertOrderShape fails to compile if m0.Order gains, loses, renames or
 // reorders a field. Regenerate: `storm generate`.
 func _assertOrderShape(m m0.Order) {
-	_ = m0.Order{
+	type shape m0.Order
+	_ = shape{
 		m.Model,
 		m.Audited,
 		m.Customer,
@@ -47,7 +50,8 @@ func _assertOrderShape(m m0.Order) {
 // _assertOrderLineShape fails to compile if m0.OrderLine gains, loses, renames or
 // reorders a field. Regenerate: `storm generate`.
 func _assertOrderLineShape(m m0.OrderLine) {
-	_ = m0.OrderLine{
+	type shape m0.OrderLine
+	_ = shape{
 		m.Model,
 		m.Order,
 		m.Product,
@@ -59,7 +63,8 @@ func _assertOrderLineShape(m m0.OrderLine) {
 // _assertProductShape fails to compile if m0.Product gains, loses, renames or
 // reorders a field. Regenerate: `storm generate`.
 func _assertProductShape(m m0.Product) {
-	_ = m0.Product{
+	type shape m0.Product
+	_ = shape{
 		m.Model,
 		m.SKU,
 		m.Name,
@@ -74,7 +79,8 @@ func _assertProductShape(m m0.Product) {
 // _assertStockItemShape fails to compile if m0.StockItem gains, loses, renames or
 // reorders a field. Regenerate: `storm generate`.
 func _assertStockItemShape(m m0.StockItem) {
-	_ = m0.StockItem{
+	type shape m0.StockItem
+	_ = shape{
 		m.Model,
 		m.Audited,
 		m.Product,

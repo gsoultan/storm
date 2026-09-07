@@ -114,6 +114,17 @@ if ! go build ./... >build.err 2>&1; then
   note "generated code does not compile:"; sed 's/^/    /' build.err | head -5 >&2
 fi
 
+# Compiling is not the bar an adopter holds it to. `go vet ./...` is a step in
+# most Go CI pipelines, and it runs over the WHOLE module — generated files
+# included. Code storm emits that fails vet is a build storm broke, and it is
+# invisible from inside this repository: the one module here that carries a
+# generated shape assertion is examples/orders, which the root `go vet ./...`
+# does not reach because it is a separate module.
+echo "== and it passes go vet, which is what the adopter's CI runs =="
+if ! go vet ./... >vet.err 2>&1; then
+  note "generated code fails go vet:"; sed 's/^/    /' vet.err | head -5 >&2
+fi
+
 # The migration path, when a server is available. It is the riskiest thing an
 # ORM does — it changes schemas that hold production data — and until now it
 # had only ever been exercised inside storm's own module, the same blind spot

@@ -12,6 +12,46 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v0.6.3 — 2026-09-07
+
+### Fixed: generated code did not pass `go vet`
+
+Since v0.3.0 every generated package has carried `shape.gen.go`, whose
+compile-time staleness check is an **unkeyed** struct literal of the model type.
+Unkeyed is the mechanism, not an oversight: a keyed literal tolerates exactly
+the changes the check exists to catch. But `go vet` reports unkeyed literals of
+*imported* struct types, and an adopter runs vet across their whole module,
+generated files included — so for four releases storm emitted code that failed
+the adopter's build.
+
+The check survives intact. A local defined type has the same underlying struct,
+so the positional literal still fails to compile on an added, removed, renamed
+or reordered field, and vet skips it because the type is declared in the file
+that uses it:
+
+```go
+type shape m0.Role
+_ = shape{m.Model, m.TenantID, ...}
+```
+
+**Why nothing caught it.** Every module here that would show it is one the root
+`go vet ./...` cannot reach. `examples/orders` is a separate module. The codegen
+fixtures declare their models in a test package, where storm correctly emits no
+shape assertion at all, because that package cannot be imported — so the gate
+that builds generated code was, on this file, gating nothing. And
+`scripts/check/outsider.sh` — the stranger's-module check, written precisely
+because an outsider sees what the repository cannot — compiled the generated
+code and never vetted it.
+
+It vets now, verified to fail before this fix and pass after, and CI vets the
+orders example rather than only testing it.
+
+Found by upgrading `anubis` off v0.2.0, whose CI runs `go vet ./...` — the same
+exercise that produced v0.6.1, doing the same job.
+
+**Regenerate to take this.** `shape.gen.go` is the only file whose contents
+change.
+
 ## v0.6.2 — 2026-09-07
 
 ### Fixed: the MySQL dialect emitted code that could not compile

@@ -41,6 +41,12 @@ check: test    ## everything CI gates on — run this before opening a PR
 	@# finding out from GitHub.
 	STORM_DSN='$(DSN)' ./scripts/check/coverage.sh
 	STORM_DSN='$(DSN)' ./scripts/check/explain.sh
+	@# The stranger's module. It is CI-enforced and was NOT part of this target,
+	@# which is how generated code that fails `go vet` reached four releases: the
+	@# one check written to see storm from outside was the one nobody ran before
+	@# pushing. A gate CI runs and the pre-PR target skips is a gate you learn
+	@# about from GitHub.
+	STORM_DSN='$(DSN)' ./scripts/check/outsider.sh
 
 example:       ## the Go kit example: its own module, generated and tested
 	cd examples/orders && \
