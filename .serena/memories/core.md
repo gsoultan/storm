@@ -21,6 +21,12 @@ CI-enforced, whole-context generation, the M3 plan-type spike passed, and the
 single-row write path shipped. `docs/PLAN.md` carries the **P0–P5 execution
 sequence**, which deliberately runs writes (M4) before relations (M3).
 
+**v0.6.3 tagged 2026-09-07** (generated code did not pass `go vet` — the
+shape assertion's unkeyed literal, which is the check itself, is what vet
+reports for an imported struct type; a local defined type keeps both. Shipped
+broken from v0.3.0. Found by upgrading anubis, again). The lesson is about
+gates, not vet: `scripts/check/outsider.sh` existed to see storm from outside
+and was the one check `make check` did not run. It runs there now.
 **v0.6.2 tagged 2026-09-07** (the MySQL dialect's generated package could not
 compile; `codegen.TestMySQLGeneratedPackageCompiles` is the gate. Postgres
 output unchanged, measured). Verified from the proxy: a fresh outside module
