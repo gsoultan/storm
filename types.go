@@ -4,6 +4,7 @@ package storm
 
 import (
 	"encoding/hex"
+	"fmt"
 	"github.com/gsoultan/storm/runtime"
 	"time"
 )
@@ -24,6 +25,35 @@ func (u UUID) String() string {
 	b[23] = '-'
 	hex.Encode(b[24:36], u[10:16])
 	return string(b)
+}
+
+// ParseUUID reads the canonical 8-4-4-4-12 form.
+//
+// The inverse of String, which existed alone for six releases. A type that can
+// print itself and not read itself is half a type, and the half that was
+// missing is the one an adopter needs: an HTTP API takes a uuid as a path
+// segment, so every one of them was writing this function. The first to try
+// was argus.
+//
+// Case-insensitive, because RFC 4122 says so: a uuid that arrives uppercase
+// from a .NET or SQL Server caller is the same sixteen bytes, and String
+// canonicalises it to lowercase on the way out. That is normalisation of the
+// TEXT, not of the identity.
+//
+// The braced, URN and unhyphenated forms are refused. Those are different
+// syntaxes rather than different spellings, and accepting them would mean
+// storm quietly deciding which of several forms an application's ids are in.
+func ParseUUID(s string) (UUID, error) {
+	var u UUID
+	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
+		return u, fmt.Errorf("storm: %q is not a uuid in 8-4-4-4-12 form", s)
+	}
+	for _, g := range [...][3]int{{0, 8, 0}, {9, 13, 4}, {14, 18, 6}, {19, 23, 8}, {24, 36, 10}} {
+		if _, err := hex.Decode(u[g[2]:], []byte(s[g[0]:g[1]])); err != nil {
+			return UUID{}, fmt.Errorf("storm: %q is not a uuid: %w", s, err)
+		}
+	}
+	return u, nil
 }
 
 // Null is the allocation-free nullable. A `*T` in a model becomes a Null[T] in

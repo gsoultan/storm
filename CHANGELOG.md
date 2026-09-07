@@ -12,6 +12,23 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v0.6.7 — 2026-09-07
+
+### `storm.ParseUUID`
+
+`UUID` could print itself and not read itself, which is half a type — and the
+missing half is the one an adopter needs, because an HTTP API takes a uuid as a
+path segment and every adopter was writing this function. The first to try was
+argus, migrating a `Session(ctx, id string)` read.
+
+Case-insensitive, per RFC 4122: a uuid arriving uppercase from a .NET or SQL
+Server caller is the same sixteen bytes, and `String` canonicalises the text on
+the way out. That is normalising the spelling, not the identity.
+
+The braced, URN and unhyphenated forms are refused. Those are different
+syntaxes rather than different spellings, and accepting them would mean storm
+quietly deciding which of several forms an application's ids are in.
+
 ## v0.6.6 — 2026-09-07
 
 ### `int4[]` — and the second adopter's schema is fully expressible
