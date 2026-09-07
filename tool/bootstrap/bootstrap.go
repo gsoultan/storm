@@ -39,7 +39,7 @@ func Run(r *tooldiscover.Result, args []string) (code int, err error) {
 // informative, printed on every save it is the noise a watcher exists to
 // remove. Errors still go to stderr, which is never redirected.
 func RunWith(r *tooldiscover.Result, args []string, stdout io.Writer) (code int, err error) {
-	src, err := Source(r)
+	src, err := SourceFor(r, args)
 	if err != nil {
 		return 1, err
 	}

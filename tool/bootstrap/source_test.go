@@ -145,3 +145,32 @@ func TestNoQueriesOmitsTheStormImport(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// `storm import` prints the model implied by an existing database. Requiring a
+// model first is a chicken-and-egg that locks out the only person the command
+// has: an adopter with a schema and no storm code yet.
+//
+// The outsider check did exercise import — after the stranger's module already
+// had a model, which is the one ordering under which this cannot fail.
+func TestImportRunsInAModuleWithNoModels(t *testing.T) {
+	r := &tooldiscover.Result{Module: &tooldiscover.Module{Path: "example.com/empty", Root: "/tmp"}}
+
+	src, err := SourceFor(r, []string{"import"})
+	if err != nil {
+		t.Fatalf("import refused a module with no models — that is the only kind it serves: %v", err)
+	}
+	if _, err := parser.ParseFile(token.NewFileSet(), "main.go", src, 0); err != nil {
+		t.Fatalf("modelless bootstrap does not parse: %v\n%s", err, src)
+	}
+	if !strings.Contains(string(src), "tool.Main(") {
+		t.Errorf("bootstrap does not call tool.Main:\n%s", src)
+	}
+
+	// Every other command still needs one, and still says why.
+	if _, err := SourceFor(r, []string{"generate"}); err == nil {
+		t.Error("generate accepted a module with no models")
+	}
+	if _, err := Source(r); err == nil {
+		t.Error("Source without a command accepted a module with no models")
+	}
+}

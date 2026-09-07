@@ -53,9 +53,23 @@ type Member struct {
 	Team     Team
 	Email    string
 	Nickname *string
+	// The shapes that broke `storm import`, every one of them ordinary: a
+	// raw jsonb column, a nullable one, and a nullable array. Each came
+	// back as a type the model file could not import, or as a pointer that
+	// storm.Build refuses.
+	Profile  storm.JSON
+	Notes    storm.JSON
+	Tags     []string
 }
 
-func (m *Member) Schema(s *storm.Table) { s.Unique(&m.Email) }
+// The index is over the FOREIGN KEY column — the most common index in any
+// real schema, and the one import emitted a dangling reference for: the
+// struct field is Team and it wrote &m.TeamID.
+func (m *Member) Schema(s *storm.Table) {
+	s.Unique(&m.Email)
+	s.Index(&m.Team).Where("nickname IS NOT NULL")
+	s.Col(&m.Team).OnDelete(storm.Cascade)
+}
 
 func All() []any { return []any{&Team{}, &Member{}} }
 EOF
@@ -226,9 +240,43 @@ GOEOF
           sed 's/^/    /' imported.go | head -8 >&2
         else
           mkdir -p imported
-          # gofmt parses; a draft that does not is a draft nobody can use.
+          # Parsing was the ONLY check here, and parsing is not the claim. A
+          # model that parses can still name a package it does not import and
+          # a struct field that does not exist — this one named both, for any
+          # schema with a jsonb column or an index on a foreign key. So: it
+          # parses, it COMPILES, and storm.Build accepts it. The last of those
+          # is what an adopter actually does with the output.
           if ! gofmt -e imported.go > imported/model.go 2>fmt.err; then
             note "the imported model is not valid Go:"; sed 's/^/    /' fmt.err | head -5 >&2
+          elif ! go build ./imported/... >importbuild.err 2>&1; then
+            note "the imported model does not compile:"
+            sed 's/^/    /' importbuild.err | head -6 >&2
+          else
+            mkdir -p cmd/importcheck
+            cat > cmd/importcheck/main.go <<'IMPCHK'
+package main
+
+import (
+	fmt "fmt"
+	os "os"
+
+	imported "example.com/outsider/imported"
+	storm "github.com/gsoultan/storm"
+)
+
+func main() {
+	s, err := storm.Build(imported.All()...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Printf("built %d tables\n", len(s.Tables))
+}
+IMPCHK
+            if ! go run ./cmd/importcheck >importbuild.out 2>&1; then
+              note "storm.Build refuses the model storm import produced:"
+              sed 's/^/    /' importbuild.out | head -6 >&2
+            fi
           fi
         fi
       fi
