@@ -248,7 +248,7 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		// string arena would reach pgx as text, which has no implicit cast to
 		// jsonb in an operator position.
 		return "jsns", "njs"
-	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array,
+	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array, kindInt4Array,
 		kindDecimalArray, kindInterval:
 		// No arena. None is a value a predicate binds or an ordering compares
 		// — an array's operators take LISTS, which live in list slots, and

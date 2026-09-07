@@ -74,7 +74,7 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 		fn:  map[string]string{},
 		fallible: map[kind]bool{
 			kindNumeric: true, kindTextArray: true, kindUUIDArray: true,
-			kindInt8Array: true, kindDecimalArray: true, kindInterval: true,
+			kindInt8Array: true, kindInt4Array: true, kindDecimalArray: true, kindInterval: true,
 			kindInet: true, kindTimeOfDay: true, kindTstzRange: true,
 		},
 	}

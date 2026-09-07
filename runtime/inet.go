@@ -60,3 +60,14 @@ func NullInet(b []byte) (Null[netip.Prefix], error) {
 func Int8Array(b []byte) ([]int64, error) {
 	return Array(b, Int8)
 }
+
+// Int4Array decodes an int4[] column.
+//
+// A separate Go type from Int8Array rather than a widening one: []int32 is
+// what the column holds, and decoding it into []int64 would double the
+// allocation for every row to spare the caller a conversion it did not ask
+// for. The first adopter to need this had `ssh_ports integer[]`, and storm's
+// only answer was to propose dropping the column.
+func Int4Array(b []byte) ([]int32, error) {
+	return Array(b, Int4)
+}
