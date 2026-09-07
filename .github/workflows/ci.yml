@@ -82,6 +82,10 @@ jobs:
         run: |
           go mod tidy
           go run ../../cmd/storm generate store
+          # vet, because this is the only module in the repository that holds a
+          # generated shape assertion and the root `go vet ./...` cannot reach
+          # it. That gap let storm emit code failing vet from v0.3.0 to v0.6.2.
+          go vet ./...
           go test -race ./orders/
 
       # Every statement the generated code can issue, planned by the server.

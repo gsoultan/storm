@@ -126,7 +126,16 @@ func shapeFile(shapes []ModelShape, pkg string) ([]byte, error) {
 		g.p("// _assert%sShape fails to compile if %s gains, loses, renames or", s.TypeName, q)
 		g.p("// reorders a field. Regenerate: `storm generate`.")
 		g.p("func _assert%sShape(m %s) {", s.TypeName, q)
-		g.p("\t_ = %s{", q)
+		// The literal is unkeyed on purpose — that is the whole check — but
+		// `go vet` reports an unkeyed literal of an IMPORTED struct type, and
+		// an adopter runs vet over their whole module. A local defined type
+		// has the same underlying struct, so the positional literal still
+		// breaks on an added, removed or reordered field, and vet skips it
+		// because the type is declared here. Keeping the check and keeping
+		// the adopter's build clean are not in tension; assuming they were is
+		// how this shipped from v0.3.0 to v0.6.2.
+		g.p("\ttype shape %s", q)
+		g.p("\t_ = shape{")
 		for _, f := range s.Fields {
 			g.p("\t\tm.%s,", f)
 		}
