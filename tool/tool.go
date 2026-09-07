@@ -199,17 +199,25 @@ func run(args []string) error {
 		return ""
 	}
 	nargs := len(positional)
-	model, err := buildModel()
-	if err != nil {
-		return err
-	}
-	// Every command here targets PostgreSQL except the one that asks about
-	// another dialect. What the model says for MySQL's sake — a prefix
-	// length, an invisible index — is refused before any of them emits SQL
-	// that quietly means something else.
-	if cmd != "portable" {
-		if err := pgddl.Check(model); err != nil {
+	// `import` prints the model implied by an existing database, so it is the
+	// one command that has to run BEFORE a model exists. Building here refused
+	// it for lacking the very thing it produces — and refused it with "no
+	// models registered — this binary is a template", which sends an adopter
+	// off to write by hand the file they just asked storm to write for them.
+	var model *schema.Schema
+	if cmd != "import" {
+		var err error
+		if model, err = buildModel(); err != nil {
 			return err
+		}
+		// Every command here targets PostgreSQL except the one that asks about
+		// another dialect. What the model says for MySQL's sake — a prefix
+		// length, an invisible index — is refused before any of them emits SQL
+		// that quietly means something else.
+		if cmd != "portable" {
+			if err := pgddl.Check(model); err != nil {
+				return err
+			}
 		}
 	}
 

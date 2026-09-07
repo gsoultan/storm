@@ -12,6 +12,65 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v0.6.4 — 2026-09-07
+
+### Fixed: `storm import` could not import
+
+Eight defects in the on-ramp, found by pointing it at a database it had never
+seen — `argus`, a session-recording gateway with eleven tables — as the first
+step of the second-adopter exercise M8 waits on. None of them needed a line of
+migration to surface. They are listed in the order an adopter meets them.
+
+**The command refused to run.** `storm import` prints the model implied by an
+existing database, and it required a model first. In a module with none — the
+only kind it serves — it exited with "no models found". Two more layers behind
+it made the same assumption: `ShimDir` returned `""` for a modelless module, so
+the bootstrap failed with `can't make .storm-bootstrap-N relative to <root>`, an
+error naming a file the developer never created; and `tool.Main` built the model
+eagerly before dispatch, refusing `import` for want of the very thing it
+produces.
+
+**Then it emitted a model that did not parse.** A referential action's value is
+SQL text, and the emitter ran it through the column-name humaniser:
+`t.Col(&m.Asset).OnDelete(storm.SET NULL)`. `CASCADE` and `RESTRICT` parsed and
+then failed to compile as undefined identifiers, which is the same defect
+wearing a better disguise.
+
+**Then one that did not compile.** Two causes, both from one type table serving
+two audiences: generated code imports `runtime` and `net/netip`, a model file
+imports `storm` and stdlib. So an imported model named `runtime.JSON` and
+`netip.Prefix` with no import for either. And an index over a foreign key
+emitted `t.Index(&m.UserID)` against a struct whose field is `User`, because the
+struct emitter turns a resolvable FK into a relation field and nothing else
+knew.
+
+**Then one `storm.Build` refused.** `storm.JSON` is a defined `[]byte`, absent
+from `inferType`'s table and unreachable through the `Kind` switch, so a model
+could not declare a raw jsonb column at all — only a struct or a map, both of
+which impose a shape on a column whose point is not having one. It has a root
+alias now, for the same reason `Decimal` and `Interval` do. Separately, nullable
+slices were wrapped in pointers: a slice already carries its own null, and
+`*storm.JSON` and `*[]string` are declarations storm rejects.
+
+**Why the gate did not catch any of it.** `scripts/check/outsider.sh` did
+exercise import, and checked that the output *parses*. A model that parses can
+still name a package it does not import and a field that does not exist — this
+one named both. The gate now compiles the imported model and hands it to
+`storm.Build`, which is what an adopter does with it, and the stranger's schema
+grew the shapes that broke it: a jsonb column, a nullable one, a nullable array
+and an index on a foreign key. It caught a ninth defect immediately — this
+release's own first attempt at the import list, which over-counted and emitted
+an unused `time` import. The import list is now read off the rendered body,
+because every version that reasoned about columns instead got it wrong, each
+time one type along.
+
+**Known, not fixed: `BIGSERIAL` does not round-trip.** It comes back as
+`.Default("nextval('audit_events_seq_seq'::regclass)")` — faithful enough to
+diff against the database it came from, and impossible to apply anywhere else,
+so `storm verify` fails on the scratch apply. Expressing it needs a decision
+about whether storm's IR grows a serial concept or normalises serial to
+identity, and that is a design change rather than a fix.
+
 ## v0.6.3 — 2026-09-07
 
 ### Fixed: generated code did not pass `go vet`

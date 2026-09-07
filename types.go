@@ -66,6 +66,15 @@ func (m *Model) Schema(t *Table) {
 // float64 is not offered for numeric. It cannot represent 0.10, and an
 // accounting system that rounds is a defect rather than a tolerance — so the
 // choice is made once, here, instead of by whoever writes the model.
+// JSON is the raw bytes of a json/jsonb column, undecoded.
+//
+// An alias for the same reason Decimal is one: a model declares storm.JSON and
+// generated code reads runtime.JSON, and those must be the same type or every
+// value would need converting at the boundary storm exists to remove. It was
+// the one runtime type with no alias here, which is why `storm import` emitted
+// a model naming a package it cannot import.
+type JSON = runtime.JSON
+
 type Decimal = runtime.Decimal
 
 // ParseDecimal reads a decimal from its text form.

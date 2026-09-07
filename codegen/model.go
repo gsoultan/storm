@@ -60,35 +60,44 @@ func Model(s *schema.Schema, o ModelOptions) ([]byte, error) {
 	g.p("package %s", o.Package)
 	g.p("")
 
-	needsTime, needsStorm := false, true
-	for _, t := range s.Tables {
-		for _, c := range t.Columns {
-			if goKind(c) == kindTimestamptz {
-				needsTime = true
-			}
-		}
-	}
-	g.p("import (")
-	if needsTime {
-		g.p("\t%q", "time")
-		g.p("")
-	}
-	if needsStorm {
-		g.p("\t%q", o.Import)
-	}
-	g.p(")")
-	g.p("")
-
+	// Render the bodies FIRST, then read the imports off what was actually
+	// written.
+	//
+	// Every version of this that reasoned about columns instead got it wrong,
+	// each time one type along: the original tested only timestamptz, so a
+	// `date` column emitted time.Time with no import; the fix that scanned
+	// every column's type over-counted, because a table embedding storm.Model
+	// emits no timestamp FIELD at all and the file then imported `time`
+	// unused. The output is the only thing that knows what the output needs.
+	var body gen
+	body.dec = g.dec
 	for _, e := range s.Enums {
-		g.enumType(e)
+		body.enumType(e)
 	}
-
 	tables := make([]*schema.Table, len(s.Tables))
 	copy(tables, s.Tables)
 	sort.Slice(tables, func(i, j int) bool { return tables[i].Name < tables[j].Name })
 	for _, t := range tables {
-		g.modelType(s, t)
+		body.modelType(s, t)
 	}
+
+	rendered := body.buf.String()
+	g.p("import (")
+	needsTime := strings.Contains(rendered, "time.Time")
+	needsNetip := strings.Contains(rendered, "netip.")
+	if needsTime {
+		g.p("\t%q", "time")
+	}
+	if needsNetip {
+		g.p("\t%q", "net/netip")
+	}
+	if needsTime || needsNetip {
+		g.p("")
+	}
+	g.p("\t%q", o.Import)
+	g.p(")")
+	g.p("")
+	g.buf.WriteString(rendered)
 
 	g.p("// All is what you pass to storm.Build.")
 	g.p("func All() []any {")
@@ -112,7 +121,7 @@ func unportedFacts(s *schema.Schema) []string {
 	var out []string
 	for _, t := range s.Tables {
 		for _, ix := range t.Indexes {
-			if _, ok := indexDecl(t, ix); !ok {
+			if _, ok := indexDecl(s, t, ix); !ok {
 				out = append(out, fmt.Sprintf("index %s on %s — re-declare with t.Index(...)", ix.Name, t.Name))
 			}
 		}
@@ -194,9 +203,9 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 				} else {
 					g.p("\t%s *%s", field, modelName(target))
 				}
-				if fk.OnDelete != "" && fk.OnDelete != schema.NoAction {
+				if c := actionConst(fk.OnDelete); c != "" {
 					schemaLines = append(schemaLines, fmt.Sprintf(
-						"t.Col(&m.%s).OnDelete(storm.%s)", field, exportName(string(fk.OnDelete))))
+						"t.Col(&m.%s).OnDelete(storm.%s)", field, c))
 				}
 				continue
 			}
@@ -223,7 +232,7 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 	// re-type: an imported schema is usually a real one, and a real one's
 	// indexes are where its performance lives.
 	for _, ix := range t.Indexes {
-		if line, ok := indexDecl(t, ix); ok {
+		if line, ok := indexDecl(s, t, ix); ok {
 			schemaLines = append(schemaLines, line)
 		}
 	}
@@ -241,10 +250,27 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 // indexDecl renders one index as the t.Index(...) declaration that would
 // produce it, or reports that it cannot: a key on a column the model omitted
 // has no field pointer to name.
-func indexDecl(t *schema.Table, ix *schema.Index) (string, bool) {
+// modelFieldName is the struct field a column actually became.
+//
+// The struct emitter turns a resolvable single-column foreign key into a
+// RELATION field — user_id becomes User — and every other place that names a
+// field has to make the same choice. It did not: an index over a foreign key
+// emitted `t.Index(&m.UserID)` against a struct whose field is `User`. That
+// parses and compiles nowhere, and an index on a foreign key is one of the
+// most common things in a real schema.
+func modelFieldName(s *schema.Schema, t *schema.Table, col string) string {
+	for _, fk := range t.ForeignKeys {
+		if len(fk.Columns) == 1 && fk.Columns[0] == col && s.Table(fk.RefTable) != nil {
+			return relationFieldName(col)
+		}
+	}
+	return exportName(col)
+}
+
+func indexDecl(s *schema.Schema, t *schema.Table, ix *schema.Index) (string, bool) {
 	keys := make([]string, 0, len(ix.Columns))
 	for _, c := range ix.Columns {
-		k, ok := indexKeyDecl(t, c)
+		k, ok := indexKeyDecl(s, t, c)
 		if !ok {
 			return "", false
 		}
@@ -267,7 +293,7 @@ func indexDecl(t *schema.Table, ix *schema.Index) (string, bool) {
 			if t.Column(col) == nil {
 				return "", false
 			}
-			inc = append(inc, "&m."+exportName(col))
+			inc = append(inc, "&m."+modelFieldName(s, t, col))
 		}
 		fmt.Fprintf(&b, ".Include(%s)", strings.Join(inc, ", "))
 	}
@@ -286,14 +312,14 @@ func indexDecl(t *schema.Table, ix *schema.Index) (string, bool) {
 
 // indexKeyDecl renders one key with its modifiers composed inside out, the
 // way the declaration reads: storm.OpClass(storm.Desc(&m.Email), "…").
-func indexKeyDecl(t *schema.Table, c schema.IndexColumn) (string, bool) {
+func indexKeyDecl(s *schema.Schema, t *schema.Table, c schema.IndexColumn) (string, bool) {
 	var k string
 	switch {
 	case !c.Expr:
 		if t.Column(c.Name) == nil {
 			return "", false
 		}
-		k = "&m." + exportName(c.Name)
+		k = "&m." + modelFieldName(s, t, c.Name)
 	default:
 		// An expression names a column somewhere inside it. The common forms
 		// are recognised; anything else is rendered over the first column the
@@ -304,11 +330,11 @@ func indexKeyDecl(t *schema.Table, c schema.IndexColumn) (string, bool) {
 		}
 		switch expr {
 		case "lower(%s)":
-			k = fmt.Sprintf("storm.Lower(&m.%s)", exportName(col))
+			k = fmt.Sprintf("storm.Lower(&m.%s)", modelFieldName(s, t, col))
 		case "upper(%s)":
-			k = fmt.Sprintf("storm.Upper(&m.%s)", exportName(col))
+			k = fmt.Sprintf("storm.Upper(&m.%s)", modelFieldName(s, t, col))
 		default:
-			k = fmt.Sprintf("storm.IndexExpr(&m.%s, %q)", exportName(col), expr)
+			k = fmt.Sprintf("storm.IndexExpr(&m.%s, %q)", modelFieldName(s, t, col), expr)
 		}
 	}
 	if c.Desc {
@@ -422,12 +448,30 @@ func isIdentityDefault(d string) bool {
 // An enum column takes its own named type rather than string: that is what
 // makes the generated query API typed, and importing it as a string would
 // silently give up the property the model exists to provide.
+// modelGoType is baseGoType rendered for a MODEL file rather than for
+// generated code.
+//
+// One type table served two audiences with different imports: generated code
+// imports runtime and net/netip, a model imports storm and stdlib. So an
+// imported model named runtime.JSON, runtime.Decimal and netip.Prefix — types
+// it had no import for — and did not compile. Every one of those has a storm
+// alias for exactly this reason; JSON was the one that did not, until now.
+func modelGoType(c *schema.Column) string {
+	t := baseGoType(c)
+	return strings.ReplaceAll(t, "runtime.", "storm.")
+}
+
 func importGoType(c *schema.Column) string {
-	base := baseGoType(c)
+	base := modelGoType(c)
 	if c.Type.Enum {
 		base = exportName(c.Type.Name)
 	}
-	if c.NotNull || goKind(c) == kindBytes {
+	// A slice carries its own null: nil is SQL NULL, and an empty non-nil
+	// slice is a real empty value — a distinction storm keeps deliberately.
+	// Wrapping one in a pointer invents a second way to say nothing, and
+	// storm.Build refuses the result. This tested only bytea, so a nullable
+	// jsonb imported as *storm.JSON and a nullable text[] as *[]string.
+	if c.NotNull || c.Type.Array || goKind(c) == kindBytes || goKind(c) == kindJSONB {
 		return base
 	}
 	return "*" + base
@@ -524,4 +568,31 @@ func snakeOf(s string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// actionConst is the Go constant naming a referential action.
+//
+// An action's VALUE is SQL text — "SET NULL", "NO ACTION" — and this used to
+// run it through exportName, the column-name humaniser. That produced
+// `storm.SET NULL`: an imported model that does not parse. CASCADE and
+// RESTRICT parsed and then failed to compile as undefined identifiers, which
+// is the same defect wearing a better disguise, and is why "it parses" was
+// never the right check.
+//
+// The mapping is written out rather than derived because a value that was
+// never an identifier cannot be turned into one by capitalising it. An action
+// this does not know emits nothing: a missing clause is a diff the adopter can
+// see, and a wrong identifier is a build they have to debug.
+func actionConst(a schema.Action) string {
+	switch a {
+	case schema.Cascade:
+		return "Cascade"
+	case schema.Restrict:
+		return "Restrict"
+	case schema.SetNull:
+		return "SetNull"
+	case schema.SetDefault:
+		return "SetDefault"
+	}
+	return "" // NoAction, and anything unrecognised
 }

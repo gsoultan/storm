@@ -16,8 +16,25 @@ import (
 // It is separated from running it so the output can be golden-tested: this is
 // generated code emitted into somebody else's module, which is precisely the
 // class of thing that shipped broken in v0.1.0 because nothing ever built it.
-func Source(r *tooldiscover.Result) ([]byte, error) {
-	if len(r.Models) == 0 {
+func Source(r *tooldiscover.Result) ([]byte, error) { return SourceFor(r, nil) }
+
+// modelless reports whether cmd is one that must work in a module that has no
+// models yet.
+//
+// `import` is the only one, and it is the whole on-ramp: it prints the model
+// implied by an existing database. Demanding a model before it will run is a
+// chicken-and-egg that locks out the single person the command exists for — an
+// adopter holding a schema and no storm code. It shipped that way because the
+// outsider check ran import *after* the stranger's module already had a model,
+// which is the one ordering under which it cannot fail.
+func modelless(args []string) bool {
+	return len(args) > 0 && args[0] == "import"
+}
+
+// SourceFor is Source for a known command, so a command that needs no model is
+// not refused for lacking one.
+func SourceFor(r *tooldiscover.Result, args []string) ([]byte, error) {
+	if len(r.Models) == 0 && !modelless(args) {
 		// A file that does not parse hides every model in it. Saying "no
 		// models found" first would send the developer looking for a missing
 		// declaration instead of the typo they just made.

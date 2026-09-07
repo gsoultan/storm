@@ -65,7 +65,14 @@ func (r *Result) Packages() []string {
 func (r *Result) ShimDir() (string, error) {
 	pkgs := r.Packages()
 	if len(pkgs) == 0 {
-		return "", nil
+		// No model packages, so nothing constrains where the shim sits and the
+		// module root is the only answer that is always inside the module.
+		// This used to return "", which every caller then joined a filename
+		// onto and handed to filepath.Rel — producing "can't make
+		// .storm-bootstrap-N relative to <root>", an error naming a file the
+		// developer never created. Only `storm import` reaches here, and only
+		// in the module it is designed for: one with a schema and no models.
+		return r.Module.Root, nil
 	}
 	rels := make([][]string, 0, len(pkgs))
 	for _, p := range pkgs {

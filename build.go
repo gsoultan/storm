@@ -20,6 +20,7 @@ var (
 	uuidType      = reflect.TypeOf(UUID{})
 	bytesType     = reflect.TypeOf([]byte(nil))
 	decimalType   = reflect.TypeOf(Decimal{})
+	jsonType      = reflect.TypeOf(JSON(nil))
 	tsvectorType  = reflect.TypeOf(TSVector{})
 	tstzRangeType = reflect.TypeOf(TstzRange{})
 	enumerType    = reflect.TypeOf((*Enumer)(nil)).Elem()
@@ -1001,6 +1002,15 @@ func (b *builder) inferType(t reflect.Type) (schema.Type, bool) {
 		return schema.Type{Name: schema.TypeUUID}, true
 	case bytesType:
 		return schema.Type{Name: schema.TypeBytea}, true
+	case jsonType:
+		// storm.JSON is a DEFINED []byte, so it is not bytesType and its
+		// element kind is uint8, which the Kind switch below does not map —
+		// it fell through to "unsupported type". A model therefore could not
+		// declare a raw jsonb column at all: only a struct or a map, both of
+		// which impose a shape on a column whose point is not having one.
+		// The row field for jsonb is this same type, which is the argument
+		// for the model naming it too.
+		return schema.Type{Name: schema.TypeJSONB}, true
 	case intervalType:
 		return schema.Type{Name: schema.TypeInterval}, true
 	case timeOfDayType:
