@@ -33,6 +33,14 @@ output unchanged, measured). Verified from the proxy: a fresh outside module
 builds and `codegen.Version()` reports `v0.6.2`.
 **v0.6.1 tagged 2026-09-06** (two verify fixes found by upgrading anubis off
 v0.2.0 — the adopter-upgrade exercise works, do it again after each release).
+
+**anubis is on v0.6.3 as of 2026-09-07** (anubis#15) — the upgrade finally
+LANDED; before this it was an unpushed local branch while `dev` stayed on
+v0.2.0. It cost two storm releases and found two Go-toolchain consequences in
+anubis (`go mod tidy`, and protoc-gen-go reformatting doc comments because it
+formats with the toolchain it was BUILT with — storm's `go 1.27` forced the
+bump). The soak has NOT been re-run on the new pin; see
+`docs/PRODUCTION-READINESS.md` P3.
 **v0.6.0 tagged 2026-09-06** (row locking). v0.5.0 tagged 2026-09-05 (index
 grammar, upsert on every unique index, top-N, AnyOf, budgets, statement
 pinning). Both verified from the module proxy by a fresh outside module.
