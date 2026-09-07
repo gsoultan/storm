@@ -209,7 +209,9 @@ func predArraySlot(c colInfo) string {
 		return "anyStr"
 	case kindInt2:
 		return "anyI16"
-	case kindInt4:
+	case kindInt4, kindInt4Array:
+		// The ELEMENT type, as everywhere else in this switch: an int4[]
+		// column's list operators bind int32 values, not int64 ones.
 		return "anyI32"
 	case kindInt8, kindInt8Array:
 		return "anyI64"
@@ -256,6 +258,7 @@ func handleType(c colInfo) string {
 		kindTimeOfDay:    "TimeOfDayCol",
 		kindInet:         "InetCol",
 		kindInt8Array:    "Int64ArrayCol",
+		kindInt4Array:    "Int32ArrayCol",
 		kindNumeric:      "DecimalCol",
 		kindJSONB:        "JSONCol",
 		kindTextArray:    "TextArrayCol",

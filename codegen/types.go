@@ -39,6 +39,7 @@ const (
 	kindTimeOfDay
 	kindInet
 	kindInt8Array
+	kindInt4Array
 	kindDecimalArray
 )
 
@@ -54,6 +55,8 @@ func goKind(c *schema.Column) kind {
 			return kindUUIDArray
 		case schema.TypeInt8:
 			return kindInt8Array
+		case schema.TypeInt4:
+			return kindInt4Array
 		case schema.TypeNumeric:
 			return kindDecimalArray
 		}
@@ -127,6 +130,8 @@ func baseGoType(c *schema.Column) string {
 		return "netip.Prefix"
 	case kindInt8Array:
 		return "[]int64"
+	case kindInt4Array:
+		return "[]int32"
 	case kindDecimalArray:
 		return "[]runtime.Decimal"
 	case kindNumeric:
@@ -206,7 +211,7 @@ func checkNumeric(table string, c *schema.Column) error {
 // the wrong one.
 func isNullable(c *schema.Column) bool {
 	switch goKind(c) {
-	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array, kindDecimalArray:
+	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array, kindInt4Array, kindDecimalArray:
 		return false
 	}
 	return !c.NotNull
@@ -240,6 +245,9 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 	}
 	if k == kindInt8Array {
 		return fmt.Sprintf("r.%s, decErr = "+d.q("Int8Array")+"(rv[%d])", f, i)
+	}
+	if k == kindInt4Array {
+		return fmt.Sprintf("r.%s, decErr = "+d.q("Int4Array")+"(rv[%d])", f, i)
 	}
 	if k == kindDecimalArray {
 		return fmt.Sprintf("r.%s, decErr = "+d.q("DecimalArray")+"(rv[%d])", f, i)
@@ -389,7 +397,7 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		// duplicate-sensitive, which almost nobody means; @> and && are the
 		// questions people actually have, and they are the ones GIN indexes.
 		switch k {
-		case kindTextArray, kindUUIDArray, kindInt8Array, kindDecimalArray:
+		case kindTextArray, kindUUIDArray, kindInt8Array, kindInt4Array, kindDecimalArray:
 			return true
 		}
 		return false
@@ -421,7 +429,7 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		// identical lexeme vectors, which nobody means; the match operators
 		// are the whole reason the column exists.
 		switch k {
-		case kindTSVector, kindBytes, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array,
+		case kindTSVector, kindBytes, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array, kindInt4Array,
 			kindDecimalArray:
 			return false
 		case kindInterval:

@@ -12,6 +12,40 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v0.6.6 — 2026-09-07
+
+### `int4[]` — and the second adopter's schema is fully expressible
+
+`integer[]` is one of the commonest array types in PostgreSQL and storm had no
+Go type for it. `int8[]`, `text[]`, `uuid[]` and `numeric[]` were supported;
+this one was omitted from any model that met it, and the first `storm diff`
+then proposed dropping the column.
+
+It decodes as `[]int32`, not as a widened `[]int64`: that is what the column
+holds, and widening would double the allocation on every row to spare the
+caller a conversion nobody asked for.
+
+**On argus, the second adopter, `storm verify` is now at one pending change.**
+The header that says "Nothing was dropped: every construct in this schema is
+expressible" is finally true of an eleven-table database storm had never seen.
+The remaining item is `CREATE INDEX` on a foreign key — storm indexes every
+one, argus does not, and that is an opinion rather than a defect.
+
+The progression across three releases, all measured against the same live
+database: `verify` failed outright → **26** pending changes → **5** → **2** →
+**1**.
+
+**The test is a compile, then a decode.** A kind reaches nine per-kind maps in
+`codegen`, and that file's own comment records three of them having been missed
+once each while adding a type — so the generated package is built, not just
+inspected. And the decoder is run against bytes PostgreSQL actually sent on a
+binary connection, including the boundary values and a NULL element, because
+this release's own predecessor twice shipped code that compiled and did not
+work.
+
+`[]int32` binds through pgx's generic encode path rather than a fast codec like
+`int8[]`'s, which is a measurement to take before claiming otherwise.
+
 ## v0.6.5 — 2026-09-07
 
 ### An imported model can now be verified
