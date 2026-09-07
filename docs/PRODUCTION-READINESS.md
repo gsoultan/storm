@@ -386,14 +386,28 @@ locking — had never run outside storm's own fixtures.
 **Half of that closed on 2026-09-07**, when anubis moved to v0.6.3
 (anubis#15). That surface now compiles against a real repository and passes
 its CI: enforcement gates, race suite, and integration + e2e + fuzz smoke
-against a fresh database. What it has *not* done is carry sustained load. The
-four signals above — p95, shapes, flushes, RSS — were recorded from a binary
-that did not contain it, so they say nothing about it either way. **Re-running
-the soak on the new pin is the next reading worth taking**, and it is cheap:
-anubis's own `scripts/soak-load.sh` and `scripts/soak-record.sh` are already
-there, and `anubis/docs/soak-storm.md` is the column the row goes into.
+against a fresh database.
 
-The second adopter M8 waits on is a separate question and still open.
+**And it has now carried load. 2026-09-07, the first soak reading on v0.6.3**
+(`anubis/docs/soak-storm.md`) — the first time any of that surface was in the
+binary under traffic:
+
+| signal | criterion | measured |
+|---|---|---|
+| authorize p95 through the repository | past the 2 ms budget | **208 µs** — 256 µs for the same query through raw pgx |
+| shapes per generated package | grows with traffic instead of plateauing | **1 → 1**, flushes **0 → 0**, unchanged from the v0.2.0 rows |
+| resident memory | no plateau | **313 → 598 → 553 → 618 MB** across four load rounds at ~10,800 decisions/s: a step, then flat |
+| `storm verify -stale` | drift | clean |
+
+Nothing moved. Read the RSS row as a series inside the run and not as an
+absolute against the older rows — those were different processes, and the
+quiet readings across rows (213.8, 309.5, 17.9 MB) are the mistake the
+recorder's own output warns about, not a trend.
+
+What this still does not vouch for: it is one workload, in one repository,
+written by the same person who wrote storm. The second adopter M8 waits on is
+a separate question and remains open — and it is the one that matters, because
+every wrong-answer bug so far came from a path no existing test reached.
 
 The kill criterion is retired rather than left open: it named a v0.1.1 it has
 long outlived, and re-reading it against every future tag would be a gate that

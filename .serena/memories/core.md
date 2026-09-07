@@ -39,8 +39,13 @@ LANDED; before this it was an unpushed local branch while `dev` stayed on
 v0.2.0. It cost two storm releases and found two Go-toolchain consequences in
 anubis (`go mod tidy`, and protoc-gen-go reformatting doc comments because it
 formats with the toolchain it was BUILT with — storm's `go 1.27` forced the
-bump). The soak has NOT been re-run on the new pin; see
-`docs/PRODUCTION-READINESS.md` P3.
+bump).
+
+**Soaked on the new pin the same day**: p95 208µs (raw pgx 256µs), shapes
+1 → 1, flushes 0 → 0, RSS 313 → 598 → 553 → 618 MB across four rounds at
+~10,800 decisions/s — a step then flat, which is the plateau. Nothing moved.
+Read RSS as a series inside one run; the quiet readings across rows (213.8,
+309.5, 17.9 MB) are different processes, not a trend.
 **v0.6.0 tagged 2026-09-06** (row locking). v0.5.0 tagged 2026-09-05 (index
 grammar, upsert on every unique index, top-N, AnyOf, budgets, statement
 pinning). Both verified from the module proxy by a fresh outside module.
