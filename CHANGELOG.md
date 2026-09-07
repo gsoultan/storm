@@ -12,7 +12,7 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.6.2 — 2026-09-07
 
 ### Fixed: the MySQL dialect emitted code that could not compile
 
@@ -48,6 +48,11 @@ though it does.
 **What this does not buy.** The generated MySQL read path builds; it has never
 decoded a byte, because there is no driver to hand it one. See
 [docs/PLAN.md](docs/PLAN.md) M9 for what remains, which is all of it.
+
+**Nothing to regenerate on Postgres.** The emitter changed, so this was
+measured rather than assumed: regenerating `examples/orders` against a live
+server reproduces the checked-in files byte for byte. Only the version stamp in
+each header moves.
 
 ## v0.6.1 — 2026-09-06
 
