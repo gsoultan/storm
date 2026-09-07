@@ -223,7 +223,21 @@ type Column struct {
 	Default   string // raw SQL expression; "" for none
 	Generated string // GENERATED ALWAYS AS (<expr>) STORED; "" for none
 	Identity  bool
-	Comment   string
+
+	// Serial is smallserial/serial/bigserial: an integer column whose default
+	// is nextval() on a sequence the column owns.
+	//
+	// It is NOT the same fact as Identity and is kept apart on purpose.
+	// Postgres implements both with an owned sequence, but a serial's sequence
+	// is an ordinary object you can grant, alter and select from, and identity
+	// is the SQL-standard form that hides it. Collapsing them would let storm
+	// describe an existing database with a model that quietly proposes to
+	// change it — a diff nobody asked for on the first day of adoption.
+	//
+	// The width comes from Type: int2/int4/int8 render as smallserial, serial
+	// and bigserial.
+	Serial  bool
+	Comment string
 
 	// Immutable and Version are storm-level facts with no DDL of their own.
 	// They change what the generator emits, not what the database enforces.
@@ -450,6 +464,22 @@ func (t *Table) normalize() {
 // can be checked for a name collision BEFORE normalisation assigns the names —
 // two indexes over the same columns, one btree and one hash, would otherwise
 // be discovered by the second CREATE failing on the first.
+// UniqueName and CheckName are the constraint names storm derives, exported
+// for the same reason FKName is: so an imported model can tell a name it would
+// have produced from one it has to state.
+func (t *Table) UniqueName(u *Unique) string { return genName("uq", t.Name, u.Columns...) }
+func (t *Table) CheckName(ck *Check) string  { return genName("ck", t.Name, sanitize(ck.Expr)) }
+
+// FKName is the constraint name storm derives for a foreign key.
+//
+// Exported so the model emitter can tell a name it would have produced from
+// one it must state: an imported database's foreign keys are usually called
+// <table>_<column>_fkey, PostgreSQL's default, and a model that does not say
+// so proposes to rename every one of them.
+func (t *Table) FKName(fk *ForeignKey) string {
+	return genName("fk", t.Name, fk.Columns...)
+}
+
 func (t *Table) IndexName(ix *Index) string {
 	if ix.Name != "" {
 		return ix.Name

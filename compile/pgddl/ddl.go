@@ -141,6 +141,18 @@ func CreateTable(t *schema.Table) string {
 // ColumnDef renders one column definition.
 func ColumnDef(c *schema.Column) string {
 	var b strings.Builder
+	// A serial IS a type in the CREATE TABLE grammar, not a default: writing
+	// `bigint DEFAULT nextval('t_c_seq')` names a sequence that exists only in
+	// the database the model was imported from, and applying it anywhere else
+	// fails. `bigserial` creates the sequence, names it t_c_seq, and marks it
+	// owned — which is what the source database has.
+	if c.Serial {
+		b.WriteString(Ident(c.Name) + " " + serialType(c.Type))
+		if c.NotNull {
+			b.WriteString(" NOT NULL")
+		}
+		return b.String()
+	}
 	b.WriteString(Ident(c.Name) + " " + c.Type.SQL())
 	if c.Generated != "" {
 		b.WriteString(" GENERATED ALWAYS AS (" + c.Generated + ") STORED")
@@ -421,3 +433,20 @@ func exprList(names []string) string {
 }
 
 var _ = strconv.Itoa
+
+// serialType is the serial spelling for an integer width.
+//
+// Anything else is a storm bug rather than an adopter's: Serial is only ever
+// set from an integer column, by the builder and by introspection. Rendering
+// the plain type keeps a wrong IR from producing DDL that does not parse.
+func serialType(t schema.Type) string {
+	switch t.Name {
+	case schema.TypeInt2:
+		return "smallserial"
+	case schema.TypeInt4:
+		return "serial"
+	case schema.TypeInt8:
+		return "bigserial"
+	}
+	return t.SQL()
+}

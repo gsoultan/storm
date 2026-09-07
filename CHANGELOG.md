@@ -12,6 +12,70 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v0.6.5 — 2026-09-07
+
+### An imported model can now be verified
+
+v0.6.4 got `storm import` to produce a model that compiles. This gets that
+model to *agree with the database it came from*. Measured on argus, the second
+adopter: `storm verify` went from failing outright, to **26 pending changes**,
+to **2** — and neither of those two is a defect.
+
+**`BIGSERIAL` is a type, not a default.** It came back as
+`.Default("nextval('audit_events_seq_seq'::regclass)")`, which names a sequence
+that exists in exactly one database in the world, so `verify` failed on the
+scratch apply and an imported model could never be checked at all.
+`schema.Column` gains `Serial`, `pgddl` renders smallserial/serial/bigserial,
+introspection recognises an integer that owns its sequence, and `.Serial()`
+declares one. Round-trips through a live server as a fixpoint.
+
+`Identity` is kept a separate fact rather than folded into it. Postgres backs
+both with an owned sequence, so a reader that only asked "does this column own
+a sequence?" would call an identity column a serial and propose an ALTER on an
+adopter's first diff. `.Identity()` also exists now — the IR and the DDL for it
+had been there since the schema package was written, and no model could say it.
+
+**Constraint names are carried.** storm derives `fk_`/`uq_`/`ck_` names;
+PostgreSQL's own defaults are `_fkey`, `_key`, `_check`. An imported model that
+could not say the existing name proposed to DROP and re-ADD every foreign key,
+unique and check in the database — a lock on every large table, and a rename of
+constraint names an application may be matching on, to gain nothing.
+`.ConstraintName(...)`, `t.UniqueNamed(...)` and `t.CheckNamed(...)` pin them,
+and import emits them only where storm's derived name would differ.
+
+**Uniques and checks are emitted, not listed as lost.** They were in the NOT
+CARRIED OVER header with "re-declare with t.Unique(...)" — but the schema holds
+the exact columns and the exact expression, so this was never a guess. Every
+imported model needed hand-editing before its first verify could pass, for
+facts storm could already state.
+
+**Every default is emitted.** A filter skipped `gen_random_uuid()` and `now()`
+on the grounds that `storm.Model` supplies them — but a column the embed
+supplies never reaches that code, so the filter only ever fired where it was
+wrong. A table with an `id` and a `created_at` but no `updated_at` does not
+embed Model and lost both; a table that does embed it lost the default on any
+other `now()` column. Eleven columns in argus.
+
+**The header lied.** It printed "Nothing was dropped: every construct in this
+schema is expressible" over a model that had silently omitted an `int4[]`
+column — visible only as a comment forty lines down inside the struct. The
+first `storm diff` then proposed `DROP COLUMN` on live data. Omitted columns
+are listed where the promise says they are.
+
+**Corrected from v0.6.4.** That release stopped pointerising nullable slices,
+reasoning that a slice already carries nil. storm does not read it that way:
+`isNullable` treats `[]byte` as nullable and `T[]` as not, so `storm.JSON` and
+`[]string` both mean NOT NULL. Dropping the pointer did not simplify a
+declaration, it changed one — a nullable jsonb came back NOT NULL, and the
+first verify against the source database proposed `SET NOT NULL` on live data.
+What `*storm.JSON` actually needed was for `inferType` to know the type, which
+was the other half of v0.6.4. Caught by running verify against argus.
+
+**The two remaining items are not defects.** `int4[]` has no Go type in storm
+(`int8[]`, `text[]`, `uuid[]` and `numeric[]` do), and it is now disclosed
+rather than silently dropped. And storm indexes every foreign key, which argus
+does not — an addition, and the one storm is opinionated about.
+
 ## v0.6.4 — 2026-09-07
 
 ### Fixed: `storm import` could not import

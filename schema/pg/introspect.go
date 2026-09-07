@@ -8,6 +8,7 @@ package pg
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/gsoultan/storm/schema"
 	"github.com/jackc/pgx/v5"
@@ -131,7 +132,14 @@ func loadColumns(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		       a.attgenerated <> '',
 		       COALESCE(pg_get_expr(gd.adbin, gd.adrelid), ''),
 		       (t.typtype = 'e' OR COALESCE(bt.typtype, ' ') = 'e'),
-		       COALESCE(col_description(cl.oid, a.attnum), '')
+		       COALESCE(col_description(cl.oid, a.attnum), ''),
+		       -- Non-null exactly when the column OWNS a sequence, which is
+		       -- what separates a serial from a bigint whose default happens
+		       -- to call nextval on a sequence someone else manages. The
+		       -- second is not a serial and must keep its default verbatim.
+		       pg_get_serial_sequence(
+		           quote_ident(n.nspname) || '.' || quote_ident(cl.relname),
+		           a.attname) IS NOT NULL
 		FROM pg_attribute a
 		JOIN pg_class cl ON cl.oid = a.attrelid
 		JOIN pg_namespace n ON n.oid = cl.relnamespace
@@ -150,11 +158,23 @@ func loadColumns(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		var tbl, name, typ string
 		var elemTyp *string
 		var attnum, typmod int32
-		var notNull, identity, generated, isEnum bool
+		var notNull, identity, generated, isEnum, ownsSeq bool
 		var def, genExpr, comment string
 		if err := rows.Scan(&tbl, &name, &attnum, &typ, &elemTyp, &notNull,
-			&typmod, &def, &identity, &generated, &genExpr, &isEnum, &comment); err != nil {
+			&typmod, &def, &identity, &generated, &genExpr, &isEnum, &comment,
+			&ownsSeq); err != nil {
 			return err
+		}
+		// A serial is an integer that owns its sequence and defaults to
+		// nextval on it. Identity owns a sequence too and is a different fact,
+		// so it is excluded rather than folded in.
+		serial := ownsSeq && !identity && strings.HasPrefix(def, "nextval(")
+		if serial {
+			// The default is the serial. Carrying it as well would put the
+			// source database's sequence NAME in the model, which is the bug
+			// this fixes: `bigint DEFAULT nextval('audit_events_seq_seq')`
+			// applies to exactly one database.
+			def = ""
 		}
 		t := s.Table(tbl)
 		if t == nil {
@@ -166,6 +186,7 @@ func loadColumns(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 			NotNull:   notNull,
 			Default:   def,
 			Identity:  identity,
+			Serial:    serial,
 			Generated: genExpr,
 			Comment:   comment,
 		})
