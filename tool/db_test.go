@@ -713,3 +713,111 @@ func TestCLI_VerifyPendingSaysWhenItSkippedEveryFile(t *testing.T) {
 		t.Errorf("an empty directory lost the fix it should name: %v", err)
 	}
 }
+
+// An enum label cannot share a file with a statement that USES it. PostgreSQL
+// runs ALTER TYPE ... ADD VALUE inside a transaction but refuses the use until
+// that transaction commits (SQLSTATE 55P04) — and a migration runner puts each
+// file in a transaction. Until 2026-09-07 storm wrote both into one file, which
+// is a migration it generated and no runner could apply.
+func TestCLI_DiffWritesAnEnumLabelAlone(t *testing.T) {
+	ns := namespace(t, "cli_enum")
+	out := t.TempDir()
+
+	withModels(t, []any{&ticketV1{}})
+	if err := run([]string{"diff", "init", "-dsn", dsn(t), "-schema", ns, "-out", out}); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(out, "*.up.sql"))
+	if len(files) != 1 {
+		t.Fatalf("the first diff wrote %d files, want 1", len(files))
+	}
+	first, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	applySQL(t, ns, string(first))
+
+	// The model gains a label and immediately defaults the column to it.
+	ticketLabels = []string{"open", "closed", "escalated"}
+	t.Cleanup(func() { ticketLabels = []string{"open", "closed"} })
+	withModels(t, []any{&ticketV2{}})
+	if err := run([]string{"diff", "add_label", "-dsn", dsn(t), "-schema", ns, "-out", out}); err != nil {
+		t.Fatal(err)
+	}
+	files, _ = filepath.Glob(filepath.Join(out, "*.up.sql"))
+	if len(files) < 3 {
+		t.Fatalf("the label and its use must be separate files; got %d file(s) total", len(files))
+	}
+
+	// Every file has to apply the way a runner applies it: on its own, wrapped
+	// in a transaction. That is the assertion — not the file names.
+	for _, f := range files[1:] {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := string(b)
+		if strings.Contains(body, "ADD VALUE") && strings.Contains(body, "SET DEFAULT") {
+			t.Fatalf("%s holds a label and a use of it in one file:\n%s", filepath.Base(f), body)
+		}
+		applyInTx(t, ns, body)
+	}
+}
+
+// applyInTx applies one migration file the way golang-migrate does: alone, in a
+// transaction. A file storm wrote that cannot survive this is not a migration.
+func applyInTx(t *testing.T, ns, body string) {
+	t.Helper()
+	ctx := context.Background()
+	c, err := pgx.Connect(ctx, dsn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(ctx)
+	if _, err := c.Exec(ctx, "SET search_path TO "+ns); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := c.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, body); err != nil {
+		t.Fatalf("a generated migration failed when applied in a transaction: %v\n%s", err, body)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ticketLabels lets one Go enum type report a different label set before and
+// after, which is what "the model gained a label" looks like. Two Go types
+// would be two enums and a destructive replacement, not an addition.
+var ticketLabels = []string{"open", "closed"}
+
+type ticketStatus string
+
+func (ticketStatus) EnumValues() []string { return ticketLabels }
+
+type ticketV1 struct {
+	storm.Model
+	Status ticketStatus
+}
+
+func (m *ticketV1) Schema(t *storm.Table) {
+	t.Name("tickets")
+	t.Col(&m.Status).Default("'open'")
+}
+
+// ticketV2 is the same table and the same enum, defaulting to a label that
+// ticketLabels only gains at the point the second diff runs — the shape that
+// could not be generated as an applicable migration.
+type ticketV2 struct {
+	storm.Model
+	Status ticketStatus
+}
+
+func (m *ticketV2) Schema(t *storm.Table) {
+	t.Name("tickets")
+	t.Col(&m.Status).Default("'escalated'")
+}

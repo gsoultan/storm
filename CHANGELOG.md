@@ -12,7 +12,7 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.7.0 — 2026-09-07
 
 ### `migrate.Auto` — automigrate, and the ADR that had to be amended for it
 
@@ -72,11 +72,16 @@ transaction, then the concurrent index builds. Committing the labels separately
 costs nothing that was ever available: PostgreSQL has no `DROP VALUE`, so there
 was no rollback to give up.
 
-> **`storm diff` has the same latent defect and is NOT fixed here.** It writes
-> the `ADD VALUE` and the step that uses it into one `.up.sql`, and a runner
-> that wraps a file in a transaction — golang-migrate does — will fail on it.
-> `Change.addsEnumValue` now carries the fact, so the fix is to give those steps
-> a file of their own exactly as `NoTransaction` steps already get one.
+**`storm diff` had the same defect, and it is fixed too — this is a behaviour
+change.** It wrote the `ADD VALUE` and the step using it into one `.up.sql`, and
+a runner that wraps a file in a transaction (golang-migrate does) could not
+apply it: storm was generating migrations no runner could run. Each label now
+gets a file of its own, numbered first, exactly as `CREATE INDEX CONCURRENTLY`
+steps already did — so **a diff that adds an enum label now writes one more file
+than it used to**. `Change.AddsEnumValue()` exposes the fact for anything else
+applying a `Plan`. The test applies every generated file the way golang-migrate
+would — alone, in a transaction — because a file storm wrote that cannot survive
+that is not a migration.
 
 **Verified against two schemas storm did not write.** argus's ten hand-written
 SQL migrations were applied to a scratch database, introspected into the IR, and
