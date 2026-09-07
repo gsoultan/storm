@@ -14,11 +14,17 @@ fi
 echo "== driver confined to its adapter =="
 # Only runtime/pgxdrv may name pgx, so driver churn cannot reach the tree.
 #
-# The exemptions are all BUILD-TIME code — the tool, introspection, the
+# The exemptions were all BUILD-TIME code — the tool, introspection, the
 # migration runner — which talks to a database directly and never hands a pgx
 # type to an application. tool/ is on the list because the commands moved
 # there from cmd/ when they became importable; that changed who can call them,
-# not when they run. Nothing an application links at runtime is exempt.
+# not when they run.
+#
+# migrate/ broke the "build-time only" half of that sentence when it gained
+# Auto (automigrate), which an application calls at startup. The rule that
+# replaces it is narrower and is checked below rather than asserted here: the
+# ROOT package must stay driver-free, so importing storm never pulls in pgx and
+# only an application that reaches for migrate/ on purpose pays for it.
 #
 # examples/ is exempt for a different reason: it is ADOPTER code, and an
 # adopter importing pgx to build a pool is the documented way to get one — not
@@ -30,6 +36,17 @@ for f in $(git ls-files '*.go' 2>/dev/null | grep -v '_test.go' | grep -v '^benc
   esac
   if grep -q 'jackc/pgx' "$f"; then note "pgx imported outside its adapter: $f"; fi
 done
+
+echo "== importing storm does not import a driver =="
+# The property that survived migrate/ becoming runtime-linked: `import
+# "github.com/gsoultan/storm"` must not drag pgx into an application's binary.
+# migrate.Auto is opt-in precisely because it is a separate import; if pgx ever
+# reaches the root package's closure, that choice has been taken away from
+# every adopter, silently.
+if go list -deps . 2>/dev/null | grep -q 'jackc/pgx'; then
+  note "the root package now depends on pgx:"
+  go list -deps . | grep 'jackc/pgx' | sed 's/^/    /'
+fi
 
 echo "== core packages are stdlib-only =="
 for p in ./schema ./compile/pgddl ./compile/pgsql ./codegen; do

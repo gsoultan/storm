@@ -1,8 +1,13 @@
 // Package migrate diffs two schemas and emits a reviewable migration.
 //
-// storm never applies DDL (ADR-0001). It writes a numbered, forward-only file
-// for your migration runner, and marks every step that could lose data so a
-// destructive change cannot arrive unannounced.
+// The default path applies nothing (ADR-0001): Diff writes a numbered,
+// forward-only file for your migration runner, and marks every step that could
+// lose data so a destructive change cannot arrive unannounced.
+//
+// Auto is the exception, added by ADR-0001's 2026-09-07 amendment — automigrate,
+// for the databases whose cost of being wrong is low. It applies the same plan
+// directly, under a lock, in one transaction, and refuses to lose data unless
+// told to. See auto.go.
 package migrate
 
 import (
@@ -33,6 +38,14 @@ type Change struct {
 	table     *schema.Table
 	index     *schema.Index
 	dropIndex string
+
+	// addsEnumValue marks ALTER TYPE ... ADD VALUE. PostgreSQL will run it
+	// inside a transaction but refuses to let anything USE the new label until
+	// that transaction commits (SQLSTATE 55P04, "unsafe use of new value"), so
+	// a step that adds a label and a step that gives a column a default of it
+	// cannot share one. Auto commits these first, on their own; anything
+	// applying a Plan as a single transaction has to do the same.
+	addsEnumValue bool
 }
 
 // NoTransactionMarker is the comment SQL puts above a change that must run
@@ -121,8 +134,11 @@ func Diff(from, to *schema.Schema) Plan {
 		// Labels can be appended but never removed or reordered in place.
 		for _, l := range e.Labels {
 			if !contains(old.Labels, l) {
-				p.add(Change{SQL: fmt.Sprintf("ALTER TYPE %s ADD VALUE %s;",
-					pgddl.Ident(e.Name), quote(l))})
+				p.add(Change{
+					SQL: fmt.Sprintf("ALTER TYPE %s ADD VALUE %s;",
+						pgddl.Ident(e.Name), quote(l)),
+					addsEnumValue: true,
+				})
 			}
 		}
 		for _, l := range old.Labels {

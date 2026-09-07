@@ -36,8 +36,11 @@ Hard rules, all CI-enforced (`scripts/check/*.sh`):
 - **Folders name the layer; package clauses are prefixed and unique**
   (`schema/pg` → `package schemapg`). No import aliases at call sites.
 - **Generated output is byte-deterministic** across runs and machines.
-- **storm emits migrations but never applies DDL** (ADR-0001). No runtime code
-  path may alter a schema.
+- **storm emits migrations; only `migrate.Auto` applies them** (ADR-0001, as
+  amended 2026-09-07). No *command* applies DDL and nothing applies it
+  implicitly — automigrate is a function an adopter calls on purpose, from a
+  package they import on purpose, and it refuses any plan that can lose data
+  unless explicitly allowed.
 - **The IR is a logical plan, not a SQL AST** (ADR-0004) — it is what keeps the
   SQL back ends from ossifying around Postgres.
 
@@ -51,7 +54,7 @@ task summary (`Driver: compiler · Challenger: perf`).
 | :--- | :--- | :--- | :--- |
 | **compiler** | `query/`, `compile/`, `codegen/`, shape enumeration, fragment lowering | an identifier reaching SQL text from a runtime value; a builder node that allocates per call; non-deterministic generated output; a lowering rule without a golden test | golden-file suite; `storm verify` clean; fuzz corpus green |
 | **perf** | `runtime/`, scanners, shape cache, pooling | `reflect` in any runtime path; `any` boxing per column; a map lookup per query on the warm path; a benchmark whose capacity differs between sides; quoting a number not re-measured this run | `benchstat` delta vs `bench/RESULTS.md`; `testing.AllocsPerRun` assertions; targets in [[docs/PERFORMANCE]] |
-| **dba** | `model/`, `schema/`, `migrate/`, introspection, EXPLAIN gates, `bench/` fixtures | storm *applying* DDL; a destructive migration step without `--allow-destructive`; a query added to a hot path without `EXPLAIN (ANALYZE, BUFFERS)`; an N+1 shipped; a relation load with unbounded round trips | `storm explain` in CI; round-trip counting decorator; model → DDL → introspect round-trip diff empty; `verify --pending` green |
+| **dba** | `model/`, `schema/`, `migrate/`, introspection, EXPLAIN gates, `bench/` fixtures | storm applying DDL *implicitly*, *unserialised*, or *in part* (`migrate.Auto` is the sanctioned exception and holds all three); a destructive migration step without an explicit opt-in; a query added to a hot path without `EXPLAIN (ANALYZE, BUFFERS)`; an N+1 shipped; a relation load with unbounded round trips | `storm explain` in CI; round-trip counting decorator; model → DDL → introspect round-trip diff empty; `verify --pending` green |
 | **dx** | public API, generated-code readability, CLI, errors | an error that does not name the query and the shape mask; an API needing a comment to be understood; generated code a human cannot review; a breaking API change without a version | migration guide runs clean; example suite compiles; adopter feedback from M6 |
 | **sec** | injection surface, identifier handling, arg binding | any identifier interpolated from a runtime value; a placeholder count not statically known; bound args logged above debug level; a raw fragment that skips build-time validation | injection corpus green; placeholder arity proven at generation time; fuzz over identifiers |
 | **arch** | package boundaries, `Executor` port, scope line | a core package importing non-stdlib; pgx leaking out of `runtime/pgxdrv`; a feature outside the scope line in [[docs/CONCEPT]]; **any dialect branch on the hot path**; a capability sniffed at runtime instead of negotiated at build time | `scripts/check/import-boundary.sh`; scope line re-read in review |

@@ -1,6 +1,6 @@
 # ADR-0001 — Model-first, with migration-mediated DDL
 
-**Status:** Proposed · 2026-08-23
+**Status:** Proposed · 2026-08-23 · **amended 2026-09-07** (automigrate)
 **Supersedes:** the database-first position of this ADR's first draft.
 
 ## Context
@@ -42,10 +42,17 @@ simpler declaration costs the compilation thesis nothing.
 
 storm generates both the query API and a **migration file** from it.
 
-**storm never applies DDL.** The generator emits a numbered, forward-only,
-reviewable `.sql` (or per-target equivalent) into `migrations/`. Your existing
-migration runner applies it. There is no `AutoMigrate`, no runtime DDL, no
-library code path that can alter a schema.
+**storm does not apply DDL by default.** The generator emits a numbered,
+forward-only, reviewable `.sql` (or per-target equivalent) into `migrations/`.
+Your existing migration runner applies it. No command in `storm` applies DDL,
+and nothing applies it implicitly.
+
+> **Amended 2026-09-07 — `migrate.Auto`.** This paragraph originally read
+> "storm never applies DDL … no `AutoMigrate`, no runtime DDL, no library code
+> path that can alter a schema", and that is no longer true. See
+> [Amendment: automigrate](#amendment-2026-09-07--automigrate) at the end of
+> this ADR for what changed, what the ban was actually protecting, and which
+> guarantees replaced it.
 
 **Introspection remains a first-class front end.** `storm import` generates the
 model from an existing database — the adoption path for `anubis` and for any
@@ -94,3 +101,65 @@ reviewed — but it is generated rather than hand-written. Adopt this ADR and th
 migration files) and one back end. Reverting to database-first means demoting
 the model front end, not restructuring. The migration *emitter* would be the
 sunk cost.
+
+
+---
+
+## Amendment 2026-09-07 — automigrate
+
+`migrate.Auto` applies DDL to a live database from inside a running process.
+That is the thing this ADR's Decision section forbade by name.
+
+### Why the ban is not simply reinstated
+
+The ban conflated two things a second time. The first draft conflated *where the
+schema is declared* with *who applies DDL*; this one conflated *who applies DDL*
+with *how dangerous it is to apply it*. The stated danger was "an ORM silently
+changing a production schema", and the operative word was **silently** — the
+GORM failure mode is that `AutoMigrate` runs on a code path you did not think
+about, drops a column because a field was deleted, and reports success.
+
+None of that is a consequence of a library applying DDL. It is a consequence of
+applying it *implicitly*, *unserialised*, *partially*, and *without a gate on
+data loss*. Those are addressable, and `migrate.Auto` addresses them:
+
+| The GORM failure mode | What `migrate.Auto` does |
+|---|---|
+| runs implicitly | applies nothing unless called; no `init()`, no hook, no path a query reaches |
+| drops a column because a field went away | returns `*DestructiveError` and applies **nothing** unless `AllowDestructive` |
+| N replicas race on start | session advisory lock; the plan is computed *after* the lock, so late replicas find nothing to do |
+| applies half a plan | every transactional step shares one transaction, which PostgreSQL supports for DDL |
+| queues behind a long read and blocks the table | `lock_timeout`, defaulted to 3s, on every step |
+| leaves the connection altered | `search_path` and `lock_timeout` are restored, so a pooled connection goes back as it came |
+
+### What is still true
+
+- **No `storm` command applies DDL.** The CLI is unchanged. `storm diff` writes
+  a file; something else applies it.
+- **Nothing is implicit.** `Auto` is a function call in your `main`, in a
+  package you have to import on purpose.
+- **`storm diff` remains the recommended path for production**, and the
+  documentation says so. `Auto` is for the schemas whose cost of being wrong is
+  low: tests, local development, ephemeral environments, CI, single-instance
+  deployments.
+- **Importing `storm` still does not import a driver.** `migrate` is a separate
+  package, and `scripts/check/boundaries.sh` now fails the build if pgx ever
+  reaches the root package's dependency closure — so an adopter who does not
+  want automigrate does not link it.
+
+### The cost, stated plainly
+
+`migrate/` is no longer build-time-only code, which was the justification for
+its exemption from the "pgx lives in `runtime/pgxdrv`" rule. The exemption now
+rests on the narrower property above, machine-checked rather than asserted.
+
+The **dba** profile's veto in `AGENTS.md` was "storm *applying* DDL" and this
+amendment overrides it in one specific place. The veto is retained everywhere
+else, including its second clause — a destructive step without an explicit
+opt-in — which `Auto` honours rather than bypasses.
+
+### Reversible?
+
+Yes, and cheaply. `Auto` is additive: two files, no change to the differ, the
+IR, or any existing command. Deleting `migrate/auto.go` and `migrate/autopool.go`
+restores the original position exactly.
