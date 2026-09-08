@@ -133,6 +133,73 @@ transactional step in one transaction, and bounds `lock_timeout` so a queued
 `storm diff` remains the right path for a production database with data in it.
 See [ADR-0001's amendment](adr/0001-schema-source-of-truth.md#amendment-2026-09-07--automigrate).
 
+## 2b. Soft delete
+
+Opt in per table, in the `Schema` method:
+
+```go
+type User struct {
+        storm.Model
+        Email     string
+        DeletedAt *time.Time
+}
+
+func (u *User) Schema(t *storm.Table) {
+        t.SoftDelete(&u.DeletedAt)
+        t.Unique(&u.Email)
+}
+```
+
+`Delete` then marks the row instead of removing it, and **every read generated
+for that table stops returning it** — the predicate is compiled into the
+statement and ANDed ahead of your own, so a call site can narrow what it sees
+and cannot widen it. Three more functions say the things you can now say:
+
+| Function | Does |
+|---|---|
+| `Delete` / `DeleteOp` | marks the row; already-deleted is `runtime.ErrNoRow` |
+| `HardDelete` / `HardDeleteOp` | removes it for real — the only thing here that destroys data |
+| `Restore` / `RestoreOp` | clears the mark; a row that was not deleted is `runtime.ErrNoRow` |
+
+`Update` will not match a deleted row either: every read says it is gone, so
+writing through it would resurrect a value nobody can see.
+
+### Uniqueness means "among the rows that are alive"
+
+A marked row keeps its key, so a plain `UNIQUE (email)` would promise the
+address can never be used again — including by the person coming back.
+PostgreSQL can only express the useful reading as a **partial unique index**, so
+that is what a unique declaration on a soft-delete table becomes:
+
+```sql
+CREATE UNIQUE INDEX uq_users_email ON users (email) WHERE deleted_at IS NULL
+```
+
+| Rows | Allowed? |
+|---|---|
+| one live + any number of deleted, same email | **yes** — this is the point |
+| two live, same email | no |
+| two deleted, same email | yes |
+
+Composite keys are scoped the same way. An index you declare with your own
+`.Where(...)` is left exactly as written.
+
+Where the *other* reading is meant — an external identifier that must never be
+reissued, a slug reserved permanently — say so:
+
+```go
+t.UniqueAcrossDeleted(&u.ExternalRef)   // a real constraint, over every row
+```
+
+`t.Index(...).Unique().AcrossDeleted()` does the same for an index.
+
+### What storm refuses
+
+**A declared join, aggregate, plan or union that reads the table.** Those name
+several tables under aliases and storm does not yet attach the predicate to the
+right one. Read the table through its own generated package, or write the query
+with `storm.SQL` and say `deleted_at IS NULL` yourself.
+
 ## 3. Typed columns, not strings
 
 Each generated package declares its own typed column handles. The *kind* of the

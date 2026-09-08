@@ -100,6 +100,21 @@ type Table struct {
 	// Joins are the named cross-table reads declared on this table.
 	Joins []*Join
 
+	// SoftDelete names the nullable timestamp column that marks a row deleted,
+	// or "" for a table that deletes rows for real. It is opt-in and per-table
+	// (docs/CONCEPT.md §Rejected), because soft delete BY DEFAULT is a
+	// correctness landmine: every read that forgets the predicate returns rows
+	// the application believes are gone.
+	//
+	// storm can make that structural rather than a matter of discipline — the
+	// predicate is compiled into the statement and ANDed ahead of the caller's
+	// own, so no call site can widen it. What a runtime ORM has to remember,
+	// a compiler can simply not offer a way to forget.
+	//
+	// A storm-level fact with no DDL of its own, like GoName and
+	// Column.Immutable: the column itself is an ordinary nullable timestamptz.
+	SoftDelete string
+
 	PrimaryKey  []string
 	Uniques     []*Unique
 	Indexes     []*Index
@@ -107,6 +122,9 @@ type Table struct {
 	Checks      []*Check
 	Excludes    []*Exclude
 }
+
+// SoftDeletes reports whether rows of this table are deleted by marking.
+func (t *Table) SoftDeletes() bool { return t.SoftDelete != "" }
 
 // Arc is one polymorphic field: a reference to a row in exactly one of several
 // tables, expressed as one nullable foreign key per variant.

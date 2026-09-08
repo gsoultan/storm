@@ -189,7 +189,25 @@ unit test need a database, and hides which statements run. Entities are data;
 
 **Soft delete by default.** A correctness landmine — every query that forgets
 the predicate returns wrong rows, and unique indexes stop meaning what they say.
-Available as an explicit, opt-in, per-table decision.
+Available as an explicit, opt-in, per-table decision: `t.SoftDelete(&u.DeletedAt)`.
+
+Both hazards are answered rather than accepted. The first is why a *compiler*
+may offer what a runtime ORM should not: the predicate is compiled into every
+read and ANDed ahead of the caller's, so a call site can narrow what it sees and
+has no way to widen it — there is no query to forget it in. The second is handled by the
+declaration meaning what you meant: a marked row keeps its key, so on a
+soft-delete table `t.Unique(&u.Email)` is emitted as a **partial unique index
+over the live rows**, which is the only form PostgreSQL can make mean "unique
+among the rows that are alive". A deleted row and a new one may then hold the
+same address; two live ones still may not. Where the other reading is intended
+— an identifier that must never be reissued — `t.UniqueAcrossDeleted(...)` says
+so and stays a constraint over every row.
+
+A declared cross-table read — a join, an aggregate, a fetch plan, a union —
+touching a soft-delete table is **refused**, because storm does not yet place
+the predicate against the right alias there. Refusing is the point: the
+alternative is the wrong rows, silently, inside the feature meant to prevent
+exactly that.
 
 ## Scope line
 

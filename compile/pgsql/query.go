@@ -38,6 +38,15 @@ func SelectPrefix(table string, cols []string) string {
 	return "SELECT " + strings.Join(q, ", ") + " FROM " + Ident(table)
 }
 
+// SoftDeleteWhere is the predicate that keeps marked rows out of a read.
+//
+// It is rendered as a DECLARED predicate, which the splice ANDs ahead of the
+// caller's own — so a call site can narrow what it sees and has no way to widen
+// it. That is the whole reason soft delete can be offered here at all: the
+// hazard docs/CONCEPT.md rejects is "every query that forgets the predicate",
+// and a compiled statement cannot forget.
+func SoftDeleteWhere(col string) string { return Ident(col) + " IS NULL" }
+
 // CountPrefix is everything before the WHERE clause of a count.
 func CountPrefix(table string) string { return "SELECT count(*) FROM " + Ident(table) }
 
