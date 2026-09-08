@@ -127,8 +127,12 @@ workarounds (own package, or `storm.SQL`).
   the gate.
 - A masked insert sends the column it was given, so a zero-valued `Row` asks for
   the zero uuid every time; a fixture inserting several rows must set ids.
-- Upsert on a soft-delete table is UNAUDITED: `ON CONFLICT` against a partial
-  unique index needs the index predicate in the conflict target. Not covered by
-  a test yet.
+- Upsert on a soft-delete table: **audited 2026-09-08, no defect**. `ON CONFLICT`
+  against a partial unique index needs the predicate in the conflict target or
+  it is SQLSTATE **42P10** at run time, on the first row that actually
+  CONFLICTS — a test inserting distinct rows never reaches it. storm already
+  propagated it (`conflictTargets` reads `ix.Where`, and the soft-delete rewrite
+  produces a real index rather than a special case). Two live tests hold it,
+  both confirmed to fail with 42P10 when the predicate is dropped.
 
 Related: [[decisions]], [[core]], [[automigrate]].

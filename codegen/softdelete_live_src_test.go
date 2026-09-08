@@ -244,6 +244,81 @@ func TestRestoreBringsTheRowBack(t *testing.T) {
 	}
 }
 
+// Upsert against a PARTIAL unique index. PostgreSQL infers the index from the
+// conflict target's keys AND its predicate together: omit the predicate and it
+// is SQLSTATE 42P10, "there is no unique or exclusion constraint matching the
+// ON CONFLICT specification" — at run time, on the first row that CONFLICTS,
+// which a test inserting distinct rows never reaches. Hence a test that
+// deliberately conflicts.
+func TestUpsertMatchesThePartialUniqueIndex(t *testing.T) {
+	ctx := context.Background()
+	const email = "upsert@example.com"
+
+	nextID++
+	var id [16]byte
+	id[0], id[15] = nextID, nextID
+	n := sd.Create()
+	n.SetID(id)
+	n.SetEmail(email)
+	n.SetName("First")
+	if _, err := n.Insert(ctx, ex); err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+
+	// The conflicting write. This is where 42P10 would surface.
+	nextID++
+	var id2 [16]byte
+	id2[0], id2[15] = nextID, nextID
+	u := sd.Create()
+	u.SetID(id2)
+	u.SetEmail(email)
+	u.SetName("Second")
+	got, err := u.OnConflictEmail().Insert(ctx, ex)
+	if err != nil {
+		t.Fatalf("upsert on a partial unique index: %v", err)
+	}
+	if got.Name != "Second" {
+		t.Errorf("the existing row was not updated: name is %q", got.Name)
+	}
+	if got.ID != id {
+		t.Error("the upsert inserted a second row instead of updating the first")
+	}
+}
+
+// And the behaviour that only a PARTIAL index gives: a deleted row does not
+// take part, so upserting over its address inserts rather than resurrecting it.
+func TestUpsertDoesNotResurrectADeletedRow(t *testing.T) {
+	ctx := context.Background()
+	const email = "revenant@example.com"
+
+	dead := insert(t, email, "Dead")
+	if err := sd.Delete(ctx, ex, dead); err != nil {
+		t.Fatal(err)
+	}
+
+	nextID++
+	var id [16]byte
+	id[0], id[15] = nextID, nextID
+	u := sd.Create()
+	u.SetID(id)
+	u.SetEmail(email)
+	u.SetName("Alive")
+	got, err := u.OnConflictEmail().Insert(ctx, ex)
+	if err != nil {
+		t.Fatalf("upsert over a deleted row's address: %v", err)
+	}
+	if got.ID == dead {
+		t.Fatal("the upsert updated the DELETED row, bringing it back from the dead")
+	}
+	rows, err := sd.New().Where(sd.Email.Eq(email)).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Name != "Alive" {
+		t.Errorf("expected exactly the live row, got %+v", rows)
+	}
+}
+
 func TestHardDeleteActuallyRemoves(t *testing.T) {
 	ctx := context.Background()
 	id := insert(t, "hard@example.com", "Hard")
