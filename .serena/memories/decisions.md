@@ -60,9 +60,10 @@ in round trips.
   path and the SLOs become fiction.
 - **Active Record (`user.Save()`)** — couples entities to sessions; every unit
   test needs a database.
-- **Soft delete by default** — a correctness landmine. **Built as opt-in
-  2026-09-08** (the entry always said "available as an explicit, opt-in,
-  per-table decision"; that was a design, not a ban). See [[softdelete]].
+- **Soft delete by default** — a correctness landmine. An opt-in form was
+  built and released as v0.8.0 on 2026-09-08 and **removed the same day** at the
+  owner's instruction; the tag is still fetchable. See [[softdelete_removed]]
+  before rebuilding it.
 - **An Ent-style `Schema()` DSL as the primary model form** — *rejected on
   review 2026-08-23.* The model is a **plain Go struct**; ~90% of a schema is
   derivable from the type (`*T` = nullable, `XxxID`+`Xxx *Xxx` = FK, `[]T` =

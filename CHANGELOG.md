@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-08
+updated: 2026-09-07
 ---
 
 # Changelog
@@ -11,6 +11,28 @@ may change with a minor bump; what is promised, and for how long, is
 
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
+
+## Unreleased
+
+### Soft delete removed
+
+`t.SoftDelete` and the generated `HardDelete` / `Restore` / `HardDeleteOp` /
+`RestoreOp` are gone, along with the build-time refusals that came with them.
+Tables no longer have a soft-delete mode; `Delete` deletes.
+
+**This is a breaking change for anyone who adopted v0.8.0**, which was tagged
+the same day and remains fetchable — a published module version cannot be
+withdrawn, so v0.8.0 stays exactly as it was and this is a removal *release*
+rather than an undo. Pin v0.8.0 if you depend on the feature.
+
+Marking rows deleted is still perfectly possible without storm's help: a
+nullable timestamp column and `Where(t.DeletedAt.IsNull())` on the reads that
+want it. What is gone is storm compiling that predicate in for you, and the
+guarantee that no read could omit it.
+
+Generated output for every table is byte-identical to v0.7.0 again, apart from
+the version stamp. Soft delete returns to the rejected list in
+[docs/CONCEPT.md](docs/CONCEPT.md) as it was.
 
 ## v0.8.0 — 2026-09-08
 

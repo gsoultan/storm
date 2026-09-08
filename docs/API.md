@@ -133,48 +133,6 @@ transactional step in one transaction, and bounds `lock_timeout` so a queued
 `storm diff` remains the right path for a production database with data in it.
 See [ADR-0001's amendment](adr/0001-schema-source-of-truth.md#amendment-2026-09-07--automigrate).
 
-## 2b. Soft delete
-
-Opt in per table, in the `Schema` method:
-
-```go
-type User struct {
-        storm.Model
-        Email     string
-        DeletedAt *time.Time
-}
-
-func (u *User) Schema(t *storm.Table) {
-        t.SoftDelete(&u.DeletedAt)
-        t.Index(&u.Email).Unique().Where("deleted_at IS NULL")
-}
-```
-
-`Delete` then marks the row instead of removing it, and **every read generated
-for that table stops returning it** — the predicate is compiled into the
-statement and ANDed ahead of your own, so a call site can narrow what it sees
-and cannot widen it. Three more functions say the things you can now say:
-
-| Function | Does |
-|---|---|
-| `Delete` / `DeleteOp` | marks the row; already-deleted is `runtime.ErrNoRow` |
-| `HardDelete` / `HardDeleteOp` | removes it for real — the only thing here that destroys data |
-| `Restore` / `RestoreOp` | clears the mark; a row that was not deleted is `runtime.ErrNoRow` |
-
-`Update` will not match a deleted row either: every read says it is gone, so
-writing through it would resurrect a value nobody can see.
-
-Two things storm refuses rather than guesses:
-
-- **A plain `t.Unique(...)`.** A marked row keeps its key, so `UNIQUE (email)`
-  would mean the address can never be used again — including by the person
-  coming back. PostgreSQL can only say "unique among live rows" as a *partial
-  index*, so the build fails and names the replacement.
-- **A declared join, aggregate, plan or union that reads the table.** Those name
-  several tables under aliases and storm does not yet attach the predicate to
-  the right one. Read the table through its own generated package, or write the
-  query with `storm.SQL` and say `deleted_at IS NULL` yourself.
-
 ## 3. Typed columns, not strings
 
 Each generated package declares its own typed column handles. The *kind* of the
