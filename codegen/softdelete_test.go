@@ -274,6 +274,8 @@ func TestSoftDeleteBehaviourAgainstPostgres(t *testing.T) {
 		"TestSeveralDeletedRowsMayShareAUniqueValue",
 		"TestTwoLiveRowsStillCannotShareAUniqueValue",
 		"TestRestoreBringsTheRowBack",
+		"TestUpsertMatchesThePartialUniqueIndex",
+		"TestUpsertDoesNotResurrectADeletedRow",
 		"TestHardDeleteActuallyRemoves",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {

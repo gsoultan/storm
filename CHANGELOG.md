@@ -12,6 +12,31 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Upsert on a soft-delete table: audited, no defect
+
+v0.10.0's notes flagged this as unaudited. It has been audited now, and the
+answer is that it already worked — so this adds tests rather than a fix.
+
+`t.Unique` on a soft-delete table produces a PARTIAL unique index, and
+PostgreSQL infers an `ON CONFLICT` target from the keys **and** the predicate
+together. Omit the predicate and it is SQLSTATE 42P10, "there is no unique or
+exclusion constraint matching the ON CONFLICT specification" — at run time, on
+the first row that actually CONFLICTS, which a test inserting distinct rows
+never reaches. That is why it was worth checking rather than assuming.
+
+storm already propagated the index predicate into the conflict target
+(`ON CONFLICT ("email") WHERE deleted_at IS NULL`), because the code that
+collects conflict targets reads it off the index and the soft-delete rewrite
+produces a real index rather than a special case. Two live tests now hold that:
+an upsert that genuinely conflicts, and one over a *deleted* row's address —
+which inserts rather than resurrecting it, since a deleted row does not take
+part in a partial index. Both are confirmed to fail with 42P10 when the
+predicate is dropped from the conflict target.
+
+No production code changed.
+
 ## v0.10.0 — 2026-09-08
 
 ### Soft delete reaches every read, including the cross-table ones
