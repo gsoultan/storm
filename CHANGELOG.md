@@ -12,7 +12,7 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.8.0 — 2026-09-08
 
 ### Soft delete — opt-in, per table, and the predicate cannot be forgotten
 
