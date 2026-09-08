@@ -135,6 +135,11 @@ func Build(models ...any) (*schema.Schema, error) {
 	// from pass 5 because it has to see the foreign-key indexes too.
 	b.validateIndexes()
 
+	// Pass 7: soft delete. After indexes, because the message it writes tells
+	// the reader to declare one.
+	b.validateSoftDelete()
+	b.validateSoftDeleteReach()
+
 	if err := b.errs.err(); err != nil {
 		return nil, err
 	}

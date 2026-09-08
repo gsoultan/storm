@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-07
+updated: 2026-09-08
 ---
 
 # Changelog
@@ -11,6 +11,66 @@ may change with a minor bump; what is promised, and for how long, is
 
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
+
+## Unreleased
+
+### Soft delete — opt-in, per table, and the predicate cannot be forgotten
+
+```go
+func (u *User) Schema(t *storm.Table) {
+        t.SoftDelete(&u.DeletedAt)
+        t.Index(&u.Email).Unique().Where("deleted_at IS NULL")
+}
+```
+
+`Delete` marks the row, `HardDelete` removes it, `Restore` brings it back, and
+each has a queueable `...Op` form. `Update` will not match a deleted row.
+
+Soft delete has been on the rejected list since the beginning, and the entry is
+worth reading before this one: *"every query that forgets the predicate returns
+wrong rows, and unique indexes stop meaning what they say"*. That entry also
+ended `Available as an explicit, opt-in, per-table decision` — which was true as
+a design position and false as a description of the code. It is now the code.
+
+**Why a compiler may offer what a runtime ORM should not.** The GORM failure is
+not that soft delete exists, it is that the predicate is applied by a callback
+that any query can escape, so correctness becomes a thing every call site has to
+remember. storm compiles its statements: the predicate goes in as a *declared*
+one, ANDed ahead of the caller's, using the same `SpliceTreeWhere` a declared
+join filter already used. A call site can narrow what it sees and has no way to
+widen it. There is no query to forget it in — and one place in the generator
+decides, so a new read path cannot quietly opt out.
+
+**The second hazard is a build error, not a footnote.** A marked row keeps its
+key, so `t.Unique(&u.Email)` on a soft-delete table promises the address can
+never be used again — by anyone, including the person coming back. Nothing fails
+at declaration time, nothing fails at migration time, and it fails the first
+time somebody re-registers. PostgreSQL can only express "unique among live rows"
+as a partial index, so that declaration is refused and told what to write. It is
+NOT silently rewritten: "unique across deleted rows too" is a real thing to
+want, and quietly changing what a declaration means is the implicitness this
+feature exists to avoid.
+
+**What is refused rather than shipped half-working.** A declared join,
+aggregate, fetch plan or union that reads a soft-delete table fails the build.
+Those name several tables under aliases and storm does not yet attach the
+predicate to the right one; shipping them unguarded would put the exact failure
+the feature prevents *inside* the feature. Read such a table through its own
+generated package, or write the query with `storm.SQL`. Lifting this is
+follow-up work, and the refusal names both workarounds.
+
+**Two defects the tests found.** `DeleteOp` — the queueable, unit-of-work form —
+still pointed at the hard delete, so a queued delete would have destroyed a row
+the caller believed was recoverable, with nothing at the call site to say which
+of the two it got. It also meant the generated package did not compile, which is
+the only reason it was noticed at all. And the live test could pass having run
+nothing: the generated package is exercised in a subprocess, and a `STORM_DSN`
+that did not survive the exec would have skipped and reported success for an
+untested feature. It now fails loudly, and the caller asserts each test ran.
+
+Verified against PostgreSQL: a deleted row leaves every read and stays in the
+table, deleting twice reports `ErrNoRow`, the address of a deleted row can be
+claimed again, restore round-trips, and only `HardDelete` actually removes.
 
 ## v0.7.0 — 2026-09-07
 
