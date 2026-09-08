@@ -43,13 +43,13 @@ func (g *gen) join(j *schema.Join) {
 
 	prefix := pgsql.JoinSelect(g.t.Name, j, func(c schema.CTE) (string, string) {
 		return g.cteSQL(c)
-	})
+	}, joinLive(g.s))
 	if g.err != nil {
 		return
 	}
 	g.p("const %sPrefix = `%s`", low, prefix)
 	g.p("const %sSuffix = `%s`", low, pgsql.JoinSuffix(j))
-	if w := pgsql.JoinDeclaredWhere(j); w != "" {
+	if w := pgsql.JoinDeclaredWhere(j, liveIn(g.s, g.t.Name, g.t.Name)); w != "" {
 		// The declared predicate is ANDed with whatever the caller adds, so a
 		// declaration that says "only fulfilled orders" cannot be widened at a
 		// call site. That is the point of declaring it there.
@@ -69,7 +69,7 @@ func (g *gen) join(j *schema.Join) {
 	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	if pgsql.JoinDeclaredWhere(j) != "" {
+	if pgsql.JoinDeclaredWhere(j, liveIn(g.s, g.t.Name, g.t.Name)) != "" {
 		g.p("\treturn c.Put(toks, runtime.SpliceTreeWhere(%sPrefix, %sWhere, toks, lowering, suffix))", low, low)
 	} else {
 		g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)

@@ -162,9 +162,9 @@ func (g *gen) topFn(key string, kc *schema.Column, cols []string) {
 		g.p("\t}")
 		var unordered string
 		if form == "Window" {
-			unordered = pgsql.TopNWindow(g.t.Name, cols, key)
+			unordered = pgsql.TopNWindow(g.t.Name, cols, key, g.live())
 		} else {
-			unordered = pgsql.TopNLateral(g.t.Name, cols, key, kc.Type.SQL())
+			unordered = pgsql.TopNLateral(g.t.Name, cols, key, kc.Type.SQL(), g.live())
 		}
 		g.p("\tsql := runtime.SpliceOrder(%q, terms, %q, %q)", unordered, pgsql.OrderLead, pgsql.OrderSep)
 		g.p("\treturn %s%sCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL", priv, form)

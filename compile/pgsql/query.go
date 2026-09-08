@@ -277,22 +277,35 @@ const existsAlias = "_storm_e"
 
 // ExistsFrag lowers "a related row exists". Negated by wrapping in NOT at the
 // token level, or by NotExistsFrag for the direct spelling.
-func ExistsFrag(childTable, childFK, parentTable, parentPK string) string {
+func ExistsFrag(childTable, childFK, parentTable, parentPK string, childLive Live) string {
+	// childLive is the CHILD's predicate, under the inner alias: "this parent
+	// has a related row" must not be satisfied by a row the child's own
+	// package would refuse to return.
 	return "EXISTS (SELECT 1 FROM " + Ident(childTable) + " AS " + Ident(existsAlias) +
 		" WHERE " + Ident(existsAlias) + "." + Ident(childFK) +
-		" = " + Ident(parentTable) + "." + Ident(parentPK) + ")"
+		" = " + Ident(parentTable) + "." + Ident(parentPK) +
+		aliasLive(childLive) + ")"
+}
+
+// aliasLive re-qualifies a child predicate to the exists alias and renders it
+// as a trailing AND, or "" when the child does not soft-delete.
+func aliasLive(l Live) string {
+	if l.Empty() {
+		return ""
+	}
+	return " AND " + string(LiveFor(existsAlias, liveCol(l)))
 }
 
 // NotExistsFrag lowers "no related row exists".
-func NotExistsFrag(childTable, childFK, parentTable, parentPK string) string {
-	return "NOT " + ExistsFrag(childTable, childFK, parentTable, parentPK)
+func NotExistsFrag(childTable, childFK, parentTable, parentPK string, childLive Live) string {
+	return "NOT " + ExistsFrag(childTable, childFK, parentTable, parentPK, childLive)
 }
 
 // ExistsOpen is ExistsFrag WITHOUT its closing paren: the splicer appends the
 // wrapped child predicates and closes. Split here rather than string-surgered
 // in codegen, so the two forms cannot drift.
-func ExistsOpen(childTable, childFK, parentTable, parentPK string) string {
-	f := ExistsFrag(childTable, childFK, parentTable, parentPK)
+func ExistsOpen(childTable, childFK, parentTable, parentPK string, childLive Live) string {
+	f := ExistsFrag(childTable, childFK, parentTable, parentPK, childLive)
 	return f[:len(f)-1]
 }
 
@@ -301,6 +314,6 @@ func ExistsOpen(childTable, childFK, parentTable, parentPK string) string {
 // `NOT EXISTS (...)` rather than `NOT (EXISTS (...))`: the same plan either
 // way, and the shorter form is what a reviewer of the generated SQL expects to
 // read.
-func NotExistsOpen(childTable, childFK, parentTable, parentPK string) string {
-	return "NOT " + ExistsOpen(childTable, childFK, parentTable, parentPK)
+func NotExistsOpen(childTable, childFK, parentTable, parentPK string, childLive Live) string {
+	return "NOT " + ExistsOpen(childTable, childFK, parentTable, parentPK, childLive)
 }

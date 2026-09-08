@@ -28,7 +28,7 @@ import "strings"
 // ordering is left as a marker for runtime.SpliceOrder, because it varies per
 // call and sits inside the window clause rather than at the end. Two
 // placeholders: the parent key array, then N.
-func TopNWindow(table string, cols []string, key string) string {
+func TopNWindow(table string, cols []string, key string, live Live) string {
 	var b strings.Builder
 	b.WriteString("SELECT ")
 	writeIdents(&b, cols)
@@ -45,7 +45,12 @@ func TopNWindow(table string, cols []string, key string) string {
 	b.WriteString(Ident(key))
 	b.WriteString(" = ANY(")
 	b.WriteString(Placeholder)
-	b.WriteString("1)) ")
+	b.WriteString("1)")
+	// Inside the subquery, beside the key filter: a marked row must not occupy
+	// one of the N slots the window function hands out, or a parent with N
+	// deleted children gets an empty page instead of its live ones.
+	live.AndInto(&b, true)
+	b.WriteString(") ")
 	b.WriteString(Ident(subqueryAlias))
 	b.WriteString(" WHERE ")
 	b.WriteString(Ident(rowNumberAlias))
@@ -66,7 +71,7 @@ func TopNWindow(table string, cols []string, key string) string {
 //
 // keyType is the SQL type of the parent key, needed because an unnested array
 // parameter has no type of its own.
-func TopNLateral(table string, cols []string, key, keyType string) string {
+func TopNLateral(table string, cols []string, key, keyType string, live Live) string {
 	var b strings.Builder
 	b.WriteString("SELECT ")
 	for i, c := range cols {
@@ -95,6 +100,9 @@ func TopNLateral(table string, cols []string, key, keyType string) string {
 	b.WriteString(Ident(parentAlias))
 	b.WriteString(".")
 	b.WriteString(Ident(parentKeyAlias))
+	// Before the LIMIT, so a parent whose most recent N children are all
+	// deleted still gets its live ones rather than an empty page.
+	live.AndInto(&b, true)
 	b.WriteString(orderMarker)
 	b.WriteString(" LIMIT ")
 	b.WriteString(Placeholder)

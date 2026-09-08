@@ -204,7 +204,7 @@ func TestParamIsSharedAcrossBranches(t *testing.T) {
 	if got := u.Params[0].Type.Name; got != schema.TypeText {
 		t.Errorf("parameter type = %s, want text inferred from the column", got)
 	}
-	sql := pgsql.UnionSelect(u) + pgsql.UnionSuffix(u)
+	sql := pgsql.UnionSelect(u, nil) + pgsql.UnionSuffix(u)
 	if strings.Count(sql, "$1") != 2 {
 		t.Errorf("the shared parameter is not one placeholder in both branches:\n%s", sql)
 	}

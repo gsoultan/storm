@@ -11,7 +11,7 @@ import (
 //
 // Split at WHERE like every other read, so the call-site predicates stay
 // dynamic and this prefix is fixed at generation time.
-func JoinSelect(table string, j *schema.Join, aggFor func(cte schema.CTE) (prefix, suffix string)) string {
+func JoinSelect(table string, j *schema.Join, aggFor func(cte schema.CTE) (prefix, suffix string), live func(table, alias string) Live) string {
 	var b strings.Builder
 
 	if len(j.CTEs) > 0 {
@@ -58,6 +58,18 @@ func JoinSelect(table string, j *schema.Join, aggFor func(cte schema.CTE) (prefi
 		}
 		b.WriteString(" ON ")
 		writeCond(&b, t.On)
+		// ON, not WHERE. For an inner join the two are equivalent; for a LEFT
+		// JOIN they are not, and the difference is the whole behaviour of the
+		// join. In WHERE, a parent whose only child is deleted is DROPPED —
+		// the outer join silently becomes an inner one. In ON, the parent
+		// survives with a NULL-extended child, which is what "left join" was
+		// asked for and what the same parent gets when it has no child at all.
+		if live != nil && t.Table != "" {
+			if p := live(t.Table, t.Alias); !p.Empty() {
+				b.WriteString(" AND ")
+				b.WriteString(string(p))
+			}
+		}
 	}
 	return b.String()
 }
@@ -87,11 +99,13 @@ func JoinSuffix(j *schema.Join) string {
 
 // JoinDeclaredWhere renders the declared predicate, which the generator folds
 // into the statement's fixed WHERE.
-func JoinDeclaredWhere(j *schema.Join) string {
-	if j.Where == nil {
-		return ""
-	}
+// driving is the predicate for the table the join reads FROM. That one belongs
+// in the WHERE rather than an ON clause: it has no ON of its own, and excluding
+// its marked rows is exactly what a filter on the driving table should do.
+func JoinDeclaredWhere(j *schema.Join, driving Live) string {
 	var b strings.Builder
-	writeCond(&b, *j.Where)
-	return b.String()
+	if j.Where != nil {
+		writeCond(&b, *j.Where)
+	}
+	return driving.And(b.String())
 }

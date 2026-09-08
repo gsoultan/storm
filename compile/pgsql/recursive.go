@@ -29,7 +29,7 @@ const (
 // table is the self-referencing table, cols its projected columns, key its
 // primary key and parent the column pointing at that key. Two placeholders: the
 // root id array, then the maximum depth.
-func Recursive(table string, cols []string, key, parent string, dir int) string {
+func Recursive(table string, cols []string, key, parent string, dir int, live Live) string {
 	var b strings.Builder
 	t := Ident(recursiveAlias)
 	c := Ident(recursiveChild)
@@ -50,7 +50,10 @@ func Recursive(table string, cols []string, key, parent string, dir int) string 
 	b.WriteString(Ident(key))
 	b.WriteString(" = ANY(")
 	b.WriteString(Placeholder)
-	b.WriteString("1) UNION ALL SELECT ")
+	b.WriteString("1)")
+	// The anchor: a deleted row must not seed the traversal.
+	live.AndInto(&b, true)
+	b.WriteString(" UNION ALL SELECT ")
 	for i, col := range cols {
 		if i > 0 {
 			b.WriteString(", ")
@@ -93,7 +96,16 @@ func Recursive(table string, cols []string, key, parent string, dir int) string 
 	b.WriteString(Ident(depthAlias))
 	b.WriteString(" < ")
 	b.WriteString(Placeholder)
-	b.WriteString("2 AND NOT ")
+	b.WriteString("2")
+	// BOTH halves, and qualified to the child: the recursive term joins the
+	// table to itself, so an unqualified predicate is ambiguous, and one that
+	// guarded only the anchor would let a deleted row back in on the second
+	// iteration — carrying its whole subtree with it.
+	if !live.Empty() {
+		b.WriteString(" AND ")
+		b.WriteString(string(LiveFor(recursiveChild, liveCol(live))))
+	}
+	b.WriteString(" AND NOT ")
 	b.WriteString(c)
 	b.WriteString(".")
 	b.WriteString(Ident(key))
@@ -114,3 +126,20 @@ const (
 	depthAlias     = "_storm_d"
 	pathAlias      = "_storm_path"
 )
+
+// liveCol recovers the column from a predicate built by LiveFor. The recursive
+// term needs the same column under a different alias, and passing the whole
+// predicate is what every other caller wants — so this unpicks it here rather
+// than widening every signature for the one shape that needs both.
+func liveCol(l Live) string {
+	s := string(l)
+	i := strings.Index(s, " IS NULL")
+	if i < 0 {
+		return ""
+	}
+	s = s[:i]
+	if j := strings.LastIndex(s, "."); j >= 0 {
+		s = s[j+1:]
+	}
+	return strings.Trim(s, `"`)
+}

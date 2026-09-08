@@ -19,7 +19,7 @@ import (
 // Each branch is parenthesised. PostgreSQL binds ORDER BY and LIMIT to the
 // whole union rather than the last branch, but the reader of a generated
 // statement should not have to know that to be sure.
-func UnionSelect(u *schema.Union) string {
+func UnionSelect(u *schema.Union, live func(table string) Live) string {
 	var b strings.Builder
 
 	sep := " UNION ALL "
@@ -31,12 +31,12 @@ func UnionSelect(u *schema.Union) string {
 		if i > 0 {
 			b.WriteString(sep)
 		}
-		writeUnionBranch(&b, u, &u.Branches[i])
+		writeUnionBranch(&b, u, &u.Branches[i], live)
 	}
 	return b.String()
 }
 
-func writeUnionBranch(b *strings.Builder, u *schema.Union, br *schema.UnionBranch) {
+func writeUnionBranch(b *strings.Builder, u *schema.Union, br *schema.UnionBranch, live func(table string) Live) {
 	b.WriteString("(SELECT ")
 	for i, e := range br.Exprs {
 		if i > 0 {
@@ -48,9 +48,16 @@ func writeUnionBranch(b *strings.Builder, u *schema.Union, br *schema.UnionBranc
 	}
 	b.WriteString(" FROM ")
 	b.WriteString(Ident(br.Table))
-	if br.Where != nil {
+	// Per BRANCH, not per union: the branches read different tables and only
+	// some of them may soft-delete. A predicate hoisted to the union as a whole
+	// would name a column half the branches do not have.
+	hasWhere := br.Where != nil
+	if hasWhere {
 		b.WriteString(" WHERE ")
 		writeCond(b, *br.Where)
+	}
+	if live != nil {
+		live(br.Table).AndInto(b, hasWhere)
 	}
 	b.WriteByte(')')
 }

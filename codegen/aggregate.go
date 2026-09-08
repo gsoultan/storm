@@ -60,13 +60,21 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	if len(agg.Params) > 0 {
+	soft := g.t.SoftDeletes()
+	switch {
+	case len(agg.Params) > 0 && soft:
+		g.p("\t// The declared parameters spell $1..$%d in the prefix, so the", len(agg.Params))
+		g.p("\t// call-site predicates are numbered from there — and the marked")
+		g.p("\t// rows are excluded before any of them are grouped.")
+		g.p("\treturn c.Put(toks, runtime.SpliceTreeWhereFrom(%sPrefix, softDeleteWhere, toks, lowering, suffix, %d))",
+			low, len(agg.Params))
+	case len(agg.Params) > 0:
 		g.p("\t// The declared parameters spell $1..$%d in the prefix, so the", len(agg.Params))
 		g.p("\t// call-site predicates are numbered from there.")
 		g.p("\treturn c.Put(toks, runtime.SpliceTreeFrom(%sPrefix, toks, lowering, suffix, %d))",
 			low, len(agg.Params))
-	} else {
-		g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)
+	default:
+		g.p("\treturn c.Put(toks, %s)", g.splice(low+"Prefix", "toks, lowering, suffix"))
 	}
 	g.p("}")
 	g.p("")

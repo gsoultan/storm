@@ -86,7 +86,7 @@ func (g *gen) recursive() {
 		{"Descend", "descendants: rows whose " + parent + " chain leads back to a root", pgsql.Descend},
 		{"Ascend", "ancestors: the " + parent + " chain upward from each row", pgsql.Ascend},
 	} {
-		sql := pgsql.Recursive(g.t.Name, cols, key, parent, dir.dir)
+		sql := pgsql.Recursive(g.t.Name, cols, key, parent, dir.dir, g.live())
 		g.p("// %s returns the %s.", dir.name, dir.doc)
 		g.p("//")
 		g.p("// The roots themselves are included, at depth 1. maxDepth counts them,")
