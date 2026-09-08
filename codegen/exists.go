@@ -69,8 +69,8 @@ func (g *gen) existsFragRows() {
 		for range ops {
 			g.p("\t\t{},")
 		}
-		g.p("\t\t{A: %q},", pgsql.ExistsFrag(rel.Target, rel.Column, g.t.Name, pk))
-		g.p("\t\t{A: %q},", pgsql.NotExistsFrag(rel.Target, rel.Column, g.t.Name, pk))
+		g.p("\t\t{A: %q},", pgsql.ExistsFrag(rel.Target, rel.Column, g.t.Name, pk, liveIn(g.s, rel.Target, "")))
+		g.p("\t\t{A: %q},", pgsql.NotExistsFrag(rel.Target, rel.Column, g.t.Name, pk, liveIn(g.s, rel.Target, "")))
 		g.p("\t},")
 	}
 }

@@ -60,6 +60,34 @@ index on every run. `TestSoftDelete_ScopedUniqueRoundTrips` covers
 model → DDL → introspect → diff-empty. Do not change the predicate text without
 re-running it.
 
+## Cross-table reads (v0.10.0) — where the predicate goes
+
+All of them carry it now; nothing is refused. Two placements are load-bearing
+and both look fine in review:
+
+- **A joined table's predicate goes in its `ON` clause, NOT the `WHERE`.** Inner
+  join: equivalent. LEFT JOIN: in the WHERE, a parent whose only child is
+  deleted is DROPPED and the outer join silently becomes an inner one. In ON,
+  the parent survives NULL-extended, which is what it gets with no child at all.
+  The DRIVING table's predicate does go in the WHERE — it has no ON.
+- **A recursive CTE is guarded in BOTH halves.** Anchor only lets a deleted row
+  back in via the recursive term, carrying its subtree. The recursive term's
+  copy must be qualified to the child alias (`_storm_rc`) or it is ambiguous.
+
+Also: unions filter per BRANCH (branches read different tables, only some
+soft-delete); top-N batch loads filter BEFORE the limit (else a parent whose
+most recent N children are deleted gets an empty page); EXISTS semi-joins are
+qualified to the inner alias `_storm_e`.
+
+**Fetch plans needed nothing** — they load through the child's own generated
+package and inherit its predicate. The original refusal was over-cautious; what
+it needed was a test.
+
+`pgsql.Live` is a distinct type and every read builder that names a table takes
+one. A `string` can be forgotten by passing `""` out of habit; the named type
+made the compiler enumerate all eleven call sites, and will enumerate the next.
+**Do not widen it back to `string`.**
+
 ## Covered vs refused
 
 Covered: select, count, exists, projections, Update (won't match a deleted row),

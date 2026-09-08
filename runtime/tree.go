@@ -349,6 +349,14 @@ func SpliceTreeFrom(prefix string, toks []Tok, lw Lowering, suffix string, reser
 	return spliceTree(prefix, "", toks, lw, suffix, reserved)
 }
 
+// SpliceTreeWhereFrom is SpliceTreeFrom with a declared predicate, for the one
+// statement that needs both: a declared aggregation over a soft-delete table.
+// Its FILTER parameters live in the prefix and have already spent ordinals,
+// and its rows still have to exclude the marked ones.
+func SpliceTreeWhereFrom(prefix, declared string, toks []Tok, lw Lowering, suffix string, reserved int) *Stmt {
+	return spliceTree(prefix, declared, toks, lw, suffix, reserved)
+}
+
 func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string, reserved int) *Stmt {
 	frag, ord2, ob := lw.Frag, lw.Order, lw.OB
 	var stack []string

@@ -143,7 +143,6 @@ func Build(models ...any) (*schema.Schema, error) {
 	// Pass 7: soft delete. After indexes, because the message it writes tells
 	// the reader to declare one.
 	b.validateSoftDelete()
-	b.validateSoftDeleteReach()
 
 	if err := b.errs.err(); err != nil {
 		return nil, err

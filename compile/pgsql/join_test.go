@@ -33,7 +33,7 @@ func noCTE(schema.CTE) (string, string) { return "", "" }
 // Every column is qualified. "id" in a two-table query is ambiguous and
 // PostgreSQL says so.
 func TestJoinQualifiesEveryColumn(t *testing.T) {
-	got := pgsql.JoinSelect("orders", joinFixture(schema.JoinInner), noCTE)
+	got := pgsql.JoinSelect("orders", joinFixture(schema.JoinInner), noCTE, nil)
 	want := `SELECT "orders"."id" AS "order_id", "customers"."email" AS "email" ` +
 		`FROM "orders" JOIN "customers" ON "orders"."customer_id" = "customers"."id"`
 	if got != want {
@@ -42,7 +42,7 @@ func TestJoinQualifiesEveryColumn(t *testing.T) {
 }
 
 func TestLeftJoinKeyword(t *testing.T) {
-	got := pgsql.JoinSelect("orders", joinFixture(schema.JoinLeft), noCTE)
+	got := pgsql.JoinSelect("orders", joinFixture(schema.JoinLeft), noCTE, nil)
 	if !strings.Contains(got, ` LEFT JOIN "customers" `) {
 		t.Errorf("got %s", got)
 	}
@@ -68,7 +68,7 @@ func TestJoinWithCTE(t *testing.T) {
 	})
 	got := pgsql.JoinSelect("orders", j, func(c schema.CTE) (string, string) {
 		return `SELECT "customer_id", count(*) AS "n" FROM "orders"`, ` GROUP BY "customer_id"`
-	})
+	}, nil)
 	for _, want := range []string{
 		`WITH "spend" AS (SELECT "customer_id", count(*) AS "n" FROM "orders" GROUP BY "customer_id")`,
 		`LEFT JOIN "spend" ON "spend"."customer_id" = "customers"."id"`,
@@ -85,13 +85,13 @@ func TestJoinWithCTE(t *testing.T) {
 
 func TestJoinDeclaredWhere(t *testing.T) {
 	j := joinFixture(schema.JoinInner)
-	if got := pgsql.JoinDeclaredWhere(j); got != "" {
+	if got := pgsql.JoinDeclaredWhere(j, ""); got != "" {
 		t.Errorf("a join with no declared Where rendered %q", got)
 	}
 	j.Where = &schema.Cond{Kind: schema.CondCmp, Op: schema.OpNe,
 		Left:  qcol("orders", "status"),
 		Right: schema.Expr{Kind: schema.ExprLit, Lit: schema.Literal{Kind: schema.TypeText, S: "cancelled"}}}
-	if got := pgsql.JoinDeclaredWhere(j); got != `"orders"."status" <> 'cancelled'` {
+	if got := pgsql.JoinDeclaredWhere(j, ""); got != `"orders"."status" <> 'cancelled'` {
 		t.Errorf("got %s", got)
 	}
 }

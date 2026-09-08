@@ -12,6 +12,46 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Soft delete reaches every read, including the cross-table ones
+
+v0.8.0 and v0.9.0 guarded the single-table reads and **refused** a declared
+join, aggregate, fetch plan or union that touched a soft-delete table, because
+storm could not attach the predicate to the right alias. It can now, so the
+refusal is gone and those reads carry it.
+
+Two placements are the whole point, and both would look fine in review:
+
+- **A joined table's predicate goes in its `ON` clause, not the `WHERE`.** For
+  an inner join the two are equivalent. For a `LEFT JOIN` they are not: filtered
+  in the `WHERE`, a parent whose only child is deleted is *dropped*, and the
+  outer join silently becomes an inner one. In `ON`, the parent survives with a
+  NULL-extended child — which is exactly what it gets when it has no child at
+  all. The driving table's predicate does belong in the `WHERE`; it has no `ON`
+  of its own.
+- **A recursive read is guarded in both halves.** A recursive CTE reads the
+  table twice. Guarding only the anchor lets a deleted row re-enter on the
+  second iteration and bring its whole subtree with it.
+
+Also now carrying it: unions (per *branch*, since branches read different tables
+and only some soft-delete), per-parent top-N batch loads (*before* the limit, so
+a parent whose most recent N children are deleted still gets its live ones),
+`EXISTS` semi-joins (qualified to the inner alias, so "has a related row" is not
+satisfied by a row the child's own package would refuse to return), and declared
+aggregates.
+
+Fetch plans needed nothing: they load through the child's own generated package
+and inherit its predicate. The refusal was over-cautious about that one — what
+it needed was a test, which it now has.
+
+**How this is kept honest.** `pgsql.Live` is a distinct type, and every read
+builder that names a table takes one. A `string` parameter can be forgotten by
+passing `""` out of habit; a named type made the compiler list all eleven call
+sites when it was introduced, and will list the next one too.
+
+Generated output for tables that do not opt in is byte-identical.
+
 ## v0.9.0 — 2026-09-08
 
 ### Soft delete: uniqueness now means "among the rows that are alive"

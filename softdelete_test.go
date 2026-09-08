@@ -170,10 +170,10 @@ func TestSoftDelete_NonNullableColumnIsRefused(t *testing.T) {
 	}
 }
 
-// The other half of "every read carries the predicate, or the model does not
-// build". A declared cross-table read names several tables under aliases, and
-// storm does not yet attach the predicate to the right one — so it refuses
-// rather than returning rows the application was told are deleted.
+// A declared cross-table read of a soft-delete table used to be refused,
+// because storm could not attach the predicate to the right alias. It can now,
+// so these check that it does — and where it puts it, which for an outer join
+// is the whole behaviour of the join.
 
 type sdOrg struct {
 	storm.Model
@@ -189,28 +189,28 @@ func (o *sdOrg) Plans(p *storm.Plans) {
 
 type sdMember struct {
 	storm.Model
-	OrgID     storm.UUID
 	Org       *sdOrg
+	Email     string
 	DeletedAt *time.Time
 }
 
-func (m *sdMember) Schema(t *storm.Table) { t.SoftDelete(&m.DeletedAt) }
+func (m *sdMember) Schema(t *storm.Table) {
+	t.SoftDelete(&m.DeletedAt)
+	t.Unique(&m.Email)
+}
 
-func TestSoftDelete_PlanReadingASoftDeleteTableIsRefused(t *testing.T) {
-	e := buildErr(t, &sdOrg{}, &sdMember{})
-	if e == "" {
-		t.Fatal("a plan that loads a soft-delete table was accepted; it would return deleted rows")
-	}
-	for _, want := range []string{"WithUsers", "sd_members", "storm.SQL"} {
-		if !strings.Contains(e, want) {
-			t.Errorf("the refusal does not mention %q:\n%s", want, e)
-		}
+// A fetch plan loads the child through the child's OWN generated package, so it
+// inherits that package's predicate rather than needing one of its own. The
+// refusal was over-cautious about this one; what it needed was a test.
+func TestSoftDelete_PlanLoadingASoftDeleteTableBuilds(t *testing.T) {
+	if e := buildErr(t, &sdOrg{}, &sdMember{}); e != "" {
+		t.Fatalf("a plan loading a soft-delete table was refused:\n%s", e)
 	}
 }
 
 // A partial unique index that does not read back is a migration that never
 // converges: `storm diff` proposes the same index on every run, and an adopter
-// learns to ignore it. Since soft delete now REWRITES a declaration into one of
+// learns to ignore it. Since soft delete REWRITES a declaration into one of
 // these, the round trip is part of the feature rather than a property of the
 // index grammar it happens to reuse.
 func TestSoftDelete_ScopedUniqueRoundTrips(t *testing.T) {
@@ -224,7 +224,6 @@ func TestSoftDelete_ScopedUniqueRoundTrips(t *testing.T) {
 	const ns = "storm_sd_roundtrip"
 	got := applyInto(t, c, ns, pgddl.Create(s))
 
-	// What the server stored has to be what the model said.
 	var partial int
 	for _, tb := range got.Tables {
 		for _, ix := range tb.Indexes {

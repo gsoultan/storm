@@ -203,11 +203,13 @@ same address; two live ones still may not. Where the other reading is intended
 — an identifier that must never be reissued — `t.UniqueAcrossDeleted(...)` says
 so and stays a constraint over every row.
 
-A declared cross-table read — a join, an aggregate, a fetch plan, a union —
-touching a soft-delete table is **refused**, because storm does not yet place
-the predicate against the right alias there. Refusing is the point: the
-alternative is the wrong rows, silently, inside the feature meant to prevent
-exactly that.
+Cross-table reads carry it too, qualified by the alias the table is read under:
+joins, aggregates, fetch plans, unions, top-N batch loads, `EXISTS` semi-joins
+and recursive traversals. Two placements are load-bearing — a joined table's
+predicate goes in its `ON` clause, because in the `WHERE` a `LEFT JOIN` would
+silently become an inner one, and a recursive read is guarded in both the anchor
+and the recursive term, because guarding one lets a deleted row back in through
+the other.
 
 ## Scope line
 

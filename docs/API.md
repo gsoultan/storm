@@ -193,12 +193,24 @@ t.UniqueAcrossDeleted(&u.ExternalRef)   // a real constraint, over every row
 
 `t.Index(...).Unique().AcrossDeleted()` does the same for an index.
 
-### What storm refuses
+### Cross-table reads
 
-**A declared join, aggregate, plan or union that reads the table.** Those name
-several tables under aliases and storm does not yet attach the predicate to the
-right one. Read the table through its own generated package, or write the query
-with `storm.SQL` and say `deleted_at IS NULL` yourself.
+Declared joins, aggregates, fetch plans, unions, top-N batch loads, `EXISTS`
+semi-joins and recursive traversals all carry the predicate too, qualified by
+the alias the table is read under. Two placements are worth knowing, because
+both are load-bearing:
+
+- **A joined table's predicate goes in its `ON` clause, not the `WHERE`.** In
+  the `WHERE`, a parent whose only child is deleted would be *dropped* — the
+  `LEFT JOIN` silently becomes an inner join. In `ON`, the parent survives with
+  a NULL-extended child, which is what it gets when it has no child at all. The
+  driving table's predicate does go in the `WHERE`, since it has no `ON`.
+- **A recursive read is guarded in both halves.** Guarding only the anchor lets
+  a deleted row re-enter through the recursive term, carrying its subtree.
+
+A union filters only the branches whose table soft-deletes; a per-parent top-N
+load excludes marked rows *before* the limit, so a parent whose most recent N
+children are deleted still gets its live ones.
 
 ## 3. Typed columns, not strings
 
