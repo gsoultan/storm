@@ -195,6 +195,9 @@ landed; read [[decisions]] for what changed and why — the rewrites carry the
 reasoning.
 
 ## Related memories
+- [[softdelete]] — opt-in soft delete, why a REJECTED entry turned out to be a
+  design and not a ban, and the queued-delete defect that would have destroyed
+  recoverable rows
 - [[automigrate]] — `migrate.Auto`, why ADR-0001 was amended rather than upheld,
   and the two concurrency defects its own tests found
 - [[m0_results]] — the spike result and the three findings that amended the plan

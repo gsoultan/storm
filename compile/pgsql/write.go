@@ -82,6 +82,26 @@ func BumpFrag(col string) (a, b string) { return Ident(col) + " = " + Ident(col)
 // DeletePrefix introduces a delete.
 func DeletePrefix(table string) string { return "DELETE FROM " + Ident(table) }
 
+// Soft delete lowering. A soft delete is an UPDATE that sets the mark, and a
+// restore is the UPDATE that clears it; neither takes a bound value, because
+// the timestamp is the server's clock and NULL is a literal. A client-supplied
+// "now" would let two rows deleted in the same request disagree about when,
+// and would make the mark a value a caller could choose.
+
+// SoftDeleteSet marks a row deleted, stamped by the server.
+func SoftDeleteSet(table, col string) string {
+	return "UPDATE " + Ident(table) + " SET " + Ident(col) + " = now()"
+}
+
+// RestoreSet clears the mark, bringing a row back.
+func RestoreSet(table, col string) string {
+	return "UPDATE " + Ident(table) + " SET " + Ident(col) + " = NULL"
+}
+
+// The predicates that separate the live rows from the marked ones are not new
+// lowerings: "IsNull" and "IsNotNull" are already in the operator table, so a
+// soft delete asks for them the same way any other predicate does.
+
 // Section punctuation. A SET list and a WHERE clause differ only in how they
 // are introduced and joined, so both are Sections and these are the only
 // strings that distinguish them.
