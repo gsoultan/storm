@@ -130,10 +130,20 @@ func Build(models ...any) (*schema.Schema, error) {
 		}
 	}
 
+	// Pass 5b: on a soft-delete table, uniqueness means "among the rows that
+	// are alive". Runs before index validation so what it produces is checked
+	// like any other index, and before nothing else depends on it.
+	b.scopeUniquesToLiveRows()
+
 	// Pass 6: refuse the index declarations the database would accept and
 	// then fail to remember, or accept and fail to create. Named separately
 	// from pass 5 because it has to see the foreign-key indexes too.
 	b.validateIndexes()
+
+	// Pass 7: soft delete. After indexes, because the message it writes tells
+	// the reader to declare one.
+	b.validateSoftDelete()
+	b.validateSoftDeleteReach()
 
 	if err := b.errs.err(); err != nil {
 		return nil, err

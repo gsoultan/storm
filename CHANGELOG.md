@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-07
+updated: 2026-09-08
 ---
 
 # Changelog
@@ -14,25 +14,60 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
-### Soft delete removed
+### Soft delete: uniqueness now means "among the rows that are alive"
 
-`t.SoftDelete` and the generated `HardDelete` / `Restore` / `HardDeleteOp` /
-`RestoreOp` are gone, along with the build-time refusals that came with them.
-Tables no longer have a soft-delete mode; `Delete` deletes.
+v0.8.0 shipped soft delete and *refused* `t.Unique(&u.Email)` on a soft-delete
+table, telling you to write `t.Index(&u.Email).Unique().Where("deleted_at IS
+NULL")` by hand. The refusal was right about the hazard — a marked row keeps its
+key, so a plain UNIQUE promises the address can never be used again, including
+to the person coming back — and wrong about whose problem it was. Everyone
+declaring a soft-delete table and a unique key on it means the same thing, and
+making each of them spell out the predicate hands back the one job a compiler is
+for.
 
-**This is a breaking change for anyone who adopted v0.8.0**, which was tagged
-the same day and remains fetchable — a published module version cannot be
-withdrawn, so v0.8.0 stays exactly as it was and this is a removal *release*
-rather than an undo. Pin v0.8.0 if you depend on the feature.
+A uniqueness declaration on a soft-delete table is now emitted as a partial
+unique index over the live rows:
 
-Marking rows deleted is still perfectly possible without storm's help: a
-nullable timestamp column and `Where(t.DeletedAt.IsNull())` on the reads that
-want it. What is gone is storm compiling that predicate in for you, and the
-guarantee that no read could omit it.
+```go
+t.SoftDelete(&u.DeletedAt)
+t.Unique(&u.Email)
+```
+```sql
+CREATE UNIQUE INDEX uq_users_email ON users (email) WHERE deleted_at IS NULL
+```
 
-Generated output for every table is byte-identical to v0.7.0 again, apart from
-the version stamp. Soft delete returns to the rejected list in
-[docs/CONCEPT.md](docs/CONCEPT.md) as it was.
+| Rows | Allowed? |
+|---|---|
+| one live + any number of deleted, same email | **yes** — this is the point |
+| two live, same email | no |
+| two deleted, same email | yes |
+
+Composite keys are scoped the same way, and the index keeps the name the
+constraint would have had — so a table that gains soft delete later does not
+also rename its keys. An index you declared with your own `.Where(...)` is left
+exactly as written.
+
+Where the *other* reading is meant — an external identifier that must never be
+reissued, a slug reserved permanently on first use —
+`t.UniqueAcrossDeleted(...)` and `t.Index(...).Unique().AcrossDeleted()` keep a
+real constraint covering every row, deleted or not.
+
+This is storm rewriting what the model said, which it does not do lightly. It is
+justified because the alternative reading is not what anyone means by declaring
+both of those things, and because the rewrite is visible: in the emitted DDL, in
+`storm diff`, and in the index name.
+
+**The round trip is part of the feature, not a hope.** A partial unique index
+that does not read back is a migration that never converges — `storm diff`
+proposes the same index on every run and an adopter learns to ignore it. Tested
+model → DDL → introspect → diff, and the diff is empty.
+
+Nothing else changes from v0.8.0. A model that already wrote the partial index
+by hand keeps working and generates the same DDL.
+
+Verified against PostgreSQL: a live row takes a deleted row's email, three
+deleted rows share one address, two live rows are still refused, and
+`UniqueAcrossDeleted` still blocks reuse of a deleted row's identifier.
 
 ## v0.8.0 — 2026-09-08
 

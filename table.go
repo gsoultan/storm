@@ -7,6 +7,7 @@ import (
 	"unsafe"
 
 	"github.com/gsoultan/storm/schema"
+	"time"
 )
 
 // Table is the builder handed to a model's Schema method. Every reference to a
@@ -28,6 +29,14 @@ type Table struct {
 	// through are the t.Through declarations, resolved after every table's
 	// keys exist — the join model's foreign keys are what name the columns.
 	through []throughDecl
+
+	// acrossDeleted records the uniqueness declarations that must NOT be
+	// scoped to live rows on a soft-delete table — an identifier that may never
+	// be reissued even to a deleted row's successor. Keyed by column list for
+	// constraints and by pointer for indexes, because that is what each
+	// declaration has to identify itself with.
+	acrossDeleted   map[string]bool
+	acrossDeletedIx map[*schema.Index]bool
 }
 
 // throughDecl is one t.Through call, held until the join model's own keys are
@@ -671,3 +680,89 @@ func With(field any, op string) ExcludeSpec { return ExcludeSpec{field: field, o
 //	t.Exclude(storm.With(&b.Room, storm.OpEq),
 //	          storm.WithExpr("tstzrange(starts_at, ends_at)", storm.OpOverlaps))
 func WithExpr(e RawSQL, op string) ExcludeSpec { return ExcludeSpec{expr: string(e), op: op} }
+
+// SoftDelete makes this table delete rows by marking them, not by removing
+// them. The field must be a nullable timestamp (`*time.Time`): NULL is alive,
+// non-NULL is the moment it was deleted.
+//
+//	func (u *User) Schema(t *storm.Table) {
+//		t.SoftDelete(&u.DeletedAt)
+//	}
+//
+// It is opt-in and per-table on purpose. Soft delete BY DEFAULT is on storm's
+// rejected list (docs/CONCEPT.md) because in a runtime ORM every read that
+// forgets the predicate returns rows the application believes are gone, and
+// "remember the predicate" is not a property you can hold across a codebase.
+//
+// A compiler does not have to ask you to remember. The predicate is compiled
+// into every read of this table and ANDed AHEAD of the caller's own, so a call
+// site can narrow what it sees and cannot widen it. Reaching the deleted rows
+// takes a different, and visibly different, function.
+//
+// The second hazard is the one that bites later: a marked row still occupies
+// its unique key, so `t.Unique(&u.Email)` would refuse a new user the address
+// of a deleted one. PostgreSQL cannot express "unique among live rows" as a
+// constraint — only as a partial unique index — so Build REFUSES a plain
+// Unique on a soft-delete table and names the replacement:
+//
+//	t.Index(&u.Email).Unique().Where("deleted_at IS NULL")
+func (t *Table) SoftDelete(fieldPtr any) *Table {
+	c, err := t.resolve(fieldPtr)
+	if err != nil {
+		t.errs.add(err)
+		return t
+	}
+	if c.field.Type != reflect.PointerTo(reflect.TypeOf(time.Time{})) {
+		t.errs.add(fmt.Errorf(
+			"%s.%s: SoftDelete wants a *time.Time — NULL is the row that is alive, "+
+				"and a non-nullable column has no way to say so (got %s)",
+			t.out.Name, c.field.Name, c.field.Type))
+		return t
+	}
+	if t.out.SoftDelete != "" && t.out.SoftDelete != c.sc.Name {
+		t.errs.add(fmt.Errorf("%s: SoftDelete declared twice, on %s and %s",
+			t.out.Name, t.out.SoftDelete, c.sc.Name))
+		return t
+	}
+	t.out.SoftDelete = c.sc.Name
+	return t
+}
+
+// UniqueAcrossDeleted declares uniqueness that a soft-delete table's marked
+// rows still take part in.
+//
+// On a soft-delete table an ordinary t.Unique is scoped to the live rows, so a
+// deleted row and a new one may hold the same value — which is what makes soft
+// delete usable. Sometimes the other reading is the right one: an external
+// identifier that must never be reissued, a slug reserved permanently the first
+// time it is used, an audit key. Those say so here, and the declaration is
+// emitted as a real UNIQUE constraint covering every row, deleted or not.
+//
+// On a table that does not soft-delete this is exactly t.Unique.
+func (t *Table) UniqueAcrossDeleted(cols ...any) *Table {
+	t.Unique(cols...)
+	if n := len(t.out.Uniques); n > 0 {
+		if t.acrossDeleted == nil {
+			t.acrossDeleted = map[string]bool{}
+		}
+		t.acrossDeleted[uniqueKey(t.out.Uniques[n-1].Columns)] = true
+	}
+	// An expression unique lands in Indexes rather than Uniques.
+	if n := len(t.out.Indexes); n > 0 && t.out.Indexes[n-1].Unique {
+		if t.acrossDeletedIx == nil {
+			t.acrossDeletedIx = map[*schema.Index]bool{}
+		}
+		t.acrossDeletedIx[t.out.Indexes[n-1]] = true
+	}
+	return t
+}
+
+// AcrossDeleted keeps this unique index covering the marked rows too, instead
+// of being scoped to the live ones. See UniqueAcrossDeleted.
+func (b *IndexBuilder) AcrossDeleted() *IndexBuilder {
+	if b.t.acrossDeletedIx == nil {
+		b.t.acrossDeletedIx = map[*schema.Index]bool{}
+	}
+	b.t.acrossDeletedIx[b.ix] = true
+	return b
+}
