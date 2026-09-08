@@ -66,7 +66,7 @@ func (g *gen) projection(name string, columns []string) {
 	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\treturn c.Put(toks, %s)", g.splice(low+"Prefix", "toks, lowering, suffix"))
+	g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)
 	g.p("}")
 	g.p("")
 

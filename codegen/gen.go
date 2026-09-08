@@ -391,15 +391,6 @@ func (g *gen) chained() {
 }
 
 func (g *gen) compile() {
-	if g.t.SoftDeletes() {
-		// A declared predicate, not part of the prefix: the prefix ends before
-		// WHERE, and this has to compose with whatever the caller adds.
-		g.p("// softDeleteWhere keeps marked rows out of every read in this package.")
-		g.p("// The splice ANDs it AHEAD of the caller's predicates, so a call site")
-		g.p("// can narrow what it sees and cannot widen it. Reaching the deleted")
-		g.p("// rows is a different function, and visibly so.")
-		g.p("const softDeleteWhere = `%s`", pgsql.SoftDeleteWhere(g.t.SoftDelete))
-	}
 	g.p("const selectPrefix = `%s`", pgsql.SelectPrefix(g.t.Name, readableCols(g.t)))
 	g.p("const countPrefix = `%s`", pgsql.CountPrefix(g.t.Name))
 	g.p("const existsPrefix = `%s`", pgsql.ExistsPrefix(g.t.Name))
@@ -560,7 +551,7 @@ func (g *gen) compile() {
 	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\treturn c.Put(toks, %s)", g.splice("selectPrefix", "toks, lowering, suffix"))
+	g.p("\treturn c.Put(toks, runtime.SpliceTree(selectPrefix, toks, lowering, suffix))")
 	g.p("}")
 	g.p("")
 	g.p("// existsStmtFor compiles the existence probe: SELECT 1, no ORDER BY,")
@@ -570,7 +561,7 @@ func (g *gen) compile() {
 	g.p("\tif st := existsCache.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\treturn existsCache.Put(toks, %s)", g.splice("existsPrefix", "toks, lowering, existsSuffix"))
+	g.p("\treturn existsCache.Put(toks, runtime.SpliceTree(existsPrefix, toks, lowering, existsSuffix))")
 	g.p("}")
 	g.p("")
 	g.p("func countStmtFor(toks []runtime.Tok) *runtime.Stmt {")
@@ -579,7 +570,7 @@ func (g *gen) compile() {
 	g.p("\t}")
 	g.p("\t// A count ignores ordering as well as LIMIT: ordering a scalar is")
 	g.p("\t// wasted work, and the token stream is trimmed before it gets here.")
-	g.p("\treturn countCache.Put(toks, %s)", g.splice("countPrefix", "toks, lowering, \"\""))
+	g.p("\treturn countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, lowering, \"\"))")
 	g.p("}")
 	g.p("")
 	g.p("// Composition seams, for the generated CONTEXT package and it alone:")
