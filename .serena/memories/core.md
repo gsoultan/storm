@@ -70,18 +70,20 @@ builds and `codegen.Version()` reports `v0.6.2`.
 **v0.6.1 tagged 2026-09-06** (two verify fixes found by upgrading anubis off
 v0.2.0 — the adopter-upgrade exercise works, do it again after each release).
 
-**anubis is on v0.7.0 as of 2026-09-07** — **anubis#17**, open against `dev`,
-rebased onto it and re-verified there. The upgrade found **nothing**: builds, vets, `verify -stale`
-clean after regeneration, and `scripts/ci/backend-suite.sh` all green (migrate →
-regenerate → `git diff --exit-code` → integration + e2e + fuzz + audit), against
-**PostgreSQL 18.4** where storm's own suite runs on 17. The only change in three
-generated files was the version stamp, which is the release note's upgrade claim
-confirmed on a real adopter rather than inferred from a diffstat. `verify
--pending` (1) and drift (59) are byte-identical to v0.6.3 — both are the
-documented consequence of rmodel being a PROJECTION of one table, not a
-regression; measure the baseline before reading either as one. Pre-existing and
-unrelated: `TestConfiguredFollowsTheFile` in `internal/platform/config` fails on
-v0.6.3 too.
+**anubis is on v0.10.0 as of 2026-09-10** — anubis#18, merged to `dev`. The
+v0.7.0 upgrade (anubis#17) is merged too. Verified on dev at v0.10.0: build,
+vet, `verify -stale`, lint, explain, the full `backend-suite.sh` (exit 0, zero
+FAIL lines) and both modules' unit suites — all green, against **PostgreSQL
+18.4** where storm's own suite runs on 17. Four storm releases of soft delete
+and automigrate, and the adopter upgrade has still found nothing.
+
+**Do not chase `TestConfiguredFollowsTheFile`.** It fails in
+`internal/platform/config` whenever `ANUBIS_DB_URL` is exported, because
+`Configured()` returns true for that variable before it ever stats the file, and
+the test never cleared it. Nothing to do with storm; CI's unit stage does not
+set the variable so it is green there and red locally. Diagnosed twice — the
+first time misattributed to "a stray config file on this machine", which is
+wrong. Fixed in anubis#19.
 
 **Previously: anubis was on v0.6.3** (anubis#15) — the upgrade finally
 LANDED; before this it was an unpushed local branch while `dev` stayed on
