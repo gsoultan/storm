@@ -69,7 +69,35 @@ scanner cannot be settled without a server to run the result against.
 M9 is therefore still a driver project and only that — but the risk that the
 driver would arrive to find the loader unbuildable is retired.
 
-What that does and does not buy: the generated MySQL read path **builds**. It has never decoded a byte, because there is no driver to hand it one. `go-sql-driver/mysql` decodes result rows into `driver.Value` before storm can see them, so satisfying the four-method port on top of it would cost one boxing allocation per column per row — the interpreter design ADR-0007 exists to refuse. M9 therefore remains a driver project: a fork that exposes the binary result rows, or an implementation of the protocol subset storm needs. That is the estimate to make before starting, not after.
+What that does and does not buy: the generated MySQL read path **builds**. It has never decoded a byte, because there is no driver to hand it one. `go-sql-driver/mysql` decodes result rows into `driver.Value` before storm can see them, so satisfying the four-method port on top of it would cost one boxing allocation per column per row — the interpreter design ADR-0007 exists to refuse. So M9 needs a driver: a fork that exposes the binary result rows, or an implementation of the protocol subset storm needs. That is the estimate to make before starting, not after.
+
+**The estimate was made, 2026-09-10, and this section was wrong: M9 is not a
+driver project *and only that*.** The dialect seam has two implementations of
+the DECODE side (`runtime/mydec`) and two of the DDL side (`compile/myddl`). It
+has **one** implementation of the QUERY side — `compile/pgsql` serves both
+dialects — so a MySQL-dialect package came out carrying PostgreSQL SQL. Measured
+against MySQL 8.4.11, in the `storm-my` container that was already running:
+
+| Emitted | MySQL 8.4.11 says |
+|---|---|
+| `SELECT "id" … FROM "my_users"` | **Error 1064** — default `sql_mode` has no `ANSI_QUOTES`, so `"my_users"` is a string literal, not a table |
+| `… RETURNING "id"` | **Error 1064** — MySQL 8 has no `RETURNING` |
+| `WHERE "id" = $1` | `?` is the placeholder; `$1` is not one |
+
+`myddl` is fine and applies cleanly; `scripts/check/mysql.sh` has been proving
+that all along, and it says so — it is a DDL check and never claimed more.
+`codegen.TestMySQLGeneratedPackageCompiles` passed throughout, because
+**compiling and executing are different claims**. That is R9's own lesson one
+level up: a seam whose second implementation does not build is a bad
+hypothesis, and one that builds while emitting the other dialect's SQL is worse,
+because the gate reads as though it works.
+
+So M9's real scope is **`compile/mysql` (the query side) *and* the driver**, not
+the driver alone. Until the first exists, `codegen` **refuses** to generate a
+MySQL package rather than emit one no server will accept
+(`codegen.ErrMySQLQueryLoweringMissing`); storm's own seam test opts out through
+an unexported hook, because the decode property it asserts is real and worth
+keeping. Re-estimate before starting: the 4 weeks above counted the driver only.
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |

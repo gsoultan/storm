@@ -92,6 +92,9 @@ func Package(s *schema.Schema, o PackageOptions) (map[string][]byte, error) {
 	if o.Import == "" {
 		return nil, fmt.Errorf("codegen: PackageOptions.Import is required")
 	}
+	if o.Dialect == DialectMySQL && !allowUnexecutableMySQL {
+		return nil, ErrMySQLQueryLoweringMissing
+	}
 
 	names := o.Only
 	if len(names) == 0 {
