@@ -43,7 +43,7 @@ func ExplainQueries(s *schema.Schema, tables []string) ([]ExplainQuery, error) {
 	for _, u := range s.Unions {
 		out = append(out, ExplainQuery{
 			Label: "union " + u.Name,
-			SQL:   pgsql.UnionSelect(u, liveLookup(s)) + pgsql.UnionSuffix(u),
+			SQL:   pgsql.UnionSelect(u, liveLookup(postgresLowering(), s)) + pgsql.UnionSuffix(u),
 		})
 	}
 	for _, name := range tables {
@@ -156,12 +156,12 @@ func joinExplainSQL(s *schema.Schema, t *schema.Table, j *schema.Join) (string, 
 		}
 		cteErr = &cteRefError{alias: c.Alias, table: c.Table, agg: c.Aggregate}
 		return "", ""
-	}, joinLive(s))
+	}, joinLive(postgresLowering(), s))
 	if cteErr != nil {
 		return "", cteErr
 	}
 	sql := prefix
-	if w := pgsql.JoinDeclaredWhere(j, liveIn(s, t.Name, t.Name)); w != "" {
+	if w := pgsql.JoinDeclaredWhere(j, liveIn(postgresLowering(), s, t.Name, t.Name)); w != "" {
 		sql += pgsql.WhereLead + w
 	}
 	return sql + pgsql.JoinSuffix(j), nil

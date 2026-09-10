@@ -112,3 +112,31 @@ func LockSuffix(m int) string {
 	}
 	return ""
 }
+
+// Soft delete. The predicate and the two marks, in the only package allowed to
+// write SQL text for this back end — codegen may not spell them itself (R9).
+
+// SoftDeleteWhere keeps marked rows out of a read.
+func SoftDeleteWhere(col string) string { return Ident(col) + " IS NULL" }
+
+// SoftDeleteSet marks a row deleted, stamped by the server.
+func SoftDeleteSet(table, col string) string {
+	return UpdatePrefix(table) + Ident(col) + " = now()"
+}
+
+// RestoreSet clears the mark.
+func RestoreSet(table, col string) string {
+	return UpdatePrefix(table) + Ident(col) + " = NULL"
+}
+
+// LiveFor is the predicate for a table, optionally qualified by the alias it is
+// read under. Empty col means the table does not soft-delete.
+func LiveFor(alias, col string) string {
+	if col == "" {
+		return ""
+	}
+	if alias == "" {
+		return SoftDeleteWhere(col)
+	}
+	return Ident(alias) + "." + SoftDeleteWhere(col)
+}

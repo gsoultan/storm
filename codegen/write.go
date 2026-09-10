@@ -692,10 +692,18 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\t\t\tcols = append(cols, insCols[i])")
 	g.p("\t\t}")
 	g.p("\t}")
-	g.p("\tsuffix := insReturning")
-	g.p("\tif conflict > 0 {")
-	g.p("\t\tsuffix = upsertTail(conflict, mask) + insReturning")
-	g.p("\t}")
+	if g.lw.Upsert != nil {
+		g.p("\tsuffix := insReturning")
+		g.p("\tif conflict > 0 {")
+		g.p("\t\tsuffix = upsertTail(conflict, mask) + insReturning")
+		g.p("\t}")
+	} else {
+		// No conflict handling on this target, so the byte can only ever be 0
+		// and there is no upsertTail to call. Emitting the branch anyway would
+		// leave generated code referring to a function that was not generated.
+		g.p("\tsuffix := insReturning")
+		g.p("\t_ = conflict // this target has no conflict handling")
+	}
 	g.p("\treturn insCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
 	g.p("")
@@ -1151,10 +1159,15 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	g.p("\t\t\tcols = append(cols, insCols[i])")
 	g.p("\t\t}")
 	g.p("\t}")
-	g.p("\tsuffix := \"\"")
-	g.p("\tif conflict > 0 {")
-	g.p("\t\tsuffix = upsertTail(conflict, mask)")
-	g.p("\t}")
+	if g.lw.Upsert != nil {
+		g.p("\tsuffix := \"\"")
+		g.p("\tif conflict > 0 {")
+		g.p("\t\tsuffix = upsertTail(conflict, mask)")
+		g.p("\t}")
+	} else {
+		g.p("\tsuffix := \"\"")
+		g.p("\t_ = conflict // this target has no conflict handling")
+	}
 	g.p("\treturn insOpCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
 	g.p("")

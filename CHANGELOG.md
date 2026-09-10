@@ -136,6 +136,44 @@ output clause on insert, and the `JSON_TABLE` `IN`-list lowering) **and** the
 driver, which is unchanged and still real. The 4-week estimate counted the
 driver only.
 
+## Unreleased
+
+### codegen speaks MySQL
+
+`DialectMySQL` generates a package that compiles, and every statement it emits
+PREPAREs and EXECUTEs against MySQL 8.4.11 — backticked identifiers, bare `?`
+placeholders, no output clause. That had never happened: the dialect had one
+query implementation, PostgreSQL's, serving both targets.
+
+Three blockers, each decided rather than worked around:
+
+- **A Go raw string literal cannot contain a backtick**, and Go has no escape
+  for one. codegen emitted every statement as one, which is exact for
+  PostgreSQL and impossible for MySQL, whose identifiers *are* backticks. The
+  delimiter is now chosen by content. PostgreSQL output is byte-identical,
+  because none of it contains a backtick — which is what makes this a fix and
+  not a reformatting of every generated file.
+- **The insert differs in shape, not text.** `Insert(ctx, ex, r *Row)` scans the
+  returned row back into `*r`; with no returning clause there is nothing to
+  scan. It keeps the signature — so a model moving between targets does not
+  change shape at the call site — and the generated doc comment says `r` is
+  unchanged, because that is the only place it can be acted on.
+- **Upsert is skipped, not approximated.** `ON DUPLICATE KEY UPDATE` names no
+  conflict target; it fires on any unique key. Every generated method is named
+  after the index it watches, so a caller who wanted one gets an
+  undefined-method compile error instead of the wrong row being updated.
+
+`codegen.lowering` is the Dialect generalisation `compile/pgsql` said was
+waiting for a second implementation — a struct of function values, so the
+PostgreSQL side is the pgsql functions themselves and cannot drift.
+
+`TestMySQLGeneratedPackageCarriesMySQLSQL` is the gate that was missing: it
+fails if a PostgreSQL identifier, placeholder or output clause reaches MySQL
+SQL. Verified both ways.
+
+M9 still needs the constructs `compile/mysql` does not lower — joins,
+aggregates, unions, top-N, recursion — and then the driver.
+
 ## v0.10.0 — 2026-09-08
 
 ### Soft delete reaches every read, including the cross-table ones

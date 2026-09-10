@@ -127,29 +127,33 @@ happens to be exactly the two placements storm can ask for, so the plain form is
 correct and an `ISNULL()` sort key would cost a sort to say what the server
 already does.
 
-**Still open, and why `codegen` still refuses `DialectMySQL`.** codegen calls
-`compile/pgsql` for every statement it emits, whichever dialect was asked for.
-That wiring was attempted 2026-09-10 and is *not* merely mechanical — the
-attempt found three blockers that an estimate from reading would have missed:
+**codegen is wired to it, 2026-09-10.** `DialectMySQL` generates, the package
+compiles, and every statement it emits PREPAREs and EXECUTEs on 8.4.11. The
+three blockers the first attempt found were decided rather than worked around:
 
-1. **A Go raw string literal cannot contain a backtick, and there is no escape
-   for one.** codegen emits every statement as a raw literal, which is exact and
-   readable for PostgreSQL, whose SQL never contains one. MySQL quotes
-   identifiers *with* backticks, so `const selectPrefix = ` + "`" + `SELECT ` + "`" + `id` + "`" + `…` + "`" + ` is not
-   valid Go. The literal's delimiter has to be chosen by content before any
-   MySQL statement can be emitted at all. This is not about SQL.
-2. **The insert's shape differs, not just its text.** `Insert(ctx, ex, r *Row)`
-   scans the returned row back into `*r`; with no returning clause there is
-   nothing to scan, so the generated function body — and what `r` holds
-   afterwards — differs by dialect. See the RETURNING note above.
-3. **Upsert has no MySQL equivalent to lower.** `ON DUPLICATE KEY UPDATE` names
-   no conflict target; it fires on *any* unique key. Every generated method is
-   named after the index it watches, so the right answer is to omit them and
-   let the call site fail to compile, not to approximate.
+1. **The Go literal's delimiter is chosen by content.** A raw literal cannot
+   contain a backtick and Go has no escape for one, so MySQL SQL could not be
+   emitted at all. `codegen.lit` picks the form; PostgreSQL output is
+   byte-identical because none of it contains a backtick.
+2. **The insert differs in SHAPE, not text.** With no returning clause there is
+   nothing to scan back, so `Insert` keeps its signature and leaves the caller's
+   Row untouched, and says so in the generated doc comment — the call site being
+   the only place that can act on it.
+3. **Upsert is skipped, not approximated.** `ON DUPLICATE KEY UPDATE` names no
+   index, so a method named after one would watch something else. A caller who
+   wanted one gets an undefined-method compile error.
 
-None is large on its own. Together they mean the wiring is a design change
-across `codegen`, not a find-and-replace, and the estimate should say so. The
-driver is unchanged and still the long pole.
+The seam's query side now has two implementations, which is what `compile/pgsql`
+said the Dialect interface was waiting for. `codegen.lowering` is that
+generalisation — a struct of function values, so the PostgreSQL side is the
+pgsql functions *themselves* and cannot drift.
+
+**What M9 still needs:** the constructs `compile/mysql` does not lower — joins,
+aggregates, unions, top-N, recursion — and then the driver, which is unchanged
+and still the long pole. `TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a
+PostgreSQL identifier, placeholder or output clause ever reaches MySQL SQL
+again, verified both ways.
+
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |
