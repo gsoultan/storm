@@ -1,7 +1,6 @@
 package codegen
 
 import (
-	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -58,6 +57,7 @@ func (g *gen) existsPreds() {
 // existsFragRows appends one frag-table row per testable relation: empty for
 // every value operator, filled only at the exists slots.
 func (g *gen) existsFragRows() {
+
 	rels := existsRelations(g.t)
 	if len(rels) == 0 {
 		return
@@ -69,8 +69,8 @@ func (g *gen) existsFragRows() {
 		for range ops {
 			g.p("\t\t{},")
 		}
-		g.p("\t\t{A: %q},", pgsql.ExistsFrag(rel.Target, rel.Column, g.t.Name, pk, liveIn(g.lw, g.s, rel.Target, "")))
-		g.p("\t\t{A: %q},", pgsql.NotExistsFrag(rel.Target, rel.Column, g.t.Name, pk, liveIn(g.lw, g.s, rel.Target, "")))
+		g.p("\t\t{A: %q},", g.lw.ExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
+		g.p("\t\t{A: %q},", g.lw.NotExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
 		g.p("\t},")
 	}
 }

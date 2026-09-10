@@ -15,6 +15,10 @@ import (
 // generation time is the SELECT list and the GROUP BY, which is exactly the
 // part that cannot be enumerated if it is composed at a call site.
 func (g *gen) aggregate(agg *schema.Aggregate) {
+	if g.refuseUnlowered("aggregate", agg.Name) {
+		return
+	}
+
 	name := agg.Name
 	cols, err := aggregateCols(g.t, agg)
 	if err != nil {

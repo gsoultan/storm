@@ -183,3 +183,71 @@ func BumpFrag(col string) (a, b string) { return Ident(col) + " = " + Ident(col)
 
 // InsertPrefix introduces a masked insert.
 func InsertPrefix(table string) string { return "INSERT INTO " + Ident(table) }
+
+// Correlated semi-joins — "a related row exists".
+//
+// Standard SQL in shape, so this is PostgreSQL's lowering with this back end's
+// identifier quoting. The inner table is ALWAYS aliased, for the same reason it
+// is there: a self-referential relation correlates a table with itself, and
+// without the alias the inner reference captures the outer one and the
+// predicate silently means something else.
+const existsAlias = "_storm_e"
+
+// ExistsFrag lowers "a related row exists". childLive is the child's
+// soft-delete predicate under the inner alias, or "" — "this parent has a
+// related row" must not be satisfied by a row the child's own package would
+// refuse to return.
+func ExistsFrag(childTable, childFK, parentTable, parentPK string, childLive Live) string {
+	return "EXISTS (SELECT 1 FROM " + Ident(childTable) + " AS " + Ident(existsAlias) +
+		" WHERE " + Ident(existsAlias) + "." + Ident(childFK) +
+		" = " + Ident(parentTable) + "." + Ident(parentPK) +
+		aliasLive(childLive) + ")"
+}
+
+// NotExistsFrag lowers "no related row exists".
+func NotExistsFrag(childTable, childFK, parentTable, parentPK string, childLive Live) string {
+	return "NOT " + ExistsFrag(childTable, childFK, parentTable, parentPK, childLive)
+}
+
+// ExistsOpen is ExistsFrag without its closing paren: the splicer appends the
+// wrapped child predicates and closes. Split here rather than string-surgered
+// in codegen, so the two forms cannot drift.
+func ExistsOpen(childTable, childFK, parentTable, parentPK string, childLive Live) string {
+	f := ExistsFrag(childTable, childFK, parentTable, parentPK, childLive)
+	return f[:len(f)-1]
+}
+
+// NotExistsOpen is ExistsOpen negated.
+func NotExistsOpen(childTable, childFK, parentTable, parentPK string, childLive Live) string {
+	return "NOT " + ExistsOpen(childTable, childFK, parentTable, parentPK, childLive)
+}
+
+// aliasLive re-qualifies a child predicate to the exists alias.
+func aliasLive(l Live) string {
+	if l.Empty() {
+		return ""
+	}
+	return " AND " + string(LiveFor(existsAlias, liveCol(l)))
+}
+
+// Live is this back end's soft-delete predicate, carried as a distinct type for
+// the reason compile/pgsql's is: a read builder that takes one cannot forget it
+// by receiving "" out of habit.
+type Live string
+
+// Empty reports whether there is nothing to add.
+func (l Live) Empty() bool { return l == "" }
+
+// liveCol recovers the column from a predicate LiveFor built.
+func liveCol(l Live) string {
+	s := string(l)
+	i := strings.Index(s, " IS NULL")
+	if i < 0 {
+		return ""
+	}
+	s = s[:i]
+	if j := strings.LastIndex(s, "."); j >= 0 {
+		s = s[j+1:]
+	}
+	return strings.Trim(s, "`")
+}

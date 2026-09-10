@@ -78,6 +78,31 @@ MySQL sorts NULLs first ascending and last descending, which is exactly the two
 placements storm can ask for, so the plain form is correct and an `ISNULL()` key
 would buy a sort for nothing.
 
+## Status 2026-09-10 (end of session)
+
+`compile/mysql` + codegen wiring DONE for the base path: a MySQL package
+generates, compiles, and every statement it emits PREPAREs and EXECUTEs on
+8.4.11. `codegen.lowering` is the Dialect generalisation, a struct of function
+values so the PostgreSQL side is the pgsql functions themselves and cannot
+drift.
+
+**The original defect was still open for the un-generated constructs.** Joins,
+aggregates, unions, top-N and recursive reads called `compile/pgsql`
+unconditionally, so a MySQL model declaring one got PostgreSQL SQL silently.
+They refuse now (`lowering.unlowered` + `gen.refuseUnlowered`). **Whenever a
+seam gains a second implementation, audit EVERY caller of the first — the ones
+nobody has exercised are where the old behaviour survives.**
+
+Two guards had to move after the emitter's early exits (`recursive`,
+`existsFragRows` run for every table and return early); refusing before the
+check refused every table on the target.
+
+Exists semi-joins were LOWERED rather than refused — standard SQL in shape, and
+any model with relations needs them.
+
+Divergences still to face: MySQL has `WITH ROLLUP` but no `GROUPING SETS`/`CUBE`,
+and no `FILTER (WHERE …)` (becomes `SUM(CASE WHEN … END)`).
+
 ## Real scope, remaining
 
 1. ~~`compile/mysql`~~ — done.
