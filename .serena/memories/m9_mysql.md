@@ -81,11 +81,23 @@ would buy a sort for nothing.
 ## Real scope, remaining
 
 1. ~~`compile/mysql`~~ — done.
-1b. **Wire codegen to it.** codegen calls `compile/pgsql` for every statement
-   whichever dialect was asked for: 68 functions across 13 files, most for
-   constructs `compile/mysql` does not lower yet (joins, aggregates, unions,
-   top-N, recursion, upsert, locking). This is why `DialectMySQL` is still
-   refused.
+1b. **Wire codegen to it — NOT merely mechanical.** Attempted 2026-09-10 and
+   backed out. Three blockers a reading-based estimate misses:
+
+   - **A Go raw string literal cannot contain a backtick**, and Go has no escape
+     for one. codegen emits every statement as a raw literal; MySQL quotes
+     identifiers WITH backticks, so no MySQL statement can be emitted at all
+     until the delimiter is chosen by content (`strconv.Quote` when the SQL
+     contains one). **This is not a SQL problem**, which is why nobody saw it.
+   - **The insert's SHAPE differs.** `Insert(ctx, ex, r *Row)` scans the
+     returned row back into `*r`. With no returning clause there is nothing to
+     scan, so the function body and what `r` holds afterwards differ by dialect.
+   - **Upsert has nothing to lower.** `ON DUPLICATE KEY UPDATE` names no target.
+     Omit the methods and let the call site fail to compile; do not approximate.
+
+   Also: `codegen.Package` passes ALL columns as the returning list, not just
+   server-computed ones — so the RETURNING refusal fires for every model, not
+   only ones with defaults.
 2. **The driver.** Unchanged and still real: `go-sql-driver/mysql` decodes into
    `driver.Value` before storm sees it — one boxing allocation per column per
    row, which ADR-0007 exists to refuse. Needs a fork exposing binary result

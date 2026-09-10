@@ -1,6 +1,8 @@
 package mysql_test
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -114,5 +116,52 @@ func TestNoOutputClauseIsOffered(t *testing.T) {
 	ins := mysql.InsertPrefix("t")
 	if strings.Contains(strings.ToUpper(ins), "RETURN") {
 		t.Errorf("the insert prefix carries an output clause MySQL 8 has not: %s", ins)
+	}
+}
+
+// The operator names are storm's, not a back end's. A table keyed on a name the
+// token stream never emits is a hole that only shows up when a column of that
+// kind is generated — this one used "Ne" where storm says "NotEq", and nothing
+// noticed until codegen asked for it.
+func TestOperatorNamesMatchTheTokenStream(t *testing.T) {
+	for _, op := range []string{"Eq", "NotEq", "Gt", "Gte", "Lt", "Lte", "Like", "In"} {
+		if !mysql.Supported(op) {
+			t.Errorf("no MySQL lowering for %s, which every scalar column needs", op)
+		}
+		// And PostgreSQL agrees the name exists, so a typo here cannot hide as
+		// "an operator this dialect happens not to have".
+		if op != "In" {
+			if _, _, ok := pgsql.Frag(op, `"c"`); !ok {
+				t.Errorf("fixture is wrong: PostgreSQL has no %s either", op)
+			}
+		}
+	}
+}
+
+// A blocker for codegen that is not about SQL at all.
+//
+// codegen emits every statement as a Go RAW string literal, delimited by
+// backticks. That is exact and readable for PostgreSQL, whose SQL never
+// contains one. MySQL quotes identifiers WITH backticks, and Go has no escape
+// for a backtick inside a raw literal — the first one ends the string:
+//
+//	const selectPrefix = `SELECT `id` FROM `users``   // not valid Go
+//
+// So wiring codegen to this package needs the literal DELIMITER chosen by
+// content, not assumed. This test is here rather than in codegen because it is
+// a property of what this package emits, and it is what makes the requirement
+// discoverable from the lowering side.
+func TestEmittedSQLCannotGoInAGoRawStringLiteral(t *testing.T) {
+	sql := mysql.SelectPrefix("users", []string{"id"})
+	if !strings.Contains(sql, "`") {
+		t.Fatal("fixture is wrong: MySQL SQL with no backtick in it")
+	}
+	// The property codegen has to respect: raw is unusable, interpreted is not.
+	var unquoted string
+	if err := json.Unmarshal([]byte(strconv.Quote(sql)), &unquoted); err != nil {
+		t.Fatal(err)
+	}
+	if unquoted != sql {
+		t.Fatalf("quoting is lossy:\n%s\n%s", sql, unquoted)
 	}
 }
