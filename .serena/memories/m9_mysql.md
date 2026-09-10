@@ -55,6 +55,29 @@ table. Also: the index-lookup assertion needs ENOUGH ROWS (the check seeds 500);
 with three rows MySQL correctly drives from the table and the plan proves
 nothing.
 
+## The blocker that is NOT syntax — read this before estimating again
+
+`compile/pgsql` on RETURNING: it "is not an optimisation here, it is the only
+correct way to learn a generated id or a DEFAULT the database computed. Reading
+them back with a second SELECT races every other writer." **MySQL 8 has no
+RETURNING.** `LAST_INSERT_ID()` reports an AUTO_INCREMENT and nothing else — not
+a uuid default, not a server timestamp, not a generated column, which is most of
+what `storm.Model` asks for.
+
+So it is a MODEL CONSTRAINT on a MySQL target, not a lowering to write.
+`mysql.InsertStmt` refuses a non-empty returning list rather than dropping it
+and handing back a zero id. **MariaDB has RETURNING** and would not need this,
+which matters because M9's exit gate names both engines.
+
+Also measured on 8.4.11: row comparison crosses (keyset pagination unchanged);
+all six lock modes cross, and their NUMBERING must stay identical to pgsql's
+because a mode is an index into the generated cache array — a divergence would
+take a different lock than the caller asked for, silently, both being valid SQL
+(`TestLockModeNumberingMatchesPostgres`). **NULLS FIRST/LAST does not exist**;
+MySQL sorts NULLs first ascending and last descending, which is exactly the two
+placements storm can ask for, so the plain form is correct and an `ISNULL()` key
+would buy a sort for nothing.
+
 ## Real scope, remaining
 
 1. ~~`compile/mysql`~~ — done.

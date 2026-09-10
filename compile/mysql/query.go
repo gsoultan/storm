@@ -62,12 +62,16 @@ func OrderSuffix(orderBy string) string {
 	return " ORDER BY " + orderBy + " LIMIT " + Placeholder
 }
 
-// LimitOffsetSuffix is the paged form.
+// LimitOffsetSuffix is the tail of a paged read.
 //
 // MySQL spells it LIMIT n OFFSET m, the same way PostgreSQL does — the older
 // `LIMIT m, n` reverses the operands and is not worth the ambiguity.
-func LimitOffsetSuffix(orderBy string) string {
-	return " ORDER BY " + orderBy + " LIMIT " + Placeholder + " OFFSET " + Placeholder
+func LimitOffsetSuffix(withOffset bool) string {
+	s := " LIMIT " + Placeholder
+	if withOffset {
+		s += " OFFSET " + Placeholder
+	}
+	return s
 }
 
 // DefaultOrderBy is the ordering used when the caller names none: the primary
@@ -90,12 +94,71 @@ const (
 	OrderSep  = ", "
 )
 
-// OrderTerm renders one ORDER BY term.
-func OrderTerm(ident string, desc bool) string {
-	if desc {
+// Order directions, in the order runtime numbers them. Mirrors pgsql's, because
+// the numbering is the token stream's and not a back end's to choose.
+const (
+	dirAsc = iota
+	dirDesc
+	dirAscNullsFirst
+	dirDescNullsLast
+)
+
+// NDirections is how many orderings OrderTerm distinguishes.
+const NDirections = 4
+
+// OrderTerm lowers one ORDER BY term.
+//
+// MySQL has no NULLS FIRST / NULLS LAST — measured: Error 1064 on 8.4.11. It
+// sorts NULLs first ascending and last descending, and the only way to ask for
+// the other placement is a leading sort key that says whether the value is
+// null. `ISNULL(x)` is 0 for a value and 1 for NULL, so `ISNULL(x), x ASC` puts
+// the nulls last.
+//
+// That extra key is not free: it is an expression, so a plain index on x no
+// longer satisfies the ordering and the server sorts. PostgreSQL attaches the
+// placement to the index instead. A model that asks for NULLS LAST on a MySQL
+// target is therefore asking for a sort, and `storm lint` is where that should
+// be surfaced — but it is CORRECT, which the alternative of silently dropping
+// the placement would not be.
+func OrderTerm(dir int, ident string) string {
+	switch dir {
+	case dirDesc:
 		return ident + " DESC"
+	case dirAscNullsFirst:
+		// Ascending already puts NULLs first on MySQL; saying so costs a sort
+		// for nothing, so this is the plain form on purpose.
+		return ident
+	case dirDescNullsLast:
+		// Descending already puts NULLs last on MySQL. Same reasoning.
+		return ident + " DESC"
+	default:
+		return ident
 	}
-	return ident
+}
+
+// Row comparison — what keyset pagination filters with.
+//
+// `(a, b) > (?, ?)` rather than the OR-expansion. MySQL supports it, measured
+// on 8.4.11, so keyset pagination crosses unchanged. SQL Server does not, and
+// M10 will have to expand it there.
+const (
+	TupleOpen  = "("
+	TupleSep   = ", "
+	TupleClose = ")"
+)
+
+const (
+	cmpGt = iota
+	cmpLt
+)
+
+// RowCmpOp lowers a row-comparison operator. Strict inequality only, for the
+// same reason as PostgreSQL: >= returns the row you just showed.
+func RowCmpOp(op int) string {
+	if op == cmpLt {
+		return " < "
+	}
+	return " > "
 }
 
 // Section punctuation, identical to PostgreSQL's because SQL's is.

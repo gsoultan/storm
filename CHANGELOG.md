@@ -69,10 +69,30 @@ no MySQL driver dependency for a check about SQL text. PREPARE is also the
 stronger assertion, since it type-checks against the real schema, placeholders
 included. Verified to fail with Error 1064 when the quoting regresses.
 
+**One blocker is not syntax.** `compile/pgsql` says of `RETURNING` that it "is
+not an optimisation here, it is the only correct way to learn a generated id or
+a DEFAULT the database computed. Reading them back with a second SELECT races
+every other writer." MySQL 8 has no `RETURNING`, and `LAST_INSERT_ID()` reports
+an `AUTO_INCREMENT` and nothing else — not a uuid default, not a server
+timestamp, not a generated column, which is most of what `storm.Model` asks for.
+So `mysql.InsertStmt` **refuses** a non-empty returning list rather than dropping
+it and handing back a zero id. It is a model constraint on a MySQL target, not a
+lowering to write; MariaDB has the clause and would not need it.
+
+Also measured: row comparison crosses, so keyset pagination is unchanged; all
+six lock modes cross, and a test pins their numbering to PostgreSQL's, because a
+mode is an *index* into the generated statement-cache array and a divergence
+would take a different lock than the caller asked for — silently, both being
+valid SQL. `NULLS FIRST/LAST` does not exist, and MySQL's own null ordering is
+exactly the two placements storm can ask for, so the plain form is correct.
+
+The server gate now PREPAREs and EXECUTEs **24 statement forms**, every ordering
+direction and every lock mode among them.
+
 `codegen` still refuses `DialectMySQL`: it calls `compile/pgsql` for every
 statement it emits, whichever dialect was asked for. Wiring that is mechanical
-but wide — 68 functions across 13 files, most for constructs `compile/mysql`
-does not lower yet — and the driver is unchanged and still the long pole.
+but wide — 68 functions across 13 files — and the driver is unchanged and still
+the long pole.
 
 ### M9 re-estimated: the MySQL dialect emits PostgreSQL SQL, and now refuses to
 

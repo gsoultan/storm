@@ -41,7 +41,7 @@ func main() {
 	stmts := []stmt{
 		{"select_eq", sel + mysql.WhereLead + eqA + eqB + mysql.OrderSuffix(pk), []string{"@s", "@n"}},
 		{"select_gt_desc", sel + mysql.WhereLead + gtA + gtB +
-			mysql.OrderLead + mysql.OrderTerm(mysql.Ident("name"), true) + " LIMIT " + mysql.Placeholder,
+			mysql.OrderLead + mysql.OrderTerm(1, mysql.Ident("name")) + " LIMIT " + mysql.Placeholder,
 			[]string{"@i", "@n"}},
 		{"select_like", sel + mysql.WhereLead + likeA + likeB + mysql.OrderSuffix(pk), []string{"@s", "@n"}},
 		{"select_isnull", sel + mysql.WhereLead + nullA + nullB + mysql.OrderSuffix(pk), []string{"@n"}},
@@ -49,12 +49,45 @@ func main() {
 			mysql.OrderSuffix(pk), []string{"@i", "@s", "@n"}},
 		{"count", mysql.CountPrefix("my_users") + mysql.WhereLead + gtA + gtB, []string{"@i"}},
 		{"exists", mysql.ExistsPrefix("my_users") + mysql.WhereLead + eqA + eqB + mysql.ExistsSuffix(), []string{"@s"}},
-		{"limit_offset", sel + mysql.LimitOffsetSuffix(pk), []string{"@n", "@n"}},
+		{"limit_offset", sel + mysql.OrderLead + pk + mysql.LimitOffsetSuffix(true), []string{"@n", "@n"}},
 		{"in_json_table", sel + mysql.WhereLead + inA + inB + mysql.OrderSuffix(pk), []string{"@j", "@n"}},
 		{"not_in_json_table", sel + mysql.WhereLead + notInA + notInB + mysql.OrderSuffix(pk), []string{"@j", "@n"}},
 		{"update", mysql.UpdatePrefix("my_users") + setA + mysql.WhereLead + eqA + eqB, []string{"@s", "@s"}},
 		{"delete", mysql.DeletePrefix("my_users") + mysql.WhereLead + eqA + eqB, []string{"@s"}},
+		// Keyset pagination. MySQL supports row comparison, so it crosses
+		// unchanged; SQL Server does not and M10 will have to expand it.
+		{"keyset_row_cmp", sel + mysql.WhereLead +
+			mysql.TupleOpen + mysql.Ident("age") + mysql.TupleSep + mysql.Ident("id") + mysql.TupleClose +
+			mysql.RowCmpOp(0) +
+			mysql.TupleOpen + mysql.Placeholder + mysql.TupleSep + mysql.Placeholder + mysql.TupleClose +
+			mysql.OrderLead + mysql.Ident("age") + mysql.OrderSep + mysql.Ident("id") + " LIMIT " + mysql.Placeholder,
+			[]string{"@i", "@i", "@n"}},
 	}
+	// Every ordering direction the token stream can carry.
+	for dir := 0; dir < mysql.NDirections; dir++ {
+		stmts = append(stmts, stmt{
+			fmt.Sprintf("order_dir_%d", dir),
+			sel + mysql.OrderLead + mysql.OrderTerm(dir, mysql.Ident("age")) + " LIMIT " + mysql.Placeholder,
+			[]string{"@n"},
+		})
+	}
+	// Every lock mode. A mode is an index into the generated cache array, so
+	// one that does not PREPARE would be a lock the caller silently never got.
+	for m := 1; m < mysql.NumLockModes; m++ {
+		stmts = append(stmts, stmt{
+			fmt.Sprintf("lock_mode_%d", m),
+			sel + mysql.WhereLead + eqA + eqB + " LIMIT " + mysql.Placeholder + mysql.LockSuffix(m),
+			[]string{"@s", "@n"},
+		})
+	}
+	// The insert, which has no output clause to carry.
+	ins, err := mysql.InsertStmt("my_users", []string{"id", "email", "name", "age"}, nil)
+	if err != nil {
+		panic(err)
+	}
+	// A key no seeded row holds: the point is that the statement PREPAREs and
+	// runs, and a duplicate would abort the whole script on line one of it.
+	stmts = append(stmts, stmt{"insert", ins, []string{"@newid", "@s2", "@s", "@i"}})
 
 	fmt.Println("DROP TABLE IF EXISTS `my_users`;")
 	fmt.Println("CREATE TABLE `my_users` (`id` BIGINT NOT NULL, `email` VARCHAR(320) NOT NULL," +
@@ -75,7 +108,7 @@ func main() {
 	}
 	fmt.Printf("INSERT INTO `my_users` VALUES %s;\n", strings.Join(vals, ","))
 	fmt.Println("ANALYZE TABLE `my_users`;")
-	fmt.Println("SET @s = 'a@x.com'; SET @n = 10; SET @i = 5; SET @j = '[1,2,3]';")
+	fmt.Println("SET @s = 'u1@x.com'; SET @s2 = 'zz@x.com'; SET @n = 10; SET @i = 5; SET @j = '[1,2,3]'; SET @newid = 900001;")
 
 	for _, s := range stmts {
 		// A single-quoted SQL string inside PREPARE: the only thing that needs
