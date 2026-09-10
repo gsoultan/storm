@@ -91,7 +91,7 @@ func main() {
 
 	fmt.Println("DROP TABLE IF EXISTS `my_users`;")
 	fmt.Println("CREATE TABLE `my_users` (`id` BIGINT NOT NULL, `email` VARCHAR(320) NOT NULL," +
-		" `name` VARCHAR(120) NOT NULL, `age` SMALLINT, PRIMARY KEY (`id`), KEY `ix_name` (`name`));")
+		" `name` VARCHAR(120) NOT NULL, `age` SMALLINT, `org_id` BIGINT NOT NULL DEFAULT 0, PRIMARY KEY (`id`), KEY `ix_name` (`name`), KEY `ix_org` (`org_id`, `id`));")
 	// Enough rows that the optimiser has a choice to get RIGHT. With three
 	// rows it drives from the table and calls that an index scan, which is
 	// correct for three rows and proves nothing about the lowering: the claim
@@ -104,7 +104,7 @@ func main() {
 		if i%7 != 0 {
 			age = fmt.Sprintf("%d", i%90)
 		}
-		vals = append(vals, fmt.Sprintf("(%d,'u%d@x.com','n%d',%s)", i, i, i, age))
+		vals = append(vals, fmt.Sprintf("(%d,'u%d@x.com','n%d',%s,%d)", i, i, i, age, i%25))
 	}
 	fmt.Printf("INSERT INTO `my_users` VALUES %s;\n", strings.Join(vals, ","))
 	fmt.Println("ANALYZE TABLE `my_users`;")
@@ -119,6 +119,25 @@ func main() {
 		fmt.Printf("EXECUTE `%s` USING %s;\n", s.label, strings.Join(s.args, ", "))
 		fmt.Printf("DEALLOCATE PREPARE `%s`;\n", s.label)
 	}
+
+	// The batch loader M9's exit gate names. Both forms, and the plan, because
+	// a lowering that is ACCEPTED but reads every child of every parent has
+	// traded a correctness problem for the N+1 this library exists to prevent.
+	order := " ORDER BY `id` DESC"
+	for label, sql := range map[string]string{
+		"batch_lateral": mysql.TopNLateral("my_users", []string{"id", "email"}, "org_id", "BIGINT", ""),
+		"batch_window":  mysql.TopNWindow("my_users", []string{"id", "email"}, "org_id", "BIGINT", ""),
+	} {
+		q := strings.Replace(sql, "\x00order\x00", order, 1)
+		fmt.Printf("-- %s\n", label)
+		fmt.Printf("PREPARE `%s` FROM '%s';\n", label, strings.ReplaceAll(q, "'", "''"))
+		fmt.Printf("EXECUTE `%s` USING @j, @n;\n", label)
+		fmt.Printf("DEALLOCATE PREPARE `%s`;\n", label)
+	}
+	fmt.Printf("-- batch_uses_index\nEXPLAIN FORMAT=TREE %s;\n",
+		strings.Replace(strings.Replace(
+			strings.Replace(mysql.TopNLateral("my_users", []string{"id", "email"}, "org_id", "BIGINT", ""),
+				"\x00order\x00", order, 1), "?", "'[1,2,3]'", 1), "?", "2", 1))
 
 	// ADR-0010's load-bearing claim: the JSON_TABLE form must still reach the
 	// index. A lowering that is merely ACCEPTED but scans every row would have

@@ -47,6 +47,13 @@ type lowering struct {
 	LockRefusedGrouped   func() string
 	LockRefusedJoined    func() string
 
+	// TopN* take keyType for both dialects even though PostgreSQL's window
+	// form does not need one: a uniform signature is what lets the emitter
+	// stay dialect-blind, and the alternative is a branch in codegen, which
+	// is the thing the seam exists to remove.
+	TopNWindow  func(table string, cols []string, key, keyType, live string) string
+	TopNLateral func(table string, cols []string, key, keyType, live string) string
+
 	ExistsFrag    func(childTable, childFK, parentTable, parentPK, childLive string) string
 	NotExistsFrag func(childTable, childFK, parentTable, parentPK, childLive string) string
 	ExistsOpen    func(childTable, childFK, parentTable, parentPK, childLive string) string
@@ -145,6 +152,12 @@ func postgresLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
+		TopNWindow: func(t string, cols []string, key, _, live string) string {
+			return pgsql.TopNWindow(t, cols, key, pgsql.Live(live))
+		},
+		TopNLateral: func(t string, cols []string, key, keyType, live string) string {
+			return pgsql.TopNLateral(t, cols, key, keyType, pgsql.Live(live))
+		},
 		ExistsFrag: func(ct, fk, pt, pk, live string) string {
 			return pgsql.ExistsFrag(ct, fk, pt, pk, pgsql.Live(live))
 		},
@@ -227,6 +240,12 @@ func mysqlLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
+		TopNWindow: func(t string, cols []string, key, keyType, live string) string {
+			return mysql.TopNWindow(t, cols, key, keyType, mysql.Live(live))
+		},
+		TopNLateral: func(t string, cols []string, key, keyType, live string) string {
+			return mysql.TopNLateral(t, cols, key, keyType, mysql.Live(live))
+		},
 		ExistsFrag: func(ct, fk, pt, pk, live string) string {
 			return mysql.ExistsFrag(ct, fk, pt, pk, mysql.Live(live))
 		},
@@ -267,7 +286,7 @@ func mysqlLowering() lowering {
 		// what remains of M9's query side.
 		unlowered: map[string]bool{
 			"join": true, "aggregate": true, "union": true,
-			"top-N batch load": true, "recursive read": true,
+			"recursive read": true,
 		},
 	}
 }

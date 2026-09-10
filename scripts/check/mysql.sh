@@ -160,11 +160,13 @@ else
   # ADR-0010's load-bearing claim: the JSON_TABLE IN-list must still reach the
   # index. A lowering that is merely ACCEPTED but scans every row would have
   # traded a correctness problem for a performance one.
-  case "$(cat "$TMP/qout")" in
-    *"index lookup"*|*"Index lookup"*|*eq_ref*) ;;
-    *) note "the JSON_TABLE IN-list no longer uses an index (ADR-0010):"
-       tail -5 "$TMP/qout" | sed 's/^/    /' >&2 ;;
-  esac
+  # Two index claims, not one: the IN-list and the batch loader. Both are the
+  # difference between a lowering that works and one that reads every row.
+  got_idx="$(grep -ci 'index lookup\|eq_ref' "$TMP/qout" || true)"
+  if [ "${got_idx:-0}" -lt 2 ]; then
+    note "a JSON_TABLE lowering stopped using an index (ADR-0010) — $got_idx of 2 plans:"
+    tail -6 "$TMP/qout" | sed 's/^/    /' >&2
+  fi
 fi
 
 if [ "$fail" -eq 0 ]; then

@@ -77,9 +77,6 @@ func (g *gen) batchTop() {
 }
 
 func (g *gen) topFn(key string, kc *schema.Column, cols []string) {
-	if g.refuseUnlowered("top-N batch load", key) {
-		return
-	}
 
 	name := "BatchTopBy" + exportName(key)
 	priv := lowerFirst(name)
@@ -166,11 +163,11 @@ func (g *gen) topFn(key string, kc *schema.Column, cols []string) {
 		g.p("\t}")
 		var unordered string
 		if form == "Window" {
-			unordered = pgsql.TopNWindow(g.t.Name, cols, key, g.live())
+			unordered = g.lw.TopNWindow(g.t.Name, cols, key, kc.Type.SQL(), string(g.live()))
 		} else {
-			unordered = pgsql.TopNLateral(g.t.Name, cols, key, kc.Type.SQL(), g.live())
+			unordered = g.lw.TopNLateral(g.t.Name, cols, key, kc.Type.SQL(), string(g.live()))
 		}
-		g.p("\tsql := runtime.SpliceOrder(%q, terms, %q, %q)", unordered, pgsql.OrderLead, pgsql.OrderSep)
+		g.p("\tsql := runtime.SpliceOrder(%q, terms, %q, %q)", unordered, g.lw.OrderLead, pgsql.OrderSep)
 		g.p("\treturn %s%sCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL", priv, form)
 		g.p("}")
 		g.p("")
