@@ -42,7 +42,7 @@ func (g *gen) emitUnion(u *schema.Union) {
 	g.p("}")
 	g.p("")
 
-	g.p("const %sSQL = `%s%s`", low, pgsql.UnionSelect(u, liveLookup(g.s)), pgsql.UnionSuffix(u))
+	g.p("const %sSQL = `%s%s`", low, pgsql.UnionSelect(u, liveLookup(g.lw, g.s)), pgsql.UnionSuffix(u))
 	g.p("")
 
 	fallible := false

@@ -305,8 +305,8 @@ func havingSpecs(s *schema.Schema, tables []string) ([]havingSpec, error) {
 				ParentPkg: ppkg,
 				ChildPkg:  cpkg,
 				child:     child.Name,
-				PosHeader: pgsql.ExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0], liveIn(s, child.Name, "")),
-				NegHeader: pgsql.NotExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0], liveIn(s, child.Name, "")),
+				PosHeader: pgsql.ExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0], liveIn(postgresLowering(), s, child.Name, "")),
+				NegHeader: pgsql.NotExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0], liveIn(postgresLowering(), s, child.Name, "")),
 			})
 		}
 	}

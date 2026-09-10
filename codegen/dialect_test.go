@@ -28,8 +28,6 @@ func portableSchema() *schema.Schema {
 func TestMySQLScannersCallTheMySQLDecoders(t *testing.T) {
 	// Asserts the DECODE seam, which is real. The package it emits cannot run
 	// a statement — the query side of the seam is still PostgreSQL's — so it
-	// takes the same opt-out the compile gate does.
-	defer codegen.AllowUnexecutableMySQLForTest()()
 
 	src, err := codegen.File(portableSchema(), codegen.Options{
 		Package: "user", Import: "github.com/gsoultan/storm",
@@ -84,14 +82,10 @@ func TestMySQLRefusesTypesItCannotDecode(t *testing.T) {
 		s := portableSchema()
 		s.Tables[0].Columns = append(s.Tables[0].Columns,
 			&schema.Column{Name: "x", Type: ty})
-		// Opt out of the query-lowering refusal so the TYPE refusal is what is
-		// being observed; otherwise this test would pass for the wrong reason.
-		restore := codegen.AllowUnexecutableMySQLForTest()
 		_, err := codegen.File(s, codegen.Options{
 			Package: "user", Import: "github.com/gsoultan/storm",
 			Table: "users", Dialect: codegen.DialectMySQL,
 		})
-		restore()
 		if err == nil {
 			t.Errorf("%s was accepted for MySQL, which has no such type", ty.SQL())
 		}

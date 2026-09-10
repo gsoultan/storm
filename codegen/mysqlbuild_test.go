@@ -1,10 +1,10 @@
 package codegen_test
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -51,8 +51,6 @@ func TestMySQLGeneratedPackageCompiles(t *testing.T) {
 	// This gate asserts that the DECODE seam compiles — R9 — and nothing more.
 	// The package it builds cannot execute a statement, because the query side
 	// of the seam has one implementation and it is PostgreSQL's. Generating it
-	// therefore takes an explicit opt-out of the refusal an adopter gets.
-	defer codegen.AllowUnexecutableMySQLForTest()()
 
 	s, err := storm.Build(&myPortable{})
 	if err != nil {
@@ -98,35 +96,74 @@ func TestMySQLGeneratedPackageCompiles(t *testing.T) {
 	}
 }
 
-// The refusal itself. A generator that emits a package no server will accept
-// has produced a silent wrong answer, and that is the failure this replaces.
+// The gate that was missing, and the one that would have caught the original
+// defect: a MySQL package must carry MySQL SQL.
 //
-// Measured against MySQL 8.4.11, the emitted package's first read is
-// Error 1064: default sql_mode has no ANSI_QUOTES, so `"my_users"` is a string
-// literal rather than a table. RETURNING is Error 1064 as well, and the
-// placeholders are $1 where MySQL wants ?.
-func TestMySQLGenerationIsRefusedUntilTheQueryLoweringExists(t *testing.T) {
+// TestMySQLGeneratedPackageCompiles was green for four releases while the
+// package it built carried PostgreSQL — double-quoted identifiers, $1
+// placeholders, an output clause MySQL has not. Compiling and executing are
+// different claims, and this asserts the second one's precondition.
+func TestMySQLGeneratedPackageCarriesMySQLSQL(t *testing.T) {
 	s, err := storm.Build(&myPortable{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = codegen.Package(s, codegen.PackageOptions{
+	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir: t.TempDir(), Import: "github.com/gsoultan/storm", Dialect: codegen.DialectMySQL,
 	})
-	if !errors.Is(err, codegen.ErrMySQLQueryLoweringMissing) {
-		t.Fatalf("generating a MySQL package returned %v; it must refuse", err)
+	if err != nil {
+		t.Fatalf("generating a MySQL package: %v", err)
 	}
-	// The refusal has to say what is missing and where to read about it —
-	// an adopter who hits this needs to know it is storm's gap, not their model.
-	for _, want := range []string{"compile/myddl", "compile/mysql", "runtime/mydec", "Error 1064", "M9"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not mention %q:\n%v", want, err)
+	var all strings.Builder
+	for _, b := range files {
+		all.Write(b)
+	}
+	src := all.String()
+
+	for _, sql := range sqlConstants(src) {
+		if strings.Contains(sql, `"`) {
+			t.Errorf("a double-quoted identifier reached MySQL SQL — default sql_mode "+
+				"has no ANSI_QUOTES, so it is a string literal, not a name:\n  %s", sql)
+		}
+		if strings.Contains(sql, "$") {
+			t.Errorf("a PostgreSQL placeholder reached MySQL SQL:\n  %s", sql)
+		}
+		if strings.Contains(strings.ToUpper(sql), "RETURNING") {
+			t.Errorf("an output clause MySQL 8 does not have reached its SQL:\n  %s", sql)
 		}
 	}
-	// PostgreSQL is unaffected.
-	if _, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: t.TempDir(), Import: "github.com/gsoultan/storm",
-	}); err != nil {
-		t.Fatalf("the PostgreSQL path was caught by the MySQL refusal: %v", err)
+	if !strings.Contains(src, "INSERT INTO `my_portables`") {
+		t.Error("no backticked insert was emitted; the fixture or the extractor is wrong")
 	}
+	// And PostgreSQL is unaffected.
+	pg, err := codegen.Package(s, codegen.PackageOptions{
+		Dir: t.TempDir(), Import: "github.com/gsoultan/storm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pgAll strings.Builder
+	for _, b := range pg {
+		pgAll.Write(b)
+	}
+	if !strings.Contains(pgAll.String(), `FROM "my_portables"`) {
+		t.Error("the PostgreSQL path stopped emitting PostgreSQL identifiers")
+	}
+}
+
+// sqlConstants pulls the emitted statements back out of a generated file, in
+// both literal forms — raw where the SQL has no backtick, interpreted where it
+// does. Anything that reads only one form would miss exactly the dialect this
+// test is about.
+func sqlConstants(src string) []string {
+	var out []string
+	for _, m := range regexp.MustCompile("(?m)^const \\w*(?:Prefix|SQL|Suffix) = `([^`]*)`$").FindAllStringSubmatch(src, -1) {
+		out = append(out, m[1])
+	}
+	for _, m := range regexp.MustCompile(`(?m)^const \w*(?:Prefix|SQL|Suffix) = "((?:[^"\\]|\\.)*)"$`).FindAllStringSubmatch(src, -1) {
+		if s, err := strconv.Unquote(`"` + m[1] + `"`); err == nil {
+			out = append(out, s)
+		}
+	}
+	return out
 }

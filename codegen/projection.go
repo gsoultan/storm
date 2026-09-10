@@ -2,8 +2,6 @@ package codegen
 
 import (
 	"fmt"
-
-	"github.com/gsoultan/storm/compile/pgsql"
 )
 
 // Named projection emission.
@@ -51,7 +49,7 @@ func (g *gen) projection(name string, columns []string) {
 	g.p("}")
 	g.p("")
 
-	g.p("const %sPrefix = %s", low, lit(pgsql.SelectPrefix(g.t.Name, columns)))
+	g.p("const %sPrefix = %s", low, lit(g.lw.SelectPrefix(g.t.Name, columns)))
 	g.p("")
 	g.p("var (")
 	g.p("\t%sCache       = runtime.NewTreeCache()", low)

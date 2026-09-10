@@ -198,21 +198,13 @@ func mysqlLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
-		SoftDeleteWhere:    func(col string) string { return mysql.Ident(col) + " IS NULL" },
-		SoftDeleteSet:      func(t, c string) string { return mysql.UpdatePrefix(t) + mysql.Ident(c) + " = now()" },
-		RestoreSet:         func(t, c string) string { return mysql.UpdatePrefix(t) + mysql.Ident(c) + " = NULL" },
-		LiveFor: func(alias, col string) string {
-			if col == "" {
-				return ""
-			}
-			if alias == "" {
-				return mysql.Ident(col) + " IS NULL"
-			}
-			return mysql.Ident(alias) + "." + mysql.Ident(col) + " IS NULL"
-		},
-		InsertStmt:   mysql.InsertStmt,
-		InsertPrefix: mysql.InsertPrefix,
-		InsertParts:  mysql.InsertParts,
+		SoftDeleteWhere:    mysql.SoftDeleteWhere,
+		SoftDeleteSet:      mysql.SoftDeleteSet,
+		RestoreSet:         mysql.RestoreSet,
+		LiveFor:            mysql.LiveFor,
+		InsertStmt:         mysql.InsertStmt,
+		InsertPrefix:       mysql.InsertPrefix,
+		InsertParts:        mysql.InsertParts,
 		// MySQL 8 cannot return the row it wrote. An empty clause here is not a
 		// lowering — InsertStmt refuses a non-empty returning list outright, so
 		// this is only ever asked for the empty case.
