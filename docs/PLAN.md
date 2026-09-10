@@ -127,12 +127,29 @@ happens to be exactly the two placements storm can ask for, so the plain form is
 correct and an `ISNULL()` sort key would cost a sort to say what the server
 already does.
 
-**Still open, and why `codegen` still refuses `DialectMySQL`:** codegen calls
+**Still open, and why `codegen` still refuses `DialectMySQL`.** codegen calls
 `compile/pgsql` for every statement it emits, whichever dialect was asked for.
-Wiring it to the lowering is mechanical but wide — 68 functions across 13 files,
-most of them for constructs (joins, aggregates, unions, top-N, recursion,
-upsert, locking) that `compile/mysql` does not lower yet. Then the driver, which
-is unchanged and still the long pole.
+That wiring was attempted 2026-09-10 and is *not* merely mechanical — the
+attempt found three blockers that an estimate from reading would have missed:
+
+1. **A Go raw string literal cannot contain a backtick, and there is no escape
+   for one.** codegen emits every statement as a raw literal, which is exact and
+   readable for PostgreSQL, whose SQL never contains one. MySQL quotes
+   identifiers *with* backticks, so `const selectPrefix = ` + "`" + `SELECT ` + "`" + `id` + "`" + `…` + "`" + ` is not
+   valid Go. The literal's delimiter has to be chosen by content before any
+   MySQL statement can be emitted at all. This is not about SQL.
+2. **The insert's shape differs, not just its text.** `Insert(ctx, ex, r *Row)`
+   scans the returned row back into `*r`; with no returning clause there is
+   nothing to scan, so the generated function body — and what `r` holds
+   afterwards — differs by dialect. See the RETURNING note above.
+3. **Upsert has no MySQL equivalent to lower.** `ON DUPLICATE KEY UPDATE` names
+   no conflict target; it fires on *any* unique key. Every generated method is
+   named after the index it watches, so the right answer is to omit them and
+   let the call site fail to compile, not to approximate.
+
+None is large on its own. Together they mean the wiring is a design change
+across `codegen`, not a find-and-replace, and the estimate should say so. The
+driver is unchanged and still the long pole.
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |

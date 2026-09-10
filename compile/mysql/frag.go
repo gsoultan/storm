@@ -24,7 +24,7 @@ type frag struct{ a, b string }
 
 var frags = map[string]frag{
 	"Eq":    {" = " + Placeholder, ""},
-	"Ne":    {" <> " + Placeholder, ""},
+	"NotEq": {" <> " + Placeholder, ""},
 	"Gt":    {" > " + Placeholder, ""},
 	"Gte":   {" >= " + Placeholder, ""},
 	"Lt":    {" < " + Placeholder, ""},
