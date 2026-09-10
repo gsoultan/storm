@@ -137,10 +137,19 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 
 	g.p("// insertSQL does not vary: the column list is fixed by the table, so")
 	g.p("// the placeholders are known at build time and nothing is spliced.")
-	g.p("const insertSQL = %s", lit(pgsql.InsertStmt(g.t.Name, names, all)))
+	ret := all
+	if !g.lw.canReturn() {
+		ret = nil
+	}
+	insSQL, err := g.lw.InsertStmt(g.t.Name, names, ret)
+	if err != nil {
+		g.err = fmt.Errorf("codegen: table %s: %w", g.t.Name, err)
+		return
+	}
+	g.p("const insertSQL = %s", lit(insSQL))
 	g.p("")
-	g.p("const updatePrefix = %s", lit(pgsql.UpdatePrefix(g.t.Name)))
-	g.p("const deletePrefix = %s", lit(pgsql.DeletePrefix(g.t.Name)))
+	g.p("const updatePrefix = %s", lit(g.lw.UpdatePrefix(g.t.Name)))
+	g.p("const deletePrefix = %s", lit(g.lw.DeletePrefix(g.t.Name)))
 	g.p("")
 
 	g.p("// Dirty bits. One per updatable column; the set of them is an UPDATE's")
@@ -157,7 +166,7 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	g.p("// setFrags is every assignment this table can make, lowered at build time.")
 	g.p("var setFrags = [nUpdatable]runtime.Frag{")
 	for _, c := range upd {
-		a, b := pgsql.SetFrag(c.Name())
+		a, b := g.lw.SetFrag(c.Name())
 		g.p("\t{A: %q, B: %q}, // %s", a, b, c.Name())
 	}
 	g.p("}")
@@ -166,7 +175,7 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	g.p("// pkFrags addresses one row.")
 	g.p("var pkFrags = [%d]runtime.Frag{", len(pk))
 	for _, c := range pk {
-		a, b, ok := pgsql.Frag("Eq", pgsql.Ident(c.Name()))
+		a, b, ok := g.lw.Frag("Eq", g.lw.Ident(c.Name()), nil)
 		if !ok {
 			g.err = fmt.Errorf("codegen: table %s: no equality lowering for primary key column %s", g.t.Name, c.Name())
 			return
@@ -177,11 +186,11 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	g.p("")
 
 	if v := versionCol(g.t); v != nil {
-		a, b, _ := pgsql.Frag("Eq", pgsql.Ident(v.Name))
+		a, b, _ := g.lw.Frag("Eq", g.lw.Ident(v.Name), nil)
 		g.p("// versionFrag is the optimistic lock. An update carrying it matches")
 		g.p("// no row when somebody else wrote first, which is the whole mechanism.")
 		g.p("var versionFrag = runtime.Frag{A: %q, B: %q}", a, b)
-		ba, bb := pgsql.BumpFrag(v.Name)
+		ba, bb := g.lw.BumpFrag(v.Name)
 		g.p("")
 		g.p("// versionBump increments from the column's own value, never from one")
 		g.p("// the client read — two writers who both saw 3 must not both write 4.")
@@ -214,17 +223,17 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	g.p("// insCols is the quoted column name for each insert bit.")
 	g.p("var insCols = [nInsertable]string{")
 	for _, c := range ins {
-		g.p("\t%q,", pgsql.Ident(c.Name()))
+		g.p("\t%q,", g.lw.Ident(c.Name()))
 	}
 	g.p("}")
 	g.p("")
-	open_, sep, mid, close_ := pgsql.InsertParts()
+	open_, sep, mid, close_ := g.lw.InsertParts()
 	g.p("// insParts and insPlaceholder come from the back end at build time; the")
 	g.p("// runtime splicer chooses none of them.")
 	g.p("var insParts = runtime.InsertParts{Open: %q, Sep: %q, Mid: %q, Close: %q}", open_, sep, mid, close_)
-	g.p("const insPlaceholder = %q", pgsql.Placeholder)
-	g.p("const insPrefix = %q", pgsql.InsertPrefix(g.t.Name))
-	g.p("const insReturning = %q", pgsql.ReturningClause(allReadable(g.t)))
+	g.p("const insPlaceholder = %q", g.lw.Placeholder)
+	g.p("const insPrefix = %q", g.lw.InsertPrefix(g.t.Name))
+	g.p("const insReturning = %q", g.lw.ReturningClause(allReadable(g.t)))
 	g.p("")
 	g.p("var insCache = runtime.NewMaskCache()")
 	g.p("")
@@ -303,6 +312,22 @@ func mutAssign(c colInfo) string {
 // that into a compile error, and renaming a constraint in the model breaks the
 // call site instead of production.
 func (g *gen) upsertTargets(ins []colInfo) {
+	if g.lw.Upsert == nil {
+		// MySQL's ON DUPLICATE KEY UPDATE names no conflict target: it fires on
+		// ANY unique key. Every method below is named after the index it
+		// watches — OnConflictEmail — so emitting them here would be a lie at
+		// the call site, and the wrong row would be updated with no error.
+		//
+		// SKIPPED, not refused. The capability is absent, not the package: a
+		// table with a unique key is perfectly generatable for this target, it
+		// simply has no upsert. A caller who wanted one gets an
+		// undefined-method compile error naming exactly what is missing, which
+		// is where a capability the target lacks belongs.
+		g.p("// No upsert for the %s target: its conflict handling names no index,", g.lw.name)
+		g.p("// so a method named after one would watch something else.")
+		g.p("")
+		return
+	}
 	targets := conflictTargets(g.t)
 	g.p("// The conflict encoding. One byte holds both which unique index an")
 	g.p("// upsert names and what it does on collision, so the insert statement")
@@ -730,6 +755,10 @@ func (g *gen) insType(ins []colInfo) {
 }
 
 func (g *gen) insertFn(ins []colInfo) {
+	if !g.lw.canReturn() {
+		g.insertFnNoReturn(ins)
+		return
+	}
 	g.p("// Insert writes one row and reads back every column, so database-computed")
 	g.p("// defaults — a generated id, a now() timestamp — land in r rather than")
 	g.p("// needing a second SELECT that would race every other writer.")
@@ -761,6 +790,49 @@ func (g *gen) insertFn(ins []colInfo) {
 	g.p("\t\treturn err")
 	g.p("\t}")
 	g.p("\treturn rows.Err()")
+	g.p("}")
+	g.p("")
+}
+
+// insertFnNoReturn is Insert for a back end that cannot return the row it wrote.
+//
+// The SIGNATURE is deliberately the same, so a model that moves between targets
+// does not change shape at the call site. What differs is what r holds
+// afterwards: nothing the server computed, because there is no way to learn it.
+// compile/pgsql's note is exact — reading it back with a second SELECT races
+// every other writer — so this does not pretend by doing that.
+//
+// The doc comment says so, because the call site is the only place it can be
+// acted on. A column left to a database DEFAULT keeps its zero value in r while
+// the database keeps the default, and that difference is silent otherwise.
+func (g *gen) insertFnNoReturn(ins []colInfo) {
+	g.p("// Insert writes one row.")
+	g.p("//")
+	g.p("// It does NOT read anything back: the %s target cannot return the row it", g.lw.name)
+	g.p("// wrote, and a second SELECT to recover a server-computed value would race")
+	g.p("// every other writer. So r is unchanged — whatever you set is what it")
+	g.p("// holds, and a column left to a database DEFAULT keeps its zero value here")
+	g.p("// while the database keeps the default.")
+	g.p("//")
+	g.p("// Set the columns you need to know. On a target WITH a returning clause the")
+	g.p("// same call fills them in, which is the difference to design around rather")
+	g.p("// than discover.")
+	g.p("//")
+	g.p("// Every insertable column is written, including zero values. storm does not")
+	g.p("// treat a zero as 'unset'.")
+	g.p("func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {")
+	g.p("\targs := make([]any, 0, %d)", len(ins))
+	for _, c := range ins {
+		g.p("\targs = append(args, %s)", writeArg(c, "r."+exportName(c.Name())))
+	}
+	g.p("\tn, err := ex.Exec(ctx, insertSQL, args)")
+	g.p("\tif err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tif n == 0 {")
+	g.p("\t\treturn runtime.ErrNoRow")
+	g.p("\t}")
+	g.p("\treturn nil")
 	g.p("}")
 	g.p("")
 }
@@ -801,7 +873,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 		// it is gone. Writing to it would resurrect a value through a row that
 		// is not supposed to be reachable, so the update simply does not match
 		// and Save reports ErrNoRow, the same as for a row that was removed.
-		alive, _, ok := pgsql.Frag("IsNull", pgsql.Ident(g.t.SoftDelete))
+		alive, _, ok := g.lw.Frag("IsNull", g.lw.Ident(g.t.SoftDelete), nil)
 		if !ok {
 			g.err = fmt.Errorf("codegen: table %s: back end has no %q lowering for soft-delete column %s",
 				g.t.Name, "IsNull", g.t.SoftDelete)
@@ -811,8 +883,8 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 		g.p("\twhere = append(where, runtime.Frag{A: %s})", lit(alive))
 	}
 	g.p("\treturn updCache.Put(mask, runtime.SpliceSections(updatePrefix, []runtime.Section{")
-	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", pgsql.SetLead, pgsql.SetSep)
-	g.p("\t\t{Lead: %q, Sep: %q, Frags: where},", pgsql.WhereLead, pgsql.WhereSep)
+	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
+	g.p("\t\t{Lead: %q, Sep: %q, Frags: where},", g.lw.WhereLead, g.lw.WhereSep)
 	g.p("\t}, \"\"))")
 	g.p("}")
 	g.p("")
@@ -886,12 +958,12 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 // say: HardDelete removes it for real, Restore brings it back.
 func (g *gen) softDeleteFns(pk []colInfo) {
 	col := g.t.SoftDelete
-	alive, _, ok := pgsql.Frag("IsNull", pgsql.Ident(col))
+	alive, _, ok := g.lw.Frag("IsNull", g.lw.Ident(col), nil)
 	if !ok {
 		g.err = fmt.Errorf("codegen: table %s: back end has no %q lowering for soft-delete column %s", g.t.Name, "IsNull", col)
 		return
 	}
-	dead, _, ok := pgsql.Frag("IsNotNull", pgsql.Ident(col))
+	dead, _, ok := g.lw.Frag("IsNotNull", g.lw.Ident(col), nil)
 	if !ok {
 		g.err = fmt.Errorf("codegen: table %s: back end has no %q lowering for soft-delete column %s", g.t.Name, "IsNotNull", col)
 		return
@@ -911,8 +983,8 @@ func (g *gen) softDeleteFns(pk []colInfo) {
 	g.p("// softDeleteSQL marks one live row. It matches on `%s`, so", alive)
 	g.p("// deleting an already-deleted row reports runtime.ErrNoRow rather than")
 	g.p("// silently re-stamping it with a later time.")
-	g.p("var softDeleteSQL = runtime.SpliceSections(%s, []runtime.Section{", lit(pgsql.SoftDeleteSet(g.t.Name, col)))
-	g.p("\t{Lead: %q, Sep: %q, Frags: append(pkFrags[:], runtime.Frag{A: %s})},", pgsql.WhereLead, pgsql.WhereSep, lit(alive))
+	g.p("var softDeleteSQL = runtime.SpliceSections(%s, []runtime.Section{", lit(g.lw.SoftDeleteSet(g.t.Name, col)))
+	g.p("\t{Lead: %q, Sep: %q, Frags: append(pkFrags[:], runtime.Frag{A: %s})},", g.lw.WhereLead, g.lw.WhereSep, lit(alive))
 	g.p("}, \"\").SQL")
 	g.p("")
 	g.p("// Delete marks one row deleted. The row stays in the table and keeps its")
@@ -932,7 +1004,7 @@ func (g *gen) softDeleteFns(pk []colInfo) {
 	g.p("}")
 	g.p("")
 	g.p("var hardDeleteSQL = runtime.SpliceSections(deletePrefix, []runtime.Section{")
-	g.p("\t{Lead: %q, Sep: %q, Frags: pkFrags[:]},", pgsql.WhereLead, pgsql.WhereSep)
+	g.p("\t{Lead: %q, Sep: %q, Frags: pkFrags[:]},", g.lw.WhereLead, g.lw.WhereSep)
 	g.p("}, \"\").SQL")
 	g.p("")
 	g.p("// HardDelete removes the row for real, deleted or not. It is the only")
@@ -949,8 +1021,8 @@ func (g *gen) softDeleteFns(pk []colInfo) {
 	g.p("\treturn nil")
 	g.p("}")
 	g.p("")
-	g.p("var restoreSQL = runtime.SpliceSections(%s, []runtime.Section{", lit(pgsql.RestoreSet(g.t.Name, col)))
-	g.p("\t{Lead: %q, Sep: %q, Frags: append(pkFrags[:], runtime.Frag{A: %s})},", pgsql.WhereLead, pgsql.WhereSep, lit(dead))
+	g.p("var restoreSQL = runtime.SpliceSections(%s, []runtime.Section{", lit(g.lw.RestoreSet(g.t.Name, col)))
+	g.p("\t{Lead: %q, Sep: %q, Frags: append(pkFrags[:], runtime.Frag{A: %s})},", g.lw.WhereLead, g.lw.WhereSep, lit(dead))
 	g.p("}, \"\").SQL")
 	g.p("")
 	g.p("// Restore clears the mark. A row that was not deleted is runtime.ErrNoRow:")
@@ -975,7 +1047,7 @@ func (g *gen) deleteFn(pk []colInfo) {
 		return
 	}
 	g.p("var deleteSQL = runtime.SpliceSections(deletePrefix, []runtime.Section{")
-	g.p("\t{Lead: %q, Sep: %q, Frags: pkFrags[:]},", pgsql.WhereLead, pgsql.WhereSep)
+	g.p("\t{Lead: %q, Sep: %q, Frags: pkFrags[:]},", g.lw.WhereLead, g.lw.WhereSep)
 	g.p("}, \"\").SQL")
 	g.p("")
 	g.p("// Delete removes one row by primary key. A row that was already gone is")
