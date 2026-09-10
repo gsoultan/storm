@@ -11,7 +11,6 @@ import (
 	"go/format"
 	"sort"
 
-	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/schema"
 )
@@ -138,7 +137,7 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 		}
 	}
 
-	g := &gen{s: s, t: t, o: o, cols: cols, dec: decodersFor(o.Dialect, o.Import)}
+	g := &gen{s: s, t: t, o: o, cols: cols, dec: decodersFor(o.Dialect, o.Import), lw: loweringFor(o.Dialect)}
 	g.header()
 	g.rowType()
 	g.opConstants()
@@ -180,6 +179,12 @@ type gen struct {
 	// dec is the decoder family this file targets, resolved once from
 	// o.Dialect so no emitter has to ask again.
 	dec decoders
+
+	// lw is the QUERY side of the seam, resolved the same way. Before it
+	// existed every emitter called compile/pgsql directly, whichever dialect
+	// had been asked for — which is how a MySQL package came out carrying
+	// PostgreSQL SQL.
+	lw lowering
 
 	// err is the first construct the target cannot express. Emitters set it
 	// and return; File reports it instead of writing a file that is quietly
@@ -401,21 +406,21 @@ func (g *gen) compile() {
 		g.p("// The splice ANDs it AHEAD of the caller's predicates, so a call site")
 		g.p("// can narrow what it sees and cannot widen it. Reaching the deleted")
 		g.p("// rows is a different function, and visibly so.")
-		g.p("const softDeleteWhere = %s", lit(pgsql.SoftDeleteWhere(g.t.SoftDelete)))
+		g.p("const softDeleteWhere = %s", lit(g.lw.SoftDeleteWhere(g.t.SoftDelete)))
 	}
-	g.p("const selectPrefix = %s", lit(pgsql.SelectPrefix(g.t.Name, readableCols(g.t))))
-	g.p("const countPrefix = %s", lit(pgsql.CountPrefix(g.t.Name)))
-	g.p("const existsPrefix = %s", lit(pgsql.ExistsPrefix(g.t.Name)))
-	g.p("const existsSuffix = %s", lit(pgsql.ExistsSuffix()))
-	g.p("const limitSuffix = %s", lit(pgsql.LimitOffsetSuffix(false)))
-	g.p("const limitOffsetSuffix = %s", lit(pgsql.LimitOffsetSuffix(true)))
+	g.p("const selectPrefix = %s", lit(g.lw.SelectPrefix(g.t.Name, readableCols(g.t))))
+	g.p("const countPrefix = %s", lit(g.lw.CountPrefix(g.t.Name)))
+	g.p("const existsPrefix = %s", lit(g.lw.ExistsPrefix(g.t.Name)))
+	g.p("const existsSuffix = %s", lit(g.lw.ExistsSuffix()))
+	g.p("const limitSuffix = %s", lit(g.lw.LimitOffsetSuffix(false)))
+	g.p("const limitOffsetSuffix = %s", lit(g.lw.LimitOffsetSuffix(true)))
 	g.p("")
 	g.p("// lockSuffix is the row-lock clause per mode, indexed by Query.lock.")
 	g.p("// It goes at the very END of the statement — after LIMIT and OFFSET,")
 	g.p("// which is what the grammar requires.")
-	g.p("var lockSuffix = [%d]string{", pgsql.NumLockModes)
-	for m := 0; m < pgsql.NumLockModes; m++ {
-		g.p("\t%s,", lit(pgsql.LockSuffix(pgsql.LockMode(m))))
+	g.p("var lockSuffix = [%d]string{", g.lw.NumLockModes)
+	for m := 0; m < g.lw.NumLockModes; m++ {
+		g.p("\t%s,", lit(g.lw.LockSuffix(m)))
 	}
 	g.p("}")
 	g.p("")
@@ -423,8 +428,8 @@ func (g *gen) compile() {
 	g.p("// pair. The lock is part of the STATEMENT, so it has to be part of the")
 	g.p("// key; a program that never locks never touches the locked entries and")
 	g.p("// they stay the empty maps they start as.")
-	g.p("var lockCaches = func() [%d][2]*runtime.TreeCache {", pgsql.NumLockModes)
-	g.p("\tvar cs [%d][2]*runtime.TreeCache", pgsql.NumLockModes)
+	g.p("var lockCaches = func() [%d][2]*runtime.TreeCache {", g.lw.NumLockModes)
+	g.p("\tvar cs [%d][2]*runtime.TreeCache", g.lw.NumLockModes)
 	g.p("\tfor i := range cs {")
 	g.p("\t\tcs[i][0], cs[i][1] = runtime.NewTreeCache(), runtime.NewTreeCache()")
 	g.p("\t}")
@@ -434,11 +439,11 @@ func (g *gen) compile() {
 	g.p("// orderTable is every ordering this table can express, lowered at build")
 	g.p("// time. ORDER BY is chosen per query, so it cannot be a constant — but it")
 	g.p("// still must not be built from strings at run time.")
-	g.p("var orderTable = [nCols][%d]string{", pgsql.NDirections)
+	g.p("var orderTable = [nCols][%d]string{", g.lw.NDirections)
 	for _, c := range g.cols {
 		g.p("\t{ // %s", c.Name())
-		for d := 0; d < pgsql.NDirections; d++ {
-			g.p("\t\t%q,", pgsql.OrderTerm(d, pgsql.Ident(c.Name())))
+		for d := 0; d < g.lw.NDirections; d++ {
+			g.p("\t\t%q,", g.lw.OrderTerm(d, g.lw.Ident(c.Name())))
 		}
 		g.p("\t},")
 	}
@@ -448,14 +453,14 @@ func (g *gen) compile() {
 	g.p("// row comparison.")
 	g.p("var identTable = [nCols]string{")
 	for _, c := range g.cols {
-		g.p("\t%q,", pgsql.Ident(c.Name()))
+		g.p("\t%q,", g.lw.Ident(c.Name()))
 	}
 	g.p("}")
 	g.p("")
 	g.p("var lowering = runtime.Lowering{")
 	g.p("\tFrag:  fragOf,")
 	g.p("\tOrder: orderOf,")
-	g.p("\tOB:    runtime.Order{Lead: %q, Sep: %q},", pgsql.OrderLead, pgsql.OrderSep)
+	g.p("\tOB:    runtime.Order{Lead: %q, Sep: %q},", g.lw.OrderLead, g.lw.OrderSep)
 	g.p("\tIdent: func(col uint32) string {")
 	g.p("\t\tif col >= nCols {")
 	g.p("\t\t\treturn \"\"")
@@ -464,13 +469,13 @@ func (g *gen) compile() {
 	g.p("\t},")
 	g.p("\tRowCmp: func(op uint32) string {")
 	g.p("\t\tif op == runtime.CmpLt {")
-	g.p("\t\t\treturn %q", pgsql.RowCmpOp(1))
+	g.p("\t\t\treturn %q", g.lw.RowCmpOp(1))
 	g.p("\t\t}")
-	g.p("\t\treturn %q", pgsql.RowCmpOp(0))
+	g.p("\t\treturn %q", g.lw.RowCmpOp(0))
 	g.p("\t},")
-	g.p("\tTupleOpen:  %q,", pgsql.TupleOpen)
-	g.p("\tTupleSep:   %q,", pgsql.TupleSep)
-	g.p("\tTupleClose: %q,", pgsql.TupleClose)
+	g.p("\tTupleOpen:  %q,", g.lw.TupleOpen)
+	g.p("\tTupleSep:   %q,", g.lw.TupleSep)
+	g.p("\tTupleClose: %q,", g.lw.TupleClose)
 	g.p("}")
 	g.p("")
 	g.p("func orderOf(dir, col uint32) string {")
@@ -492,10 +497,10 @@ func (g *gen) compile() {
 				g.p("\t\t{},")
 				continue
 			}
-			a, b, ok := pgsql.Frag(op.name, pgsql.Ident(c.Name()))
+			a, b, ok := g.lw.Frag(op.name, g.lw.Ident(c.Name()), c.col)
 			if !ok {
-				g.err = fmt.Errorf("codegen: table %s column %s: target postgres has no lowering for operator %s",
-					g.t.Name, c.Name(), op.name)
+				g.err = fmt.Errorf("codegen: table %s column %s: target %s has no lowering for operator %s",
+					g.t.Name, c.Name(), g.lw.name, op.name)
 				return
 			}
 			g.p("\t\t{A: %q, B: %q},", a, b)
