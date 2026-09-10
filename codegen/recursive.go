@@ -118,7 +118,7 @@ func (g *gen) recursive() {
 		g.p("\treturn out, rows.Err()")
 		g.p("}")
 		g.p("")
-		g.p("const %sSQL = `%s`", lowerFirst(dir.name), sql)
+		g.p("const %sSQL = %s", lowerFirst(dir.name), lit(sql))
 		g.p("")
 	}
 }

@@ -47,13 +47,13 @@ func (g *gen) join(j *schema.Join) {
 	if g.err != nil {
 		return
 	}
-	g.p("const %sPrefix = `%s`", low, prefix)
-	g.p("const %sSuffix = `%s`", low, pgsql.JoinSuffix(j))
+	g.p("const %sPrefix = %s", low, lit(prefix))
+	g.p("const %sSuffix = %s", low, lit(pgsql.JoinSuffix(j)))
 	if w := pgsql.JoinDeclaredWhere(j, liveIn(g.s, g.t.Name, g.t.Name)); w != "" {
 		// The declared predicate is ANDed with whatever the caller adds, so a
 		// declaration that says "only fulfilled orders" cannot be widened at a
 		// call site. That is the point of declaring it there.
-		g.p("const %sWhere = `%s`", low, w)
+		g.p("const %sWhere = %s", low, lit(w))
 	}
 	g.p("")
 	g.p("var (")

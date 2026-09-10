@@ -137,10 +137,10 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 
 	g.p("// insertSQL does not vary: the column list is fixed by the table, so")
 	g.p("// the placeholders are known at build time and nothing is spliced.")
-	g.p("const insertSQL = `%s`", pgsql.InsertStmt(g.t.Name, names, all))
+	g.p("const insertSQL = %s", lit(pgsql.InsertStmt(g.t.Name, names, all)))
 	g.p("")
-	g.p("const updatePrefix = `%s`", pgsql.UpdatePrefix(g.t.Name))
-	g.p("const deletePrefix = `%s`", pgsql.DeletePrefix(g.t.Name))
+	g.p("const updatePrefix = %s", lit(pgsql.UpdatePrefix(g.t.Name)))
+	g.p("const deletePrefix = %s", lit(pgsql.DeletePrefix(g.t.Name)))
 	g.p("")
 
 	g.p("// Dirty bits. One per updatable column; the set of them is an UPDATE's")
@@ -808,7 +808,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 			return
 		}
 		g.p("\t// A deleted row is not updatable: every read here says it is gone.")
-		g.p("\twhere = append(where, runtime.Frag{A: `%s`})", alive)
+		g.p("\twhere = append(where, runtime.Frag{A: %s})", lit(alive))
 	}
 	g.p("\treturn updCache.Put(mask, runtime.SpliceSections(updatePrefix, []runtime.Section{")
 	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", pgsql.SetLead, pgsql.SetSep)
@@ -911,8 +911,8 @@ func (g *gen) softDeleteFns(pk []colInfo) {
 	g.p("// softDeleteSQL marks one live row. It matches on `%s`, so", alive)
 	g.p("// deleting an already-deleted row reports runtime.ErrNoRow rather than")
 	g.p("// silently re-stamping it with a later time.")
-	g.p("var softDeleteSQL = runtime.SpliceSections(`%s`, []runtime.Section{", pgsql.SoftDeleteSet(g.t.Name, col))
-	g.p("\t{Lead: %q, Sep: %q, Frags: append(pkFrags[:], runtime.Frag{A: `%s`})},", pgsql.WhereLead, pgsql.WhereSep, alive)
+	g.p("var softDeleteSQL = runtime.SpliceSections(%s, []runtime.Section{", lit(pgsql.SoftDeleteSet(g.t.Name, col)))
+	g.p("\t{Lead: %q, Sep: %q, Frags: append(pkFrags[:], runtime.Frag{A: %s})},", pgsql.WhereLead, pgsql.WhereSep, lit(alive))
 	g.p("}, \"\").SQL")
 	g.p("")
 	g.p("// Delete marks one row deleted. The row stays in the table and keeps its")
@@ -949,8 +949,8 @@ func (g *gen) softDeleteFns(pk []colInfo) {
 	g.p("\treturn nil")
 	g.p("}")
 	g.p("")
-	g.p("var restoreSQL = runtime.SpliceSections(`%s`, []runtime.Section{", pgsql.RestoreSet(g.t.Name, col))
-	g.p("\t{Lead: %q, Sep: %q, Frags: append(pkFrags[:], runtime.Frag{A: `%s`})},", pgsql.WhereLead, pgsql.WhereSep, dead)
+	g.p("var restoreSQL = runtime.SpliceSections(%s, []runtime.Section{", lit(pgsql.RestoreSet(g.t.Name, col)))
+	g.p("\t{Lead: %q, Sep: %q, Frags: append(pkFrags[:], runtime.Frag{A: %s})},", pgsql.WhereLead, pgsql.WhereSep, lit(dead))
 	g.p("}, \"\").SQL")
 	g.p("")
 	g.p("// Restore clears the mark. A row that was not deleted is runtime.ErrNoRow:")
