@@ -118,7 +118,7 @@ func TestMySQLGenerationIsRefusedUntilTheQueryLoweringExists(t *testing.T) {
 	}
 	// The refusal has to say what is missing and where to read about it —
 	// an adopter who hits this needs to know it is storm's gap, not their model.
-	for _, want := range []string{"compile/myddl", "compile/mysql", "Error 1064", "M9"} {
+	for _, want := range []string{"compile/myddl", "compile/mysql", "runtime/mydec", "Error 1064", "M9"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not mention %q:\n%v", want, err)
 		}

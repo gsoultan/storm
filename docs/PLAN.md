@@ -93,11 +93,25 @@ hypothesis, and one that builds while emitting the other dialect's SQL is worse,
 because the gate reads as though it works.
 
 So M9's real scope is **`compile/mysql` (the query side) *and* the driver**, not
-the driver alone. Until the first exists, `codegen` **refuses** to generate a
-MySQL package rather than emit one no server will accept
-(`codegen.ErrMySQLQueryLoweringMissing`); storm's own seam test opts out through
-an unexported hook, because the decode property it asserts is real and worth
-keeping. Re-estimate before starting: the 4 weeks above counted the driver only.
+the driver alone. Re-estimate before starting: the 4 weeks above counted the
+driver only.
+
+**`compile/mysql` landed 2026-09-10** — the query lowering, proven against MySQL
+8.4.11 rather than asserted. Backtick identifiers; the bare `?` through
+`runtime.Placeholder`, the carrier ADR-0010 decided and left unbuilt; the
+typed-`JSON_TABLE` list lowering, which holds one statement text across list
+lengths 0, 1, 3 and 5 and keeps an index lookup in the plan; no output clause on
+insert. `scripts/check/mysql.sh` now PREPAREs and EXECUTEs every form against a
+real server — through the container's client, so storm still gains no MySQL
+driver dependency for a check about SQL text — and it is verified to fail with
+Error 1064 when the identifier quoting regresses to PostgreSQL's.
+
+**Still open, and why `codegen` still refuses `DialectMySQL`:** codegen calls
+`compile/pgsql` for every statement it emits, whichever dialect was asked for.
+Wiring it to the lowering is mechanical but wide — 68 functions across 13 files,
+most of them for constructs (joins, aggregates, unions, top-N, recursion,
+upsert, locking) that `compile/mysql` does not lower yet. Then the driver, which
+is unchanged and still the long pole.
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |

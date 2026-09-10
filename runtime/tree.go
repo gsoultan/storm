@@ -310,6 +310,11 @@ type Lowering struct {
 	// TupleOpen, TupleSep and TupleClose punctuate both sides of a row
 	// comparison.
 	TupleOpen, TupleSep, TupleClose string
+
+	// Placeholder is how this back end spells a bound parameter. The zero
+	// value is PostgreSQL's `$` plus an ordinal, so a generated PostgreSQL
+	// package need not mention it (ADR-0010).
+	Placeholder Placeholder
 }
 
 // SpliceTree assembles a read statement.
@@ -383,7 +388,9 @@ func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string,
 			s := f.A
 			if takesArg(f) {
 				ord++
-				s += itoa(ord)
+				// The fragment ends in the SIGIL the back end chose; what
+				// follows it (an ordinal, or nothing) is the back end's too.
+				s = s[:len(s)-1] + lw.Placeholder.text(ord)
 			}
 			stack = append(stack, s+f.B)
 
@@ -444,8 +451,7 @@ func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string,
 					b.WriteString(lw.TupleSep)
 				}
 				ord++
-				b.WriteByte(placeholderSigil)
-				b.WriteString(itoa(ord))
+				lw.Placeholder.write(&b, ord)
 			}
 			b.WriteString(lw.TupleClose)
 			stack = append(stack[:len(stack)-n], b.String())
@@ -503,9 +509,23 @@ func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string,
 	var b strings.Builder
 	b.Grow(len(sql) + len(suffix) + 8)
 	b.WriteString(sql)
+	sigil := lw.Placeholder.sigil()
 	for i := 0; i < len(suffix); i++ {
 		b.WriteByte(suffix[i])
-		if suffix[i] != placeholderSigil {
+		if suffix[i] != sigil {
+			continue
+		}
+		if lw.Placeholder.Bare {
+			// Nothing to write — the sigil IS the placeholder. It still has to
+			// be COUNTED, because NArg is what the caller binds against.
+			//
+			// The hazard ADR-0010 named for a bare back end is a sigil inside a
+			// string literal, which this loop would count as a parameter. It
+			// cannot happen from here: suffixes are built at generate time from
+			// a fixed set — the row cap, the offset, the lock modes — and none
+			// of them contains a literal. A back end that lets a literal reach
+			// a suffix has to scan for quoting before it reaches this loop.
+			ord++
 			continue
 		}
 		// A sigil ALREADY carrying an ordinal is not the splicer's to number.
@@ -547,7 +567,11 @@ const placeholderSigil = '$'
 // without a server to run the result against. A second implementation nothing
 // executes is what R9 already cost this project once.
 func takesArg(f Frag) bool {
-	return len(f.A) > 0 && f.A[len(f.A)-1] == '$'
+	if len(f.A) == 0 {
+		return false
+	}
+	c := f.A[len(f.A)-1]
+	return c == '$' || c == '?'
 }
 
 // unwrapOuter drops the parentheses around a single top-level group; `WHERE (a

@@ -32,6 +32,13 @@ type Section struct {
 // every section in order. Cold path: paid once per mask for the life of the
 // process.
 func SpliceSections(prefix string, secs []Section, suffix string) *Stmt {
+	return SpliceSectionsWith(prefix, secs, suffix, Placeholder{})
+}
+
+// SpliceSectionsWith is SpliceSections for a back end whose placeholder is not
+// PostgreSQL's. A generated MySQL package passes runtime.MySQLPlaceholder; the
+// zero value is the PostgreSQL spelling, so the plain form above stays exact.
+func SpliceSectionsWith(prefix string, secs []Section, suffix string, ph Placeholder) *Stmt {
 	var b strings.Builder
 	b.WriteString(prefix)
 	ord := 0
@@ -44,10 +51,14 @@ func SpliceSections(prefix string, secs []Section, suffix string) *Stmt {
 			if i > 0 {
 				b.WriteString(s.Sep)
 			}
-			b.WriteString(f.A)
 			if takesArg(f) {
 				ord++
-				b.WriteString(strconv.Itoa(ord))
+				// The fragment ends in the sigil; the back end decides what
+				// follows it.
+				b.WriteString(f.A[:len(f.A)-1])
+				ph.write(&b, ord)
+			} else {
+				b.WriteString(f.A)
 			}
 			b.WriteString(f.B)
 		}

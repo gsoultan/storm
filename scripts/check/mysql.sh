@@ -140,8 +140,35 @@ for want in 'array type' 'INTERVAL' 'network address' 'EXCLUDE'; do
   esac
 done
 
+echo "== MySQL PREPAREs and EXECUTEs every statement compile/mysql lowers =="
+# The gate that was missing, and the reason the dialect emitted PostgreSQL SQL
+# through four releases: a package that COMPILES is not a package that RUNS.
+# TestMySQLGeneratedPackageCompiles asserted the cheaper claim and read as
+# though it asserted this one.
+#
+# PREPARE rather than a driver, so storm gains no MySQL dependency for a check
+# about SQL text — the same reasoning the DDL half above already applies. It is
+# also the stronger assertion: PREPARE type-checks the statement against the
+# real schema, placeholders included.
+if ! go run ./internal/myquerycheck > "$TMP/queries.sql" 2>"$TMP/qerr"; then
+  note "emitting the query script failed:"; sed 's/^/    /' "$TMP/qerr" >&2
+else
+  if ! mysql_run < "$TMP/queries.sql" > "$TMP/qout" 2>"$TMP/qapply"; then
+    note "MySQL refused a lowered statement:"
+    grep -v Warning "$TMP/qapply" | head -5 | sed 's/^/    /' >&2
+  fi
+  # ADR-0010's load-bearing claim: the JSON_TABLE IN-list must still reach the
+  # index. A lowering that is merely ACCEPTED but scans every row would have
+  # traded a correctness problem for a performance one.
+  case "$(cat "$TMP/qout")" in
+    *"index lookup"*|*"Index lookup"*|*eq_ref*) ;;
+    *) note "the JSON_TABLE IN-list no longer uses an index (ADR-0010):"
+       tail -5 "$TMP/qout" | sed 's/^/    /' >&2 ;;
+  esac
+fi
+
 if [ "$fail" -eq 0 ]; then
-  echo "OK: storm's MySQL DDL applies, and its portability report names what does not cross"
+  echo "OK: storm's MySQL DDL applies, its queries PREPARE and EXECUTE, and its portability report names what does not cross"
 else
   echo "FAILED"
 fi
