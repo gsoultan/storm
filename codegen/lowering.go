@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"github.com/gsoultan/storm/compile/mysql"
 	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
@@ -46,6 +47,11 @@ type lowering struct {
 	LockRefusedGrouped   func() string
 	LockRefusedJoined    func() string
 
+	ExistsFrag    func(childTable, childFK, parentTable, parentPK, childLive string) string
+	NotExistsFrag func(childTable, childFK, parentTable, parentPK, childLive string) string
+	ExistsOpen    func(childTable, childFK, parentTable, parentPK, childLive string) string
+	NotExistsOpen func(childTable, childFK, parentTable, parentPK, childLive string) string
+
 	SoftDeleteWhere func(col string) string
 	SoftDeleteSet   func(table, col string) string
 	RestoreSet      func(table, col string) string
@@ -73,11 +79,22 @@ type lowering struct {
 	// name is what a refusal calls this dialect.
 	name string
 
+	// unlowered names the constructs this dialect has no query lowering for.
+	//
+	// An emitter that finds its construct here REFUSES. It must not fall back
+	// to compile/pgsql, which is exactly how a MySQL package came to carry
+	// PostgreSQL SQL in the first place — the fallback was invisible because it
+	// compiled and read as though the dialect were handled.
+	unlowered map[string]bool
+
 	// noReturning marks a back end that cannot hand back the row it wrote.
 	// Insert then leaves the caller's Row untouched rather than racing a second
 	// SELECT for the values — see compile/mysql.ErrNoReturning.
 	noReturning bool
 }
+
+// lowers reports whether this dialect can express a construct.
+func (l lowering) lowers(construct string) bool { return !l.unlowered[construct] }
 
 // canReturn reports whether an insert can learn what the server computed.
 func (l lowering) canReturn() bool { return !l.noReturning }
@@ -128,10 +145,22 @@ func postgresLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
-		SoftDeleteWhere:    pgsql.SoftDeleteWhere,
-		SoftDeleteSet:      pgsql.SoftDeleteSet,
-		RestoreSet:         pgsql.RestoreSet,
-		LiveFor:            func(alias, col string) string { return string(pgsql.LiveFor(alias, col)) },
+		ExistsFrag: func(ct, fk, pt, pk, live string) string {
+			return pgsql.ExistsFrag(ct, fk, pt, pk, pgsql.Live(live))
+		},
+		NotExistsFrag: func(ct, fk, pt, pk, live string) string {
+			return pgsql.NotExistsFrag(ct, fk, pt, pk, pgsql.Live(live))
+		},
+		ExistsOpen: func(ct, fk, pt, pk, live string) string {
+			return pgsql.ExistsOpen(ct, fk, pt, pk, pgsql.Live(live))
+		},
+		NotExistsOpen: func(ct, fk, pt, pk, live string) string {
+			return pgsql.NotExistsOpen(ct, fk, pt, pk, pgsql.Live(live))
+		},
+		SoftDeleteWhere: pgsql.SoftDeleteWhere,
+		SoftDeleteSet:   pgsql.SoftDeleteSet,
+		RestoreSet:      pgsql.RestoreSet,
+		LiveFor:         func(alias, col string) string { return string(pgsql.LiveFor(alias, col)) },
 		InsertStmt: func(t string, c, r []string) (string, error) {
 			return pgsql.InsertStmt(t, c, r), nil
 		},
@@ -198,13 +227,25 @@ func mysqlLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
-		SoftDeleteWhere:    mysql.SoftDeleteWhere,
-		SoftDeleteSet:      mysql.SoftDeleteSet,
-		RestoreSet:         mysql.RestoreSet,
-		LiveFor:            mysql.LiveFor,
-		InsertStmt:         mysql.InsertStmt,
-		InsertPrefix:       mysql.InsertPrefix,
-		InsertParts:        mysql.InsertParts,
+		ExistsFrag: func(ct, fk, pt, pk, live string) string {
+			return mysql.ExistsFrag(ct, fk, pt, pk, mysql.Live(live))
+		},
+		NotExistsFrag: func(ct, fk, pt, pk, live string) string {
+			return mysql.NotExistsFrag(ct, fk, pt, pk, mysql.Live(live))
+		},
+		ExistsOpen: func(ct, fk, pt, pk, live string) string {
+			return mysql.ExistsOpen(ct, fk, pt, pk, mysql.Live(live))
+		},
+		NotExistsOpen: func(ct, fk, pt, pk, live string) string {
+			return mysql.NotExistsOpen(ct, fk, pt, pk, mysql.Live(live))
+		},
+		SoftDeleteWhere: mysql.SoftDeleteWhere,
+		SoftDeleteSet:   mysql.SoftDeleteSet,
+		RestoreSet:      mysql.RestoreSet,
+		LiveFor:         mysql.LiveFor,
+		InsertStmt:      mysql.InsertStmt,
+		InsertPrefix:    mysql.InsertPrefix,
+		InsertParts:     mysql.InsertParts,
 		// MySQL 8 cannot return the row it wrote. An empty clause here is not a
 		// lowering — InsertStmt refuses a non-empty returning list outright, so
 		// this is only ever asked for the empty case.
@@ -220,5 +261,31 @@ func mysqlLowering() lowering {
 		Placeholder:     mysql.Placeholder,
 		Upsert:          nil, // ON DUPLICATE KEY UPDATE names no target; see the field's note
 		noReturning:     true,
+		// Standard SQL in shape, but every one of them renders identifiers and
+		// placeholders through compile/pgsql today. Refused rather than
+		// silently emitted in the other dialect's spelling; lowering them is
+		// what remains of M9's query side.
+		unlowered: map[string]bool{
+			"join": true, "aggregate": true, "union": true,
+			"top-N batch load": true, "recursive read": true,
+		},
 	}
+}
+
+// refuseUnlowered sets g.err when the dialect cannot express a construct, and
+// reports whether it did.
+//
+// The message names the construct and the target, because an adopter hitting it
+// needs to know it is storm's gap and not their model — the same shape as the
+// refusal for a column type the target has no decoder for.
+func (g *gen) refuseUnlowered(construct, name string) bool {
+	if g.lw.lowers(construct) {
+		return false
+	}
+	g.err = fmt.Errorf(
+		"codegen: table %s: %s %q has no %s lowering yet, and storm will not emit "+
+			"another dialect's SQL for it. Declare it only on a PostgreSQL target, or "+
+			"write the query with storm.SQL. See docs/PLAN.md M9",
+		g.t.Name, construct, name, g.lw.name)
+	return true
 }

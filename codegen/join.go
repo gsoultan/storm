@@ -21,6 +21,10 @@ func (g *gen) joins() {
 // changes what a row carries and which rows qualify; it does not need a
 // different machine to run on.
 func (g *gen) join(j *schema.Join) {
+	if g.refuseUnlowered("join", j.Name) {
+		return
+	}
+
 	cols, err := joinCols(g.t, j)
 	if err != nil {
 		g.err = err

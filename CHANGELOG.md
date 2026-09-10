@@ -171,8 +171,17 @@ PostgreSQL side is the pgsql functions themselves and cannot drift.
 fails if a PostgreSQL identifier, placeholder or output clause reaches MySQL
 SQL. Verified both ways.
 
-M9 still needs the constructs `compile/mysql` does not lower — joins,
-aggregates, unions, top-N, recursion — and then the driver.
+**The original defect is closed everywhere it existed.** Joins, aggregates,
+unions, top-N and recursive reads still went through `compile/pgsql` whichever
+dialect was asked for — the same bug, unfixed for exactly the constructs nobody
+had generated yet. They refuse now, naming the construct and the target, rather
+than emitting another dialect's SQL. Correlated semi-joins were *lowered*
+instead of refused: they are standard SQL in shape, and any model with relations
+needs them.
+
+M9 still needs lowerings for those five, and then the driver. Divergences to
+expect: MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no
+`FILTER (WHERE …)`.
 
 ## v0.10.0 — 2026-09-08
 

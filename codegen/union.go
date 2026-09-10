@@ -22,6 +22,10 @@ import (
 // in its back end (R9). That makes this the simplest read storm generates,
 // which is a fair trade for the declaration being the strictest.
 func (g *gen) emitUnion(u *schema.Union) {
+	if g.refuseUnlowered("union", u.Name) {
+		return
+	}
+
 	cols, err := unionCols(u)
 	if err != nil {
 		g.err = err

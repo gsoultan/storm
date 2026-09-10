@@ -148,11 +148,21 @@ said the Dialect interface was waiting for. `codegen.lowering` is that
 generalisation — a struct of function values, so the PostgreSQL side is the
 pgsql functions *themselves* and cannot drift.
 
-**What M9 still needs:** the constructs `compile/mysql` does not lower — joins,
-aggregates, unions, top-N, recursion — and then the driver, which is unchanged
-and still the long pole. `TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a
-PostgreSQL identifier, placeholder or output clause ever reaches MySQL SQL
-again, verified both ways.
+**The original defect is now closed everywhere.** Joins, aggregates, unions,
+top-N and recursive reads still went through `compile/pgsql` whichever dialect
+was asked for, so a MySQL model declaring one got PostgreSQL SQL *silently* —
+the same bug, unfixed for exactly the constructs nobody had generated yet. They
+**refuse** now, naming the construct and the target. Correlated semi-joins
+("has a related row") are standard SQL in shape and were lowered rather than
+refused, since any model with relations needs them.
+
+**What M9 still needs:** lowerings for those five constructs, and then the
+driver, which is unchanged and still the long pole. Genuine divergences to
+expect there — MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no
+`FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
+
+`TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a PostgreSQL identifier,
+placeholder or output clause reaches MySQL SQL, verified both ways.
 
 | M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |

@@ -50,6 +50,12 @@ func (g *gen) recursive() {
 	if parent == "" {
 		return
 	}
+	// After the early exits: this runs for every table, and only a
+	// self-referential one would actually emit a recursive read. Refusing
+	// before the check would refuse every table on the target.
+	if g.refuseUnlowered("recursive read", g.t.Name) {
+		return
+	}
 	if len(g.t.PrimaryKey) != 1 {
 		return // a composite key has no single array to guard a cycle with
 	}

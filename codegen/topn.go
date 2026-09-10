@@ -77,6 +77,10 @@ func (g *gen) batchTop() {
 }
 
 func (g *gen) topFn(key string, kc *schema.Column, cols []string) {
+	if g.refuseUnlowered("top-N batch load", key) {
+		return
+	}
+
 	name := "BatchTopBy" + exportName(key)
 	priv := lowerFirst(name)
 	keyGo := baseGoType(kc)
