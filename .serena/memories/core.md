@@ -196,7 +196,15 @@ ADRs 0001 and 0002 were **rewritten** on 2026-08-23 when multi-dialect + Mongo
 landed; read [[decisions]] for what changed and why — the rewrites carry the
 reasoning.
 
+**M9 re-estimated 2026-09-10 and PLAN.md corrected**: it is NOT a driver project
+alone. The seam's query side has one implementation (`compile/pgsql`) serving
+both dialects, so a MySQL package carried PostgreSQL SQL and MySQL 8.4.11
+rejects it with Error 1064. `codegen` now refuses `DialectMySQL`. See
+[[m9_mysql]] before starting M9.
+
 ## Related memories
+- [[m9_mysql]] — why M9 is bigger than PLAN.md said, and the gate that read
+  as though it worked
 - [[softdelete]] — opt-in soft delete, why a REJECTED entry turned out to be a
   design and not a ban, and the queued-delete defect that would have destroyed
   recoverable rows

@@ -37,6 +37,50 @@ predicate is dropped from the conflict target.
 
 No production code changed.
 
+## Unreleased
+
+### M9 re-estimated: the MySQL dialect emits PostgreSQL SQL, and now refuses to
+
+`docs/PLAN.md` said M9's remaining cost was "the wire-level driver, nothing
+else". That was wrong, and this is the measurement that says so.
+
+The dialect seam has two implementations of the **decode** side
+(`runtime/mydec`) and two of the **DDL** side (`compile/myddl`). It has one of
+the **query** side: `compile/pgsql` serves both dialects, and `codegen.Dialect`
+only selects a decoder family. So a MySQL-dialect package came out carrying
+PostgreSQL SQL. Against MySQL 8.4.11:
+
+| Emitted | MySQL says |
+|---|---|
+| `SELECT "id" … FROM "my_users"` | **Error 1064** — default `sql_mode` has no `ANSI_QUOTES`, so a double-quoted name is a string *literal*, not an identifier |
+| the insert's output clause | **Error 1064** — MySQL 8 has no such clause |
+| `$1` placeholders | `?` is the placeholder |
+
+`compile/myddl` is fine and applies cleanly; `scripts/check/mysql.sh` has been
+proving that all along and is honestly scoped — it checks DDL and says so.
+
+**`codegen.TestMySQLGeneratedPackageCompiles` passed throughout.** Compiling and
+executing are different claims, and that is R9's own lesson one level up: a seam
+whose second implementation does not build is a bad hypothesis, and one that
+builds while emitting the other dialect's SQL is worse, because the gate reads
+as though it works.
+
+**So generation now refuses.** `codegen.Package` and `codegen.File` return
+`ErrMySQLQueryLoweringMissing` for `DialectMySQL` rather than emit a package no
+server will accept — a construct the target cannot express is a generation
+error, and silence is not an option this codebase allows. storm's own seam tests
+opt out through `AllowUnexecutableMySQLForTest`, because the decode property
+they assert is real and worth keeping.
+
+Nothing about PostgreSQL changes, and generated PostgreSQL output is
+byte-identical.
+
+**M9's real scope**, for whoever starts it: `compile/mysql` (backtick
+identifiers, the `?` placeholder carrier ADR-0010 decided and did not build, no
+output clause on insert, and the `JSON_TABLE` `IN`-list lowering) **and** the
+driver, which is unchanged and still real. The 4-week estimate counted the
+driver only.
+
 ## v0.10.0 — 2026-09-08
 
 ### Soft delete reaches every read, including the cross-table ones

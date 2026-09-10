@@ -69,3 +69,11 @@ Lesson: when a design is replaced, delete its constants in the same commit. A
 stale bound does not announce itself — it just quietly drops work.
 
 See [[core]], [[write_path]].
+
+## 2026-09-10 — the seam's query side has only one implementation
+
+R9 was declared mitigated when the MySQL package COMPILED. It emits PostgreSQL
+SQL: `compile/pgsql` serves both dialects and `codegen.Dialect` only chooses a
+decoder family. MySQL 8.4.11 rejects the first read with Error 1064. Compiling
+and executing are different claims, and the gate asserted the cheaper one.
+`codegen` now refuses `DialectMySQL`. See [[m9_mysql]].

@@ -84,6 +84,9 @@ type OrderTerm struct {
 
 // File renders one table's package.
 func File(s *schema.Schema, o Options) ([]byte, error) {
+	if o.Dialect == DialectMySQL && !allowUnexecutableMySQL {
+		return nil, ErrMySQLQueryLoweringMissing
+	}
 	t := s.Table(o.Table)
 	if t == nil {
 		return nil, fmt.Errorf("codegen: no table %q", o.Table)
