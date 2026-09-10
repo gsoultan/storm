@@ -156,10 +156,27 @@ the same bug, unfixed for exactly the constructs nobody had generated yet. They
 ("has a related row") are standard SQL in shape and were lowered rather than
 refused, since any model with relations needs them.
 
-**What M9 still needs:** lowerings for those five constructs, and then the
-driver, which is unchanged and still the long pole. Genuine divergences to
-expect there — MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no
-`FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
+**The batch loader crossed, 2026-09-10.** This is the construct M9's exit gate
+names, and where the dialects genuinely part company: PostgreSQL binds a whole
+parent-key list as ONE array and unnests it; MySQL has neither an array type nor
+`unnest`, so the list arrives as a bound JSON document that `JSON_TABLE` turns
+back into rows. Both the lateral and window forms PREPARE and EXECUTE on
+8.4.11, return correct greatest-n-per-group, and the plan reads
+
+    -> Index lookup on members using ix_org (org_id=_storm_p._storm_k)
+
+which is ADR-0010's claim, now measured through storm's own lowering rather than
+by hand. Two placeholders whatever the list length — the key list and N.
+
+The `COLUMNS` declaration must be **typed to the key it joins against**;
+declared `JSON` it compares a JSON scalar to a native value, which is wrong and
+unindexable. `scripts/check/mysql.sh` asserts *two* index plans now — the
+IN-list and the batch loader — and is verified to fail when either regresses.
+
+**What M9 still needs:** joins, aggregates, unions and recursive reads, which
+refuse rather than emit PostgreSQL; then the driver, still the long pole.
+Divergences to expect: MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`,
+and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 
 `TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a PostgreSQL identifier,
 placeholder or output clause reaches MySQL SQL, verified both ways.

@@ -179,9 +179,23 @@ than emitting another dialect's SQL. Correlated semi-joins were *lowered*
 instead of refused: they are standard SQL in shape, and any model with relations
 needs them.
 
-M9 still needs lowerings for those five, and then the driver. Divergences to
-expect: MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no
-`FILTER (WHERE …)`.
+**The batch loader crossed** — the construct M9's exit gate names, and where the
+dialects genuinely part company. PostgreSQL binds a whole parent-key list as one
+array and unnests it; MySQL has neither an array type nor `unnest`, so the list
+arrives as a bound JSON document that `JSON_TABLE` turns back into rows. Both
+the lateral and window forms PREPARE and EXECUTE on 8.4.11, return correct
+greatest-n-per-group, and the plan shows `Index lookup … (org_id=_storm_p._storm_k)`
+— ADR-0010's claim, now measured through storm's own lowering. Two placeholders
+whatever the list length.
+
+The `COLUMNS` declaration is typed to the key it joins against; declared `JSON`
+it compares a JSON scalar to a native value, which is wrong *and* unindexable.
+`scripts/check/mysql.sh` asserts two index plans now, and fails if either
+regresses.
+
+M9 still needs joins, aggregates, unions and recursive reads — which refuse
+rather than emit PostgreSQL — and then the driver. Divergences to expect: MySQL
+has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no `FILTER (WHERE …)`.
 
 ## v0.10.0 — 2026-09-08
 
