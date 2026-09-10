@@ -106,6 +106,27 @@ real server — through the container's client, so storm still gains no MySQL
 driver dependency for a check about SQL text — and it is verified to fail with
 Error 1064 when the identifier quoting regresses to PostgreSQL's.
 
+**A blocker that is not syntax, found 2026-09-10.** `compile/pgsql` says of
+`RETURNING`: it "is not an optimisation here, it is the only correct way to
+learn a generated id or a DEFAULT the database computed. Reading them back with
+a second SELECT races every other writer." **MySQL 8 has no `RETURNING`**, and
+neither substitute closes the gap — `LAST_INSERT_ID()` reports an
+`AUTO_INCREMENT` and nothing else, not a uuid default, not a server timestamp,
+not a generated column, which is most of what `storm.Model` asks the server for.
+
+So this is a **model constraint on a MySQL target**, not a lowering to write: a
+model whose inserts need server-computed values back cannot be served correctly,
+and `compile/mysql.InsertStmt` refuses rather than dropping the clause and
+handing back a zero id. MariaDB *does* have `RETURNING` and would not need this
+— which is worth weighing, since M9's exit gate names both engines.
+
+Measured on 8.4.11 while lowering the rest: row comparison crosses (keyset
+pagination is unchanged), all six lock modes crossed, and **`NULLS FIRST/LAST`
+does not exist** — MySQL sorts NULLs first ascending and last descending, which
+happens to be exactly the two placements storm can ask for, so the plain form is
+correct and an `ISNULL()` sort key would cost a sort to say what the server
+already does.
+
 **Still open, and why `codegen` still refuses `DialectMySQL`:** codegen calls
 `compile/pgsql` for every statement it emits, whichever dialect was asked for.
 Wiring it to the lowering is mechanical but wide — 68 functions across 13 files,
