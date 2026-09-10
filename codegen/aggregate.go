@@ -42,10 +42,10 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("}")
 	g.p("")
 
-	g.p("const %sPrefix = `%s`", low, pgsql.AggregateSelect(g.t.Name, agg))
+	g.p("const %sPrefix = %s", low, lit(pgsql.AggregateSelect(g.t.Name, agg)))
 	// GROUP BY and ORDER BY sit between the predicates and the paging, which
 	// is where SQL wants them and where the splice puts them.
-	g.p("const %sSuffix = `%s`", low, pgsql.AggregateSuffix(agg))
+	g.p("const %sSuffix = %s", low, lit(pgsql.AggregateSuffix(agg)))
 	g.p("")
 	g.p("var (")
 	g.p("\t%sCache       = runtime.NewTreeCache()", low)

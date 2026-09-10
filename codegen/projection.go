@@ -51,7 +51,7 @@ func (g *gen) projection(name string, columns []string) {
 	g.p("}")
 	g.p("")
 
-	g.p("const %sPrefix = `%s`", low, pgsql.SelectPrefix(g.t.Name, columns))
+	g.p("const %sPrefix = %s", low, lit(pgsql.SelectPrefix(g.t.Name, columns)))
 	g.p("")
 	g.p("var (")
 	g.p("\t%sCache       = runtime.NewTreeCache()", low)
