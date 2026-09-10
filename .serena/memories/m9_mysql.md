@@ -40,12 +40,29 @@ target cannot express is a generation error, and silence is not an option.
 storm's own seam tests opt out via `codegen.AllowUnexecutableMySQLForTest()`,
 unexported-in-spirit, because the decode property they assert is real.
 
-## Real scope, for whoever starts M9
+## `compile/mysql` — DONE 2026-09-10, proven not asserted
 
-1. **`compile/mysql`** — the query side. Backtick identifiers, `?` placeholders
-   (the `Lowering.Placeholder` carrier ADR-0010 decided), no output clause on
-   insert (`LAST_INSERT_ID()` or a following read), and the `IN`-list lowering
-   ADR-0010 settled on `JSON_TABLE`.
+Backtick identifiers; the bare `?` via `runtime.Placeholder` (zero value is
+PostgreSQL, so pg output is byte-identical); typed-`JSON_TABLE` list lowering;
+no output clause on insert. Every form PREPAREd and EXECUTEd against MySQL
+8.4.11 by `scripts/check/mysql.sh`, verified to fail with Error 1064 when the
+quoting regresses.
+
+**The `JSON_TABLE` COLUMNS declaration must be TYPED to the column it matches.**
+Declared `JSON` it compares a JSON scalar against a native value — wrong AND
+unindexable. That is why `InFrag` takes a colType and is not in the operator
+table. Also: the index-lookup assertion needs ENOUGH ROWS (the check seeds 500);
+with three rows MySQL correctly drives from the table and the plan proves
+nothing.
+
+## Real scope, remaining
+
+1. ~~`compile/mysql`~~ — done.
+1b. **Wire codegen to it.** codegen calls `compile/pgsql` for every statement
+   whichever dialect was asked for: 68 functions across 13 files, most for
+   constructs `compile/mysql` does not lower yet (joins, aggregates, unions,
+   top-N, recursion, upsert, locking). This is why `DialectMySQL` is still
+   refused.
 2. **The driver.** Unchanged and still real: `go-sql-driver/mysql` decodes into
    `driver.Value` before storm sees it — one boxing allocation per column per
    row, which ADR-0007 exists to refuse. Needs a fork exposing binary result

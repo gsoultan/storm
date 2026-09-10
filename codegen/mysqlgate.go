@@ -26,12 +26,17 @@ import "errors"
 // rule is that silence is not an option: a construct the target cannot express
 // is a generation error naming the target and the source line.
 var ErrMySQLQueryLoweringMissing = errors.New(
-	"codegen: the MySQL dialect has no query lowering yet, so a generated package would " +
-		"carry PostgreSQL SQL — double-quoted identifiers, $1 placeholders, and the " +
-		"insert's output clause, none of which MySQL 8 accepts (Error 1064).\n" +
-		"       What exists: compile/myddl (DDL) and runtime/mydec (decoders), both fine.\n" +
-		"       What is missing: compile/mysql — the query side — plus the placeholder\n" +
-		"       carrier on runtime.Lowering that ADR-0010 decided and did not build.\n" +
+	"codegen: the MySQL dialect is not wired to its query lowering yet, so a generated " +
+		"package would carry PostgreSQL SQL — double-quoted identifiers, $1 placeholders, " +
+		"and an insert output clause, none of which MySQL 8 accepts (Error 1064).\n" +
+		"       What exists and is proven against MySQL 8.4.11:\n" +
+		"         compile/myddl   the DDL\n" +
+		"         compile/mysql   the query lowering — backtick identifiers, the bare ?,\n" +
+		"                         and the JSON_TABLE list lowering from ADR-0010\n" +
+		"         runtime/mydec   the decoders\n" +
+		"         runtime.Placeholder  the carrier ADR-0010 decided\n" +
+		"       What is missing: codegen still calls compile/pgsql for every statement it\n" +
+		"       emits, whichever dialect was asked for, and the wire-level driver.\n" +
 		"       See docs/PLAN.md M9. Generating anyway is available to storm's own seam\n" +
 		"       test only, which asserts that the DECODE path compiles and nothing more.")
 

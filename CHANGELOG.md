@@ -39,6 +39,41 @@ No production code changed.
 
 ## Unreleased
 
+### `compile/mysql` — the query lowering, proven against a real server
+
+The seam's second query implementation now exists, and every form it lowers has
+been PREPAREd and EXECUTEd against MySQL 8.4.11 rather than asserted:
+
+- **Backtick identifiers.** Not a style choice: default `sql_mode` has no
+  `ANSI_QUOTES`, so `SELECT "id" FROM "users"` does not fail — it selects the
+  *constant* `"id"`. A library cannot assume someone else's `sql_mode`.
+- **The bare `?`**, through `runtime.Placeholder` — the carrier ADR-0010 decided
+  and deliberately left unbuilt for want of a server to run the result against.
+  The zero value is PostgreSQL's `$n`, so generated PostgreSQL output is
+  byte-identical.
+- **The list lowering**, which is the one that could have sunk M9. PostgreSQL
+  lowers `In` to `= ANY($1)`: one placeholder for a whole list, so the statement
+  text does not depend on the caller's data. MySQL's `IN (?,?,?)` has
+  value-dependent arity — a shape key that is a function of *request data*
+  rather than of the program. ADR-0010's `JSON_TABLE` form crosses it, and the
+  `COLUMNS` declaration must be **typed to the column it matches**: declared
+  `JSON` it compares a JSON scalar to a native value, which is both wrong and
+  unindexable. Verified: one statement text across list lengths 0, 1, 3 and 5,
+  and an index lookup still in the plan.
+- **No output clause on insert.** MySQL 8 cannot return the row it wrote.
+
+`scripts/check/mysql.sh` gained the gate that was missing, and it is the one
+that would have caught the original defect: it PREPAREs and EXECUTEs every form
+against a real server — through the container's own client, so storm still gains
+no MySQL driver dependency for a check about SQL text. PREPARE is also the
+stronger assertion, since it type-checks against the real schema, placeholders
+included. Verified to fail with Error 1064 when the quoting regresses.
+
+`codegen` still refuses `DialectMySQL`: it calls `compile/pgsql` for every
+statement it emits, whichever dialect was asked for. Wiring that is mechanical
+but wide — 68 functions across 13 files, most for constructs `compile/mysql`
+does not lower yet — and the driver is unchanged and still the long pole.
+
 ### M9 re-estimated: the MySQL dialect emits PostgreSQL SQL, and now refuses to
 
 `docs/PLAN.md` said M9's remaining cost was "the wire-level driver, nothing
