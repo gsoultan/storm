@@ -41,12 +41,40 @@ weight: storm would decode twice or not at all.
 SHAPE for the port.** That is a stronger argument than the allocation count and
 it is the one to lead with.
 
-## Still undecided, and worth deciding before the driver starts
+## "Why not a different driver for MariaDB?" — researched 2026-09-11
 
-- **MySQL vs MariaDB.** MariaDB has `RETURNING`, which removes the insert-shape
-  divergence entirely ([[m9_mysql]]). M9's exit gate names both engines, so the
-  choice changes what the protocol subset must target.
+**Because the WIRE is the same.** MariaDB speaks the MySQL wire protocol; any
+MySQL client connects to either. A second driver would reimplement an identical
+thing. What diverges is SQL — JSON functions, `RETURNING`, auth defaults, GTID —
+and that is the DIALECT layer storm already has.
+
+So the split is **one driver, two dialects**, not two drivers:
+
+- wire: one protocol implementation, shared.
+- SQL: `compile/mysql` today; a MariaDB variant gains `INSERT … RETURNING`
+  (MySQL 8 has none — confirmed), which removes the insert-shape divergence in
+  [[m9_mysql]] entirely. MariaDB is therefore the CHEAPER target, not just a
+  second one.
+
+One wire caveat to plan for: MySQL 8.4 turns `mysql_native_password` off by
+default while most MariaDB installs still use it, so the handshake must carry
+both `caching_sha2_password` and `mysql_native_password`.
+
+## Can an existing library supply the row shape? No — see VITESS.md
+
+`vitess.io/vitess/go/mysql` gives `sqltypes.Value.Raw() []byte` for EVERY column
+including integers, which proves the shape is reachable. It is still not usable:
+**9.07 allocs/row** (worse than go-sql-driver, because `ExecuteFetch`
+materialises the whole result) and **text protocol only** on the client side, so
+`mydec`'s binary decoders would not apply.
+
+No Go library streams raw BINARY-protocol bytes row-at-a-time into a caller's
+buffer. Vitess (Apache 2.0) is a working reference for packet framing and the
+auth handshake — the tedious half — but not a dependency that solves it.
+
+## Still undecided
+
 - The `Insert` API difference between dialects is unreleased and is a public
-  surface question.
+  surface question — though targeting MariaDB first would make it moot.
 
 Related: [[m9_mysql]], [[decisions]] (ADR-0007), [[core]].
