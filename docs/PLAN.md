@@ -173,8 +173,16 @@ declared `JSON` it compares a JSON scalar to a native value, which is wrong and
 unindexable. `scripts/check/mysql.sh` asserts *two* index plans now — the
 IN-list and the batch loader — and is verified to fail when either regresses.
 
-**What M9 still needs:** joins, aggregates, unions and recursive reads, which
-refuse rather than emit PostgreSQL; then the driver, still the long pole.
+**Unions crossed** along with the expression renderer they need. That renderer
+is a second implementation, not compile/pgsql's parameterised: four of its
+decisions are PostgreSQL facts its own comments say so — the division cast
+("MySQL's `/` already yields a decimal"), `FILTER (WHERE …)`, `::numeric`, and
+`arithOp` falling through to `" ? "`, which is an operator in PostgreSQL and a
+BOUND PARAMETER here. Each is refused rather than approximated, because each
+changes the result rather than its spelling.
+
+**What M9 still needs:** joins, aggregates and recursive reads, which refuse
+rather than emit PostgreSQL; then the driver, still the long pole.
 Divergences to expect: MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`,
 and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 

@@ -193,8 +193,24 @@ it compares a JSON scalar to a native value, which is wrong *and* unindexable.
 `scripts/check/mysql.sh` asserts two index plans now, and fails if either
 regresses.
 
-M9 still needs joins, aggregates, unions and recursive reads — which refuse
-rather than emit PostgreSQL — and then the driver. Divergences to expect: MySQL
+**Unions cross**, with the expression renderer they need. It is a second
+implementation rather than compile/pgsql's parameterised, because four of that
+one's decisions are PostgreSQL facts its own comments say so: the division cast
+("MySQL's `/` already yields a decimal, and its back end must not inherit a cast
+it does not need"), `FILTER (WHERE …)`, `::numeric`, and `arithOp` falling
+through to `" ? "` — an operator in PostgreSQL and a *bound parameter* here, so
+an unknown one would silently add to the statement's arity. Each is refused
+rather than approximated; each changes the result, not the spelling.
+
+**A generator could carry half a dialect.** The decoder family and the query
+lowering were assigned separately at five call sites, and four set only the
+decoders — so a context file's unions rendered through a zero lowering. They are
+resolved together now (`setDialect`) or copied together (`inheritDialect`), and
+a test fails if anything else touches either half. It found the fifth site
+itself.
+
+M9 still needs joins, aggregates and recursive reads — which refuse rather than
+emit PostgreSQL — and then the driver. Divergences to expect: MySQL
 has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no `FILTER (WHERE …)`.
 
 ## v0.10.0 — 2026-09-08

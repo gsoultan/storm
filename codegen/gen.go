@@ -134,7 +134,8 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 		}
 	}
 
-	g := &gen{s: s, t: t, o: o, cols: cols, dec: decodersFor(o.Dialect, o.Import), lw: loweringFor(o.Dialect)}
+	g := &gen{s: s, t: t, o: o, cols: cols}
+	g.setDialect(o.Dialect, o.Import)
 	g.header()
 	g.rowType()
 	g.opConstants()
@@ -917,4 +918,27 @@ func (g *gen) hasFallibleDecode() bool {
 		}
 	}
 	return false
+}
+
+// setDialect resolves BOTH sides of the seam a generator needs — the decoder
+// family and the query lowering — and is the only place either is chosen.
+//
+// They were set separately, and contextFile set only the decoders. Its unions
+// then rendered through a ZERO lowering, whose function fields are nil. A
+// generator with half a dialect is not a state worth being able to express, so
+// the two are resolved together and the caller cannot take one without the
+// other.
+func (g *gen) setDialect(d Dialect, imp string) {
+	g.dec = decodersFor(d, imp)
+	g.lw = loweringFor(d)
+}
+
+// inheritDialect copies BOTH halves from another generator.
+//
+// Several emitters build a scratch gen to render a fragment and then ask what
+// the fragment needed — the enum types, the imports. Those inherit the parent's
+// dialect, and inheriting half of it is the same bug as resolving half of it.
+func (g *gen) inheritDialect(from *gen) {
+	g.dec = from.dec
+	g.lw = from.lw
 }
