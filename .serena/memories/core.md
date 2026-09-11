@@ -205,6 +205,8 @@ rejects it with Error 1064. `codegen` now refuses `DialectMySQL`. See
 ## Related memories
 - [[m9_mysql]] — why M9 is bigger than PLAN.md said, and the gate that read
   as though it worked
+- [[m9_driver]] — the driver question MEASURED: the wrapper cannot satisfy the
+  port, so M9 needs the protocol subset
 - [[softdelete]] — opt-in soft delete, why a REJECTED entry turned out to be a
   design and not a ban, and the queued-delete defect that would have destroyed
   recoverable rows

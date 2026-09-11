@@ -217,8 +217,34 @@ ascending (MySQL already sorts NULLs first) and costs an `ISNULL(x) DESC` sort
 descending.
 
 **What M9 still needs: the driver, and only the driver.** That is where this
-milestone started, and the estimate for it is unchanged — the query side turned
-out to be the part nobody had counted.
+milestone started, and the query side turned out to be the part nobody had
+counted.
+
+**The driver question is measured, 2026-09-11** — `internal/mysqlspike`, a
+separate module so storm's own `go.mod` gains no MySQL dependency. Against
+8.4.11, 200 rows × 8 columns:
+
+| path | allocs per row |
+|---|---|
+| `database/sql` + `Scan` | 10.1 |
+| `driver.Rows.Next` directly | **8.07** |
+
+Eight columns, 8.07 allocations per row at the floor: one per column per row,
+exactly what ADR-0007 refuses. Bypassing `database/sql` removes only the two per
+row `sql.Rows` adds on top. (Measure with ids above 255 — the first run used
+1..200, reported 2.07, and was measuring Go's preallocated small integers.)
+
+**The shape is the real blocker, not the count.** `driver.Value` carries DECODED
+values — `int64`, `[]uint8` — not wire bytes. So `runtime.Rows.RawValues()
+[][]byte` cannot be satisfied on top of this driver without re-encoding the
+int64 back to bytes, which costs more than the boxing did. And the driver has
+already done the decoding `runtime/mydec` exists to do, so ADR-0007's second
+decoder family is dead weight on this path: storm would decode twice or not at
+all.
+
+So the fork is not an optimisation over the wrapper — the wrapper cannot satisfy
+the port at all. **M9 needs the protocol subset**, and the four-week estimate
+stands for that and nothing else.
 Divergences to expect: MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`,
 and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 
