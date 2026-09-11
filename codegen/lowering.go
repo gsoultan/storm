@@ -65,6 +65,12 @@ type lowering struct {
 	UnionSelect func(u *schema.Union, live func(string) string) (string, error)
 	UnionSuffix func(u *schema.Union) (string, error)
 
+	// Recursive takes keyType for the same reason the batch loads do: the
+	// roots arrive as a bound list, and MySQL has no array parameter to
+	// compare one against.
+	Recursive func(table string, cols []string, key, parent, keyType string,
+		dir int, live string) string
+
 	TopNWindow  func(table string, cols []string, key, keyType, live string) string
 	TopNLateral func(table string, cols []string, key, keyType, live string) string
 
@@ -179,6 +185,9 @@ func postgresLowering() lowering {
 			return pgsql.UnionSelect(u, func(t string) pgsql.Live { return pgsql.Live(live(t)) }), nil
 		},
 		UnionSuffix: func(u *schema.Union) (string, error) { return pgsql.UnionSuffix(u), nil },
+		Recursive: func(t string, cols []string, key, parent, _ string, dir int, live string) string {
+			return pgsql.Recursive(t, cols, key, parent, dir, pgsql.Live(live))
+		},
 		TopNWindow: func(t string, cols []string, key, _, live string) string {
 			return pgsql.TopNWindow(t, cols, key, pgsql.Live(live))
 		},
@@ -285,6 +294,9 @@ func mysqlLowering() lowering {
 			}
 			return mysql.UnionSuffix(u), nil
 		},
+		Recursive: func(t string, cols []string, key, parent, keyType string, dir int, live string) string {
+			return mysql.Recursive(t, cols, key, parent, keyType, dir, mysql.Live(live))
+		},
 		TopNWindow: func(t string, cols []string, key, keyType, live string) string {
 			return mysql.TopNWindow(t, cols, key, keyType, mysql.Live(live))
 		},
@@ -330,7 +342,7 @@ func mysqlLowering() lowering {
 		// silently emitted in the other dialect's spelling; lowering them is
 		// what remains of M9's query side.
 		unlowered: map[string]bool{
-			"aggregate": true, "recursive read": true,
+			"aggregate": true,
 		},
 	}
 }
