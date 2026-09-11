@@ -189,8 +189,21 @@ the `LEFT JOIN` into an inner one. A join that materialises a declared
 aggregation as a CTE is refused: MySQL *has* `WITH`, but not the `FILTER` and
 `GROUPING SETS` forms an aggregation may carry.
 
-**What M9 still needs:** aggregates and recursive reads, which refuse rather
-than emit PostgreSQL; then the driver, still the long pole.
+**Recursive reads crossed.** MySQL 8 has `WITH RECURSIVE`, so the shape carried
+over; the CYCLE GUARD did not. PostgreSQL accumulates visited keys in an ARRAY
+(`ARRAY[k]`, `path || k`, `NOT k = ANY(path)`) and MySQL has no array type. The
+path is a HEX string joined by commas, tested with `FIND_IN_SET` — HEX rather
+than `CAST(… AS CHAR)` because a BINARY(16) uuid key, which is what
+`storm.Model` uses, can contain the comma that separates the list and would make
+the guard read one visited key as two. Verified on 8.4.11: a subtree traverses
+to the right depths, ancestors walk upward, and a 6↔7 cycle terminates at depth
+2 rather than running to `cte_max_recursion_depth`.
+
+**What M9 still needs:** aggregates, which refuse rather than emit PostgreSQL —
+and they are the hardest of the five, because `FILTER (WHERE …)` has no MySQL
+form and its rewrite changes what the aggregate counts, while `GROUPING SETS`
+and `CUBE` do not exist at all (only `WITH ROLLUP`). Then the driver, still the
+long pole.
 Divergences to expect: MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`,
 and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 

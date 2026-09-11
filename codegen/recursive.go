@@ -50,12 +50,6 @@ func (g *gen) recursive() {
 	if parent == "" {
 		return
 	}
-	// After the early exits: this runs for every table, and only a
-	// self-referential one would actually emit a recursive read. Refusing
-	// before the check would refuse every table on the target.
-	if g.refuseUnlowered("recursive read", g.t.Name) {
-		return
-	}
 	if len(g.t.PrimaryKey) != 1 {
 		return // a composite key has no single array to guard a cycle with
 	}
@@ -92,7 +86,7 @@ func (g *gen) recursive() {
 		{"Descend", "descendants: rows whose " + parent + " chain leads back to a root", pgsql.Descend},
 		{"Ascend", "ancestors: the " + parent + " chain upward from each row", pgsql.Ascend},
 	} {
-		sql := pgsql.Recursive(g.t.Name, cols, key, parent, dir.dir, g.live())
+		sql := g.lw.Recursive(g.t.Name, cols, key, parent, kc.Type.SQL(), dir.dir, string(g.live()))
 		g.p("// %s returns the %s.", dir.name, dir.doc)
 		g.p("//")
 		g.p("// The roots themselves are included, at depth 1. maxDepth counts them,")
