@@ -22,9 +22,6 @@ import (
 // in its back end (R9). That makes this the simplest read storm generates,
 // which is a fair trade for the declaration being the strictest.
 func (g *gen) emitUnion(u *schema.Union) {
-	if g.refuseUnlowered("union", u.Name) {
-		return
-	}
 
 	cols, err := unionCols(u)
 	if err != nil {
@@ -46,7 +43,20 @@ func (g *gen) emitUnion(u *schema.Union) {
 	g.p("}")
 	g.p("")
 
-	g.p("const %sSQL = `%s%s`", low, pgsql.UnionSelect(u, liveLookup(g.lw, g.s)), pgsql.UnionSuffix(u))
+	// Two %s in one raw literal is why the earlier lit() conversion missed this
+	// site: its pattern matched a single verb. A MySQL union would have emitted
+	// a Go raw string containing backticks, which does not parse.
+	sel, err := g.lw.UnionSelect(u, func(t string) string { return string(liveIn(g.lw, g.s, t, "")) })
+	if err != nil {
+		g.err = fmt.Errorf("codegen: union %s: %w", u.Name, err)
+		return
+	}
+	suf, err := g.lw.UnionSuffix(u)
+	if err != nil {
+		g.err = fmt.Errorf("codegen: union %s: %w", u.Name, err)
+		return
+	}
+	g.p("const %sSQL = %s", low, lit(sel+suf))
 	g.p("")
 
 	fallible := false

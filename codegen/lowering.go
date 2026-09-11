@@ -51,6 +51,13 @@ type lowering struct {
 	// form does not need one: a uniform signature is what lets the emitter
 	// stay dialect-blind, and the alternative is a branch in codegen, which
 	// is the thing the seam exists to remove.
+	// UnionSelect is fallible: a bare-placeholder back end cannot bind one
+	// declared parameter to two branches, and an aggregate FILTER has no
+	// MySQL form. Both change the RESULT rather than its spelling, so they
+	// are refused at generate time rather than approximated.
+	UnionSelect func(u *schema.Union, live func(string) string) (string, error)
+	UnionSuffix func(u *schema.Union) (string, error)
+
 	TopNWindow  func(table string, cols []string, key, keyType, live string) string
 	TopNLateral func(table string, cols []string, key, keyType, live string) string
 
@@ -152,6 +159,10 @@ func postgresLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
+		UnionSelect: func(u *schema.Union, live func(string) string) (string, error) {
+			return pgsql.UnionSelect(u, func(t string) pgsql.Live { return pgsql.Live(live(t)) }), nil
+		},
+		UnionSuffix: func(u *schema.Union) (string, error) { return pgsql.UnionSuffix(u), nil },
 		TopNWindow: func(t string, cols []string, key, _, live string) string {
 			return pgsql.TopNWindow(t, cols, key, pgsql.Live(live))
 		},
@@ -240,6 +251,15 @@ func mysqlLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
+		UnionSelect: func(u *schema.Union, live func(string) string) (string, error) {
+			return mysql.UnionSelect(u, func(t string) mysql.Live { return mysql.Live(live(t)) })
+		},
+		UnionSuffix: func(u *schema.Union) (string, error) {
+			if err := mysql.UnionOrderRefused(u); err != nil {
+				return "", err
+			}
+			return mysql.UnionSuffix(u), nil
+		},
 		TopNWindow: func(t string, cols []string, key, keyType, live string) string {
 			return mysql.TopNWindow(t, cols, key, keyType, mysql.Live(live))
 		},
@@ -285,7 +305,7 @@ func mysqlLowering() lowering {
 		// silently emitted in the other dialect's spelling; lowering them is
 		// what remains of M9's query side.
 		unlowered: map[string]bool{
-			"join": true, "aggregate": true, "union": true,
+			"join": true, "aggregate": true,
 			"recursive read": true,
 		},
 	}
