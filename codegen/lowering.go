@@ -55,6 +55,13 @@ type lowering struct {
 	// declared parameter to two branches, and an aggregate FILTER has no
 	// MySQL form. Both change the RESULT rather than its spelling, so they
 	// are refused at generate time rather than approximated.
+	// Join* are fallible for the same reason Union* are: a back end may be
+	// unable to express a declaration rather than merely spell it differently.
+	JoinSelect func(table string, j *schema.Join,
+		aggFor func(schema.CTE) (string, string), live func(table, alias string) string) (string, error)
+	JoinSuffix        func(j *schema.Join) (string, error)
+	JoinDeclaredWhere func(j *schema.Join, driving string) (string, error)
+
 	UnionSelect func(u *schema.Union, live func(string) string) (string, error)
 	UnionSuffix func(u *schema.Union) (string, error)
 
@@ -159,6 +166,15 @@ func postgresLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
+		JoinSelect: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+			live func(table, alias string) string) (string, error) {
+			return pgsql.JoinSelect(t, j, aggFor,
+				func(tb, al string) pgsql.Live { return pgsql.Live(live(tb, al)) }), nil
+		},
+		JoinSuffix: func(j *schema.Join) (string, error) { return pgsql.JoinSuffix(j), nil },
+		JoinDeclaredWhere: func(j *schema.Join, driving string) (string, error) {
+			return pgsql.JoinDeclaredWhere(j, pgsql.Live(driving)), nil
+		},
 		UnionSelect: func(u *schema.Union, live func(string) string) (string, error) {
 			return pgsql.UnionSelect(u, func(t string) pgsql.Live { return pgsql.Live(live(t)) }), nil
 		},
@@ -251,6 +267,15 @@ func mysqlLowering() lowering {
 		LockRefusedProbed:  pgsql.LockRefusedProbed,
 		LockRefusedGrouped: pgsql.LockRefusedGrouped,
 		LockRefusedJoined:  pgsql.LockRefusedJoined,
+		JoinSelect: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+			live func(table, alias string) string) (string, error) {
+			return mysql.JoinSelect(t, j, aggFor,
+				func(tb, al string) mysql.Live { return mysql.Live(live(tb, al)) })
+		},
+		JoinSuffix: mysql.JoinSuffix,
+		JoinDeclaredWhere: func(j *schema.Join, driving string) (string, error) {
+			return mysql.JoinDeclaredWhere(j, mysql.Live(driving))
+		},
 		UnionSelect: func(u *schema.Union, live func(string) string) (string, error) {
 			return mysql.UnionSelect(u, func(t string) mysql.Live { return mysql.Live(live(t)) })
 		},
@@ -305,8 +330,7 @@ func mysqlLowering() lowering {
 		// silently emitted in the other dialect's spelling; lowering them is
 		// what remains of M9's query side.
 		unlowered: map[string]bool{
-			"join": true, "aggregate": true,
-			"recursive read": true,
+			"aggregate": true, "recursive read": true,
 		},
 	}
 }

@@ -21,9 +21,6 @@ func (g *gen) joins() {
 // changes what a row carries and which rows qualify; it does not need a
 // different machine to run on.
 func (g *gen) join(j *schema.Join) {
-	if g.refuseUnlowered("join", j.Name) {
-		return
-	}
 
 	cols, err := joinCols(g.t, j)
 	if err != nil {
@@ -45,15 +42,29 @@ func (g *gen) join(j *schema.Join) {
 	g.p("}")
 	g.p("")
 
-	prefix := pgsql.JoinSelect(g.t.Name, j, func(c schema.CTE) (string, string) {
+	prefix, err := g.lw.JoinSelect(g.t.Name, j, func(c schema.CTE) (string, string) {
 		return g.cteSQL(c)
-	}, joinLive(g.lw, g.s))
+	}, func(tb, al string) string { return string(liveIn(g.lw, g.s, tb, al)) })
+	if err != nil {
+		g.err = fmt.Errorf("codegen: join %s: %w", j.Name, err)
+		return
+	}
 	if g.err != nil {
 		return
 	}
 	g.p("const %sPrefix = %s", low, lit(prefix))
-	g.p("const %sSuffix = %s", low, lit(pgsql.JoinSuffix(j)))
-	if w := pgsql.JoinDeclaredWhere(j, liveIn(g.lw, g.s, g.t.Name, g.t.Name)); w != "" {
+	suffix, err := g.lw.JoinSuffix(j)
+	if err != nil {
+		g.err = fmt.Errorf("codegen: join %s: %w", j.Name, err)
+		return
+	}
+	g.p("const %sSuffix = %s", low, lit(suffix))
+	declared, err := g.lw.JoinDeclaredWhere(j, string(liveIn(g.lw, g.s, g.t.Name, g.t.Name)))
+	if err != nil {
+		g.err = fmt.Errorf("codegen: join %s: %w", j.Name, err)
+		return
+	}
+	if w := declared; w != "" {
 		// The declared predicate is ANDed with whatever the caller adds, so a
 		// declaration that says "only fulfilled orders" cannot be widened at a
 		// call site. That is the point of declaring it there.
@@ -73,7 +84,7 @@ func (g *gen) join(j *schema.Join) {
 	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	if pgsql.JoinDeclaredWhere(j, liveIn(g.lw, g.s, g.t.Name, g.t.Name)) != "" {
+	if declared != "" {
 		g.p("\treturn c.Put(toks, runtime.SpliceTreeWhere(%sPrefix, %sWhere, toks, lowering, suffix))", low, low)
 	} else {
 		g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)
@@ -149,7 +160,7 @@ func (g *gen) join(j *schema.Join) {
 	g.p("}")
 	g.p("")
 	g.p("var err%sLocked = errors.New(", j.Name)
-	g.p("\t%q)", pgsql.LockRefusedJoined())
+	g.p("\t%q)", g.lw.LockRefusedJoined())
 	g.p("")
 	g.p("var err%sOrdered = errors.New(", j.Name)
 	g.p("\t%q)", "storm: Order() on a join — its ordering is declared, because a column name "+
