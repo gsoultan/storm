@@ -258,7 +258,19 @@ Aggregates are where MySQL is genuinely *weaker*, not differently spelled:
   `ISNULL(x) DESC` sort descending.
 
 M9 now needs the driver, and only the driver — which is where the milestone
-started. The query side turned out to be the part nobody had counted. Divergences to expect: MySQL
+started. The query side turned out to be the part nobody had counted.
+
+**And the driver question is now measured** rather than inherited
+(`internal/mysqlspike`, a separate module so storm's `go.mod` gains no MySQL
+dependency). Against 8.4.11, 200 rows × 8 columns: **8.07 allocations per row**
+through `driver.Rows` directly, 10.1 through `database/sql` — one per column per
+row at the floor, exactly what ADR-0007 refuses.
+
+The shape is the real blocker, not the count. `driver.Value` carries *decoded*
+values (`int64`, `[]uint8`), not wire bytes, so `RawValues() [][]byte` cannot be
+satisfied without re-encoding — and the driver has already done the decoding
+`runtime/mydec` exists to do. The fork is not an optimisation over the wrapper;
+the wrapper cannot satisfy the port at all. Divergences to expect: MySQL
 has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no `FILTER (WHERE …)`.
 
 ## v0.10.0 — 2026-09-08
