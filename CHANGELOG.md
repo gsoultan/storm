@@ -209,8 +209,23 @@ resolved together now (`setDialect`) or copied together (`inheritDialect`), and
 a test fails if anything else touches either half. It found the fifth site
 itself.
 
-M9 still needs joins, aggregates and recursive reads — which refuse rather than
-emit PostgreSQL — and then the driver. Divergences to expect: MySQL
+**Joins cross**, with the placement that would have been silently wrong. A
+joined table's soft-delete predicate goes in its `ON` clause, never the `WHERE`.
+Verified against 8.4.11:
+
+| org | members | in the result |
+|---|---|---|
+| alpha | one live | its email |
+| beta | **only a deleted one** | **NULL-extended, still present** |
+| gamma | none | NULL-extended |
+
+In the `WHERE`, `beta` vanishes and the `LEFT JOIN` has quietly become an inner
+join. A join that materialises a declared aggregation as a CTE is refused —
+MySQL *has* `WITH`, but not the `FILTER` and `GROUPING SETS` forms an
+aggregation may carry, and aggregates have no MySQL lowering yet.
+
+M9 still needs aggregates and recursive reads — which refuse rather than emit
+PostgreSQL — and then the driver. Divergences to expect: MySQL
 has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no `FILTER (WHERE …)`.
 
 ## v0.10.0 — 2026-09-08

@@ -181,8 +181,16 @@ decisions are PostgreSQL facts its own comments say so — the division cast
 BOUND PARAMETER here. Each is refused rather than approximated, because each
 changes the result rather than its spelling.
 
-**What M9 still needs:** joins, aggregates and recursive reads, which refuse
-rather than emit PostgreSQL; then the driver, still the long pole.
+**Joins crossed**, with the placement that would have been silently wrong:
+a joined table's soft-delete predicate goes in its `ON` clause, never the
+`WHERE`. Verified on 8.4.11 — an org whose only member is deleted still appears
+NULL-extended, where filtering in the `WHERE` would have dropped it and turned
+the `LEFT JOIN` into an inner one. A join that materialises a declared
+aggregation as a CTE is refused: MySQL *has* `WITH`, but not the `FILTER` and
+`GROUPING SETS` forms an aggregation may carry.
+
+**What M9 still needs:** aggregates and recursive reads, which refuse rather
+than emit PostgreSQL; then the driver, still the long pole.
 Divergences to expect: MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`,
 and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 
