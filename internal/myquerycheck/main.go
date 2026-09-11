@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/gsoultan/storm/compile/mysql"
+	"github.com/gsoultan/storm/schema"
 )
 
 func main() {
@@ -138,6 +139,35 @@ func main() {
 		strings.Replace(strings.Replace(
 			strings.Replace(mysql.TopNLateral("my_users", []string{"id", "email"}, "org_id", "BIGINT", ""),
 				"\x00order\x00", order, 1), "?", "'[1,2,3]'", 1), "?", "2", 1))
+
+	// A grouped read, plain and rolled up. The rollup matters because MySQL
+	// spells it as a SUFFIX and has no GROUPING SETS at all, so this is the
+	// form storm falls back to rather than the one it would have written.
+	agg := &schema.Aggregate{
+		Name: "ByAge",
+		By:   []schema.GroupTerm{{Expr: schema.Expr{Kind: schema.ExprCol, Col: "age"}, As: "Age"}},
+		Terms: []schema.AggregateTerm{{
+			Expr: schema.Expr{Kind: schema.ExprAgg, Fn: "count",
+				Args: []schema.Expr{{Kind: schema.ExprStar}}}, As: "N"}},
+	}
+	for label, sets := range map[string]*schema.GroupingSets{
+		"agg_plain":  nil,
+		"agg_rollup": {Kind: schema.SetsRollup},
+	} {
+		agg.Sets = sets
+		sel, err := mysql.AggregateSelect("my_users", agg)
+		if err != nil {
+			panic(err)
+		}
+		suf, err := mysql.AggregateSuffix(agg)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("-- %s\n", label)
+		fmt.Printf("PREPARE `%s` FROM '%s';\n", label, strings.ReplaceAll(sel+suf, "'", "''"))
+		fmt.Printf("EXECUTE `%s`;\n", label)
+		fmt.Printf("DEALLOCATE PREPARE `%s`;\n", label)
+	}
 
 	// ADR-0010's load-bearing claim: the JSON_TABLE form must still reach the
 	// index. A lowering that is merely ACCEPTED but scans every row would have

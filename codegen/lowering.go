@@ -1,7 +1,6 @@
 package codegen
 
 import (
-	"fmt"
 	"github.com/gsoultan/storm/compile/mysql"
 	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
@@ -68,6 +67,12 @@ type lowering struct {
 	// Recursive takes keyType for the same reason the batch loads do: the
 	// roots arrive as a bound list, and MySQL has no array parameter to
 	// compare one against.
+	// Aggregate* are fallible: MySQL has only WITH ROLLUP, so an aggregation
+	// over arbitrary grouping combinations has no lowering rather than a
+	// different spelling.
+	AggregateSelect func(table string, agg *schema.Aggregate) (string, error)
+	AggregateSuffix func(agg *schema.Aggregate) (string, error)
+
 	Recursive func(table string, cols []string, key, parent, keyType string,
 		dir int, live string) string
 
@@ -106,22 +111,11 @@ type lowering struct {
 	// name is what a refusal calls this dialect.
 	name string
 
-	// unlowered names the constructs this dialect has no query lowering for.
-	//
-	// An emitter that finds its construct here REFUSES. It must not fall back
-	// to compile/pgsql, which is exactly how a MySQL package came to carry
-	// PostgreSQL SQL in the first place — the fallback was invisible because it
-	// compiled and read as though the dialect were handled.
-	unlowered map[string]bool
-
 	// noReturning marks a back end that cannot hand back the row it wrote.
 	// Insert then leaves the caller's Row untouched rather than racing a second
 	// SELECT for the values — see compile/mysql.ErrNoReturning.
 	noReturning bool
 }
-
-// lowers reports whether this dialect can express a construct.
-func (l lowering) lowers(construct string) bool { return !l.unlowered[construct] }
 
 // canReturn reports whether an insert can learn what the server computed.
 func (l lowering) canReturn() bool { return !l.noReturning }
@@ -185,6 +179,12 @@ func postgresLowering() lowering {
 			return pgsql.UnionSelect(u, func(t string) pgsql.Live { return pgsql.Live(live(t)) }), nil
 		},
 		UnionSuffix: func(u *schema.Union) (string, error) { return pgsql.UnionSuffix(u), nil },
+		AggregateSelect: func(t string, a *schema.Aggregate) (string, error) {
+			return pgsql.AggregateSelect(t, a), nil
+		},
+		AggregateSuffix: func(a *schema.Aggregate) (string, error) {
+			return pgsql.AggregateSuffix(a), nil
+		},
 		Recursive: func(t string, cols []string, key, parent, _ string, dir int, live string) string {
 			return pgsql.Recursive(t, cols, key, parent, dir, pgsql.Live(live))
 		},
@@ -294,6 +294,8 @@ func mysqlLowering() lowering {
 			}
 			return mysql.UnionSuffix(u), nil
 		},
+		AggregateSelect: mysql.AggregateSelect,
+		AggregateSuffix: mysql.AggregateSuffix,
 		Recursive: func(t string, cols []string, key, parent, keyType string, dir int, live string) string {
 			return mysql.Recursive(t, cols, key, parent, keyType, dir, mysql.Live(live))
 		},
@@ -341,26 +343,5 @@ func mysqlLowering() lowering {
 		// placeholders through compile/pgsql today. Refused rather than
 		// silently emitted in the other dialect's spelling; lowering them is
 		// what remains of M9's query side.
-		unlowered: map[string]bool{
-			"aggregate": true,
-		},
 	}
-}
-
-// refuseUnlowered sets g.err when the dialect cannot express a construct, and
-// reports whether it did.
-//
-// The message names the construct and the target, because an adopter hitting it
-// needs to know it is storm's gap and not their model — the same shape as the
-// refusal for a column type the target has no decoder for.
-func (g *gen) refuseUnlowered(construct, name string) bool {
-	if g.lw.lowers(construct) {
-		return false
-	}
-	g.err = fmt.Errorf(
-		"codegen: table %s: %s %q has no %s lowering yet, and storm will not emit "+
-			"another dialect's SQL for it. Declare it only on a PostgreSQL target, or "+
-			"write the query with storm.SQL. See docs/PLAN.md M9",
-		g.t.Name, construct, name, g.lw.name)
-	return true
 }
