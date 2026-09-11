@@ -239,9 +239,26 @@ Verified on 8.4.11: a subtree traverses to the right depths, ancestors walk
 upward, and a 6↔7 cycle terminates at depth 2 rather than running to
 `cte_max_recursion_depth`.
 
-M9 still needs aggregates — the hardest of the five, since `FILTER (WHERE …)`
-has no MySQL form and its rewrite changes what the aggregate counts, while
-`GROUPING SETS` and `CUBE` do not exist at all — and then the driver. Divergences to expect: MySQL
+**Aggregates cross, and with them the whole query side.** Every declared read
+storm generates now has a MySQL lowering — base reads, projections, writes,
+batch loads, semi-joins, unions, joins, recursive reads and grouped reads. The
+blanket "this construct has no lowering" mechanism is gone, because nothing is
+left in it: what a dialect cannot express is refused by the lowering that would
+have emitted it, naming the part rather than the whole.
+
+Aggregates are where MySQL is genuinely *weaker*, not differently spelled:
+
+- **`GROUPING SETS` and `CUBE` do not exist** — Error 1064, measured. MySQL has
+  only `WITH ROLLUP`, which produces subtotals along one *prefix* of the
+  grouping columns rather than arbitrary combinations, so emitting it for a cube
+  would return fewer rows than the declaration asked for. Refused.
+- **`ROLLUP` is a suffix**, not a function wrapping the list.
+- **`NULLS FIRST`**, which keeps subtotals above the detail they summarise, is
+  free ascending (MySQL already sorts NULLs first) and costs an
+  `ISNULL(x) DESC` sort descending.
+
+M9 now needs the driver, and only the driver — which is where the milestone
+started. The query side turned out to be the part nobody had counted. Divergences to expect: MySQL
 has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`, and no `FILTER (WHERE …)`.
 
 ## v0.10.0 — 2026-09-08

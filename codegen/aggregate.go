@@ -15,9 +15,6 @@ import (
 // generation time is the SELECT list and the GROUP BY, which is exactly the
 // part that cannot be enumerated if it is composed at a call site.
 func (g *gen) aggregate(agg *schema.Aggregate) {
-	if g.refuseUnlowered("aggregate", agg.Name) {
-		return
-	}
 
 	name := agg.Name
 	cols, err := aggregateCols(g.t, agg)
@@ -46,10 +43,20 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("}")
 	g.p("")
 
-	g.p("const %sPrefix = %s", low, lit(pgsql.AggregateSelect(g.t.Name, agg)))
+	sel, err := g.lw.AggregateSelect(g.t.Name, agg)
+	if err != nil {
+		g.err = fmt.Errorf("codegen: aggregate %s: %w", agg.Name, err)
+		return
+	}
+	g.p("const %sPrefix = %s", low, lit(sel))
 	// GROUP BY and ORDER BY sit between the predicates and the paging, which
 	// is where SQL wants them and where the splice puts them.
-	g.p("const %sSuffix = %s", low, lit(pgsql.AggregateSuffix(agg)))
+	suf, err := g.lw.AggregateSuffix(agg)
+	if err != nil {
+		g.err = fmt.Errorf("codegen: aggregate %s: %w", agg.Name, err)
+		return
+	}
+	g.p("const %sSuffix = %s", low, lit(suf))
 	g.p("")
 	g.p("var (")
 	g.p("\t%sCache       = runtime.NewTreeCache()", low)
