@@ -245,6 +245,24 @@ all.
 So the fork is not an optimisation over the wrapper — the wrapper cannot satisfy
 the port at all. **M9 needs the protocol subset**, and the four-week estimate
 stands for that and nothing else.
+
+**One driver, two dialects — not two drivers.** MariaDB speaks the MySQL WIRE
+protocol; any MySQL client connects to either, so a second driver would
+reimplement an identical thing. What diverges is SQL — `RETURNING`, JSON
+functions, auth defaults, GTID — which is the dialect layer storm already has.
+MariaDB gains `INSERT … RETURNING`, which MySQL 8 has not, and that removes the
+insert-shape divergence above entirely: **MariaDB is the cheaper target, not
+merely a second one.** One wire caveat to plan for — MySQL 8.4 turns
+`mysql_native_password` off by default while most MariaDB installs still use it,
+so the handshake must carry both it and `caching_sha2_password`.
+
+**No existing Go library supplies the row shape** (`internal/mysqlspike/VITESS.md`).
+`vitess.io/vitess/go/mysql` gives `sqltypes.Value.Raw() []byte` for every column
+including integers — which proves the shape is reachable — but costs 9.07
+allocs/row, worse than go-sql-driver, because `ExecuteFetch` materialises the
+whole result; and its client API is text-protocol only, so `runtime/mydec`'s
+binary decoders would not apply. Vitess is a working reference (Apache 2.0) for
+packet framing and the auth handshake, not a dependency that solves it.
 Divergences to expect: MySQL has `WITH ROLLUP` but no `GROUPING SETS` or `CUBE`,
 and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 

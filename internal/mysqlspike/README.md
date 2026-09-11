@@ -40,3 +40,6 @@ either decode twice or not at all.
 
 That is why M9 needs the wire, not a wrapper: not because the boxing is
 expensive, but because the driver's output is the wrong SHAPE for the port.
+
+See VITESS.md for whether an existing Go library can supply the row shape
+instead (short answer: no, but for a more interesting reason than cost).
