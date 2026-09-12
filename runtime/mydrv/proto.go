@@ -23,10 +23,10 @@
 //
 // Known limits, stated here rather than in a release note:
 //
-//   - Result sets are MATERIALISED, not streamed. A query holds its rows in
-//     memory rather than the connection, which is what lets a pooled connection
-//     go back before the caller finishes reading. A million-row scan costs a
-//     million rows of memory.
+//   - Result sets STREAM, so a query holds its CONNECTION until the rows are
+//     closed. Callers must Close, which generated code does with a defer, and
+//     a second statement on the same connection before then is ErrRowsOpen
+//     rather than a garbled packet. Use a Pool if you nest.
 //   - CopyFrom is emulated with a multi-row INSERT, because MySQL has no COPY.
 //     See ErrNoCopyProtocol.
 //   - Batch is N round trips, because MySQL's protocol has no pipeline. See

@@ -22,6 +22,9 @@ const (
 )
 
 type stmt struct {
+	// types is the current result set's column types, and its length is the
+	// column count. Empty means no result set is open.
+	types   []byte
 	c       *conn
 	id      uint32
 	nParams uint16
@@ -43,6 +46,9 @@ func (c *conn) prepare(sql string) (*stmt, error) {
 	}
 	if p[0] == 0xff {
 		return nil, parseError(p)
+	}
+	if len(p) < 9 {
+		return nil, errShortRow
 	}
 	s := &stmt{
 		c:       c,
@@ -96,9 +102,39 @@ const (
 
 // exec runs COM_STMT_EXECUTE and calls fn per row with RAW BINARY column bytes.
 //
-// args are bound as int64 or string only — enough to prove the path. A driver
-// needs the full type table.
+// The pull form — send, then header, then nextRow — is what Query uses, so a
+// result set streams rather than being materialised. This callback form is for
+// the paths that have no rows to hand back.
 func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
+	if err := s.send(args); err != nil {
+		return err
+	}
+	if err := s.header(); err != nil {
+		return err
+	}
+	if fn == nil {
+		return nil
+	}
+	for {
+		row, err := s.nextRow()
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			return nil
+		}
+		if err := fn(row); err != nil {
+			// The caller stopped, but the server has not: the rest of the rows
+			// are still on the socket and the next statement would read them
+			// as its own answer.
+			_ = s.drain()
+			return err
+		}
+	}
+}
+
+// send writes COM_STMT_EXECUTE with the arguments bound.
+func (s *stmt) send(args []any) error {
 	s.c.seq = 0
 	b := make([]byte, 0, 64)
 	b = append(b, comStmtExecute)
@@ -130,10 +166,15 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 			}
 		}
 	}
-	if err := s.c.writePacket(b); err != nil {
-		return err
-	}
+	return s.c.writePacket(b)
+}
 
+// header reads what comes back from COM_STMT_EXECUTE: an error, an OK packet
+// with no result set, or a column count and its definitions.
+//
+// It leaves the connection positioned at the first ROW, which is what lets the
+// caller pull rows one at a time instead of being handed them all.
+func (s *stmt) header() error {
 	p, err := s.c.readPacket()
 	if err != nil {
 		return err
@@ -145,16 +186,20 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 		if s.c.onOK != nil {
 			s.c.onOK(p)
 		}
+		s.types = nil
 		return nil // OK: no result set
 	}
 	nCols, _, _ := lenEncInt(p)
-	types := make([]byte, nCols)
+	if cap(s.types) < int(nCols) {
+		s.types = make([]byte, nCols)
+	}
+	s.types = s.types[:nCols]
 	for i := uint64(0); i < nCols; i++ {
 		def, err := s.c.readPacket()
 		if err != nil {
 			return err
 		}
-		types[i] = columnType(def)
+		s.types[i] = columnType(def)
 	}
 	if _, err := s.c.readPacket(); err != nil { // EOF
 		return err
@@ -163,34 +208,48 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 		s.c.cols = make([][]byte, nCols)
 	}
 	s.c.cols = s.c.cols[:nCols]
+	return nil
+}
 
-	for {
+// nextRow reads one row.
+//
+// Returns (nil, nil) at the end of the result set. The returned slices point
+// INTO the connection's reused packet buffer and are valid until the next call
+// — the contract runtime.Rows.RawValues already has, and the reason storm has
+// Slabs.
+func (s *stmt) nextRow() ([][]byte, error) {
+	nCols := len(s.types)
+	if nCols == 0 {
+		return nil, nil
+	}
+	{
 		p, err := s.c.readPacket()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if p[0] == 0xfe && len(p) < 9 {
-			return nil
+			s.types = s.types[:0]
+			return nil, nil
 		}
 		if p[0] == 0xff {
-			return parseError(p)
+			return nil, parseError(p)
 		}
 		// Binary row: 0x00, then a null bitmap offset by two bits, then the
 		// values back to back in their wire encodings.
-		if 1+(int(nCols)+9)/8 > len(p) {
-			return errShortRow
+		if 1+(nCols+9)/8 > len(p) {
+			return nil, errShortRow
 		}
-		nullMap := p[1 : 1+(int(nCols)+9)/8]
+		nullMap := p[1 : 1+(nCols+9)/8]
 		off := 1 + len(nullMap)
-		for i := 0; i < int(nCols); i++ {
+		for i := 0; i < nCols; i++ {
 			if nullMap[(i+2)/8]&(1<<uint((i+2)%8)) != 0 {
 				s.c.cols[i] = nil
 				continue
 			}
-			w := fixedWidth(types[i])
+			w := fixedWidth(s.types[i])
 			if w > 0 {
 				if off+w > len(p) {
-					return errShortRow
+					return nil, errShortRow
 				}
 				s.c.cols[i] = p[off : off+w]
 				off += w
@@ -214,17 +273,31 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 			// add up is a corrupt or hostile server, and a driver that panics
 			// on one hands it the process.
 			if !ok || off+adv+int(n) > len(p) {
-				return errShortRow
+				return nil, errShortRow
 			}
-			if isTemporal(types[i]) {
+			if isTemporal(s.types[i]) {
 				s.c.cols[i] = p[off : off+adv+int(n)]
 			} else {
 				s.c.cols[i] = p[off+adv : off+adv+int(n)]
 			}
 			off += adv + int(n)
 		}
-		if err := fn(s.c.cols); err != nil {
+		return s.c.cols, nil
+	}
+}
+
+// drain reads a result set to its end and throws it away.
+//
+// Needed when a caller stops early: the rest of the rows are still on the
+// socket, and the next statement would read them as its own answer.
+func (s *stmt) drain() error {
+	for {
+		row, err := s.nextRow()
+		if err != nil {
 			return err
+		}
+		if row == nil {
+			return nil
 		}
 	}
 }

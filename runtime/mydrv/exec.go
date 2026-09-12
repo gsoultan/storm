@@ -30,7 +30,20 @@ type Conn struct {
 	mu     sync.Mutex
 	killed bool // a watcher killed the statement now in flight
 	broken bool // the socket is in an unknown state; the pool must not reuse it
+
+	// busy is set while a streaming result set is open. MySQL is strictly
+	// request/response: the unread rows are still on the socket, so a second
+	// statement would read them as its own answer. Without this the failure is
+	// a garbled packet somewhere later, which is unrelatable to the missing
+	// Close that caused it.
+	busy bool
 }
+
+// ErrRowsOpen is returned by a statement issued while a result set from the
+// same connection is still open.
+var ErrRowsOpen = errors.New(
+	"mydrv: this connection still has an open result set; close it before running another " +
+		"statement, or take a second connection from a Pool")
 
 // Open dials a server and authenticates.
 //
@@ -156,6 +169,9 @@ type entry struct {
 // query with an IN-list has one text per arity, so an unbounded map here is a
 // map that grows with the caller's input.
 func (x *Conn) prepared(sql string) (*stmt, error) {
+	if x.busy {
+		return nil, ErrRowsOpen
+	}
 	if el, ok := x.sts[sql]; ok {
 		x.lru.MoveToFront(el)
 		return el.Value.(*entry).s, nil
@@ -196,6 +212,9 @@ const DefaultMaxPreparedStmts = 128
 // batch size — caching would fill the cache with statements that are never seen
 // twice and evict the ones that are.
 func (x *Conn) once(ctx context.Context, sql string, args []any) (int64, error) {
+	if x.busy {
+		return 0, ErrRowsOpen
+	}
 	stop := x.watch(ctx)
 	var n int64
 	s, err := x.c.prepare(sql)
@@ -209,63 +228,116 @@ func (x *Conn) once(ctx context.Context, sql string, args []any) (int64, error) 
 	return n, classify(err)
 }
 
-// rows buffers one result set's raw bytes.
+// rows streams one result set.
 //
-// storm's contract is that RawValues is valid until the next Next, which the
-// wire gives for free — the column slices point into a reused packet buffer. It
-// is materialised here anyway, because the protocol is strictly
-// request/response: holding a result set open holds the CONNECTION, and a
-// generated plan loads relations while iterating a parent. Streaming would
-// deadlock on the second query. A pooled driver streams; this one cannot yet,
-// and says so rather than deadlocking.
+// Nothing is copied: the column slices point into the connection's reused
+// packet buffer and are valid until the next Next, which is exactly the
+// contract runtime.Rows states and the reason storm's scanners copy into a
+// Slab. Materialising instead cost nine allocations a row — one per column plus
+// the row — which is the entire allocation advantage this adapter exists for.
+//
+// The connection is HELD until Close. On a Pool that is one connection out of
+// MaxConns for the length of the iteration; on a bare Conn it means no other
+// statement may run until the rows are done, which the protocol requires
+// anyway — MySQL is strictly request/response.
 type rows struct {
-	vals [][][]byte
-	i    int
+	s    *stmt
+	c    *Conn
+	stop func() error // ends the cancellation watch
+	rel  func()       // returns the connection to its pool, at most once
+	cols [][]byte
 	err  error
+	done bool
 }
 
 func (r *rows) Next() bool {
-	if r.i >= len(r.vals) {
+	if r.done {
 		return false
 	}
-	r.i++
+	cols, err := r.s.nextRow()
+	if err != nil {
+		r.err = classify(err)
+		r.finish()
+		return false
+	}
+	if cols == nil {
+		r.finish()
+		return false
+	}
+	r.cols = cols
 	return true
 }
-func (r *rows) RawValues() [][]byte { return r.vals[r.i-1] }
-func (r *rows) Close()              {}
+
+func (r *rows) RawValues() [][]byte { return r.cols }
 func (r *rows) Err() error          { return r.err }
 
+// Close ends the result set and releases the connection.
+//
+// Draining first when the caller stopped early is not optional: the unread rows
+// are still on the socket, and the next statement on this connection would read
+// them as its own answer.
+func (r *rows) Close() {
+	if r.done {
+		return
+	}
+	if err := r.s.drain(); err != nil && r.err == nil {
+		// The socket's position is now unknown, so the connection cannot be
+		// handed to anyone else.
+		r.c.mu.Lock()
+		r.c.broken = true
+		r.c.mu.Unlock()
+		r.err = classify(err)
+	}
+	r.finish()
+}
+
+func (r *rows) finish() {
+	if r.done {
+		return
+	}
+	r.done = true
+	r.c.busy = false
+	if r.stop != nil {
+		// The cancellation OVERRIDES whatever the server said. A killed
+		// statement comes back as "Query execution was interrupted", and a
+		// caller told that instead of context.Canceled cannot tell their own
+		// timeout from the database having a bad day.
+		if cerr := r.stop(); cerr != nil {
+			r.err = cerr
+		}
+		r.stop = nil
+	}
+	if r.rel != nil {
+		r.rel()
+		r.rel = nil
+	}
+}
+
 // Query runs a statement and returns its rows.
+//
+// The rows STREAM: the connection stays busy until they are closed. Callers
+// must Close, which generated code does with a defer.
 func (x *Conn) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
 	// The watch starts before the prepare, because a prepare is a round trip
 	// too, and it ends on every path below — a watcher left running would kill
 	// whatever this connection ran NEXT, which after a pool release is someone
-	// else's statement.
+	// else's statement. For a streaming result set that is at Close, not at
+	// return: the statement is still running until the last row is read.
 	stop := x.watch(ctx)
-	out := &rows{}
 	s, err := x.prepared(sql)
 	if err == nil {
-		err = s.exec(args, func(cols [][]byte) error {
-			row := make([][]byte, len(cols))
-			for i, c := range cols {
-				if c == nil {
-					continue
-				}
-				// Copied because the packet buffer is reused and this result
-				// set outlives the read — see the note on rows.
-				row[i] = append([]byte(nil), c...)
-			}
-			out.vals = append(out.vals, row)
-			return nil
-		})
-	}
-	if cerr := stop(); cerr != nil {
-		return nil, cerr
+		if err = s.send(args); err == nil {
+			err = s.header()
+		}
 	}
 	if err != nil {
+		if cerr := stop(); cerr != nil {
+			return nil, cerr
+		}
 		return nil, classify(err)
 	}
-	return out, nil
+	x.busy = true
+	return &rows{s: s, c: x, stop: stop}, nil
 }
 
 // Exec runs a statement and reports the rows it affected.
@@ -293,6 +365,9 @@ func (x *Conn) Exec(ctx context.Context, sql string, args []any) (int64, error) 
 // arguments: the text protocol has nowhere to put them, and interpolating them
 // into the SQL is the injection this driver exists to avoid.
 func (x *Conn) simple(ctx context.Context, sql string) (int64, error) {
+	if x.busy {
+		return 0, ErrRowsOpen
+	}
 	stop := x.watch(ctx)
 	var n int64
 	x.c.onOK = func(p []byte) {
