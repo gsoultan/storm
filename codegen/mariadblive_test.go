@@ -1,11 +1,13 @@
 package codegen_test
 
 import (
+	"context"
 	"time"
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/codegen"
 	"github.com/gsoultan/storm/compile/myddl"
+	"github.com/gsoultan/storm/runtime/mydrv"
 	"github.com/gsoultan/storm/schema"
 	"os"
 	"os/exec"
@@ -156,15 +158,81 @@ func TestSoftDeleteScopedUniqueDoesNotPortToMySQL(t *testing.T) {
 	}
 }
 
-// A sixth MariaDB divergence, found by the end-to-end and recorded rather than
-// fixed here — fixing it means splitting compile/myddl per dialect, which is
-// its own change.
+// The sixth MariaDB divergence, found by the end-to-end.
 //
-// MySQL 8.4 accepts a generated column declared `... STORED NOT NULL`.
-// MariaDB 11.4 rejects it: its grammar allows no nullability clause after
-// VIRTUAL/PERSISTENT/STORED. So a model with a NOT NULL generated column emits
-// DDL MariaDB will not apply.
-func TestGeneratedColumnDDLDoesNotPortToMariaDB(t *testing.T) {
-	t.Skip("known gap: compile/myddl emits `STORED NOT NULL`, which MariaDB rejects — " +
-		"needs a MariaDB DDL variant, see docs/PLAN.md M9")
+// MySQL 8 accepts a generated column declared `... STORED NOT NULL`. MariaDB
+// 11.4 rejects it: its grammar allows no nullability clause after
+// VIRTUAL/PERSISTENT/STORED, and derives nullability from the expression
+// instead. myddl.CreateFor drops the clause for MariaDB and keeps it for MySQL.
+//
+// Asserted against BOTH servers, because the whole failure was that one of them
+// accepted what the other would not, and a golden test cannot tell which.
+func TestGeneratedColumnDDLAppliesToBothEngines(t *testing.T) {
+	s, err := storm.Build(&genUser{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	my, err := myddl.CreateFor(s, myddl.MySQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md, err := myddl.CreateFor(s, myddl.MariaDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(my, "STORED NOT NULL") {
+		t.Errorf("the MySQL form lost its NOT NULL, which MySQL does enforce:\n%s", my)
+	}
+	if strings.Contains(md, "STORED NOT NULL") {
+		t.Errorf("the MariaDB form still carries NOT NULL, which MariaDB rejects:\n%s", md)
+	}
+
+	applyDDL(t, "STORM_MYSQL_ADDR", my)
+	applyDDL(t, "STORM_MARIADB_ADDR", md)
+}
+
+// applyDDL runs a schema against a server through storm's own adapter — the
+// point being that the server accepts it, which no golden test can establish.
+func applyDDL(t *testing.T, addrVar, ddl string) {
+	t.Helper()
+	addr := os.Getenv(addrVar)
+	if addr == "" {
+		t.Skip(addrVar + " unset")
+	}
+	ctx := context.Background()
+	c, err := mydrv.Open(ctx, mydrv.Config{
+		Addr: addr, User: "root", Password: "storm", Database: "storm",
+		AllowCleartextPasswordOverPlaintext: true,
+	})
+	if err != nil {
+		t.Fatalf("%s: %v", addrVar, err)
+	}
+	defer c.Close()
+	if _, err := c.Exec(ctx, "DROP TABLE IF EXISTS `gen_users`", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range strings.Split(ddl, ";") {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := c.Exec(ctx, stmt, nil); err != nil {
+			t.Fatalf("%s rejected:\n%s\n%v", addrVar, stmt, err)
+		}
+	}
+	t.Cleanup(func() { _, _ = c.Exec(ctx, "DROP TABLE IF EXISTS `gen_users`", nil) })
+}
+
+// A model with a NOT NULL generated column, which is the only shape that shows
+// the divergence.
+type genUser struct {
+	storm.Model
+	First string
+	Last  string
+	Full  string
+}
+
+func (u *genUser) Schema(t *storm.Table) {
+	t.Col(&u.First).Size(60)
+	t.Col(&u.Last).Size(60)
+	t.Col(&u.Full).Size(121).Generated(storm.RawSQL("concat(`first`,' ',`last`)"))
 }

@@ -339,9 +339,12 @@ shape — each piece worked and the seam between them did not:
 3. `SpliceSections` needed the carrier too, on the write path.
 4. The parameter binder covered `int64` and `string`; storm passes uuids,
    timestamps, decimals and pointers to all of them.
-5. `myddl` emits `GENERATED ALWAYS AS (…) STORED NOT NULL`, which MySQL accepts
-   and **MariaDB rejects** — a sixth divergence, recorded as a skipped test
-   rather than fixed, because it needs a MariaDB DDL variant.
+5. `myddl` emitted `GENERATED ALWAYS AS (…) STORED NOT NULL`, which MySQL
+   accepts and **MariaDB rejects** — its grammar allows no nullability clause
+   after `STORED`, and it derives nullability from the expression. Fixed with
+   `myddl.CreateFor(s, myddl.MariaDB)`, which drops the clause for MariaDB and
+   keeps it for MySQL, and asserted by applying both forms to both servers —
+   a golden test cannot tell which engine would have refused.
 6. A soft-delete table's live-scoped unique is a PARTIAL index, which MySQL has
    not — so on this engine soft delete has uniqueness over every row or none,
    and a deleted row keeps its email forever. `myddl.Check` already refused it

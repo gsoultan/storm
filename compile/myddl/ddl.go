@@ -22,18 +22,37 @@ import (
 	"github.com/gsoultan/storm/schema"
 )
 
-// Create renders the whole schema.
+// Target names which of the two MySQL-family servers the DDL is for.
+//
+// One package rather than two, because the DDL they accept is almost the same
+// and a second package would copy the whole of it to change one clause. Where
+// they diverge, the divergence is written down here.
+type Target int
+
+const (
+	// MySQL is the default target, and what the bare Create/CreateTable/
+	// ColumnDef render.
+	MySQL Target = iota
+	// MariaDB differs in one place today: it accepts no nullability clause
+	// after a generated column's STORED.
+	MariaDB
+)
+
+// Create renders the whole schema for MySQL.
 //
 // Returns an error rather than emitting something that will not run: a type
 // with no MySQL equivalent is a portability decision, and the moment to make it
 // is now, not when a customer's install fails.
-func Create(s *schema.Schema) (string, error) {
+func Create(s *schema.Schema) (string, error) { return CreateFor(s, MySQL) }
+
+// CreateFor renders the whole schema for one target.
+func CreateFor(s *schema.Schema, tgt Target) (string, error) {
 	if err := Check(s); err != nil {
 		return "", err
 	}
 	var b strings.Builder
 	for _, t := range s.Tables {
-		def, err := CreateTable(t)
+		def, err := CreateTableFor(t, tgt)
 		if err != nil {
 			return "", err
 		}
@@ -55,13 +74,16 @@ func Create(s *schema.Schema) (string, error) {
 	return b.String(), nil
 }
 
-// CreateTable renders one table.
-func CreateTable(t *schema.Table) (string, error) {
+// CreateTable renders one table for MySQL.
+func CreateTable(t *schema.Table) (string, error) { return CreateTableFor(t, MySQL) }
+
+// CreateTableFor renders one table for one target.
+func CreateTableFor(t *schema.Table, tgt Target) (string, error) {
 	var b strings.Builder
 	b.WriteString("CREATE TABLE " + Ident(t.Name) + " (\n")
 	parts := make([]string, 0, len(t.Columns)+2)
 	for _, c := range t.Columns {
-		def, err := ColumnDef(t.Name, c)
+		def, err := ColumnDefFor(t.Name, c, tgt)
 		if err != nil {
 			return "", err
 		}
@@ -84,8 +106,13 @@ func CreateTable(t *schema.Table) (string, error) {
 	return b.String(), nil
 }
 
-// ColumnDef renders one column.
+// ColumnDef renders one column for MySQL.
 func ColumnDef(table string, c *schema.Column) (string, error) {
+	return ColumnDefFor(table, c, MySQL)
+}
+
+// ColumnDefFor renders one column for one target.
+func ColumnDefFor(table string, c *schema.Column, tgt Target) (string, error) {
 	ty, err := TypeSQL(table, c)
 	if err != nil {
 		return "", err
@@ -109,7 +136,12 @@ func ColumnDef(table string, c *schema.Column) (string, error) {
 			b.WriteString(" DEFAULT " + d)
 		}
 	}
-	if c.NotNull {
+	// MariaDB's grammar allows no nullability clause after VIRTUAL, PERSISTENT
+	// or STORED, so a generated column cannot carry one there — it derives its
+	// nullability from the expression instead. MySQL 8 accepts and enforces it.
+	// The clause is dropped rather than the column refused, because the column
+	// is portable and only the constraint is not.
+	if c.NotNull && !(tgt == MariaDB && c.Generated != "") {
 		b.WriteString(" NOT NULL")
 	}
 	return b.String(), nil
