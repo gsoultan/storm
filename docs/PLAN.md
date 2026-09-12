@@ -246,6 +246,29 @@ So the fork is not an optimisation over the wrapper — the wrapper cannot satis
 the port at all. **M9 needs the protocol subset**, and the four-week estimate
 stands for that and nothing else.
 
+**MariaDB is a dialect, added 2026-09-12 — and it is not "MySQL plus
+RETURNING".** Measured against 11.4.13 and 8.4.11, for what storm emits:
+
+| | MySQL 8 | MariaDB 11.4 |
+|---|---|---|
+| `INSERT … RETURNING` | no | **yes** |
+| `LATERAL` | yes | no |
+| `GROUPING()` | yes | no |
+| `WITH ROLLUP` + `ORDER BY` | yes | no (Error 1221) |
+| `FOR SHARE` | yes | no (`LOCK IN SHARE MODE`) |
+
+Everything else crosses: `JSON_TABLE`, `WITH RECURSIVE`, `FIND_IN_SET`, window
+functions, row comparison, `FOR UPDATE` with `NOWAIT`/`SKIP LOCKED`,
+`JSON_CONTAINS`. Neither has `NULLS FIRST/LAST`.
+
+So MariaDB gains one thing and loses four — **it is different, not simply
+cheaper**, which qualifies the recommendation made when only the `RETURNING`
+difference was known. What it buys is real though: a model using `storm.Model`
+generates and its insert returns the row, which MySQL 8 cannot do at all.
+`compile/mariadb` holds exactly those five differences and shares the rest, and
+`scripts/check/mariadb.sh` is a separate gate — one that ran the shared part
+twice would prove nothing about the part that diverges.
+
 **One driver, two dialects — not two drivers.** MariaDB speaks the MySQL WIRE
 protocol; any MySQL client connects to either, so a second driver would
 reimplement an identical thing. What diverges is SQL — `RETURNING`, JSON

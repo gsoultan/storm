@@ -16,11 +16,21 @@ const (
 	DialectPostgres Dialect = iota
 	// DialectMySQL targets MySQL 8.
 	DialectMySQL
+	// DialectMariaDB targets MariaDB 11.
+	//
+	// It shares MySQL's WIRE protocol, so it needs no driver of its own — but
+	// not its SQL: it gains INSERT … RETURNING and loses LATERAL, GROUPING()
+	// and ordered WITH ROLLUP, and spells the shared lock differently. See
+	// compile/mariadb.
+	DialectMariaDB
 )
 
 func (d Dialect) String() string {
-	if d == DialectMySQL {
+	switch d {
+	case DialectMySQL:
 		return "mysql"
+	case DialectMariaDB:
+		return "mariadb"
 	}
 	return "postgres"
 }
@@ -47,7 +57,9 @@ type decoders struct {
 }
 
 func decodersFor(d Dialect, runtimeImport string) decoders {
-	if d == DialectMySQL {
+	if d == DialectMySQL || d == DialectMariaDB {
+		// One decoder family for both: they share the wire, and the decoders
+		// are about bytes on it rather than the SQL above it.
 		return decoders{
 			pkg: "mydec",
 			imp: runtimeImport + "/runtime/mydec",
@@ -86,7 +98,7 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 // equivalent — `compile/myddl` already refuses them in DDL, and this is the
 // same refusal on the read path so the two cannot disagree.
 func (d Dialect) supports(c *schema.Column) bool {
-	if d != DialectMySQL {
+	if d != DialectMySQL && d != DialectMariaDB {
 		return true
 	}
 	if c.Type.Array {

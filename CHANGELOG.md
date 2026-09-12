@@ -260,6 +260,22 @@ Aggregates are where MySQL is genuinely *weaker*, not differently spelled:
 M9 now needs the driver, and only the driver — which is where the milestone
 started. The query side turned out to be the part nobody had counted.
 
+**MariaDB is a target, and it is not "MySQL plus RETURNING".** Measured against
+11.4.13: it gains `INSERT … RETURNING` and loses `LATERAL`, `GROUPING()`,
+ordered `WITH ROLLUP` (Error 1221) and `FOR SHARE` (`LOCK IN SHARE MODE`
+instead). Everything else crosses.
+
+What it buys is real: a model using `storm.Model` generates for MariaDB and its
+insert **returns the row it wrote** — verified on the server, id and both
+timestamps came back — which MySQL 8 cannot do at all. That removes the
+insert-shape divergence between dialects entirely.
+
+`compile/mariadb` holds exactly those five differences and shares the rest with
+`compile/mysql`; `codegen`'s `mariadbLowering` starts from MySQL's and overrides
+five fields, which is what a struct of function values is for. A second full
+implementation would be four fifths duplicate, and that four fifths is where the
+drift would happen.
+
 **And the driver question is now measured** rather than inherited
 (`internal/mysqlspike`, a separate module so storm's `go.mod` gains no MySQL
 dependency). Against 8.4.11, 200 rows × 8 columns: **8.07 allocations per row**
