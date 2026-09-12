@@ -340,6 +340,18 @@ non-PostgreSQL dialect and say to apply `storm ddl -dialect …` with another
 migration tool, rather than connecting and failing somewhere deep in
 `pg_namespace`.
 
+**A seventh defect, found by round-tripping every type through a real server.**
+`fixedWidth` had no entry for `FLOAT`, so a FLOAT column was read as
+length-encoded: its first byte became a length, every subsequent column in the
+row was decoded from the wrong offset, and the driver PANICKED with a slice
+bound rather than returning a wrong number. Neither side's unit tests could see
+it — `mydec` hand-writes the bytes it expects and the binder's tests check what
+it produced, so a contract mismatch between them passes both. Only the server,
+sitting in the middle, can tell them apart. `MEDIUMINT` and `YEAR` were missing
+too, and the row decoder is now bounds-checked at every step: a row packet that
+does not add up is a corrupt or hostile server, and a driver that panics on one
+hands it the process.
+
 Remaining limits, stated rather than fixed: result sets are materialised rather
 than streamed, `CopyFrom` is emulated with a multi-row INSERT (MySQL has no
 COPY), `Batch` is N round trips (the protocol has no pipeline), `Addr` is

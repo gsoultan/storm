@@ -273,6 +273,16 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		if tgt.dialect != codegen.DialectPostgres && len(RawQueries) > 0 {
+			// storm.SQL is validated by PREPAREing each statement against a
+			// real PostgreSQL — that is what makes the escape hatch safe, and
+			// it is what the generated allow-list is built from. There is no
+			// MySQL equivalent yet, and validating MySQL SQL against PostgreSQL
+			// would accept text that fails on the target.
+			return fmt.Errorf("%d raw storm.SQL declaration(s) are registered, and they are "+
+				"validated by PREPAREing against PostgreSQL; generating for %s would ship them "+
+				"unchecked", len(RawQueries), *dialectName)
+		}
 		return generate(dir, model, *dsn, against, tgt.dialect)
 
 	case "portable":

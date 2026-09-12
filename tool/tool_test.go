@@ -465,3 +465,23 @@ func readTree(t *testing.T, dir string) string {
 	}
 	return b.String()
 }
+
+// storm.SQL is safe because every declared statement is PREPAREd against a real
+// PostgreSQL before it can run — that check is what the generated allow-list is
+// built from. There is no MySQL equivalent, so generating for MySQL with raw
+// queries registered must refuse rather than ship them unchecked.
+func TestCLI_RawQueriesRefuseANonPostgresDialect(t *testing.T) {
+	withModels(t, []any{&portableUser{}})
+	prev := RawQueries
+	RawQueries = testmodel.Queries()
+	t.Cleanup(func() { RawQueries = prev })
+
+	dir := filepath.Join(moduleScratch(t, "cliraw"), "store")
+	err := run([]string{"generate", "-dialect", "mysql", dir})
+	if err == nil {
+		t.Fatal("raw queries were generated for MySQL without being checked anywhere")
+	}
+	if !strings.Contains(err.Error(), "unchecked") {
+		t.Errorf("the refusal does not say what the risk is: %v", err)
+	}
+}
