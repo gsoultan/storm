@@ -12,7 +12,12 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.11.0 — 2026-09-12
+
+**MySQL 8 and MariaDB are runtime targets.** storm generates for them, emits
+their DDL, and executes against them through an adapter that imports nothing
+outside the standard library. An adopter who targets only PostgreSQL links
+none of it, and PostgreSQL output is byte-identical to v0.10.0.
 
 ### MySQL and MariaDB are shippable
 
@@ -116,7 +121,6 @@ predicate is dropped from the conflict target.
 
 No production code changed.
 
-## Unreleased
 
 ### `compile/mysql` — the query lowering, proven against a real server
 
@@ -199,9 +203,11 @@ whose second implementation does not build is a bad hypothesis, and one that
 builds while emitting the other dialect's SQL is worse, because the gate reads
 as though it works.
 
-**So generation now refuses.** `codegen.Package` and `codegen.File` return
-`ErrMySQLQueryLoweringMissing` for `DialectMySQL` rather than emit a package no
-server will accept — a construct the target cannot express is a generation
+**So generation refused, for a while.** This is the state partway through the
+release — by the end of it `codegen` speaks MySQL and the refusal is gone; it is
+recorded because the refusal is what made the gap visible. `codegen.Package` and
+`codegen.File` returned `ErrMySQLQueryLoweringMissing` for `DialectMySQL` rather
+than emit a package no server will accept — a construct the target cannot express is a generation
 error, and silence is not an option this codebase allows. storm's own seam tests
 opt out through `AllowUnexecutableMySQLForTest`, because the decode property
 they assert is real and worth keeping.
@@ -215,7 +221,6 @@ output clause on insert, and the `JSON_TABLE` `IN`-list lowering) **and** the
 driver, which is unchanged and still real. The 4-week estimate counted the
 driver only.
 
-## Unreleased
 
 ### codegen speaks MySQL
 
