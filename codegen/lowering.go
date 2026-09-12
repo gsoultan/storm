@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"github.com/gsoultan/storm/compile/mariadb"
 	"github.com/gsoultan/storm/compile/mysql"
 	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
@@ -128,10 +129,45 @@ type upsertLowering struct {
 }
 
 func loweringFor(d Dialect) lowering {
-	if d == DialectMySQL {
+	switch d {
+	case DialectMySQL:
 		return mysqlLowering()
+	case DialectMariaDB:
+		return mariadbLowering()
 	}
 	return postgresLowering()
+}
+
+// mariadbLowering is mysqlLowering with the five things that differ.
+//
+// Starting from MySQL's and overriding is the point of a struct of function
+// values rather than an interface: MariaDB IS four fifths MySQL, and a second
+// full implementation would be four fifths duplicate — which is where the drift
+// would happen. What is listed here is exactly what diverges, measured against
+// 11.4.13, and a reader can see the whole difference in one place.
+func mariadbLowering() lowering {
+	l := mysqlLowering()
+	l.name = "mariadb"
+
+	// The difference that pays for the dialect: MariaDB can return the row it
+	// wrote, so Insert keeps the semantics MySQL cannot give it.
+	l.InsertStmt = mariadb.InsertStmt
+	l.ReturningClause = mariadb.ReturningClause
+	l.noReturning = false
+
+	// FOR SHARE does not exist; LOCK IN SHARE MODE does.
+	l.LockSuffix = mariadb.LockSuffix
+
+	// No LATERAL. The window form is not a fallback here, it is the only one.
+	l.TopNLateral = func(t string, cols []string, key, keyType, live string) string {
+		return mariadb.TopNBatch(t, cols, key, keyType, mysql.Live(live))
+	}
+
+	// WITH ROLLUP cannot be combined with ORDER BY, and storm always orders a
+	// grouped read.
+	l.AggregateSuffix = mariadb.AggregateSuffix
+
+	return l
 }
 
 // postgresLowering assigns the pgsql functions across. Nothing is wrapped, so

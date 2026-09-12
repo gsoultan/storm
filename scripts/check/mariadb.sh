@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Does the SQL storm emits for MariaDB actually run on MariaDB?
+#
+# A separate gate from mysql.sh, not a flag on it, because the point is that the
+# two are DIFFERENT dialects. They share a wire protocol and four fifths of
+# their SQL; the fifth is what this checks, and a gate that ran the shared part
+# twice would prove nothing about the part that diverges.
+#
+# Measured differences, 11.4.13 vs 8.4.11: MariaDB HAS INSERT ... RETURNING and
+# has NOT got LATERAL, GROUPING(), ordered WITH ROLLUP, or FOR SHARE.
+#
+# Skipped unless STORM_MARIADB names a running container.
+set -uo pipefail
+cd "$(dirname "$0")/../.."
+
+if [ -z "${STORM_MARIADB:-}" ]; then
+  echo "STORM_MARIADB unset; skipping the MariaDB check"
+  exit 0
+fi
+maria_run() { container exec -i "$STORM_MARIADB" sh -c 'mariadb -uroot -pstorm storm'; }
+
+fail=0
+note() { echo "  $*" >&2; fail=1; }
+
+echo "== waiting for MariaDB to be usable =="
+ready=0
+for _ in $(seq 1 30); do
+  if echo 'SELECT 1' | maria_run >/dev/null 2>&1; then ready=1; break; fi
+  sleep 2
+done
+if [ "$ready" -ne 1 ]; then
+  echo "MariaDB never became usable" >&2; exit 1
+fi
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+echo "== MariaDB PREPAREs and EXECUTEs what storm emits for it =="
+if ! go run ./internal/mariadbcheck > "$TMP/q.sql" 2>"$TMP/err"; then
+  note "emitting the script failed:"; sed 's/^/    /' "$TMP/err" >&2
+else
+  if ! maria_run < "$TMP/q.sql" > "$TMP/out" 2>"$TMP/apply"; then
+    note "MariaDB refused a statement:"
+    grep -v Warning "$TMP/apply" | head -5 | sed 's/^/    /' >&2
+  fi
+  # The difference that pays for the dialect: the insert must hand the row back.
+  if ! grep -q 'returned_id' "$TMP/out"; then
+    note "the insert did not return the row it wrote — the whole reason MariaDB is a"
+    note "separate target rather than an alias for MySQL"
+  fi
+fi
+
+if [ "$fail" -eq 0 ]; then
+  echo "OK: storm's MariaDB SQL applies, and its insert returns the row it wrote"
+else
+  echo "FAILED"
+fi
+exit "$fail"

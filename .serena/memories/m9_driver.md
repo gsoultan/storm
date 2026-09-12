@@ -51,10 +51,18 @@ and that is the DIALECT layer storm already has.
 So the split is **one driver, two dialects**, not two drivers:
 
 - wire: one protocol implementation, shared.
-- SQL: `compile/mysql` today; a MariaDB variant gains `INSERT … RETURNING`
-  (MySQL 8 has none — confirmed), which removes the insert-shape divergence in
-  [[m9_mysql]] entirely. MariaDB is therefore the CHEAPER target, not just a
-  second one.
+- SQL: `compile/mysql` and `compile/mariadb`.
+
+**MariaDB is NOT "MySQL plus RETURNING" — that was my guess and it was wrong.**
+Measured on 11.4.13 (built 2026-09-12): it gains `INSERT … RETURNING` and loses
+FOUR things — `LATERAL`, `GROUPING()`, `WITH ROLLUP` combined with `ORDER BY`
+(Error 1221), and `FOR SHARE` (it wants `LOCK IN SHARE MODE`). So it is
+DIFFERENT, not cheaper. The `RETURNING` win is real though: `storm.Model`
+generates for MariaDB and the insert returns the row, which MySQL 8 cannot.
+
+Consequence worth remembering: **no LATERAL means the batch loader uses the
+WINDOW form on MariaDB**, whose cost tracks the total child count rather than
+the rows returned. A relation load costs more there, structurally.
 
 One wire caveat to plan for: MySQL 8.4 turns `mysql_native_password` off by
 default while most MariaDB installs still use it, so the handshake must carry
