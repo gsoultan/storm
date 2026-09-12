@@ -56,7 +56,26 @@ the connection instead of reporting an error.
 and a read-modify-write inside a transaction stay on the typed path. The lock
 is part of the statement and so part of its cache key, `SKIP LOCKED` is proven
 against two concurrent transactions, and a locked read is refused wherever
-PostgreSQL refuses one. The milestone log with
+PostgreSQL refuses one.
+
+**v0.7.0 adds opt-in automigrate** (`migrate.Auto`), which takes an advisory
+lock, computes the plan *after* taking it, and applies it in one transaction —
+because `CREATE SCHEMA IF NOT EXISTS` is not atomic, and four processes racing
+it leave three of them failed. **v0.9.0 and v0.10.0 add soft delete**, with the
+part that is usually got wrong: a unique constraint on a soft-delete table
+becomes a PARTIAL unique index scoped to the live rows, so a deleted row stops
+holding its email hostage, and the predicate reaches every read path — joins,
+aggregates, fetch plans and unions included.
+
+**MySQL 8 and MariaDB are runtime targets.** The dialect is a build-time
+parameter, `compile/mysql` and `compile/mariadb` hold the SQL each engine
+actually accepts, `runtime/mydec` decodes the little-endian binary protocol, and
+`runtime/mydrv` is a **stdlib-only** adapter that speaks the wire directly — TLS,
+`caching_sha2_password`, a bounded pool, pinned transactions, and cancellation
+that sends `KILL QUERY` from a second connection rather than just walking away.
+An adopter who targets only PostgreSQL links none of it.
+
+The milestone log with
 every exit gate is [docs/PLAN.md](docs/PLAN.md), what would still stop a
 team adopting this is written down, with gates, in
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md), and where the

@@ -9,15 +9,34 @@
 # Measured differences, 11.4.13 vs 8.4.11: MariaDB HAS INSERT ... RETURNING and
 # has NOT got LATERAL, GROUPING(), ordered WITH ROLLUP, or FOR SHARE.
 #
-# Skipped unless STORM_MARIADB names a running container.
+# Skipped unless STORM_MARIADB names a running container, or STORM_MARIADB_DSN
+# names a host:port — the same two ways in that mysql.sh has, because the check
+# has to run locally against a container and in CI against a service.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
-if [ -z "${STORM_MARIADB:-}" ]; then
-  echo "STORM_MARIADB unset; skipping the MariaDB check"
+if [ -n "${STORM_MARIADB_DSN:-}" ]; then
+  # FAIL rather than skip: the caller asked for this check by setting the
+  # variable, so not being able to run it is an error, not a pass.
+  if command -v mariadb >/dev/null 2>&1; then
+    CLIENT=mariadb
+  elif command -v mysql >/dev/null 2>&1; then
+    CLIENT=mysql
+  else
+    echo "STORM_MARIADB_DSN is set but no mariadb/mysql client is installed" >&2
+    exit 1
+  fi
+  MARIA_HOST="${STORM_MARIADB_DSN%%:*}"
+  MARIA_PORT="${STORM_MARIADB_DSN##*:}"
+  maria_run() {
+    "$CLIENT" --protocol=TCP -h"$MARIA_HOST" -P"$MARIA_PORT" -uroot -pstorm storm
+  }
+elif [ -n "${STORM_MARIADB:-}" ]; then
+  maria_run() { container exec -i "$STORM_MARIADB" sh -c 'mariadb -uroot -pstorm storm'; }
+else
+  echo "neither STORM_MARIADB nor STORM_MARIADB_DSN set; skipping the MariaDB check"
   exit 0
 fi
-maria_run() { container exec -i "$STORM_MARIADB" sh -c 'mariadb -uroot -pstorm storm'; }
 
 fail=0
 note() { echo "  $*" >&2; fail=1; }

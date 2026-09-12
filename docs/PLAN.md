@@ -287,9 +287,45 @@ count, exists, soft delete, uniqueness — and its insert reads the row back,
 proved by the server truncating nanoseconds to microseconds rather than by
 echoing the input.
 
-**It is NOT production ready, and `mydrv`'s package doc says so first**: no TLS,
-`mysql_native_password` only, no pooling, no `COM_KILL_QUERY` on cancel. Those
-remain.
+It runs against BOTH engines, each with the dialect it was generated for, and
+through the POOL rather than a bare connection — a pool is what an adopter
+passes. Pointing the MariaDB-dialect package at MySQL 8 fails with a syntax
+error on `RETURNING`, which is how the two tests are known to be testing two
+things.
+
+**Shippable, 2026-09-12.** The four gaps that made it "not production ready" are
+closed, and each is proved by a test that fails when the feature is removed:
+
+- **TLS.** `Config.TLS` is `TLSPreferred` (upgrade opportunistically, do not
+  verify), `TLSRequired` (refuse a server without it, and VERIFY — a nil
+  `TLSConfig` is not `InsecureSkipVerify`) or `TLSDisabled`. The tunnel is
+  asserted by the SERVER's `Ssl_cipher`, not by the client's own flag.
+- **`caching_sha2_password`**, including the full-auth exchange, plus
+  `mysql_native_password` and the auth-switch request. Full auth sends the
+  password in a recoverable form, so on a plaintext socket it is REFUSED
+  (`ErrCleartextRefused`) unless the caller sets
+  `AllowCleartextPasswordOverPlaintext`.
+- **Pooling.** `mydrv.Pool` is a bounded pool and a `runtime.Executor`;
+  `Pool.Begin` returns a `Tx` pinned to one connection, which is what
+  ADR-0005's "a transaction is an Executor you were given" requires — `BEGIN`
+  is session state, so an unpinned transaction commits on the wrong socket.
+- **Real cancellation.** A cancelled context sends `KILL QUERY` from a SECOND
+  connection, so the statement stops on the server and the connection survives
+  to be reused. The test asserts `information_schema.processlist` no longer
+  holds it; with the kill removed, it does.
+
+Two more that the work turned up. Server errors are now typed with their CODE
+(`mydrv.Error`, `IsDuplicate`, `IsForeignKey`, `IsNotNull`, `IsCheck`) — the
+message is localised and reworded between versions, so anything that DECIDES on
+an error has to read the number. And the per-connection prepared-statement cache
+is bounded with LRU eviction: it is keyed by SQL TEXT, which is not a closed set,
+and the server's own `max_prepared_stmt_count` is 16382 — exhausting it fails
+every prepare on the server, including other clients'.
+
+Remaining limits, stated rather than fixed: result sets are materialised rather
+than streamed, `CopyFrom` is emulated with a multi-row INSERT (MySQL has no
+COPY), `Batch` is N round trips (the protocol has no pipeline), and `Addr` is
+host:port with no unix socket.
 
 Six defects the end-to-end found that the unit gates could not, all of the same
 shape — each piece worked and the seam between them did not:
