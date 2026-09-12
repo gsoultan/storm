@@ -871,3 +871,109 @@ func TestTransactionSatisfiesTheWholePort(t *testing.T) {
 		t.Errorf("%s rows survived the commit, want 4", got)
 	}
 }
+
+// P2.3, for the MySQL path: a bound value must not reach storm's own error text.
+//
+// The server's diagnostic DOES carry the value — "Duplicate entry 'x' for key
+// 'y'" — and that message belongs to the server; storm must not rewrite it. The
+// property is that it stays reachable through Unwrap and is never folded into
+// what storm prints, because that is what ends up in a log line.
+func TestAConstraintErrorDoesNotPrintTheOffendingValue(t *testing.T) {
+	for _, engine := range []struct {
+		name string
+		cfg  func(testing.TB) mydrv.Config
+	}{{"mysql", config}, {"mariadb", mariaConfig}} {
+		t.Run(engine.name, func(t *testing.T) {
+			c, err := mydrv.Open(context.Background(), engine.cfg(t))
+			if err != nil {
+				t.Skipf("no server: %v", err)
+			}
+			defer c.Close()
+			ctx := context.Background()
+			mustExec(t, c, "DROP TABLE IF EXISTS `hyg_probe`")
+			mustExec(t, c, "CREATE TABLE `hyg_probe` (`id` BIGINT PRIMARY KEY, "+
+				"`email` VARCHAR(80) NOT NULL, UNIQUE KEY `hyg_email_uq` (`email`)) ENGINE=InnoDB")
+			t.Cleanup(func() { _, _ = c.Exec(ctx, "DROP TABLE IF EXISTS `hyg_probe`", nil) })
+
+			// A value with an apostrophe in it, because the constraint name is
+			// recovered from a message that quotes BOTH the value and the key
+			// with the same character, and the server does not escape it.
+			const secret = "o'brien-sentinel@example.com"
+			if _, err := c.Exec(ctx, "INSERT INTO `hyg_probe` VALUES (?, ?)",
+				[]any{int64(1), secret}); err != nil {
+				t.Fatal(err)
+			}
+			err = mustDupErr(t, c, ctx, secret)
+
+			var ce *runtime.ConstraintError
+			if !errors.As(err, &ce) {
+				t.Fatalf("err = %v, want a *runtime.ConstraintError", err)
+			}
+			// What storm prints.
+			if strings.Contains(ce.Error(), secret) {
+				t.Errorf("storm's error text carries the bound value: %s", ce.Error())
+			}
+			// ...and the metadata it carries, which is what a handler reads and
+			// a structured logger writes out field by field.
+			if strings.Contains(ce.Constraint, secret) || strings.Contains(ce.Table, secret) ||
+				strings.Contains(ce.Column, secret) {
+				t.Errorf("the value leaked into the metadata: %+v", ce)
+			}
+			if ce.Constraint != "hyg_email_uq" {
+				t.Errorf("constraint = %q, want hyg_email_uq — a value with a quote in it "+
+					"must not shift the parse", ce.Constraint)
+			}
+			// The server's own diagnostic stays reachable, deliberately.
+			var se *mydrv.Error
+			if !errors.As(err, &se) {
+				t.Fatal("the server's diagnostic was discarded rather than wrapped")
+			}
+			if !strings.Contains(se.Message, secret) {
+				t.Logf("this server does not name the value: %q", se.Message)
+			}
+		})
+	}
+}
+
+func mustDupErr(t *testing.T, c *mydrv.Conn, ctx context.Context, email string) error {
+	t.Helper()
+	_, err := c.Exec(ctx, "INSERT INTO `hyg_probe` VALUES (?, ?)", []any{int64(2), email})
+	if err == nil {
+		t.Fatal("the duplicate was accepted")
+	}
+	return err
+}
+
+// storm's own errors must be static sentinels: nothing the caller bound may
+// appear in one, on any exit path.
+func TestNoExitPathPrintsABoundValue(t *testing.T) {
+	c := open(t)
+	ctx := context.Background()
+	const secret = "sentinel-value-9f3a"
+	// A statement that cannot run, so every path returns an error with the
+	// value bound. `no_such_table` fails at PREPARE; the argument is still
+	// carried by the call.
+	if _, err := c.Query(ctx, "SELECT * FROM `no_such_table` WHERE `x` = ?",
+		[]any{secret}); err == nil {
+		t.Fatal("a missing table was accepted")
+	} else if strings.Contains(err.Error(), secret) {
+		t.Errorf("Query's error carries the bound value: %v", err)
+	}
+	if _, err := c.Exec(ctx, "UPDATE `no_such_table` SET `x` = ?", []any{secret}); err == nil {
+		t.Fatal("a missing table was accepted")
+	} else if strings.Contains(err.Error(), secret) {
+		t.Errorf("Exec's error carries the bound value: %v", err)
+	}
+	// An unbindable type: the message must name the TYPE, never the value.
+	type unbindable struct{ Secret string }
+	_, err := c.Exec(ctx, "SELECT ?", []any{unbindable{secret}})
+	if err == nil {
+		t.Fatal("an unbindable argument was accepted")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("the binder's refusal carries the value: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unbindable") {
+		t.Errorf("the binder's refusal does not name the type: %v", err)
+	}
+}

@@ -72,7 +72,7 @@ library, so an adopter who targets only PostgreSQL links none of it.
 
 ```go
 pool, err := mydrv.NewPool(ctx, mydrv.Config{
-    Addr:     "db.internal:3306",   // host:port; no unix socket
+    Addr:     "db.internal:3306",   // host:port, or a path for a unix socket
     User:     "app",
     Password: os.Getenv("DB_PASSWORD"),
     Database: "app",

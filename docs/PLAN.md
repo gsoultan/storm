@@ -370,8 +370,7 @@ nothing to connect the crash to the missing Close.
 
 Remaining limits, stated rather than fixed: `CopyFrom` is emulated with a
 multi-row INSERT (MySQL has no COPY), `Batch` is N round trips (the protocol
-has no pipeline), `Addr` is host:port with no unix socket, and `migrate.Auto`
-is PostgreSQL-only — MySQL DDL is not transactional, so the one-transaction
+has no pipeline), and `migrate.Auto` is PostgreSQL-only — MySQL DDL is not transactional, so the one-transaction
 guarantee automigrate is built on does not exist there.
 
 Six defects the end-to-end found that the unit gates could not, all of the same
