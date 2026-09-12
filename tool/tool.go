@@ -116,7 +116,7 @@ usage:
                                   migrations (functions, views the model omits)
   storm watch <dir>               regenerate on save; leave it running while you edit
   storm models                    what discovery found, and which rule matched
-  storm portable <dialect>        fail if the model does not port (mysql)
+  storm portable <dialect>        fail if the model does not port (mysql, mariadb)
   storm lint                      cost every named plan in round trips; fail over the budget
   storm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
@@ -927,12 +927,16 @@ func portable(dialect string, model *schema.Schema) error {
 		// The native target. Nothing to check: the model IS the Postgres schema.
 		fmt.Printf("✓ %d table(s) port to postgres — it is the native target\n", len(model.Tables))
 		return nil
-	case "mysql":
+	case "mysql", "mariadb":
+		// The same check for both: what does not port is a TYPE or an index
+		// kind, and those are the same on either. Where the two differ is the
+		// DDL's spelling, which myddl.CreateFor handles, and the SQL, which
+		// compile/mysql and compile/mariadb handle.
 		if err := myddl.Check(model); err != nil {
 			return err
 		}
-		fmt.Printf("✓ %d table(s) port to mysql\n", len(model.Tables))
+		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
 		return nil
 	}
-	return fmt.Errorf("unknown dialect %q — storm knows postgres and mysql", dialect)
+	return fmt.Errorf("unknown dialect %q — storm knows postgres, mysql and mariadb", dialect)
 }
