@@ -119,10 +119,12 @@ the same as the server's `max_connections`.
 **What is different from the PostgreSQL path**, and worth knowing before you
 size anything:
 
-- **Result sets are materialised**, not streamed. A query holds its rows in
-  memory rather than holding the connection, which is what lets a pooled
-  connection go back before you finish reading. A million-row scan costs a
-  million rows of memory.
+- **Result sets stream**, and hold their connection until closed. Generated
+  code closes with a `defer`; hand-written code must too, or the connection
+  leaks. A second statement on the same connection before then is
+  `ErrRowsOpen`, not a garbled packet — and a `Pool` is what lets you nest,
+  which is why `MaxConns` should exceed the result sets one request has open
+  at once.
 - **`CopyFrom` is emulated** with a multi-row `INSERT`: MySQL has no `COPY`. It
   is still one round trip, but it pays statement parsing that a real copy skips.
 - **`Batch` is N round trips.** MySQL's protocol has no equivalent of

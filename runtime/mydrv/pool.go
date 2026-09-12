@@ -139,16 +139,22 @@ func (p *Pool) Close() {
 
 // Query runs a statement on a pooled connection.
 //
-// The connection is released before the rows are returned, which is safe only
-// because mydrv materialises a result set — see the note on rows. A streaming
-// driver would have to hold the connection until Close.
+// The connection is held until the rows are CLOSED, because they stream. A
+// caller who forgets to close leaks it — which is why the generated code closes
+// with a defer, and why MaxConns should exceed the number of result sets a
+// single request has open at once.
 func (p *Pool) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
 	c, err := p.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer p.release(c)
-	return c.Query(ctx, sql, args)
+	r, err := c.Query(ctx, sql, args)
+	if err != nil {
+		p.release(c)
+		return nil, err
+	}
+	r.(*rows).rel = func() { p.release(c) }
+	return r, nil
 }
 
 func (p *Pool) Exec(ctx context.Context, sql string, args []any) (int64, error) {

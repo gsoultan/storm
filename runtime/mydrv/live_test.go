@@ -109,7 +109,9 @@ func TestCancelKillsTheQueryOnTheServer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(400 * time.Millisecond); cancel() }()
 	start := time.Now()
-	_, err = p.Query(ctx, sleep, nil)
+	// The rows STREAM, so the failure arrives while draining rather than from
+	// Query: MySQL sends the result-set header before it has computed a row.
+	err = drainErr(p.Query(ctx, sleep, nil))
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.Canceled) {
@@ -138,7 +140,7 @@ func TestTheConnectionSurvivesACancellation(t *testing.T) {
 	defer c.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
-	if _, err := c.Query(ctx, "SELECT SLEEP(30)", nil); !errors.Is(err, context.DeadlineExceeded) {
+	if err := drainErr(c.Query(ctx, "SELECT SLEEP(30)", nil)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
 	if got := one(t, c, "SELECT CAST(7 AS CHAR)"); got != "7" {
@@ -256,10 +258,12 @@ func TestPreparedStatementCacheIsBounded(t *testing.T) {
 	defer c.Close()
 	before := one(t, c, "SHOW GLOBAL STATUS LIKE 'Prepared_stmt_count'")
 	for i := 0; i < 200; i++ {
-		if _, err := c.Query(context.Background(),
-			"SELECT CAST("+itoa(i)+" AS CHAR) /* distinct text */", nil); err != nil {
+		r, err := c.Query(context.Background(),
+			"SELECT CAST("+itoa(i)+" AS CHAR) /* distinct text */", nil)
+		if err != nil {
 			t.Fatal(err)
 		}
+		r.Close()
 	}
 	after := one(t, c, "SHOW GLOBAL STATUS LIKE 'Prepared_stmt_count'")
 	// The bound is 8 plus the two SHOW statements; anything near 200 means the
@@ -267,6 +271,18 @@ func TestPreparedStatementCacheIsBounded(t *testing.T) {
 	if atoi(after)-atoi(before) > 20 {
 		t.Fatalf("prepared statements went %s -> %s over 200 distinct texts", before, after)
 	}
+}
+
+// drainErr reads a result set to its end and reports whichever error came
+// first, so a streaming failure is as easy to assert as an immediate one.
+func drainErr(r runtime.Rows, err error) error {
+	if err != nil {
+		return err
+	}
+	for r.Next() {
+	}
+	r.Close()
+	return r.Err()
 }
 
 func atoi(s string) int {
@@ -547,5 +563,97 @@ func TestDeadlockIsNamed(t *testing.T) {
 	}
 	if !deadlocked {
 		t.Skip("the two transactions did not actually deadlock on this server")
+	}
+}
+
+// A second statement on a connection whose rows are still open must be a NAMED
+// error, not a garbled packet somewhere later.
+//
+// This is the cost of streaming, and the reason it has to be explicit: the
+// unread rows are on the socket, so a prepare issued now reads a row as its
+// answer. Before the check existed, forgetting Close panicked the driver
+// several statements later, with nothing to connect the crash to the cause.
+func TestASecondStatementWhileRowsAreOpenIsRefused(t *testing.T) {
+	c := open(t)
+	ctx := context.Background()
+	r, err := c.Query(ctx, "SELECT CAST(1 AS CHAR) UNION SELECT CAST(2 AS CHAR)", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Next() {
+		t.Fatalf("no rows: %v", r.Err())
+	}
+	if _, err := c.Query(ctx, "SELECT CAST(3 AS CHAR)", nil); !errors.Is(err, mydrv.ErrRowsOpen) {
+		t.Errorf("second Query: err = %v, want ErrRowsOpen", err)
+	}
+	if _, err := c.Exec(ctx, "SELECT CAST(3 AS CHAR)", nil); !errors.Is(err, mydrv.ErrRowsOpen) {
+		t.Errorf("Exec: err = %v, want ErrRowsOpen", err)
+	}
+	// Closing early has to drain, or the connection is left mid-result.
+	r.Close()
+	if err := r.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got := one(t, c, "SELECT CAST(4 AS CHAR)"); got != "4" {
+		t.Errorf("the connection is unusable after an early Close: %q", got)
+	}
+}
+
+// A pool has a second connection, so the nesting that a bare Conn refuses is
+// exactly what a pool is for.
+func TestAPoolAllowsNestedResultSets(t *testing.T) {
+	cfg := config(t)
+	cfg.MaxConns = 4
+	p, err := mydrv.NewPool(context.Background(), cfg)
+	if err != nil {
+		t.Skipf("no server: %v", err)
+	}
+	defer p.Close()
+	ctx := context.Background()
+	outer, err := p.Query(ctx, "SELECT CAST(1 AS CHAR) UNION SELECT CAST(2 AS CHAR)", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outer.Close()
+	n := 0
+	for outer.Next() {
+		// A query issued while the outer rows are open, which is what a
+		// generated plan does when it loads a relation per parent.
+		if got := one(t, p, "SELECT CAST(9 AS CHAR)"); got != "9" {
+			t.Fatalf("nested query returned %q", got)
+		}
+		n++
+	}
+	if err := outer.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("outer read %d rows, want 2", n)
+	}
+}
+
+// Rows must be released back to the pool when they close, or a pool with a
+// small cap deadlocks after MaxConns queries.
+func TestClosingRowsReturnsTheConnection(t *testing.T) {
+	cfg := config(t)
+	cfg.MaxConns = 1
+	p, err := mydrv.NewPool(context.Background(), cfg)
+	if err != nil {
+		t.Skipf("no server: %v", err)
+	}
+	defer p.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for i := 0; i < 5; i++ {
+		r, err := p.Query(ctx, "SELECT CAST(1 AS CHAR)", nil)
+		if err != nil {
+			t.Fatalf("query %d with MaxConns=1: %v", i, err)
+		}
+		for r.Next() {
+		}
+		r.Close()
+		if err := r.Err(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

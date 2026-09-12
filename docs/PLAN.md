@@ -352,12 +352,27 @@ too, and the row decoder is now bounds-checked at every step: a row packet that
 does not add up is a corrupt or hostile server, and a driver that panics on one
 hands it the process.
 
-Remaining limits, stated rather than fixed: result sets are materialised rather
-than streamed, `CopyFrom` is emulated with a multi-row INSERT (MySQL has no
-COPY), `Batch` is N round trips (the protocol has no pipeline), `Addr` is
-host:port with no unix socket, and `migrate.Auto` is PostgreSQL-only — MySQL DDL
-is not transactional, so the one-transaction guarantee automigrate is built on
-does not exist there.
+**And the shipped adapter reaches the number the project was justified by.**
+The first version materialised each result set — copying every column and every
+row — which cost **10.1 allocations per row**, WORSE than the go-sql-driver it
+replaced, and quietly gave up the entire reason for writing it. Materialising
+was there so a pooled connection could go back before the caller finished
+reading; once there was a pool, a nested query could simply take another
+connection, and the reason evaporated. Streaming: **1.07 allocs/row, 6 B/row**
+(`BenchmarkQuery200x8`, 200 rows × 8 columns, MySQL 8) — the spike's figure,
+now in shipped code, against go-sql-driver's 8.07.
+
+The cost of streaming is stated rather than hidden: a result set holds its
+connection until Close, and a second statement on the same connection before
+then is `ErrRowsOpen`. That is a named error rather than a garbled packet
+because the first version of this panicked several statements later, with
+nothing to connect the crash to the missing Close.
+
+Remaining limits, stated rather than fixed: `CopyFrom` is emulated with a
+multi-row INSERT (MySQL has no COPY), `Batch` is N round trips (the protocol
+has no pipeline), `Addr` is host:port with no unix socket, and `migrate.Auto`
+is PostgreSQL-only — MySQL DDL is not transactional, so the one-transaction
+guarantee automigrate is built on does not exist there.
 
 Six defects the end-to-end found that the unit gates could not, all of the same
 shape — each piece worked and the seam between them did not:
