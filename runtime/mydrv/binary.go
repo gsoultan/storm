@@ -177,6 +177,9 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 		}
 		// Binary row: 0x00, then a null bitmap offset by two bits, then the
 		// values back to back in their wire encodings.
+		if 1+(int(nCols)+9)/8 > len(p) {
+			return errShortRow
+		}
 		nullMap := p[1 : 1+(int(nCols)+9)/8]
 		off := 1 + len(nullMap)
 		for i := 0; i < int(nCols); i++ {
@@ -186,6 +189,9 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 			}
 			w := fixedWidth(types[i])
 			if w > 0 {
+				if off+w > len(p) {
+					return errShortRow
+				}
 				s.c.cols[i] = p[off : off+w]
 				off += w
 				continue
@@ -203,7 +209,13 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 			//
 			// Strip it for one and keep it for the other, or the temporals
 			// fail with "wrong length" while every other column looks fine.
-			n, adv, _ := lenEncInt(p[off:])
+			n, adv, ok := lenEncInt(p[off:])
+			// Bounds-checked rather than trusted. A row packet that does not
+			// add up is a corrupt or hostile server, and a driver that panics
+			// on one hands it the process.
+			if !ok || off+adv+int(n) > len(p) {
+				return errShortRow
+			}
 			if isTemporal(types[i]) {
 				s.c.cols[i] = p[off : off+adv+int(n)]
 			} else {
@@ -228,13 +240,22 @@ func isTemporal(t byte) bool {
 
 // fixedWidth is the wire width of a fixed-size binary type, or 0 for a
 // length-encoded one.
+// fixedWidth is the binary protocol's width for a type, or 0 for the
+// length-encoded ones.
+//
+// Every fixed-width type MySQL can send has to be here, not just the ones storm
+// emits: a type missing from this table is read as length-encoded, so its first
+// byte becomes a length and the rest of the ROW is decoded from the wrong
+// offset. That is how a FLOAT column made this panic rather than return a wrong
+// number — the failure is not confined to the column that caused it.
 func fixedWidth(t byte) int {
 	switch t {
 	case typeTiny:
 		return 1
-	case typeShort:
+	case typeShort, typeYear:
 		return 2
-	case typeLong:
+	case typeLong, typeInt24, typeFloat:
+		// MEDIUMINT is three bytes in storage and FOUR on the wire.
 		return 4
 	case typeLongLong, typeDouble:
 		return 8
@@ -394,6 +415,8 @@ func bindType(a any) (byte, byte) {
 const (
 	typeNull  = 0x06
 	typeFloat = 0x04
+	typeInt24 = 0x09
+	typeYear  = 0x0d
 )
 
 func appendBind(b []byte, a any) ([]byte, error) {

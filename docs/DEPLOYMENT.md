@@ -1,6 +1,6 @@
 ---
 tags: [storm, deployment, pgbouncer]
-updated: 2026-08-26
+updated: 2026-09-12
 ---
 
 # Deploying storm
@@ -63,6 +63,80 @@ per-connection override can slip past:
 Before this existed, a `false` from such a connection decoded as **true**,
 silently. If you are reading this because you hit the error, that inversion is
 what it saved you from.
+
+## MySQL and MariaDB
+
+A different adapter, and a different set of things that bite. `runtime/mydrv`
+speaks the wire protocol directly and imports nothing outside the standard
+library, so an adopter who targets only PostgreSQL links none of it.
+
+```go
+pool, err := mydrv.NewPool(ctx, mydrv.Config{
+    Addr:     "db.internal:3306",   // host:port; no unix socket
+    User:     "app",
+    Password: os.Getenv("DB_PASSWORD"),
+    Database: "app",
+    TLS:      mydrv.TLSRequired,    // see below
+    MaxConns: 16,
+})
+if err != nil {
+    return err
+}
+defer pool.Close()
+
+// pool is a runtime.Executor. Every generated surface takes one.
+rows, err := article.New().Where(article.AuthorID.Eq(id)).All(ctx, pool, nil)
+```
+
+Generate for it with `storm generate -dialect mysql` or `-dialect mariadb`, and
+emit its schema with `storm ddl -dialect ...`. The two are different targets, not
+one with a flag: MariaDB has `INSERT ... RETURNING` and has not got `LATERAL`,
+`GROUPING()`, ordered `WITH ROLLUP` or `FOR SHARE`, and its generated column
+syntax differs. Code generated for one is a syntax error on the other.
+
+**TLS.** `TLSPreferred` is the default and is opportunistic: it upgrades where
+the server offers it, falls back to plaintext where it does not, and does not
+verify the certificate. It costs a passive observer the traffic and costs an
+active one nothing. **Use `TLSRequired` in production** — it refuses a server
+with no TLS and verifies the certificate, and a nil `TLSConfig` there means
+verified, not `InsecureSkipVerify`. A private CA goes in `Config.TLSConfig`.
+
+**First connection to a `caching_sha2_password` account.** Before the server has
+cached the hash, the protocol requires an exchange that puts the password on the
+wire in a recoverable form — cleartext inside TLS, or RSA-encrypted without it,
+which stops an eavesdropper and does not stop anyone who can answer as the
+server. On a plaintext connection mydrv REFUSES it (`ErrCleartextRefused`)
+rather than proceeding. Fix it with TLS. If the socket is genuinely private —
+loopback, a unix-domain proxy — set
+`AllowCleartextPasswordOverPlaintext`, which is named at that length on purpose.
+
+**Cancellation is real.** A cancelled context sends `KILL QUERY` on a second
+connection, so the statement stops on the server rather than only in your
+process, and the connection survives to be reused. It costs one extra
+connection for the duration of the kill, which is why `MaxConns` should not be
+the same as the server's `max_connections`.
+
+**What is different from the PostgreSQL path**, and worth knowing before you
+size anything:
+
+- **Result sets are materialised**, not streamed. A query holds its rows in
+  memory rather than holding the connection, which is what lets a pooled
+  connection go back before you finish reading. A million-row scan costs a
+  million rows of memory.
+- **`CopyFrom` is emulated** with a multi-row `INSERT`: MySQL has no `COPY`. It
+  is still one round trip, but it pays statement parsing that a real copy skips.
+- **`Batch` is N round trips.** MySQL's protocol has no equivalent of
+  PostgreSQL's extended-query pipeline.
+- **`migrate.Auto` is PostgreSQL-only.** MySQL's DDL is not transactional, so
+  the one-transaction guarantee automigrate is built on does not exist there.
+  Use `storm ddl -dialect ...` with your own migration tool.
+- **No partial indexes**, so a soft-delete table's uniqueness spans deleted rows
+  or nothing. `myddl.Check` refuses the live-scoped form rather than quietly
+  widening it.
+
+Constraint violations arrive as the same `runtime.ConstraintError` and the same
+sentinels PostgreSQL produces, so a handler written for one engine works on the
+other.
 
 ## PgBouncer
 

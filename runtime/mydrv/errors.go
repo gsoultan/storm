@@ -210,3 +210,11 @@ func code(err error) uint16 {
 	}
 	return 0
 }
+
+// errShortRow is a row packet whose columns do not fit inside it.
+//
+// Reachable two ways: a type this driver has no width for, which throws every
+// subsequent column's offset off, and a server sending something malformed.
+// Both have to be an error rather than a panic — the second one is somebody
+// else's choice.
+var errShortRow = errors.New("mydrv: a row packet's columns do not fit inside it")
