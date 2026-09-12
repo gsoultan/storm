@@ -149,7 +149,11 @@ jobs:
         run: ./scripts/check/mariadb.sh
 
       - name: benchmarks compile and run
-        run: go test -run XXX -bench . -benchtime=1x ./bench/
+        run: |
+          go test -run XXX -bench . -benchtime=1x ./bench/
+          # The MySQL adapter's allocation budget is a gate, not a doc: it
+          # already shipped once at ten allocations per row while claiming one.
+          go test -run XXX -bench . -benchtime=1x ./runtime/mydrv/
 
       # The seed corpus runs as an ordinary test above; this is the part that
       # searches. Short on every PR because a fuzzer that only runs nightly

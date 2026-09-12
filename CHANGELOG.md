@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-08
+updated: 2026-09-12
 ---
 
 # Changelog
@@ -13,6 +13,85 @@ Every entry names what changed and — where it matters — what it cost, becaus
 a release note that cannot be checked is marketing.
 
 ## Unreleased
+
+### MySQL and MariaDB are shippable
+
+`runtime/mydrv` named four gaps in its own package documentation — no TLS,
+`mysql_native_password` only, no pooling, cancellation that was a deadline
+rather than a kill. All four are closed, each proved by a test that fails when
+the feature is removed, and both engines are now runtime targets you can point
+a production service at.
+
+- **TLS.** `Config.TLS` is `TLSPreferred` (upgrade where offered, do not
+  verify), `TLSRequired` (refuse a server without it, and VERIFY — a nil
+  `TLSConfig` there is not `InsecureSkipVerify`) or `TLSDisabled`. The default
+  does not verify deliberately: stock MySQL and MariaDB both ship a self-signed
+  certificate, so a verifying default could not connect to either and would
+  push callers to `TLSDisabled`, which is strictly less. The tunnel is asserted
+  by the SERVER's `Ssl_cipher`, not by the client's own flag.
+- **`caching_sha2_password`**, including the full-auth exchange MySQL 8
+  requires the first time an account connects, plus `mysql_native_password` and
+  the auth-switch request. Full auth puts the password on the wire in a
+  recoverable form, so on a plaintext socket it is REFUSED
+  (`ErrCleartextRefused`) unless the caller sets
+  `AllowCleartextPasswordOverPlaintext`. The RSA branch is OAEP with **SHA-1**,
+  not SHA-256 — the digest is OAEP's mask function and has nothing to do with
+  the plugin's name. SHA-256 encrypts something the server cannot read and
+  fails as "Access denied", indistinguishable from a wrong password, which is
+  what it did until a test created a fresh account to force the exchange.
+- **Pooling.** `mydrv.Pool` is a bounded pool and a `runtime.Executor`;
+  `Pool.Begin` returns a `Tx` pinned to one connection. Pinning is a
+  correctness requirement, not an optimisation: `BEGIN` is session state, so an
+  unpinned transaction would open on one socket and commit on another.
+- **Cancellation is real.** A cancelled context sends `KILL QUERY` from a
+  second connection, so the statement stops on the SERVER and the connection
+  survives to be reused. A socket deadline only stopped this process waiting
+  and left the query holding its locks. The test reads
+  `information_schema.processlist`; with the kill removed, it finds the
+  statement still running.
+
+**Rows stream, and the adapter reaches 1.07 allocations per row.** The reason
+storm has a hand-written MySQL adapter is that number — go-sql-driver costs
+8.07 on the same shape. Measured on the code that actually shipped, it was
+**10.1**: every column was copied into a fresh slice and every row into a fresh
+header. Materialising had a real reason (a result set holds the connection, and
+a generated plan loading a relation would deadlock) that the pool made obsolete
+and nobody revisited. Now `BenchmarkQuery200x8` reports 1.07 allocs/row and 6
+B/row, decoding included, and `TestQueryCostsAboutOneAllocationPerRow` fails if
+it regresses. The cost is stated: a result set holds its connection until
+`Close`, and a second statement before then is `ErrRowsOpen` — a named error,
+because the first version panicked several statements later with nothing to
+connect the crash to the missing `Close`.
+
+**Errors speak storm's vocabulary.** Constraint violations arrive as the same
+`runtime.ConstraintError` and the same sentinels PostgreSQL produces, so a
+handler is written once. Proved against both servers, because the codes differ
+(3819 vs 4025 for a failed CHECK) and each quotes the constraint's name with
+different punctuation. Nothing is invented where the engine makes no
+distinction: MySQL has no exclusion constraint and surfaces a serialization
+conflict AS a deadlock.
+
+**And the dialect is reachable.** `storm generate -dialect mysql|mariadb` and
+`storm ddl -dialect ...`; every engine-specific piece existed and none of it
+could be asked for from the command line. Commands that read a live PostgreSQL
+catalogue refuse a non-PostgreSQL dialect and say what to do instead.
+
+Two defects found on the way, both by tests that put a real server between the
+two halves of a contract:
+
+- **A `FLOAT` column panicked the row decoder.** `fixedWidth` had no entry for
+  it, so four bytes were read as a length-encoded value: the first byte became
+  a length and every subsequent column in the row decoded from the wrong
+  offset. `MEDIUMINT` and `YEAR` were missing too. Neither side's unit tests
+  could see it — `mydec` hand-writes the bytes it expects and the binder's
+  tests check what it produced — so the fix ships with a round trip of every
+  type storm supports, against both servers. The row decoder is bounds-checked
+  now: a packet that does not add up is an error, not a panic.
+- **MariaDB rejects `GENERATED ALWAYS AS (...) STORED NOT NULL`**, which MySQL
+  requires and enforces. Its grammar allows no nullability clause after
+  `STORED`. `myddl.CreateFor(s, myddl.MariaDB)` drops it, and both forms are
+  applied to both servers — a golden test proves the strings differ but cannot
+  say which engine would have refused which.
 
 ### Upsert on a soft-delete table: audited, no defect
 

@@ -6,8 +6,10 @@
 // go-sql-driver hands back DECODED values — int64, []uint8 — in both protocols,
 // so satisfying the port on top of it would mean re-encoding. Measured, 200
 // rows x 8 columns: 8.07 allocations per row through go-sql-driver, 9.07
-// through vitess, 1.04 here with decoding included. See
-// internal/mysqlspike/ for the measurements.
+// through vitess, 1.07 here — the same with decoding as without, because
+// decoding raw bytes allocates nothing. BenchmarkQuery200x8 measures this
+// package; internal/mysqlspike/ has the comparison against the others, and
+// TestQueryCostsAboutOneAllocationPerRow is the gate that keeps it true.
 //
 // No third-party dependency: this package is stdlib only, so an adopter who
 // never targets MySQL links nothing extra and one who does links no driver
