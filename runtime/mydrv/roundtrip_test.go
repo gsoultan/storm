@@ -180,6 +180,36 @@ func roundTrips(t *testing.T, c *mydrv.Conn) {
 	} else if got.Valid {
 		t.Error("NullDuration called a NULL valid")
 	}
+	if got, err := mydec.NullDate(v[15]); err != nil {
+		t.Errorf("NullDate on NULL: %v", err)
+	} else if got.Valid {
+		t.Error("NullDate called a NULL valid")
+	}
+	// ...and on a present value they have to agree with the plain decoders,
+	// not merely report Valid.
+	if got, err := mydec.NullDate(v[10]); err != nil {
+		t.Errorf("NullDate: %v", err)
+	} else if !got.Valid || !got.V.Equal(wantDate) {
+		t.Errorf("NullDate = %v valid=%v, want %v", got.V, got.Valid, wantDate)
+	}
+	if got, err := mydec.NullDateTime(v[9]); err != nil {
+		t.Errorf("NullDateTime: %v", err)
+	} else if !got.Valid || !got.V.Equal(wantTS) {
+		t.Errorf("NullDateTime = %v valid=%v", got.V, got.Valid)
+	}
+	if got, err := mydec.NullDuration(v[11]); err != nil {
+		t.Errorf("NullDuration: %v", err)
+	} else if !got.Valid || got.V != wantTOD {
+		t.Errorf("NullDuration = %v valid=%v", got.V, got.Valid)
+	}
+	if got, err := mydec.NullNumeric(v[12]); err != nil {
+		t.Errorf("NullNumeric: %v", err)
+	} else if !got.Valid || got.V.String() != wantDec.String() {
+		t.Errorf("NullNumeric = %v valid=%v", got.V, got.Valid)
+	}
+	if got := mydec.NullText(v[6], &runtime.Slab{}); !got.Valid || got.V != "héllo — ünicode" {
+		t.Errorf("NullText = %q valid=%v", got.V, got.Valid)
+	}
 	if r.Next() {
 		t.Error("more than one row")
 	}

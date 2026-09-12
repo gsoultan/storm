@@ -657,3 +657,217 @@ func TestClosingRowsReturnsTheConnection(t *testing.T) {
 		}
 	}
 }
+
+// CopyFrom and Batch are two of the port's four methods, and neither had ever
+// run against MySQL. Generated bulk loads go through the first and a
+// unit-of-work flush through the second, so "the adapter satisfies the port"
+// was half a claim.
+func TestCopyFromLoadsEveryRow(t *testing.T) {
+	p, err := mydrv.NewPool(context.Background(), config(t))
+	if err != nil {
+		t.Skipf("no server: %v", err)
+	}
+	defer p.Close()
+	ctx := context.Background()
+	mustPool(t, p, "DROP TABLE IF EXISTS `copy_probe`")
+	mustPool(t, p, "CREATE TABLE `copy_probe` (`id` BIGINT PRIMARY KEY, "+
+		"`s` VARCHAR(40) NOT NULL) ENGINE=InnoDB")
+	t.Cleanup(func() { _, _ = p.Exec(ctx, "DROP TABLE IF EXISTS `copy_probe`", nil) })
+
+	src := &countingSource{n: 500}
+	n, err := p.CopyFrom(ctx, "copy_probe", []string{"id", "s"}, src)
+	if err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if n != 500 {
+		t.Errorf("CopyFrom reported %d rows, want 500", n)
+	}
+	if got := one(t, p, "SELECT CAST(COUNT(*) AS CHAR) FROM `copy_probe`"); got != "500" {
+		t.Errorf("the table holds %s rows, want 500", got)
+	}
+	// The identifier is quoted, so a table or column named like a keyword
+	// loads rather than failing at parse time.
+	mustPool(t, p, "DROP TABLE IF EXISTS `order`")
+	mustPool(t, p, "CREATE TABLE `order` (`id` BIGINT PRIMARY KEY, `select` VARCHAR(8) NOT NULL)")
+	t.Cleanup(func() { _, _ = p.Exec(ctx, "DROP TABLE IF EXISTS `order`", nil) })
+	if _, err := p.CopyFrom(ctx, "order", []string{"id", "select"},
+		&countingSource{n: 3}); err != nil {
+		t.Errorf("a keyword-named table did not load: %v", err)
+	}
+
+	// An empty source is zero rows and no statement, not an INSERT with no
+	// VALUES — which is a syntax error.
+	if n, err := p.CopyFrom(ctx, "copy_probe", []string{"id", "s"},
+		&countingSource{n: 0}); err != nil || n != 0 {
+		t.Errorf("empty CopyFrom = %d, %v", n, err)
+	}
+}
+
+type countingSource struct {
+	i, n int
+	err  error
+}
+
+func (s *countingSource) Next() bool {
+	if s.i >= s.n {
+		return false
+	}
+	s.i++
+	return true
+}
+func (s *countingSource) Values() []any {
+	return []any{int64(1_000_000 + s.i), "row" + itoa(s.i)}
+}
+func (s *countingSource) Err() error { return s.err }
+
+// A source that fails partway must not leave half a load behind: the emulation
+// builds one statement, so nothing is sent at all.
+func TestCopyFromReportsASourceError(t *testing.T) {
+	c := open(t)
+	ctx := context.Background()
+	mustExec(t, c, "DROP TABLE IF EXISTS `copyerr_probe`")
+	mustExec(t, c, "CREATE TABLE `copyerr_probe` (`id` BIGINT PRIMARY KEY, `s` VARCHAR(40))")
+	t.Cleanup(func() { _, _ = c.Exec(ctx, "DROP TABLE IF EXISTS `copyerr_probe`", nil) })
+
+	src := &countingSource{n: 10, err: errors.New("the source gave up")}
+	if _, err := c.CopyFrom(ctx, "copyerr_probe", []string{"id", "s"}, src); err == nil {
+		t.Fatal("a failing source was reported as a successful load")
+	}
+	if got := one(t, c, "SELECT CAST(COUNT(*) AS CHAR) FROM `copyerr_probe`"); got != "0" {
+		t.Errorf("%s rows landed from a failed load", got)
+	}
+}
+
+func TestBatchRunsEveryOpAndReportsEachResult(t *testing.T) {
+	p, err := mydrv.NewPool(context.Background(), config(t))
+	if err != nil {
+		t.Skipf("no server: %v", err)
+	}
+	defer p.Close()
+	ctx := context.Background()
+	mustPool(t, p, "DROP TABLE IF EXISTS `batch_probe`")
+	mustPool(t, p, "CREATE TABLE `batch_probe` (`id` BIGINT PRIMARY KEY, `v` BIGINT NOT NULL) "+
+		"ENGINE=InnoDB")
+	t.Cleanup(func() { _, _ = p.Exec(ctx, "DROP TABLE IF EXISTS `batch_probe`", nil) })
+
+	ops := []runtime.BatchOp{
+		{SQL: "INSERT INTO `batch_probe` VALUES (?, ?)", Args: []any{int64(1), int64(10)}},
+		{SQL: "INSERT INTO `batch_probe` VALUES (?, ?)", Args: []any{int64(2), int64(20)}},
+		{SQL: "SELECT CAST(`v` AS CHAR) FROM `batch_probe` ORDER BY `id`", WantRows: true},
+		// A duplicate key: the error goes to the CALLBACK, not out of Batch,
+		// which is what lets a unit of work report every failure rather than
+		// the first.
+		{SQL: "INSERT INTO `batch_probe` VALUES (?, ?)", Args: []any{int64(1), int64(99)}},
+	}
+	var (
+		seen   []int
+		counts []int64
+		read   []string
+		failed int
+	)
+	err = p.Batch(ctx, ops, func(i int, r runtime.Rows, n int64, err error) error {
+		seen = append(seen, i)
+		if err != nil {
+			failed++
+			if !errors.Is(err, runtime.ErrUniqueViolation) {
+				t.Errorf("op %d: err = %v, want a unique violation", i, err)
+			}
+			return nil
+		}
+		if r != nil {
+			for r.Next() {
+				read = append(read, string(r.RawValues()[0]))
+			}
+			r.Close()
+			return r.Err()
+		}
+		counts = append(counts, n)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if len(seen) != 4 || seen[0] != 0 || seen[3] != 3 {
+		t.Errorf("ops arrived as %v, want 0..3 in order", seen)
+	}
+	if len(counts) != 2 || counts[0] != 1 || counts[1] != 1 {
+		t.Errorf("affected counts = %v, want [1 1]", counts)
+	}
+	if len(read) != 2 || read[0] != "10" || read[1] != "20" {
+		t.Errorf("the row-returning op read %v", read)
+	}
+	if failed != 1 {
+		t.Errorf("%d ops failed, want 1", failed)
+	}
+}
+
+// Returning an error FROM the callback is what aborts a batch: the port says
+// the per-op error does not, and the two must not be confused.
+func TestBatchStopsWhenTheCallbackSaysSo(t *testing.T) {
+	c := open(t)
+	ctx := context.Background()
+	stop := errors.New("enough")
+	n := 0
+	err := c.Batch(ctx, []runtime.BatchOp{
+		{SQL: "SELECT CAST(1 AS CHAR)", WantRows: true},
+		{SQL: "SELECT CAST(2 AS CHAR)", WantRows: true},
+	}, func(i int, r runtime.Rows, _ int64, err error) error {
+		n++
+		if r != nil {
+			for r.Next() {
+			}
+			r.Close()
+		}
+		return stop
+	})
+	if !errors.Is(err, stop) {
+		t.Fatalf("err = %v, want the callback's error", err)
+	}
+	if n != 1 {
+		t.Errorf("the batch ran %d ops after the callback stopped it, want 1", n)
+	}
+}
+
+// A transaction is an Executor, so it has to satisfy the whole port and not
+// just the two methods a query uses.
+func TestTransactionSatisfiesTheWholePort(t *testing.T) {
+	p, err := mydrv.NewPool(context.Background(), config(t))
+	if err != nil {
+		t.Skipf("no server: %v", err)
+	}
+	defer p.Close()
+	ctx := context.Background()
+	mustPool(t, p, "DROP TABLE IF EXISTS `txport_probe`")
+	mustPool(t, p, "CREATE TABLE `txport_probe` (`id` BIGINT PRIMARY KEY, `s` VARCHAR(40) NOT NULL) "+
+		"ENGINE=InnoDB")
+	t.Cleanup(func() { _, _ = p.Exec(ctx, "DROP TABLE IF EXISTS `txport_probe`", nil) })
+
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.CopyFrom(ctx, "txport_probe", []string{"id", "s"},
+		&countingSource{n: 4}); err != nil {
+		t.Fatalf("CopyFrom in a transaction: %v", err)
+	}
+	if err := tx.Batch(ctx, []runtime.BatchOp{
+		{SQL: "UPDATE `txport_probe` SET `s` = ?", Args: []any{"batched"}},
+	}, func(_ int, _ runtime.Rows, n int64, err error) error {
+		if err != nil {
+			return err
+		}
+		if n != 4 {
+			t.Errorf("the batched update affected %d rows, want 4", n)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Batch in a transaction: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := one(t, p, "SELECT CAST(COUNT(*) AS CHAR) FROM `txport_probe` WHERE `s` = 'batched'"); got != "4" {
+		t.Errorf("%s rows survived the commit, want 4", got)
+	}
+}

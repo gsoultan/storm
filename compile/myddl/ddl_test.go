@@ -251,3 +251,83 @@ func TestCheck_RefusesWhatMySQLLacksAndDemandsAKeyLength(t *testing.T) {
 		t.Fatalf("MySQL's own forms were refused: %v", err)
 	}
 }
+
+// The bare Create/CreateTable/ColumnDef mean MySQL. They exist so that adding
+// the Target did not change what every existing caller gets — and a wrapper
+// nothing calls is a wrapper that can quietly point at the wrong target.
+func TestTheBareFormsMeanMySQL(t *testing.T) {
+	s := &schema.Schema{Tables: []*schema.Table{{
+		Name:       "users",
+		Columns:    []*schema.Column{col("id", schema.TypeUUID), col("email", schema.TypeVarchar)},
+		PrimaryKey: []string{"id"},
+	}}}
+	s.Tables[0].Columns[1].Type.Size = 320
+
+	bare, err := myddl.Create(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forMySQL, err := myddl.CreateFor(s, myddl.MySQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare != forMySQL {
+		t.Errorf("Create is not CreateFor(MySQL):\n%s\n%s", bare, forMySQL)
+	}
+
+	tbl, err := myddl.CreateTable(s.Tables[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tblFor, _ := myddl.CreateTableFor(s.Tables[0], myddl.MySQL); tbl != tblFor {
+		t.Error("CreateTable is not CreateTableFor(MySQL)")
+	}
+	cd, err := myddl.ColumnDef("users", s.Tables[0].Columns[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cdFor, _ := myddl.ColumnDefFor("users", s.Tables[0].Columns[1], myddl.MySQL); cd != cdFor {
+		t.Error("ColumnDef is not ColumnDefFor(MySQL)")
+	}
+	if !strings.Contains(cd, "`email` VARCHAR(320) NOT NULL") {
+		t.Errorf("ColumnDef = %q", cd)
+	}
+}
+
+// A foreign key is a separate ALTER rather than an inline REFERENCES, because
+// a table can reference one created after it and storm emits tables in model
+// order. The referential actions have to survive the crossing.
+func TestForeignKeyIsAnAlterWithItsActions(t *testing.T) {
+	tbl := &schema.Table{Name: "orders"}
+	fk := &schema.ForeignKey{
+		Name:       "fk_orders_customer",
+		Columns:    []string{"customer_id"},
+		RefTable:   "customers",
+		RefColumns: []string{"id"},
+		OnDelete:   schema.Cascade,
+		OnUpdate:   schema.Restrict,
+	}
+	got := myddl.AddForeignKey(tbl, fk)
+	for _, want := range []string{
+		"ALTER TABLE `orders` ADD CONSTRAINT `fk_orders_customer`",
+		"FOREIGN KEY (`customer_id`)",
+		"REFERENCES `customers` (`id`)",
+		"ON DELETE CASCADE",
+		"ON UPDATE RESTRICT",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, ";") {
+		t.Errorf("unterminated: %s", got)
+	}
+
+	// No actions declared means no clauses, not an empty ON DELETE.
+	plain := myddl.AddForeignKey(tbl, &schema.ForeignKey{
+		Name: "fk_plain", Columns: []string{"a"}, RefTable: "b", RefColumns: []string{"id"},
+	})
+	if strings.Contains(plain, "ON DELETE") || strings.Contains(plain, "ON UPDATE") {
+		t.Errorf("an undeclared action was emitted:\n%s", plain)
+	}
+}

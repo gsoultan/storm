@@ -118,3 +118,32 @@ func TestTheSharedFourFifthsIsShared(t *testing.T) {
 		t.Error("the shared spelling changed under MariaDB's feet")
 	}
 }
+
+// GroupBy refuses the rolled-up form for the same reason AggregateSuffix does:
+// MariaDB rejects WITH ROLLUP together with ORDER BY (Error 1221), and storm
+// always orders a grouped read. Both entry points have to refuse, or the one
+// that does not emits a statement the server throws out.
+func TestGroupByRefusesTheRolledUpForm(t *testing.T) {
+	plain := &schema.Aggregate{
+		Name: "PerOrg",
+		By: []schema.GroupTerm{
+			{Expr: schema.Expr{Kind: schema.ExprCol, Col: "org_id"}, As: "OrgID"},
+		},
+	}
+	got, err := mariadb.GroupBy(plain)
+	if err != nil {
+		t.Fatalf("a plain grouping was refused: %v", err)
+	}
+	if !strings.Contains(got, "`org_id`") {
+		t.Errorf("GroupBy = %q", got)
+	}
+	if mine, _ := mysql.GroupBy(plain); got != mine {
+		t.Errorf("a plain grouping diverged from MySQL's:\n%s\n%s", got, mine)
+	}
+
+	rolled := *plain
+	rolled.Sets = &schema.GroupingSets{Kind: schema.SetsRollup}
+	if _, err := mariadb.GroupBy(&rolled); !errors.Is(err, mariadb.ErrNoOrderedRollup) {
+		t.Errorf("err = %v, want ErrNoOrderedRollup", err)
+	}
+}
