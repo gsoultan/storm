@@ -80,6 +80,30 @@ No Go library streams raw BINARY-protocol bytes row-at-a-time into a caller's
 buffer. Vitess (Apache 2.0) is a working reference for packet framing and the
 auth handshake — the tedious half — but not a dependency that solves it.
 
+## A wire client DOES reach the target — 1.07 allocs/row (2026-09-12)
+
+`internal/mysqlspike/wire`, MariaDB 11.4.13, 200 rows × 8 columns:
+
+| path | allocs/row | B/row |
+|---|---|---|
+| `go-sql-driver` via `driver.Rows` | 8.07 | 99 |
+| vitess `ExecuteFetch` | 9.07 | 420 |
+| **minimal wire client** | **1.07** | **5** |
+
+Reuse the packet buffer, point the column slices into it. Same validity contract
+as pgx's `RawValues` (good until the next row), which is why storm has Slabs.
+
+**So the four weeks is BREADTH, not risk.** The design is proven. What remains:
+`caching_sha2_password` (MySQL 8.4 disables native password; the spike only
+speaks native, hence testing on MariaDB), TLS, **the binary protocol —
+`COM_STMT_PREPARE`/`COM_STMT_EXECUTE`, without which `runtime/mydec` does not
+apply at all, and the largest single piece** — pooling, cancellation, error
+mapping.
+
+Gotcha that cost the first run: without `CLIENT_DEPRECATE_EOF` the column
+definitions are followed by an EOF packet. Not consuming it means the first
+"row" read IS the EOF, and the result looks empty rather than wrong.
+
 ## Still undecided
 
 - The `Insert` API difference between dialects is unreleased and is a public

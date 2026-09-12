@@ -279,6 +279,23 @@ merely a second one.** One wire caveat to plan for — MySQL 8.4 turns
 `mysql_native_password` off by default while most MariaDB installs still use it,
 so the handshake must carry both it and `caching_sha2_password`.
 
+**And a wire client does reach the target profile, measured 2026-09-12**
+(`internal/mysqlspike/wire`). MariaDB 11.4.13, 200 rows × 8 columns:
+
+| path | allocs/row | B/row |
+|---|---|---|
+| `go-sql-driver` via `driver.Rows` | 8.07 | 99 |
+| `vitess.io/vitess/go/mysql` | 9.07 | 420 |
+| a minimal wire client | **1.07** | **5** |
+
+Eight times fewer allocations than the best library path. The packet buffer is
+reused and the column slices point into it, so exposing a row costs nothing —
+the same contract pgx's `RawValues` has. **So the four weeks is breadth, not
+risk:** the design is proven, and what remains is `caching_sha2_password`, TLS,
+the binary protocol (`COM_STMT_PREPARE`/`EXECUTE`, without which `runtime/mydec`
+does not apply at all — the largest single piece), pooling, cancellation and
+error mapping. The spike is a reference for those, not a head start on them.
+
 **No existing Go library supplies the row shape** (`internal/mysqlspike/VITESS.md`).
 `vitess.io/vitess/go/mysql` gives `sqltypes.Value.Raw() []byte` for every column
 including integers — which proves the shape is reachable — but costs 9.07
