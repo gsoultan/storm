@@ -14,6 +14,43 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Every fetch plan on a default model was broken on MySQL
+
+Three defects, all found by the same test: a generated package with TWO tables,
+a foreign key and a named plan, run against both servers with real data. The
+existing end-to-end had one table, so nothing had ever loaded a relation.
+
+**The generator emitted storm's type name into MySQL's SQL.** A bound key list
+crosses as one JSON document and is unpacked by `JSON_TABLE(?, '$[*]' COLUMNS
+(k <type> PATH '$'))`, and codegen filled `<type>` with `c.Type.SQL()` — which
+is `uuid`, PostgreSQL's word for `BINARY(16)`. MySQL cannot parse it. Every
+storm model has a uuid primary key, so that was every fetch plan and every
+`In` predicate on an id. The spelling now comes from the lowering
+(`Lowering.KeyType`), like every other piece of SQL text, and delegates to
+`compile/myddl` rather than restating the type map — two maps for one question
+drift, and the direction they drift in is a key declared `BINARY(16)` by the
+DDL and something else by the loader that joins against it.
+
+**And a binary key cannot travel inside a JSON document at all.** JSON is text;
+arbitrary bytes are not valid UTF-8. It goes as hex and comes back through
+`UNHEX`, which keeps the comparison in the column's own type and therefore on
+its index — wrapping the indexed column in `HEX()` instead would read the same
+rows and lose the index doing it. The driver encodes a Go slice into that
+document, which is the same job pgx does turning one into a PostgreSQL array.
+
+**The connection collation was wrong, and it made every string list fail.**
+The handshake sent `utf8mb4_general_ci`, which is not MySQL 8's default, so
+comparing a table column against a `JSON_TABLE` column was error 1267,
+"illegal mix of collations" — on every `In` over a text column. `SET NAMES
+utf8mb4` at connect takes the server's OWN default rather than naming one, so
+it is right on both engines.
+
+The document is built by hand rather than by `encoding/json`, and its escaping
+is a security property, not a formatting one: the values ARE the document, so
+an unescaped quote ends the string early and the rest of a caller's value
+becomes JSON syntax. Asserted against both servers with values that try
+exactly that.
+
 ### Unix sockets, and the MySQL path held to the readiness gates
 
 `Config.Addr` takes a unix socket path when it begins with `/`. Told apart by

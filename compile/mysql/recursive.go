@@ -51,7 +51,7 @@ func Recursive(table string, cols []string, key, parent, keyType string, dir int
 	b.WriteString(" WHERE ")
 	b.WriteString(Ident(key))
 	b.WriteString(" IN (SELECT ")
-	b.WriteString(Ident(parentKeyAlias))
+	b.WriteString(keyValue(keyType, ""))
 	b.WriteString(" FROM ")
 	b.WriteString(keyRows(keyType))
 	b.WriteString(")")

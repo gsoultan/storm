@@ -86,9 +86,14 @@ func InFrag(ident, colType string, negate bool) (a, b string) {
 	if negate {
 		op = " NOT IN ("
 	}
+	jsonType, decode := jsonKey(colType)
+	v := "`v`"
+	if decode != "" {
+		v = decode + "(`v`)"
+	}
 	return ident + op +
-		"SELECT `v` FROM JSON_TABLE(" + Placeholder +
-		", '$[*]' COLUMNS (`v` " + colType + " PATH '$')) AS `_storm_in`)", ""
+		"SELECT " + v + " FROM JSON_TABLE(" + Placeholder +
+		", '$[*]' COLUMNS (`v` " + jsonType + " PATH '$')) AS `_storm_in`)", ""
 }
 
 // Supported reports whether this back end has a lowering for an operator, for

@@ -69,6 +69,21 @@ func Open(ctx context.Context, cfg Config) (*Conn, error) {
 		nc.Close()
 		return nil, err
 	}
+	// The connection's collation must be the server's DEFAULT for utf8mb4,
+	// which is what an unqualified VARCHAR column gets. The handshake carries a
+	// single collation byte and this driver sends utf8mb4_general_ci, which on
+	// MySQL 8 is NOT the default — so comparing a table column against a
+	// JSON_TABLE column (how every IN-list and every batch load reaches the
+	// server) is error 1267, "illegal mix of collations". SET NAMES takes the
+	// server's own default rather than naming one, so it is right on both
+	// engines and on a server configured with neither.
+	//
+	// One round trip at connect, amortised by the pool, and it is text protocol
+	// because the prepared protocol refuses SET NAMES.
+	if err := c.query("SET NAMES utf8mb4", nil); err != nil {
+		nc.Close()
+		return nil, err
+	}
 	_ = nc.SetDeadline(time.Time{})
 	return &Conn{c: c, cfg: cfg, sts: map[string]*list.Element{}, lru: list.New()}, nil
 }

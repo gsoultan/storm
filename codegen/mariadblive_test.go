@@ -109,16 +109,19 @@ func runGeneratedLive(t *testing.T, dialect, addrVar string, want []string) {
 
 func pkgFor(t *testing.T, s *schema.Schema, dir, dialect string) (map[string][]byte, error) {
 	t.Helper()
-	d := codegen.DialectPostgres
-	switch dialect {
-	case "mysql":
-		d = codegen.DialectMySQL
-	case "mariadb":
-		d = codegen.DialectMariaDB
-	}
 	return codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm", Dialect: d,
+		Dir: dir, Import: "github.com/gsoultan/storm", Dialect: dialectFor(dialect),
 	})
+}
+
+func dialectFor(name string) codegen.Dialect {
+	switch name {
+	case "mysql":
+		return codegen.DialectMySQL
+	case "mariadb":
+		return codegen.DialectMariaDB
+	}
+	return codegen.DialectPostgres
 }
 
 // mdUser is a soft-delete model that PORTS: the email is sized so it is a
@@ -236,3 +239,103 @@ func (u *genUser) Schema(t *storm.Table) {
 	t.Col(&u.Last).Size(60)
 	t.Col(&u.Full).Size(121).Generated(storm.RawSQL("concat(`first`,' ',`last`)"))
 }
+
+// Two tables, a foreign key and a named plan, against a real server.
+//
+// The single-table end-to-end proves CRUD. It cannot prove the BATCH LOADER,
+// which is the construct M9's exit gate names and the one genuinely different
+// here: PostgreSQL unnests an array, MySQL reaches the same answer through
+// JSON_TABLE and MariaDB through a window. Those forms PREPARE in the shell
+// gates; nothing had checked the rows they return, or which parent each child
+// was attached to.
+func TestGeneratedRelationsRunAgainstMySQL(t *testing.T) {
+	runRelationsLive(t, "mysql", "STORM_MYSQL_ADDR", "MySQL")
+}
+
+func TestGeneratedRelationsRunAgainstMariaDB(t *testing.T) {
+	runRelationsLive(t, "mariadb", "STORM_MARIADB_ADDR", "MariaDB")
+}
+
+func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
+	if os.Getenv(addrVar) == "" {
+		t.Skip(addrVar + " unset")
+	}
+	s, err := storm.Build(&mdAuthor{}, &mdPost{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err2 := filepath.Abs("..")
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+	base := "mdrel" + dialect + strconv.Itoa(os.Getpid())
+	dir := filepath.Join(root, "internal", base)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	// Package and PackageImport are what make codegen emit the CONTEXT
+	// package. Without them only the per-table packages appear, and a plan
+	// spans tables so it lives in neither.
+	pkg := filepath.Base(dir)
+	files, err := codegen.Package(s, codegen.PackageOptions{
+		Dir: dir, Import: "github.com/gsoultan/storm", Dialect: dialectFor(dialect),
+		Package:       pkg,
+		PackageImport: "github.com/gsoultan/storm/internal/" + base,
+	})
+	if err != nil {
+		t.Fatalf("generating for %s: %v", dialect, err)
+	}
+	for rel, src := range files {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, src, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := strings.ReplaceAll(relationsLiveSrc, "PKG", pkg)
+	src = strings.ReplaceAll(src, "ADDRVAR", addrVar)
+	src = strings.ReplaceAll(src, "TARGET", ddlTarget)
+	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	if err := os.WriteFile(filepath.Join(dir, "live_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("go", "test", "-count=1", "-v", "./internal/"+base+"/")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), addrVar+"="+os.Getenv(addrVar))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the generated package does not run:\n%s", out)
+	}
+	for _, name := range []string{
+		"TestPlanLoadsEveryChildInTwoRoundTrips",
+		"TestChildTopUsesTheBatchLoader",
+		"TestChildQueryFiltersByItsParent",
+		"TestKeysetPagingOverTheParents",
+	} {
+		if !strings.Contains(string(out), "--- PASS: "+name) {
+			t.Errorf("%s did not run:\n%s", name, out)
+		}
+	}
+}
+
+// The two-table model the relation tests generate from. Declared here so the
+// harness can Build it; the generated package redeclares it to Build the DDL,
+// which is the same trick the single-table test plays.
+type mdAuthor struct {
+	storm.Model
+	Name  string
+	Posts []mdPost
+}
+
+func (a *mdAuthor) Schema(t *storm.Table) { t.Col(&a.Name).Size(80) }
+func (a *mdAuthor) Plans(p *storm.Plans)  { p.Named("Feed").With(&a.Posts) }
+
+type mdPost struct {
+	storm.Model
+	Title  string
+	Author mdAuthor
+}
+
+func (p *mdPost) Schema(t *storm.Table) { t.Col(&p.Title).Size(120) }
