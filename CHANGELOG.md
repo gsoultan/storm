@@ -12,7 +12,16 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.12.0 — 2026-09-12
+
+**If you generate for MySQL or MariaDB, regenerate.** v0.11.0 shipped with
+every fetch plan on a default storm model broken on those targets: a bound key
+list carried storm's own type name into the JSON_TABLE clause that unpacks it,
+and `storm.Model` gives every table the key that triggers it. The end-to-end
+had one table, so nothing had ever loaded a relation. It has two now, and the
+afternoon that took found four defects.
+
+Generated PostgreSQL output changes by one comment and nothing else.
 
 ### The semi-join in a MySQL package was PostgreSQL SQL
 

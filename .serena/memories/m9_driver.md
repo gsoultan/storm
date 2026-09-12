@@ -214,3 +214,48 @@ against PostgreSQL, and there is no MySQL equivalent.
 192.168.64.188:3306), both root/storm, database `storm`. Tests read
 `STORM_MYSQL_ADDR` and `STORM_MARIADB_ADDR`; CI has both services and the
 MariaDB dialect gate gained a `STORM_MARIADB_DSN` path.
+
+---
+
+# What the FIRST multi-table live test found — 2026-09-12
+
+v0.11.0 shipped with **every fetch plan on a default model broken on MySQL**.
+The end-to-end had ONE table, so nothing had ever loaded a relation. Adding a
+second table and a plan found four defects in an afternoon, three of them in
+shipped code.
+
+1. **codegen spelled the key type itself.** A bound key list crosses as one JSON
+   document unpacked by `JSON_TABLE(?, '$[*]' COLUMNS (k <type> PATH '$'))`, and
+   codegen filled `<type>` with `c.Type.SQL()` — `uuid`, PostgreSQL's word for
+   `BINARY(16)`. `storm.Model` gives every table a uuid key, so that was every
+   plan and every `In` on an id. Now `Lowering.KeyType`, delegating to
+   `compile/myddl` rather than restating the type map.
+2. **A binary key cannot travel in a JSON document as itself** — JSON is text.
+   It goes as hex, and the SQL side unpacks it with `UNHEX`. Wrapping the
+   INDEXED column in `HEX()` instead would read the same rows and lose the
+   index, which is the whole reason ADR-0010 chose this form.
+3. **The connection collation was wrong.** The handshake sent
+   `utf8mb4_general_ci`, not MySQL 8's default, so comparing a table column
+   against a `JSON_TABLE` column was error 1267 on every `In` over text.
+   `SET NAMES utf8mb4` at connect takes the server's OWN default, which is right
+   on both engines.
+4. **The semi-join was PostgreSQL SQL.** `havingSpecs` called
+   `pgsql.ExistsOpen` unconditionally. It survived everything because **the
+   context file is generated once per PACKAGE rather than per table**, so it
+   kept a hard-coded dialect while everything per-table went through the seam.
+
+## The gate that was missing
+
+`TestOnlySetDialectResolvesADialect` checks the lowering is ASSIGNED once. It
+cannot see a CALL that skips it. `TestEveryDialectReferenceIsAccountedFor` now
+lists every direct `pgsql.`/`mysql.`/`myddl.` reference in `codegen/` with the
+reason it is dialect-independent. Writing that table found two more leaks.
+
+## The generalisable lesson
+
+Three milestones of unit tests, golden tests and shell gates did not catch a
+construct that had never RUN. The rule that keeps holding: **a test that does
+not execute against the target proves the generator is consistent with itself,
+nothing more.** The corollary is about fixtures — a one-table model cannot
+exercise a relation, and the end-to-end's model is therefore part of its
+coverage, not scaffolding.
