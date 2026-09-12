@@ -474,6 +474,12 @@ func (g *gen) compile() {
 	g.p("\tTupleOpen:  %q,", g.lw.TupleOpen)
 	g.p("\tTupleSep:   %q,", g.lw.TupleSep)
 	g.p("\tTupleClose: %q,", g.lw.TupleClose)
+	if g.lw.PlaceholderExpr != "" {
+		// Without this the splicer numbers the back end's sigil as though it
+		// were PostgreSQL's, turning every `?` into `$1` — a statement the
+		// server rejects with "Unknown column '$1'".
+		g.p("\tPlaceholder: %s,", g.lw.PlaceholderExpr)
+	}
 	g.p("}")
 	g.p("")
 	g.p("func orderOf(dir, col uint32) string {")

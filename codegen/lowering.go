@@ -103,6 +103,12 @@ type lowering struct {
 	WhereLead, WhereSep string
 	Placeholder         string
 
+	// PlaceholderExpr is how the GENERATED code names its placeholder policy in
+	// the runtime.Lowering it builds. Empty means the zero value, which is
+	// PostgreSQL — so a PostgreSQL package does not mention it and stays
+	// byte-identical.
+	PlaceholderExpr string
+
 	// Upsert is nil for a back end whose conflict handling is not the
 	// inference form. MySQL's ON DUPLICATE KEY UPDATE names no target at all —
 	// it fires on ANY unique key — so a generated OnConflictEmail() would be a
@@ -373,6 +379,7 @@ func mysqlLowering() lowering {
 		WhereLead:       mysql.WhereLead,
 		WhereSep:        mysql.WhereSep,
 		Placeholder:     mysql.Placeholder,
+		PlaceholderExpr: "runtime.MySQLPlaceholder",
 		Upsert:          nil, // ON DUPLICATE KEY UPDATE names no target; see the field's note
 		noReturning:     true,
 		// Standard SQL in shape, but every one of them renders identifiers and
@@ -380,4 +387,25 @@ func mysqlLowering() lowering {
 		// silently emitted in the other dialect's spelling; lowering them is
 		// what remains of M9's query side.
 	}
+}
+
+// spliceFn and spliceTail name the write splice a generated package calls.
+//
+// PostgreSQL keeps the three-argument runtime.SpliceSections it always used, so
+// its output is byte-identical to what it emitted before the placeholder
+// carrier existed — an adopter regenerating on a storm that gained MySQL
+// support should see no diff at all. Only a back end that needs a different
+// placeholder names the four-argument form.
+func (g *gen) spliceFn() string {
+	if g.lw.PlaceholderExpr == "" {
+		return "runtime.SpliceSections"
+	}
+	return "runtime.SpliceSectionsWith"
+}
+
+func (g *gen) spliceTail() string {
+	if g.lw.PlaceholderExpr == "" {
+		return `""`
+	}
+	return `"", ` + g.lw.PlaceholderExpr
 }

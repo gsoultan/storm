@@ -285,3 +285,49 @@ func NullNumeric(b []byte) (runtime.Null[runtime.Decimal], error) {
 	}
 	return runtime.Null[runtime.Decimal]{V: d, Valid: true}, nil
 }
+
+// The nullable TEMPORALS. Absent until 2026-09-12, and absent silently: the
+// generated MySQL package named mydec.NullTimestamptz — the PostgreSQL family's
+// spelling, because the dialect's rename map covered Timestamptz and not
+// NullTimestamptz — and no fixture had a nullable timestamp column, so
+// TestMySQLGeneratedPackageCompiles never asked for one.
+//
+// A soft-delete model asks for one immediately: `DeletedAt *time.Time` is the
+// commonest nullable temporal there is.
+
+// NullDateTime reads a nullable DATETIME or TIMESTAMP.
+func NullDateTime(b []byte) (runtime.Null[time.Time], error) {
+	if b == nil {
+		return runtime.Null[time.Time]{}, nil
+	}
+	t, err := DateTime(b)
+	if err != nil {
+		return runtime.Null[time.Time]{}, err
+	}
+	return runtime.Null[time.Time]{V: t, Valid: true}, nil
+}
+
+// NullDate reads a nullable DATE.
+func NullDate(b []byte) (runtime.Null[time.Time], error) {
+	if b == nil {
+		return runtime.Null[time.Time]{}, nil
+	}
+	t, err := Date(b)
+	if err != nil {
+		return runtime.Null[time.Time]{}, err
+	}
+	return runtime.Null[time.Time]{V: t, Valid: true}, nil
+}
+
+// NullDuration reads a nullable TIME, which MySQL models as a signed duration
+// rather than a time of day.
+func NullDuration(b []byte) (runtime.Null[time.Duration], error) {
+	if b == nil {
+		return runtime.Null[time.Duration]{}, nil
+	}
+	d, err := Duration(b)
+	if err != nil {
+		return runtime.Null[time.Duration]{}, err
+	}
+	return runtime.Null[time.Duration]{V: d, Valid: true}, nil
+}

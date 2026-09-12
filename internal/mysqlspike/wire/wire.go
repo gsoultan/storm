@@ -76,8 +76,8 @@ func (c *conn) handshake(user, pass, db string) error {
 	for i < len(p) && p[i] != 0 {
 		i++
 	}
-	i++      // server version NUL
-	i += 4   // thread id
+	i++    // server version NUL
+	i += 4 // thread id
 	salt := append([]byte{}, p[i:i+8]...)
 	i += 8 + 1 + 2 + 1 + 2 + 2 + 1 + 10
 	if i+12 <= len(p) {
