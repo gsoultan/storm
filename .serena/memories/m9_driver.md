@@ -129,3 +129,88 @@ definitions are followed by an EOF packet. Not consuming it means the first
   surface question — though targeting MariaDB first would make it moot.
 
 Related: [[m9_mysql]], [[decisions]] (ADR-0007), [[core]].
+
+---
+
+# The adapter is shippable — 2026-09-12
+
+The four gaps `runtime/mydrv`'s package doc named are closed. Each is proved by
+a test that fails when the feature is removed (probed, not assumed).
+
+## What landed
+
+- **TLS.** `Config.TLS`: `TLSPreferred` (upgrade where offered, do NOT verify),
+  `TLSRequired` (refuse a server without it, and verify — a nil `TLSConfig`
+  there is not `InsecureSkipVerify`), `TLSDisabled`. The default does not verify
+  ON PURPOSE: stock MySQL and MariaDB both ship a self-signed certificate, so a
+  verifying default cannot connect to either and pushes callers to
+  `TLSDisabled`, which is strictly less. Same model as go-sql-driver's
+  `tls=preferred`.
+- **`caching_sha2_password`** with full auth, `mysql_native_password`, and the
+  auth-switch request. Full auth on a plaintext socket is `ErrCleartextRefused`
+  unless `AllowCleartextPasswordOverPlaintext`.
+- **`mydrv.Pool`** (bounded, an `Executor`) and **`mydrv.Tx`** (pinned to one
+  connection; `BEGIN` is session state).
+- **`KILL QUERY` from a second connection** on cancel. Asserted against
+  `information_schema.processlist`.
+
+## The three findings worth remembering
+
+1. **The RSA branch of full auth is OAEP with SHA-1, not SHA-256.** The digest
+   is OAEP's mask function; it has nothing to do with the plugin's name. Getting
+   it wrong fails as "Access denied", indistinguishable from a wrong password.
+   Only a test that CREATEs a fresh account (so the server has no cached hash)
+   reaches this branch at all — every ordinary test takes the fast path.
+
+2. **The shipped adapter cost 10.1 allocs/row while the docs claimed 1.07.**
+   The 1.07 was the spike's; the shipped `Query` MATERIALISED every result set,
+   which is nine allocations a row on top. Materialising had a real reason —
+   a result set holds the connection, and a plan loading a relation mid-iteration
+   would deadlock — that **the pool made obsolete and nobody revisited**. Now it
+   streams: 1.07 allocs/row, 6 B/row, and
+   `TestQueryCostsAboutOneAllocationPerRow` is the gate. The lesson generalises:
+   when a constraint is removed, go back and find what was built to work around
+   it.
+
+3. **A `FLOAT` column panicked the row decoder.** `fixedWidth` had no entry, so
+   four bytes were read as length-encoded and every subsequent column in the row
+   decoded from the wrong offset. Neither side's unit tests could see it —
+   `mydec` hand-writes the bytes it expects and the binder's tests check what it
+   produced, so a contract mismatch passes both. **Only a real server, sitting
+   in the middle, can tell two halves of a contract apart.** The fix ships with
+   a round trip of every supported type against both engines.
+
+## Streaming's contract
+
+A result set holds its connection until `Close`. A second statement on the same
+connection before then is `ErrRowsOpen` — a NAMED error, because the first
+version let it corrupt the protocol and panic several statements later, with
+nothing to connect the crash to the missing `Close`. `Close` drains first. A
+`Pool` is what lets you nest, which is what a fetch plan does.
+
+## Errors
+
+`mydrv.classify` maps the server's codes onto `runtime.ConstraintError` and the
+same sentinels `pgxdrv` uses. Nothing is invented: MySQL has no exclusion
+constraint and reports a serialization conflict AS a deadlock, so those two
+sentinels stay unmapped. The constraint's NAME is dug out of the message
+(best-effort, documented) because the server does not send it as a field — what
+is matched is an identifier quoted back from the DDL, not translated prose.
+The two servers use different codes for a failed CHECK (3819 / 4025) and
+different quoting, so the test runs against both.
+
+## Reachability
+
+`storm generate -dialect mysql|mariadb`, `storm ddl -dialect ...`. Before this,
+every engine-specific piece existed and none could be asked for from the CLI.
+Commands that read a live PostgreSQL catalogue (`diff`, `verify`, `explain`,
+`import`, `watch`) refuse a non-PostgreSQL dialect and say what to do instead.
+Raw `storm.SQL` declarations refuse it too: they are validated by PREPAREing
+against PostgreSQL, and there is no MySQL equivalent.
+
+## Local servers
+
+`storm-my` (MySQL 8, 192.168.64.3:3306) and `storm-maria` (MariaDB 11.4,
+192.168.64.188:3306), both root/storm, database `storm`. Tests read
+`STORM_MYSQL_ADDR` and `STORM_MARIADB_ADDR`; CI has both services and the
+MariaDB dialect gate gained a `STORM_MARIADB_DSN` path.

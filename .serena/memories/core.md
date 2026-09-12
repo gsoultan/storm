@@ -202,6 +202,16 @@ both dialects, so a MySQL package carried PostgreSQL SQL and MySQL 8.4.11
 rejects it with Error 1064. `codegen` now refuses `DialectMySQL`. See
 [[m9_mysql]] before starting M9.
 
+**M9 DONE, 2026-09-12. MySQL 8 and MariaDB are runtime targets.**
+`compile/mysql`, `compile/mariadb`, `runtime/mydec`, `runtime/mydrv` (TLS,
+`caching_sha2_password`, a bounded pool, pinned transactions, `KILL QUERY` on
+cancel, streaming rows at 1.07 allocs/row), errors in `runtime`'s own
+vocabulary, and `storm generate -dialect mysql|mariadb`. A generated package
+does real CRUD against both servers, through a pool, over TLS. The three
+findings worth carrying forward are in [[m9_driver]] — especially that the
+shipped adapter cost 10.1 allocs/row while the docs claimed 1.07, because
+materialising was built to work around a constraint the pool had removed.
+
 ## Related memories
 - [[m9_mysql]] — why M9 is bigger than PLAN.md said, and the gate that read
   as though it worked
