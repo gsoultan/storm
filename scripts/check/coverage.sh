@@ -17,6 +17,15 @@ declare -a FLOORS=(
   # Lower than the others because a driver adapter's remaining statements are
   # error plumbing that needs a broken server to reach.
   "github.com/gsoultan/storm/runtime/pgxdrv 85"
+  # The MySQL/MariaDB adapter, which is a wire protocol written by hand: an
+  # off-by-one in a packet offset produces a plausible value, not an error.
+  # Needs STORM_MYSQL_ADDR to reach anything, which is the same bargain pgxdrv
+  # makes with STORM_DSN.
+  "github.com/gsoultan/storm/runtime/mydrv 80"
+  "github.com/gsoultan/storm/compile/mysql 80"
+  "github.com/gsoultan/storm/compile/mariadb 80"
+  "github.com/gsoultan/storm/runtime/mydec 90"
+  "github.com/gsoultan/storm/compile/myddl 85"
   "github.com/gsoultan/storm/compile/pgsql 80"
   "github.com/gsoultan/storm/compile/pgddl 90"
   "github.com/gsoultan/storm/codegen 85"
