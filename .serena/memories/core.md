@@ -207,10 +207,12 @@ rejects it with Error 1064. `codegen` now refuses `DialectMySQL`. See
 `caching_sha2_password`, a bounded pool, pinned transactions, `KILL QUERY` on
 cancel, streaming rows at 1.07 allocs/row), errors in `runtime`'s own
 vocabulary, and `storm generate -dialect mysql|mariadb`. A generated package
-does real CRUD against both servers, through a pool, over TLS. The three
+does real CRUD against both servers, through a pool, over TLS. The
 findings worth carrying forward are in [[m9_driver]] — especially that the
-shipped adapter cost 10.1 allocs/row while the docs claimed 1.07, because
-materialising was built to work around a constraint the pool had removed.
+shipped adapter cost 10.1 allocs/row while the docs claimed 1.07 (materialising
+was built to work around a constraint the pool had removed), and that v0.11.0
+shipped with every fetch plan broken on MySQL because the end-to-end had ONE
+table and so had never loaded a relation.
 
 ## Related memories
 - [[m9_mysql]] — why M9 is bigger than PLAN.md said, and the gate that read
