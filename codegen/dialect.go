@@ -70,6 +70,14 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 				"Timestamptz":  "DateTime",
 				"TimeOfDayErr": "Duration",
 				"NumericErr":   "Decimal",
+				// The NULLABLE spellings, which were missing. nullName builds
+				// "Null"+the kind's PostgreSQL decoder name, so the rename has
+				// to cover those too — otherwise a nullable timestamp emits
+				// mydec.NullTimestamptz, a function this family does not have.
+				// Nothing caught it because no MySQL fixture had a nullable
+				// temporal column, and a soft-delete model has one on day one.
+				"NullTimestamptz": "NullDateTime",
+				"NullTimeOfDay":   "NullDuration",
 			},
 			fallible: map[kind]bool{
 				// Every temporal type here reads a leading length and can be

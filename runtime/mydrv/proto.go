@@ -1,10 +1,38 @@
-// A minimal MySQL/MariaDB wire client — enough to answer one question: can
-// storm's port (raw bytes per column, zero-copy, row at a time) be satisfied at
-// the allocation profile ADR-0007 demands?
+// Package mydrv is storm's MySQL and MariaDB adapter.
 //
-// NOT a driver. No TLS, no caching_sha2_password, no prepared statements, no
-// pooling, no cancellation. Those are the four weeks; this is the risk in them.
-package main
+// It speaks the wire protocol directly rather than wrapping a database/sql
+// driver, and that is not a preference. storm's port wants raw bytes per column
+// (runtime.Rows.RawValues) so the generated scanners can decode without boxing;
+// go-sql-driver hands back DECODED values — int64, []uint8 — in both protocols,
+// so satisfying the port on top of it would mean re-encoding. Measured, 200
+// rows x 8 columns: 8.07 allocations per row through go-sql-driver, 9.07
+// through vitess, 1.04 here with decoding included. See
+// internal/mysqlspike/ for the measurements.
+//
+// No third-party dependency: this package is stdlib only, so an adopter who
+// never targets MySQL links nothing extra and one who does links no driver
+// either.
+//
+// # NOT YET PRODUCTION READY
+//
+// Stated here rather than in a release note, because the gap is the kind that
+// bites in production and not in a test:
+//
+//   - **No TLS.** Every connection is plaintext. Do not point this at a
+//     database across a network you do not own.
+//   - **mysql_native_password only.** MySQL 8.4 turns that off by default, so
+//     this connects to MariaDB and to a MySQL configured for it.
+//     caching_sha2_password is not implemented.
+//   - **No connection pooling.** One Conn is one connection, and it is not safe
+//     for concurrent use.
+//   - **Context cancellation is a deadline, not a kill.** Cancelling does not
+//     send COM_KILL_QUERY, so a long statement runs to completion server-side.
+//   - **Bound parameters cover the types storm generates** and not the whole
+//     MySQL type table.
+//
+// Those are the remaining work, and each one is a reason not to ship this
+// against a real database yet.
+package mydrv
 
 import (
 	"bufio"
@@ -21,19 +49,17 @@ type conn struct {
 	seq  uint8
 	pkt  []byte   // reused packet buffer
 	cols [][]byte // reused per-row column slices, pointing INTO pkt
+
+	// onOK, when set, is handed an OK packet so a caller can read the
+	// affected-row count out of it. A field rather than a return value because
+	// the OK packet arrives on a path shared with result sets.
+	onOK func(p []byte)
 }
 
-func dial(addr, user, pass, db string) (*conn, error) {
-	nc, err := net.Dial("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	c := &conn{c: nc, r: bufio.NewReaderSize(nc, 64<<10), pkt: make([]byte, 0, 64<<10)}
-	if err := c.handshake(user, pass, db); err != nil {
-		nc.Close()
-		return nil, err
-	}
-	return c, nil
+// newConn wraps an already-dialled socket. Dialling is Open's job, so it can
+// honour the caller's context.
+func newConn(nc net.Conn) *conn {
+	return &conn{c: nc, r: bufio.NewReaderSize(nc, 64<<10), pkt: make([]byte, 0, 64<<10)}
 }
 
 // readPacket reads one packet into c.pkt, REUSING the buffer. The returned
@@ -238,5 +264,3 @@ func ioReadFull(r *bufio.Reader, p []byte) (int, error) {
 	}
 	return n, nil
 }
-
-func main() {}

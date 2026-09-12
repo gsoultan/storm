@@ -279,6 +279,38 @@ merely a second one.** One wire caveat to plan for — MySQL 8.4 turns
 `mysql_native_password` off by default while most MariaDB installs still use it,
 so the handshake must carry both it and `caching_sha2_password`.
 
+**A generated package RUNS, 2026-09-12.** `runtime/mydrv` is storm's
+MySQL/MariaDB adapter: it satisfies `runtime.Executor`, speaks the wire
+directly, and carries **no third-party dependency and no reflect**. A generated
+package now does real CRUD against MariaDB 11.4 — insert, bound predicates,
+count, exists, soft delete, uniqueness — and its insert reads the row back,
+proved by the server truncating nanoseconds to microseconds rather than by
+echoing the input.
+
+**It is NOT production ready, and `mydrv`'s package doc says so first**: no TLS,
+`mysql_native_password` only, no pooling, no `COM_KILL_QUERY` on cancel. Those
+remain.
+
+Six defects the end-to-end found that the unit gates could not, all of the same
+shape — each piece worked and the seam between them did not:
+
+1. `mydec.NullTimestamptz` did not exist. The dialect's rename map covered
+   `Timestamptz` and not the nullable spelling, and **no MySQL fixture had a
+   nullable temporal column** — a soft-delete model has one on day one. The
+   nullable temporals were missing from `mydec` entirely.
+2. The generated `runtime.Lowering` never set `Placeholder`, so the splicer
+   numbered MySQL's `?` as though it were PostgreSQL's and emitted `$1`.
+3. `SpliceSections` needed the carrier too, on the write path.
+4. The parameter binder covered `int64` and `string`; storm passes uuids,
+   timestamps, decimals and pointers to all of them.
+5. `myddl` emits `GENERATED ALWAYS AS (…) STORED NOT NULL`, which MySQL accepts
+   and **MariaDB rejects** — a sixth divergence, recorded as a skipped test
+   rather than fixed, because it needs a MariaDB DDL variant.
+6. A soft-delete table's live-scoped unique is a PARTIAL index, which MySQL has
+   not — so on this engine soft delete has uniqueness over every row or none,
+   and a deleted row keeps its email forever. `myddl.Check` already refused it
+   correctly; what was missing was anyone knowing.
+
 **And a wire client does reach the target profile, measured 2026-09-12**
 (`internal/mysqlspike/wire`). MariaDB 11.4.13, 200 rows × 8 columns:
 
