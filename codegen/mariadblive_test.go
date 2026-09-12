@@ -260,7 +260,7 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 	if os.Getenv(addrVar) == "" {
 		t.Skip(addrVar + " unset")
 	}
-	s, err := storm.Build(&mdAuthor{}, &mdPost{}, mdNames)
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, mdNames)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,6 +318,8 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		"TestSemiJoinDoesNotMultiplyTheParent",
 		"TestUnionMergesBothTablesInOneOrder",
 		"TestRowLockingInsideATransaction",
+		"TestRecursiveDescendsAndAscends",
+		"TestRecursiveTerminatesOnACycle",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
@@ -369,6 +371,23 @@ func (p *mdPost) Aggregates(a *storm.Aggregates) {
 	byAuthor.Sum(&p.Views, "Views")
 	byAuthor.Max(&p.Views, "TopViews")
 	byAuthor.Having(a.Gt(n, 0))
+}
+
+// A self-referential table, which is what generates WITH RECURSIVE. It takes
+// its roots as a bound key list — the same JSON-document path that broke every
+// fetch plan — and its cycle guard is the one construct that differs most
+// between the engines: PostgreSQL accumulates visited keys in an ARRAY, MySQL
+// has none and uses a HEX string with FIND_IN_SET.
+type mdNode struct {
+	storm.Model
+	Name     string
+	Parent   *mdNode
+	Children []mdNode
+}
+
+func (n *mdNode) Schema(t *storm.Table) {
+	t.Col(&n.Name).Size(60)
+	t.Col(&n.Parent).OnDelete(storm.Cascade)
 }
 
 // A union has no driving table, so it hangs off the schema rather than off

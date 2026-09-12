@@ -12,6 +12,38 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Recursive traversal was broken on MySQL and MariaDB, and had no gate at all
+
+The construct with the least coverage of anything storm generates for these
+targets: the shell gates never PREPAREd it, so before this it had none of any
+kind. Running it found it broken on both.
+
+MySQL and MariaDB infer a recursive CTE column's type from the **anchor** term
+alone. The cycle guard accumulates visited keys as a HEX string — PostgreSQL
+uses an array and neither of these has one — and the anchor emitted a bare
+`HEX(key)`, which makes the path column exactly ONE KEY WIDE. The first append
+overflows it: error 1406 in strict mode, and a **silently truncated path**
+without it, which is a cycle guard that stops guarding and a connection that
+does not come back. The anchor now casts to a fixed width.
+
+A fixed width means a bound, so there is one: `ErrDepthTooDeep` refuses a
+traversal deeper than the guard can hold (121 levels for a uuid key, 235 for a
+bigint) rather than trusting the server's `sql_mode` to turn the overflow into
+an error. PostgreSQL's array has no width and so no bound.
+
+Both shell gates now build a four-level chain and a two-node cycle and assert
+the ANSWERS — four rows and two — because a guard that returns the depth
+bound's worth of rows is accepted by the server and wrong. Removing the guard
+reports 200. The end-to-end traverses a real tree on both engines: depth
+bounds, ancestors, and a cycle that must terminate.
+
+One test-harness bug worth recording: the first version of the gate anchored
+its assertion on a `-- label` comment, which the client strips. It read an
+empty string and passed — for exactly the reason it was written to catch. The
+probe is labelled in the RESULT SET now.
+
 ## v0.12.0 — 2026-09-12
 
 **If you generate for MySQL or MariaDB, regenerate.** v0.11.0 shipped with

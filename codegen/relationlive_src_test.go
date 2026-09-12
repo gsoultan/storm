@@ -12,8 +12,10 @@ const relationsLiveSrc = `package PKG_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/myddl"
@@ -22,6 +24,7 @@ import (
 
 	ctxpkg "IMPORTPATH"
 	"IMPORTPATH/mdauthor"
+	"IMPORTPATH/mdnode"
 	"IMPORTPATH/mdpost"
 )
 
@@ -43,6 +46,18 @@ type mdPost struct {
 
 func (p *mdPost) Schema(t *storm.Table) { t.Col(&p.Title).Size(120) }
 
+type mdNode struct {
+	storm.Model
+	Name     string
+	Parent   *mdNode
+	Children []mdNode
+}
+
+func (n *mdNode) Schema(t *storm.Table) {
+	t.Col(&n.Name).Size(60)
+	t.Col(&n.Parent).OnDelete(storm.Cascade)
+}
+
 var ex *mydrv.Pool
 
 func TestMain(m *testing.M) {
@@ -60,12 +75,12 @@ func TestMain(m *testing.M) {
 	defer p.Close()
 	ex = p
 
-	s, err := storm.Build(&mdAuthor{}, &mdPost{})
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{})
 	must(err)
 	ddl, err := myddl.CreateFor(s, myddl.TARGET)
 	must(err)
 	// Children first: the foreign key points the other way.
-	for _, t := range []string{"md_posts", "md_authors"} {
+	for _, t := range []string{"md_posts", "md_authors", "md_nodes"} {
 		_, _ = p.Exec(ctx, "DROP TABLE IF EXISTS " + "` + "`" + `" + t + "` + "`" + `", nil)
 	}
 	for _, stmt := range splitDDL(ddl) {
@@ -413,5 +428,155 @@ func TestRowLockingInsideATransaction(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// WITH RECURSIVE, run rather than spelled.
+//
+// This is the construct with the LEAST coverage of anything storm generates for
+// this target: the shell gates never PREPAREd it, so before this it had none of
+// any kind. It also takes its roots as a bound key list, which is the exact
+// path that broke every fetch plan, and its cycle guard is where the two
+// engines part company hardest — PostgreSQL accumulates visited keys in an
+// ARRAY, MySQL has no array type and joins HEX strings with FIND_IN_SET.
+func TestRecursiveDescendsAndAscends(t *testing.T) {
+	ctx := context.Background()
+	// A 1 -> 2 -> 4 chain with a sibling 3 under 1, so depth and breadth are
+	// distinguishable and a bound that counted wrongly shows up as a count.
+	//
+	//   1
+	//   |- 2 - 4
+	//   \- 3
+	tree := []struct {
+		id     byte
+		name   string
+		parent byte // 0 = root
+	}{{1, "root", 0}, {2, "child", 1}, {3, "sibling", 1}, {4, "grandchild", 2}}
+	for _, n := range tree {
+		row := &mdnode.Row{ID: id(0x70, n.id), Name: n.name}
+		if n.parent != 0 {
+			p := id(0x70, n.parent)
+			row.ParentID = runtime.Null[[16]byte]{V: p, Valid: true}
+		}
+		if err := mdnode.Insert(ctx, ex, row); err != nil {
+			t.Fatalf("insert %s: %v", n.name, err)
+		}
+	}
+
+	// The roots are included AT DEPTH 1, so maxDepth 1 returns exactly them.
+	only, err := mdnode.Descend(ctx, ex, [][16]byte{id(0x70, 1)}, 1)
+	if err != nil {
+		t.Fatalf("descend depth 1: %v", err)
+	}
+	if len(only) != 1 || only[0].Name != "root" {
+		t.Fatalf("depth 1 returned %d rows (%+v), want just the root", len(only), only)
+	}
+
+	// Depth 2 adds one level: the two children, not the grandchild.
+	two, err := mdnode.Descend(ctx, ex, [][16]byte{id(0x70, 1)}, 2)
+	if err != nil {
+		t.Fatalf("descend depth 2: %v", err)
+	}
+	if len(two) != 3 {
+		t.Fatalf("depth 2 returned %d rows, want 3 (root + two children): %+v", len(two), two)
+	}
+	if namesOf(two)["grandchild"] {
+		t.Error("the depth bound did not hold: a grandchild came back at depth 2")
+	}
+
+	// The whole subtree.
+	all, err := mdnode.Descend(ctx, ex, [][16]byte{id(0x70, 1)}, 10)
+	if err != nil {
+		t.Fatalf("descend: %v", err)
+	}
+	if len(all) != 4 {
+		t.Fatalf("the subtree has %d rows, want 4: %+v", len(all), all)
+	}
+
+	// Upward, from the deepest row: itself, its parent, and the root.
+	up, err := mdnode.Ascend(ctx, ex, [][16]byte{id(0x70, 4)}, 10)
+	if err != nil {
+		t.Fatalf("ascend: %v", err)
+	}
+	got := namesOf(up)
+	if len(up) != 3 || !got["grandchild"] || !got["child"] || !got["root"] {
+		t.Errorf("the ancestor chain is %+v, want grandchild, child and root", up)
+	}
+	if got["sibling"] {
+		t.Error("ascending reached a sibling, which is not an ancestor")
+	}
+
+	// A traversal with no positive bound is refused rather than run: unbounded
+	// recursion over a cycle does not return.
+	if _, err := mdnode.Descend(ctx, ex, [][16]byte{id(0x70, 1)}, 0); err == nil {
+		t.Error("an unbounded traversal was accepted")
+	}
+	// ...and so is one deeper than the cycle guard can hold. This back end
+	// accumulates visited keys in a fixed-width column, and past its limit the
+	// path overflows — an error in strict mode and a SILENT TRUNCATION without
+	// it, which is a guard that stops guarding. Refused here rather than
+	// trusted to the server's sql_mode.
+	if _, err := mdnode.Descend(ctx, ex, [][16]byte{id(0x70, 1)}, 100000); err == nil {
+		t.Error("a traversal deeper than the cycle guard was accepted")
+	} else if !errors.Is(err, mdnode.ErrDepthTooDeep) {
+		t.Errorf("err = %v, want ErrDepthTooDeep", err)
+	}
+}
+
+// The cycle guard, which is the half that differs most between the engines.
+//
+// A foreign key does not stop A pointing at B pointing at A. Without a guard
+// the query runs to the server's recursion limit and the connection hangs; the
+// guard has to stop it at the point it revisits a key.
+func TestRecursiveTerminatesOnACycle(t *testing.T) {
+	ctx := context.Background()
+	// Two rows pointing at each other. Inserted with NULL parents first,
+	// because each references the other and neither can be second.
+	a, b := id(0x71, 1), id(0x71, 2)
+	for _, n := range []struct {
+		id   [16]byte
+		name string
+	}{{a, "cycle-a"}, {b, "cycle-b"}} {
+		if err := mdnode.Insert(ctx, ex, &mdnode.Row{ID: n.id, Name: n.name}); err != nil {
+			t.Fatalf("insert %s: %v", n.name, err)
+		}
+	}
+	for _, l := range []struct{ from, to [16]byte }{{a, b}, {b, a}} {
+		// Unquoted identifiers: neither is reserved, and a backtick would end
+		// the template this source lives in.
+		if _, err := ex.Exec(ctx,
+			"UPDATE md_nodes SET parent_id = ? WHERE id = ?", []any{l.to, l.from}); err != nil {
+			t.Fatalf("link: %v", err)
+		}
+	}
+
+	done := make(chan struct{})
+	var rows []mdnode.Row
+	var err error
+	go func() {
+		defer close(done)
+		rows, err = mdnode.Descend(ctx, ex, [][16]byte{a}, 50)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the traversal did not terminate on a cycle")
+	}
+	if err != nil {
+		t.Fatalf("descend over a cycle: %v", err)
+	}
+	// Each row once: the guard stops at the revisit rather than at the depth
+	// bound, so 50 levels of a two-node cycle is two rows, not fifty.
+	if len(rows) != 2 {
+		t.Errorf("the cycle produced %d rows, want 2 — the guard stopped at the depth "+
+			"bound rather than at the revisited key: %+v", len(rows), rows)
+	}
+}
+
+func namesOf(rows []mdnode.Row) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range rows {
+		out[r.Name] = true
+	}
+	return out
 }
 `

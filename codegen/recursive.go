@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
@@ -41,6 +42,9 @@ func selfRefColumn(t *schema.Table) (string, error) {
 	}
 }
 
+// itoa64 spells a depth bound for an error message.
+func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
+
 func (g *gen) recursive() {
 	parent, err := selfRefColumn(g.t)
 	if err != nil {
@@ -78,6 +82,21 @@ func (g *gen) recursive() {
 	g.p("\t%q)", "storm: recursive traversal needs a positive depth bound — "+
 		"unbounded recursion over a cycle does not return")
 	g.p("")
+	if limit := g.lw.RecursiveMaxDepth(g.lw.KeyType(kc)); limit > 0 {
+		// A bound the TARGET imposes, refused here rather than trusted to the
+		// server's sql_mode: this back end's cycle guard is a fixed-width
+		// column of visited keys, and past this depth it overflows — an error
+		// in strict mode and a silent truncation without it, which is a guard
+		// that stops guarding and a connection that does not come back.
+		g.p("// ErrDepthTooDeep is returned by a traversal deeper than this back end's")
+		g.p("// cycle guard can hold. Its visited-key path is a fixed-width column, and")
+		g.p("// past %d levels it overflows — which on a server without strict mode is a", limit)
+		g.p("// silently truncated path rather than an error, so the depth is refused here.")
+		g.p("var ErrDepthTooDeep = errors.New(")
+		g.p("\t%q)", "storm: recursive traversal deeper than "+
+			itoa64(limit)+" is beyond this back end's cycle guard")
+		g.p("")
+	}
 
 	for _, dir := range []struct {
 		name, doc string
@@ -86,7 +105,9 @@ func (g *gen) recursive() {
 		{"Descend", "descendants: rows whose " + parent + " chain leads back to a root", pgsql.Descend},
 		{"Ascend", "ancestors: the " + parent + " chain upward from each row", pgsql.Ascend},
 	} {
-		sql := g.lw.Recursive(g.t.Name, cols, key, parent, g.lw.KeyType(kc), dir.dir, string(g.live()))
+		keyType := g.lw.KeyType(kc)
+		maxDepth := g.lw.RecursiveMaxDepth(keyType)
+		sql := g.lw.Recursive(g.t.Name, cols, key, parent, keyType, dir.dir, string(g.live()))
 		g.p("// %s returns the %s.", dir.name, dir.doc)
 		g.p("//")
 		g.p("// The roots themselves are included, at depth 1. maxDepth counts them,")
@@ -102,6 +123,11 @@ func (g *gen) recursive() {
 		g.p("\tif maxDepth <= 0 {")
 		g.p("\t\treturn nil, ErrDepth")
 		g.p("\t}")
+		if maxDepth > 0 {
+			g.p("\tif maxDepth > %d {", maxDepth)
+			g.p("\t\treturn nil, ErrDepthTooDeep")
+			g.p("\t}")
+		}
 		g.p("\trows, err := ex.Query(ctx, %sSQL, []any{roots, maxDepth})", lowerFirst(dir.name))
 		g.p("\tif err != nil {")
 		g.p("\t\treturn nil, err")

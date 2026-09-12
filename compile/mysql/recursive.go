@@ -1,6 +1,9 @@
 package mysql
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Recursive traversal of a self-reference: a whole subtree or ancestor chain in
 // one query rather than one query per level.
@@ -43,7 +46,12 @@ func Recursive(table string, cols []string, key, parent, keyType string, dir int
 	b.WriteString(", 1 AS ")
 	b.WriteString(Ident(depthAlias))
 	b.WriteString(", ")
-	b.WriteString(hexKey(Ident(key)))
+	// CAST, and this is load-bearing. MySQL infers a recursive CTE column's
+	// type from the ANCHOR alone, so an un-cast HEX(key) makes the path column
+	// exactly one key wide and the FIRST append overflows it — error 1406 in
+	// strict mode, and a SILENTLY TRUNCATED path in a server without it, which
+	// is a cycle guard that stops guarding.
+	b.WriteString("CAST(" + hexKey(Ident(key)) + " AS CHAR(" + strconv.Itoa(pathWidth) + "))")
 	b.WriteString(" AS ")
 	b.WriteString(Ident(pathAlias))
 	b.WriteString(" FROM ")
@@ -121,4 +129,51 @@ const (
 	recursiveChild = "_storm_rc"
 	depthAlias     = "_storm_d"
 	pathAlias      = "_storm_path"
+
+	// pathWidth is how much visited-key history the guard can hold.
+	//
+	// A fixed width because the anchor's CAST has to name one, and the depth is
+	// a run-time argument. Generous rather than exact: the column exists only
+	// inside the CTE, so it costs nothing until a traversal is actually that
+	// deep.
+	pathWidth = 4000
 )
+
+// MaxRecursionDepth is the deepest traversal whose cycle guard still holds for
+// this key type, or 0 for no limit.
+//
+// Past it the path column overflows. In strict mode that is an error, and
+// without strict mode it is a silent truncation — a guard that stops guarding,
+// which is a hung connection rather than a wrong answer. So the generated
+// traversal refuses the depth instead of trusting the server's sql_mode.
+func MaxRecursionDepth(keyType string) int64 {
+	hex := hexWidth(keyType)
+	if hex <= 0 {
+		return 0
+	}
+	// Each key costs its hex characters plus the comma that separates it.
+	return int64(pathWidth / (hex + 1))
+}
+
+// hexWidth is how many characters HEX() produces for a key of this type, or 0
+// when it cannot be known from the type alone.
+func hexWidth(keyType string) int {
+	if n, ok := binaryWidth(keyType); ok {
+		return n * 2
+	}
+	t := strings.ToUpper(strings.TrimSpace(keyType))
+	switch {
+	case strings.HasPrefix(t, "BIGINT"):
+		return 16
+	case strings.HasPrefix(t, "INT"), strings.HasPrefix(t, "MEDIUMINT"):
+		return 8
+	case strings.HasPrefix(t, "SMALLINT"):
+		return 4
+	case strings.HasPrefix(t, "TINYINT"):
+		return 2
+	}
+	// A text key: HEX() doubles its bytes, and the declared length is a
+	// character count rather than a byte count under utf8mb4. Unknowable from
+	// the type, so no bound is claimed rather than a wrong one.
+	return 0
+}

@@ -167,6 +167,18 @@ else
     note "a JSON_TABLE lowering stopped using an index (ADR-0010) — $got_idx of 2 plans:"
     tail -6 "$TMP/qout" | sed 's/^/    /' >&2
   fi
+  # The recursive traversal ANSWERS, not just its acceptance. A cycle guard
+  # that returns the depth bound's worth of rows instead of stopping at the
+  # revisited key is accepted by the server and wrong — which is the whole
+  # difference between a guard and a bound.
+  chain="$(awk '$1=="recursive_reaches_every_level"{print $2;exit}' "$TMP/qout")"
+  if [ "${chain:-0}" != "4" ]; then
+    note "the recursive traversal reached $chain levels of a four-level chain"
+  fi
+  cyc="$(awk '$1=="recursive_cycle_terminates"{print $2;exit}' "$TMP/qout")"
+  if [ "${cyc:-0}" != "2" ]; then
+    note "a two-node cycle produced $cyc rows under a depth bound of 200 — the guard stopped at the bound, not at the revisited key"
+  fi
 fi
 
 if [ "$fail" -eq 0 ]; then
