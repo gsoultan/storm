@@ -13,6 +13,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +34,26 @@ type fakeServer struct {
 
 func newFakeServer(t *testing.T, caps uint32, plugin string, after []byte) *fakeServer {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	return newFakeServerOn(t, "tcp", "127.0.0.1:0", caps, plugin, after)
+}
+
+// tempSock is a SHORT socket path. t.TempDir's is nested deep enough to pass
+// the 104-byte limit a unix socket address has, and the failure is "bind:
+// invalid argument", which does not say so.
+func tempSock(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "mydrv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
+func newFakeServerOn(t *testing.T, network, addr string, caps uint32,
+	plugin string, after []byte) *fakeServer {
+	t.Helper()
+	ln, err := net.Listen(network, addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,5 +259,67 @@ func TestGreetingSaltIsBothParts(t *testing.T) {
 	}
 	if g.connID != 7 {
 		t.Errorf("connID = %d, want 7 — without it there is nothing to KILL QUERY", g.connID)
+	}
+}
+
+// A unix socket is a path, not a host:port, and it is how most local MySQL
+// installs are actually reached — the loopback TCP listener is often off.
+func TestAUnixSocketPathIsDialledAsASocket(t *testing.T) {
+	sock := tempSock(t)
+	s := newFakeServerOn(t, "unix", sock, baseCaps, "mysql_native_password", []byte{0x00})
+	c, err := Open(context.Background(), Config{Addr: s.addr(), User: "u", Password: "p"})
+	if err != nil {
+		t.Fatalf("unix socket: %v", err)
+	}
+	c.Close()
+}
+
+// TLSPreferred does NOT upgrade over a unix socket: the socket is a file
+// guarded by filesystem permissions and there is no host name for a certificate
+// to attest to, so opportunistic encryption buys nothing.
+func TestTLSPreferredDoesNotUpgradeAUnixSocket(t *testing.T) {
+	sock := tempSock(t)
+	s := newFakeServerOn(t, "unix", sock, baseCaps|capSSL, "mysql_native_password", []byte{0x00})
+	c, err := Open(context.Background(), Config{Addr: s.addr(), User: "u", Password: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	select {
+	case login := <-s.login:
+		if binary.LittleEndian.Uint32(login)&capSSL != 0 {
+			t.Error("TLSPreferred asked to upgrade a unix socket")
+		}
+	default:
+		t.Fatal("the server never saw a login packet")
+	}
+}
+
+// ...but TLSRequired still means what it says. Over a unix socket it needs a
+// TLSConfig naming who to expect, because verification checks a name against a
+// certificate and a socket path is not one. Skipping the check silently would
+// make TLSRequired weaker over a socket than over TCP, which is backwards.
+func TestTLSRequiredOverAUnixSocketNeedsAName(t *testing.T) {
+	sock := tempSock(t)
+	s := newFakeServerOn(t, "unix", sock, baseCaps|capSSL, "mysql_native_password", []byte{0x00})
+	_, err := Open(context.Background(), Config{
+		Addr: s.addr(), User: "u", Password: "p", TLS: TLSRequired,
+	})
+	if !errors.Is(err, ErrTLSOverUnixNeedsAName) {
+		t.Fatalf("err = %v, want ErrTLSOverUnixNeedsAName", err)
+	}
+}
+
+// A malformed address is an error naming both accepted forms, not a dial to
+// something unintended.
+func TestAMalformedAddressIsRefused(t *testing.T) {
+	_, err := Open(context.Background(), Config{Addr: "db.internal", User: "u"})
+	if err == nil {
+		t.Fatal("an address with no port was accepted")
+	}
+	for _, want := range []string{"host:port", "unix socket"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q: %v", want, err)
+		}
 	}
 }

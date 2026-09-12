@@ -35,7 +35,6 @@
 //     Conn.Batch.
 //   - Bound parameters cover the types storm generates and not the whole MySQL
 //     type table; an unbound type is an error, never a silent conversion.
-//   - Unix sockets are not supported: Config.Addr is host:port.
 package mydrv
 
 import (

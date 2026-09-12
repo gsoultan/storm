@@ -65,7 +65,12 @@ const (
 
 // Config is how a connection is opened.
 type Config struct {
-	Addr, User, Password, Database string
+	// Addr is host:port, or a UNIX SOCKET PATH when it begins with "/" —
+	// "/tmp/mysql.sock". A host:port cannot begin with a separator, so the two
+	// need no second field to tell them apart.
+	Addr string
+
+	User, Password, Database string
 
 	TLS TLSMode
 	// TLSConfig is used when upgrading, exactly as given. A nil value takes
@@ -104,6 +109,14 @@ var ErrCleartextRefused = errors.New(
 
 // ErrTLSUnsupported is returned for TLSRequired against a server without it.
 var ErrTLSUnsupported = errors.New("mydrv: TLSRequired, but the server does not offer TLS")
+
+// ErrTLSOverUnixNeedsAName is why TLSRequired over a unix socket needs a
+// TLSConfig: verification checks a name against a certificate, and a socket
+// path is not one. Silently skipping the check would make TLSRequired mean
+// less over a unix socket than over TCP, which is backwards.
+var ErrTLSOverUnixNeedsAName = errors.New(
+	"mydrv: TLSRequired over a unix socket needs a Config.TLSConfig with a ServerName; " +
+		"a socket path is not a name a certificate can attest to")
 
 // greeting is the server's opening packet.
 type greeting struct {
@@ -254,15 +267,23 @@ func (c *conn) handshake(cfg Config, host string) error {
 	c.id = g.connID
 
 	serverTLS := g.caps&capSSL != 0
+	// A unix socket is a file guarded by filesystem permissions, and there is
+	// no host name for a certificate to attest to. Encrypting it opportunis-
+	// tically buys nothing, so TLSPreferred does not — but TLSRequired still
+	// means what it says, and needs a TLSConfig naming who to expect.
+	overUnix := host == ""
 	useTLS := false
 	switch cfg.TLS {
 	case TLSRequired:
 		if !serverTLS {
 			return ErrTLSUnsupported
 		}
+		if overUnix && cfg.TLSConfig == nil {
+			return ErrTLSOverUnixNeedsAName
+		}
 		useTLS = true
 	case TLSPreferred:
-		useTLS = serverTLS
+		useTLS = serverTLS && !overUnix
 	}
 
 	flags := uint32(capLongPassword | capLongFlag | capProtocol41 |

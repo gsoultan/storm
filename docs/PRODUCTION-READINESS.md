@@ -1,12 +1,12 @@
 ---
 tags: [storm, production, gates]
-updated: 2026-08-27
+updated: 2026-09-12
 ---
 
 # The road to production-grade
 
 **Scope.** What must be true before a team that is not the author runs storm
-on Postgres in production. Not v1.0 the version number — v1.0 the *promise*.
+on Postgres in production — and, since v0.11.0, on MySQL or MariaDB (§P6). Not v1.0 the version number — v1.0 the *promise*.
 `docs/PLAN.md` owns the milestone sequence (M0–M12) and the honest assessment
 of what shipped; this file owns the gap between "M6 passed" and "someone else
 can run it", written as gates with kill criteria, because "production ready"
@@ -461,6 +461,112 @@ plans and fails through `go test ./...`.
 to mean anything. Against an empty CI database the planner's row estimates
 cannot reach the threshold, so this gate asserts validity, not performance. A
 stats-bearing replica is where the performance signal lives.
+
+---
+
+## P6 — MySQL and MariaDB, held to the same gates (2026-09-12)
+
+A second engine does not inherit the first's assessment. Every P0–P2 item above
+is a property of a code path, and `runtime/mydrv` is a different path from
+`runtime/pgxdrv` — hand-written wire protocol, different decoder family,
+different error codes. These are the same questions, asked again.
+
+### P6.1 The wire format — **closed by construction**
+
+P0.1's PostgreSQL defect was that pgx CHOOSES text or binary per column and
+storm's scanners only decode binary. mydrv has no such choice: every read goes
+through `COM_STMT_PREPARE`/`COM_STMT_EXECUTE`, which is the binary protocol,
+and the only text-protocol path (`Conn.simple`, the 1295 fallback) hands back an
+affected-row count and never a row. There is nothing to configure and so nothing
+to configure wrongly.
+
+What replaces it as the thing to get right is the WIDTH TABLE. A type missing
+from `fixedWidth` is read as length-encoded, so its first byte becomes a length
+and every subsequent column in the row decodes from the wrong offset — that is
+what `FLOAT` did, and it panicked rather than returning a wrong number.
+Bounds-checked now, and `TestEveryTypeRoundTrips` writes every supported type
+through the binder and reads it back through the decoder against BOTH servers,
+because neither side's unit tests can see a mismatch between them.
+
+### P6.2 Unbounded growth — **closed 2026-09-12**
+
+P1.1's shape cache is dialect-independent. mydrv adds one of its own: a
+prepared-statement cache keyed by SQL TEXT, which is not a closed set — a query
+with an IN-list has one text per arity, and `CopyFrom`'s multi-row INSERT one
+per batch size. Unbounded, that grows with the caller's input AND exhausts the
+server's `max_prepared_stmt_count` (16382 by default), which fails every
+prepare on the whole server including other clients'. It is an LRU bounded by
+`Config.MaxPreparedStmts`, statements whose text varies with the data bypass it
+entirely, and `TestPreparedStatementCacheIsBounded` reads the server's own
+`Prepared_stmt_count` over 200 distinct texts.
+
+The pool is bounded too, and a connection released after a cancellation gives
+back its token whether it is reused or discarded — otherwise the pool would
+shrink by one every time a query was cancelled the hard way.
+
+### P6.3 Errors must never carry values — **closed 2026-09-12**
+
+Same property as P2.3, and it needed checking rather than assuming: MySQL puts
+the offending value in its own diagnostic — `Duplicate entry 'x' for key 'y'` —
+and mydrv recovers the CONSTRAINT NAME from that message, because the server
+does not send it as a field. So the parse is one character away from putting a
+bound value into `ConstraintError.Constraint`, which is what a structured logger
+writes out.
+
+`TestAConstraintErrorDoesNotPrintTheOffendingValue` asserts, on both servers,
+that neither storm's error text nor any of its metadata carries the value, that
+the server's own message stays reachable through `Unwrap`, and that a value
+containing an apostrophe does not shift the parse — which is the case that
+actually breaks, and the probe that removes the fix reports the constraint as
+`"o"`.
+
+### P6.4 Constraint violations are classified — **closed 2026-09-12**
+
+`mydrv.classify` maps the server's codes onto the same `runtime` sentinels
+`pgxdrv` does, so a handler is written once. Asserted against both servers,
+because the codes differ (3819 and 4025 for the same failed CHECK). Nothing is
+invented where the engine makes no distinction: MySQL has no exclusion
+constraint and reports a serialization conflict AS a deadlock, so
+`ErrExclusionViolation` and `ErrSerializationFailure` stay unmapped rather than
+approximated.
+
+### P6.5 Credentials on the wire — **closed 2026-09-12, and it is the one to read**
+
+The failure mode here has no PostgreSQL analogue. `caching_sha2_password`, which
+MySQL 8 defaults to, requires a full-auth exchange the FIRST time an account
+connects, and that exchange puts the password on the wire in a recoverable form.
+mydrv refuses it on a plaintext socket (`ErrCleartextRefused`) unless the caller
+sets `AllowCleartextPasswordOverPlaintext`.
+
+`TLSRequired` verifies, and a nil `TLSConfig` there means verified — not
+`InsecureSkipVerify`, which would make the mode a decoration. `TLSPreferred`,
+the default, does NOT verify, and that is a deliberate trade written down at the
+constant: stock MySQL and MariaDB both ship a self-signed certificate, so a
+verifying default cannot connect to either and would push callers to
+`TLSDisabled`, which is strictly less. **Set `TLSRequired` in production.**
+
+### P6.6 What is NOT closed
+
+- **`migrate.Auto` is PostgreSQL-only.** MySQL's DDL is not transactional, so
+  the one-transaction guarantee automigrate is built on does not exist there. A
+  half-applied plan is possible and storm will not pretend otherwise: use
+  `storm ddl -dialect ...` with a migration tool that expects this.
+- **No partial indexes**, so a soft-delete table's uniqueness spans deleted rows
+  or nothing. `myddl.Check` refuses the live-scoped form rather than quietly
+  widening it, which means a model that works on PostgreSQL may not port —
+  correctly, and loudly.
+- **`CopyFrom` is emulated** and `Batch` is N round trips. Both are engine
+  limits with the alternatives rejected in writing at the call site: `LOAD DATA
+  LOCAL INFILE` lets a server request arbitrary client files, and
+  `CLIENT_MULTI_STATEMENTS` is the text protocol with nowhere to put a bound
+  parameter.
+- **No second adopter on MySQL.** Every wrong-answer bug in this project so far
+  was found by exercising a path no test reached, and the MySQL path has been
+  exercised by its author only. This is the same open item M8 carries for
+  PostgreSQL, and it is the honest reason this section says "closed" about
+  properties and not about the target.
+
+**Driver: sec · Challenger: dx.**
 
 ---
 

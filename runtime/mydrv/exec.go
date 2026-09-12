@@ -50,12 +50,12 @@ var ErrRowsOpen = errors.New(
 // There is no DSN parser on purpose — a half-parsed DSN silently connecting
 // somewhere unintended is worse than an explicit struct.
 func Open(ctx context.Context, cfg Config) (*Conn, error) {
-	host, _, err := net.SplitHostPort(cfg.Addr)
+	network, host, err := dialTarget(cfg.Addr)
 	if err != nil {
-		return nil, fmt.Errorf("mydrv: Addr must be host:port: %w", err)
+		return nil, err
 	}
 	var d net.Dialer
-	nc, err := d.DialContext(ctx, "tcp", cfg.Addr)
+	nc, err := d.DialContext(ctx, network, cfg.Addr)
 	if err != nil {
 		return nil, err
 	}
@@ -71,6 +71,22 @@ func Open(ctx context.Context, cfg Config) (*Conn, error) {
 	}
 	_ = nc.SetDeadline(time.Time{})
 	return &Conn{c: c, cfg: cfg, sts: map[string]*list.Element{}, lru: list.New()}, nil
+}
+
+// dialTarget reads the network and the TLS server name out of Addr.
+//
+// A path is a unix socket and anything else is host:port. Told apart by the
+// leading separator rather than by a second config field, because a host:port
+// cannot begin with one and a second field could contradict the first.
+func dialTarget(addr string) (network, host string, err error) {
+	if strings.HasPrefix(addr, "/") {
+		return "unix", "", nil
+	}
+	host, _, err = net.SplitHostPort(addr)
+	if err != nil {
+		return "", "", fmt.Errorf("mydrv: Addr must be host:port or a unix socket path: %w", err)
+	}
+	return "tcp", host, nil
 }
 
 func (x *Conn) Close() error { return x.c.c.Close() }
@@ -394,6 +410,17 @@ var ErrNoCopyProtocol = errors.New(
 	"mydrv: MySQL has no COPY protocol; CopyFrom is emulated with a multi-row INSERT, " +
 		"which is one round trip but pays statement parsing that a real copy skips")
 
+// Why not LOAD DATA LOCAL INFILE, which IS a bulk path:
+//
+// It needs local_infile=1, which MySQL 8 has off by default, so a load would
+// work on the author's server and fail on the adopter's. And it inverts who
+// asks for what — the SERVER replies to the statement by naming a file for the
+// CLIENT to send, so a malicious or compromised server can request any file the
+// process can read. Drivers that support it gate it behind an explicit
+// per-path allowlist for exactly that reason. Trading a parse for that, by
+// default, inside a method a generated bulk load calls, is not a trade this
+// package makes.
+
 // CopyFrom emulates a bulk load with a multi-row INSERT.
 func (x *Conn) CopyFrom(ctx context.Context, table string, cols []string, src runtime.CopySource) (int64, error) {
 	var b strings.Builder
@@ -441,6 +468,12 @@ func (x *Conn) CopyFrom(ctx context.Context, table string, cols []string, src ru
 // equivalent of PostgreSQL's extended-query pipeline. So this is N round trips
 // wearing a batch's shape, and a caller counting round trips will find that
 // out. Saying so is the same rule CopyFrom follows.
+//
+// CLIENT_MULTI_STATEMENTS is not the answer. It sends several statements in one
+// COM_QUERY, which is the TEXT protocol — there is nowhere to put a bound
+// parameter, and a BatchOp carries Args. Folding them into the statement text
+// is the injection this driver exists to avoid, so the only batch it could
+// pipeline is one with no arguments, which is not the batch storm generates.
 //
 // The per-op error goes to the callback rather than ending the batch, matching
 // the port: returning an error FROM the callback is what aborts.

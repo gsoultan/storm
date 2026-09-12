@@ -12,6 +12,38 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### Unix sockets, and the MySQL path held to the readiness gates
+
+`Config.Addr` takes a unix socket path when it begins with `/`. Told apart by
+the separator rather than by a second field, because a host:port cannot begin
+with one and a second field could contradict the first. `TLSPreferred` does not
+upgrade a socket — it is a file guarded by filesystem permissions and there is
+no host name for a certificate to attest to — but `TLSRequired` still means what
+it says, and over a socket it needs a `TLSConfig` naming who to expect rather
+than silently skipping the check.
+
+`docs/PRODUCTION-READINESS.md` gains §P6, which asks every P0–P2 question again
+of `runtime/mydrv`, because a second engine does not inherit the first's
+assessment: a different code path, a different decoder family, different error
+codes. Two of them needed checking rather than assuming.
+
+**Errors must not carry values, and this one was a character away from doing so.**
+MySQL puts the offending value in its own diagnostic — `Duplicate entry 'x' for
+key 'y'` — and mydrv recovers the constraint NAME from that message, because the
+server does not send it as a field. A test now asserts on both servers that
+neither storm's error text nor its metadata carries the value, that the server's
+message stays reachable through `Unwrap`, and that a value containing an
+apostrophe does not shift the parse. Removing the fix reports the constraint as
+`"o"`.
+
+Also recorded, at the call sites, why the two emulations stay emulations: `LOAD
+DATA LOCAL INFILE` inverts who asks for what — the server names a file for the
+client to send, so a compromised server can request anything the process can
+read — and `CLIENT_MULTI_STATEMENTS` is the text protocol, with nowhere to put a
+bound parameter.
+
 ## v0.11.0 — 2026-09-12
 
 **MySQL 8 and MariaDB are runtime targets.** storm generates for them, emits
