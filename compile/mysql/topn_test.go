@@ -39,13 +39,60 @@ func TestBatchLoadBindsOneJSONDocumentNotAList(t *testing.T) {
 	}
 }
 
-// Only the key's type moves between two loads of different key types — the
-// shape is otherwise fixed at generate time.
+// Only the key's TYPE moves between two loads whose keys are both JSON-native
+// — the shape is otherwise fixed at generate time.
 func TestBatchLoadShapeDependsOnlyOnTheKeyType(t *testing.T) {
 	a := mysql.TopNLateral("t", []string{"id"}, "fk", "BIGINT", "")
-	b := mysql.TopNLateral("t", []string{"id"}, "fk", "BINARY(16)", "")
-	if strings.Replace(b, "BINARY(16)", "BIGINT", 1) != a {
+	b := mysql.TopNLateral("t", []string{"id"}, "fk", "INT", "")
+	if strings.Replace(b, "INT", "BIGINT", 1) != a {
 		t.Errorf("the two differ by more than the key type:\n%s\n%s", a, b)
+	}
+}
+
+// A BINARY key cannot travel in a JSON document as itself: JSON is text, and
+// arbitrary bytes are not valid UTF-8. It goes as hex and comes back through
+// UNHEX.
+//
+// This is the DEFAULT key, not an edge case — storm.Model gives every table a
+// BINARY(16) uuid — and before this the generator emitted the storm type name
+// `uuid` into the COLUMNS clause, which MySQL cannot parse. Every fetch plan on
+// a default model was a syntax error.
+func TestABinaryKeyTravelsAsHex(t *testing.T) {
+	for name, sql := range map[string]string{
+		"lateral": mysql.TopNLateral("members", []string{"id"}, "org_id", "BINARY(16)", ""),
+		"window":  mysql.TopNWindow("members", []string{"id"}, "org_id", "BINARY(16)", ""),
+		"in":      inFragSQL("BINARY(16)"),
+	} {
+		if strings.Contains(sql, "BINARY(16) PATH") {
+			t.Errorf("%s declares a binary JSON_TABLE column, which cannot hold bytes:\n%s",
+				name, sql)
+		}
+		// Two hex characters per byte, or the value is silently truncated.
+		if !strings.Contains(sql, "CHAR(32) PATH '$'") {
+			t.Errorf("%s does not unpack the key as 32 hex characters:\n%s", name, sql)
+		}
+		if !strings.Contains(sql, "UNHEX(") {
+			t.Errorf("%s never decodes the hex back to the column's type:\n%s", name, sql)
+		}
+		// UNHEX is applied to the JSON side, never to the indexed column:
+		// comparing HEX(id) would read the same rows and lose the index, which
+		// is the whole reason this form was chosen.
+		if strings.Contains(sql, "HEX(`org_id`)") || strings.Contains(sql, "HEX(`id`)") {
+			t.Errorf("%s wraps the INDEXED column rather than the JSON value:\n%s", name, sql)
+		}
+	}
+}
+
+func inFragSQL(colType string) string {
+	a, b := mysql.InFrag("`org_id`", colType, false)
+	return a + b
+}
+
+// A key that IS representable in JSON must not be wrapped in anything.
+func TestANonBinaryKeyIsNotDecoded(t *testing.T) {
+	sql := mysql.TopNLateral("members", []string{"id"}, "org_id", "BIGINT", "")
+	if strings.Contains(sql, "UNHEX") {
+		t.Errorf("a BIGINT key was decoded as though it were hex:\n%s", sql)
 	}
 }
 

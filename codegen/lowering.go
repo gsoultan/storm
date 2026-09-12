@@ -74,6 +74,14 @@ type lowering struct {
 	AggregateSelect func(table string, agg *schema.Aggregate) (string, error)
 	AggregateSuffix func(agg *schema.Aggregate) (string, error)
 
+	// KeyType spells a column's type for the places a lowering has to NAME one
+	// — the JSON_TABLE COLUMNS declaration a bound key list is unpacked
+	// through. codegen must not spell it itself: `uuid` is PostgreSQL's word
+	// for BINARY(16), and passing it through emitted a MySQL statement that
+	// PARSES nowhere. Every default storm model has a uuid key, so that was
+	// every fetch plan.
+	KeyType func(c *schema.Column) string
+
 	Recursive func(table string, cols []string, key, parent, keyType string,
 		dir int, live string) string
 
@@ -227,6 +235,8 @@ func postgresLowering() lowering {
 		AggregateSuffix: func(a *schema.Aggregate) (string, error) {
 			return pgsql.AggregateSuffix(a), nil
 		},
+		// PostgreSQL's own spelling, so the emitted text is unchanged.
+		KeyType: func(c *schema.Column) string { return c.Type.SQL() },
 		Recursive: func(t string, cols []string, key, parent, _ string, dir int, live string) string {
 			return pgsql.Recursive(t, cols, key, parent, dir, pgsql.Live(live))
 		},
@@ -290,7 +300,7 @@ func mysqlLowering() lowering {
 				if c == nil {
 					return "", "", false
 				}
-				a, b := mysql.InFrag(ident, c.Type.SQL(), op == "NotIn")
+				a, b := mysql.InFrag(ident, mysql.ColumnType(c), op == "NotIn")
 				return a, b, true
 			}
 			return mysql.Frag(op, ident)
@@ -338,6 +348,7 @@ func mysqlLowering() lowering {
 		},
 		AggregateSelect: mysql.AggregateSelect,
 		AggregateSuffix: mysql.AggregateSuffix,
+		KeyType:         mysql.ColumnType,
 		Recursive: func(t string, cols []string, key, parent, keyType string, dir int, live string) string {
 			return mysql.Recursive(t, cols, key, parent, keyType, dir, mysql.Live(live))
 		},

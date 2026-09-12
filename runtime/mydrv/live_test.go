@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gsoultan/storm/compile/mysql"
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/mydrv"
 )
@@ -976,4 +977,101 @@ func TestNoExitPathPrintsABoundValue(t *testing.T) {
 	if !strings.Contains(err.Error(), "unbindable") {
 		t.Errorf("the binder's refusal does not name the type: %v", err)
 	}
+}
+
+// The JSON document a list becomes has to survive the SERVER's parser, and a
+// value that tries to break out of it has to come back as data.
+//
+// This is the injection surface the bound-parameter design removes from the
+// statement text, moved one layer in: the values ARE the document. A unit test
+// can say the encoder escaped a quote; only the server can say the document
+// parsed and matched the right rows.
+func TestAListSurvivesTheServersJSONParser(t *testing.T) {
+	for _, engine := range []struct {
+		name string
+		cfg  func(testing.TB) mydrv.Config
+	}{{"mysql", config}, {"mariadb", mariaConfig}} {
+		t.Run(engine.name, func(t *testing.T) {
+			c, err := mydrv.Open(context.Background(), engine.cfg(t))
+			if err != nil {
+				t.Skipf("no server: %v", err)
+			}
+			defer c.Close()
+			ctx := context.Background()
+			mustExec(t, c, "DROP TABLE IF EXISTS `jl_probe`")
+			mustExec(t, c, "CREATE TABLE `jl_probe` (`id` BINARY(16) PRIMARY KEY, "+
+				"`s` VARCHAR(120) NOT NULL) ENGINE=InnoDB")
+			t.Cleanup(func() { _, _ = c.Exec(ctx, "DROP TABLE IF EXISTS `jl_probe`", nil) })
+
+			nasty := []string{
+				`plain`,
+				`say "hi"`,
+				`back\slash`,
+				"line\nbreak",
+				`x","injected`,
+				`","] OR 1=1 -- `,
+			}
+			ids := make([][16]byte, len(nasty))
+			for i, s := range nasty {
+				ids[i] = [16]byte{byte(i + 1), 0xaa}
+				if _, err := c.Exec(ctx, "INSERT INTO `jl_probe` VALUES (?, ?)",
+					[]any{ids[i], s}); err != nil {
+					t.Fatalf("insert %q: %v", s, err)
+				}
+			}
+			// One extra row that must NOT be selected, so a document that
+			// collapsed into "match everything" fails rather than passes.
+			other := [16]byte{0xff, 0xff}
+			if _, err := c.Exec(ctx, "INSERT INTO `jl_probe` VALUES (?, ?)",
+				[]any{other, "not selected"}); err != nil {
+				t.Fatal(err)
+			}
+
+			// A BINARY key through the hex path.
+			byID, _ := mysql.InFrag("`id`", "BINARY(16)", false)
+			got := allStrings(t, c, "SELECT `s` FROM `jl_probe` WHERE "+byID+
+				" ORDER BY `id`", []any{ids})
+			if len(got) != len(nasty) {
+				t.Fatalf("the uuid list matched %d rows, want %d: %q", len(got), len(nasty), got)
+			}
+
+			// ...and the strings themselves as the list, which is where the
+			// escaping actually matters.
+			byS, _ := mysql.InFrag("`s`", "VARCHAR(120)", false)
+			got = allStrings(t, c, "SELECT `s` FROM `jl_probe` WHERE "+byS+
+				" ORDER BY `id`", []any{nasty})
+			if len(got) != len(nasty) {
+				t.Fatalf("the string list matched %d rows, want %d: %q", len(got), len(nasty), got)
+			}
+			for i, s := range nasty {
+				if got[i] != s {
+					t.Errorf("row %d = %q, want %q", i, got[i], s)
+				}
+			}
+
+			// An empty list matches nothing, rather than everything.
+			none := allStrings(t, c, "SELECT `s` FROM `jl_probe` WHERE "+byS,
+				[]any{[]string{}})
+			if len(none) != 0 {
+				t.Errorf("an empty list matched %d rows", len(none))
+			}
+		})
+	}
+}
+
+func allStrings(t *testing.T, c *mydrv.Conn, sql string, args []any) []string {
+	t.Helper()
+	r, err := c.Query(context.Background(), sql, args)
+	if err != nil {
+		t.Fatalf("%s: %v", sql, err)
+	}
+	defer r.Close()
+	var out []string
+	for r.Next() {
+		out = append(out, string(r.RawValues()[0]))
+	}
+	if err := r.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

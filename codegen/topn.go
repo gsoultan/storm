@@ -163,9 +163,9 @@ func (g *gen) topFn(key string, kc *schema.Column, cols []string) {
 		g.p("\t}")
 		var unordered string
 		if form == "Window" {
-			unordered = g.lw.TopNWindow(g.t.Name, cols, key, kc.Type.SQL(), string(g.live()))
+			unordered = g.lw.TopNWindow(g.t.Name, cols, key, g.lw.KeyType(kc), string(g.live()))
 		} else {
-			unordered = g.lw.TopNLateral(g.t.Name, cols, key, kc.Type.SQL(), string(g.live()))
+			unordered = g.lw.TopNLateral(g.t.Name, cols, key, g.lw.KeyType(kc), string(g.live()))
 		}
 		g.p("\tsql := runtime.SpliceOrder(%q, terms, %q, %q)", unordered, g.lw.OrderLead, pgsql.OrderSep)
 		g.p("\treturn %s%sCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL", priv, form)

@@ -84,9 +84,23 @@ func (s *fakeServer) serve() {
 	default:
 	}
 	_, _ = c.Write(packet(2, s.after))
-	// Read whatever the client says next so it sees a clean close rather than
-	// a reset, then stop: these tests end at the client's decision.
-	_, _ = readOne(c)
+	// Keep answering after the handshake. Open sends SET NAMES before it
+	// returns, so a server that stopped here would fail every connection with
+	// EOF and the test would be about the fake rather than the driver.
+	for {
+		if _, err := readOne(c); err != nil {
+			return
+		}
+		if _, err := c.Write(packet(1, okPacket())); err != nil {
+			return
+		}
+	}
+}
+
+// okPacket is the minimum OK: the marker, zero affected rows, no insert id,
+// then the status and warning counts protocol 41 requires.
+func okPacket() []byte {
+	return []byte{0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00}
 }
 
 func (s *fakeServer) greeting() []byte {

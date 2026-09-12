@@ -1,6 +1,12 @@
 package mysql
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+
+	"github.com/gsoultan/storm/compile/myddl"
+	"github.com/gsoultan/storm/schema"
+)
 
 // Greatest-n-per-group: "each parent with its first N children".
 //
@@ -37,8 +43,65 @@ const (
 // unindexable — and losing the index is the whole reason this form was chosen
 // over reading every child of every parent.
 func keyRows(keyType string) string {
+	jsonType, _ := jsonKey(keyType)
 	return "JSON_TABLE(" + Placeholder + ", '$[*]' COLUMNS (" +
-		Ident(parentKeyAlias) + " " + keyType + " PATH '$')) AS " + Ident(parentAlias)
+		Ident(parentKeyAlias) + " " + jsonType + " PATH '$')) AS " + Ident(parentAlias)
+}
+
+// keyValue is the unpacked key, back in the column's own type, ready to be
+// compared against the indexed column.
+//
+// qualify names the derived table where the reference needs it; empty means an
+// unqualified reference, which is what a subquery in an IN takes.
+func keyValue(keyType, qualify string) string {
+	ref := Ident(parentKeyAlias)
+	if qualify != "" {
+		ref = Ident(qualify) + "." + ref
+	}
+	_, decode := jsonKey(keyType)
+	if decode == "" {
+		return ref
+	}
+	return decode + "(" + ref + ")"
+}
+
+// jsonKey says how a key of this type crosses a JSON document.
+//
+// A BINARY key cannot travel in one as itself: JSON is text, and arbitrary
+// bytes are not valid UTF-8 — which matters because storm.Model gives every
+// table a BINARY(16) uuid, so this is the DEFAULT key, not an edge case. It
+// goes as hex and comes back through UNHEX, which keeps the comparison in the
+// column's own type and therefore on its index. Comparing HEX(id) to the JSON
+// value instead would read the same rows and lose the index doing it.
+func jsonKey(keyType string) (jsonType, decode string) {
+	if n, ok := binaryWidth(keyType); ok {
+		return "CHAR(" + strconv.Itoa(n*2) + ")", "UNHEX"
+	}
+	return keyType, ""
+}
+
+// binaryWidth reads the n out of BINARY(n) or VARBINARY(n).
+func binaryWidth(keyType string) (int, bool) {
+	t := strings.ToUpper(strings.TrimSpace(keyType))
+	for _, p := range []string{"VARBINARY(", "BINARY("} {
+		if !strings.HasPrefix(t, p) {
+			continue
+		}
+		rest := t[len(p):]
+		i := strings.IndexByte(rest, ')')
+		if i < 0 {
+			return 0, false
+		}
+		n, err := strconv.Atoi(rest[:i])
+		if err != nil || n <= 0 {
+			return 0, false
+		}
+		return n, true
+	}
+	// LONGBLOB and friends carry no width, so there is no CHAR(n) to declare.
+	// They are not key types — a blob cannot be a primary key in MySQL without
+	// a prefix length — so falling through is right, not a gap.
+	return 0, false
 }
 
 // TopNWindow lowers greatest-n-per-group with row_number().
@@ -67,7 +130,7 @@ func TopNWindow(table string, cols []string, key, keyType string, live Live) str
 	b.WriteString(" WHERE ")
 	b.WriteString(Ident(key))
 	b.WriteString(" IN (SELECT ")
-	b.WriteString(Ident(parentKeyAlias))
+	b.WriteString(keyValue(keyType, ""))
 	b.WriteString(" FROM ")
 	b.WriteString(keyRows(keyType))
 	b.WriteString(")")
@@ -111,9 +174,7 @@ func TopNLateral(table string, cols []string, key, keyType string, live Live) st
 	b.WriteString(" WHERE ")
 	b.WriteString(Ident(key))
 	b.WriteString(" = ")
-	b.WriteString(Ident(parentAlias))
-	b.WriteString(".")
-	b.WriteString(Ident(parentKeyAlias))
+	b.WriteString(keyValue(keyType, parentAlias))
 	// Before the LIMIT, so a parent whose most recent N children are deleted
 	// still gets its live ones rather than an empty page.
 	live.AndInto(&b, true)
@@ -145,4 +206,28 @@ func (l Live) AndInto(b *strings.Builder, hasWhere bool) {
 		b.WriteString(" WHERE ")
 	}
 	b.WriteString(string(l))
+}
+
+// ColumnType is the MySQL type of a storm column, for the places a lowering has
+// to NAME a type rather than just quote an identifier — a JSON_TABLE COLUMNS
+// declaration, and a CAST.
+//
+// It delegates to compile/myddl rather than restating the map. Two maps for one
+// question drift, and the direction they drift in is a key declared BINARY(16)
+// by the DDL and something else by the loader that joins against it — which
+// reads the right rows in the wrong types, or none.
+//
+// A type myddl refuses has no MySQL spelling, so there is nothing to return.
+// That cannot reach a generated package: the generator runs myddl.Check first
+// and refuses the model. The fallback exists so this function is total.
+func ColumnType(c *schema.Column) string {
+	if c.Type.Enum {
+		// An enum column's values are its labels, and a JSON document carries
+		// them as text.
+		return "CHAR(255)"
+	}
+	if t, err := myddl.TypeSQL("", c); err == nil {
+		return t
+	}
+	return "CHAR(255)"
 }

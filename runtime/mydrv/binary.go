@@ -452,6 +452,63 @@ func deref(a any) any {
 	case *[16]byte:
 		return *v
 	}
+	return derefList(a)
+}
+
+// derefList unwraps a pointer to a LIST.
+//
+// A declared In predicate stores its list in a slot and binds the slot's
+// address, so what reaches the binder is *[]T rather than []T. Enumerated
+// rather than reflected, for the reason isNil is: one reflection path becomes
+// THE path.
+func derefList(a any) any {
+	switch v := a.(type) {
+	case *[]int64:
+		if v == nil {
+			return nil
+		}
+		return *v
+	case *[]int32:
+		if v == nil {
+			return nil
+		}
+		return *v
+	case *[]int16:
+		if v == nil {
+			return nil
+		}
+		return *v
+	case *[]int:
+		if v == nil {
+			return nil
+		}
+		return *v
+	case *[]float64:
+		if v == nil {
+			return nil
+		}
+		return *v
+	case *[]string:
+		if v == nil {
+			return nil
+		}
+		return *v
+	case *[][16]byte:
+		if v == nil {
+			return nil
+		}
+		return *v
+	case *[][]byte:
+		if v == nil {
+			return nil
+		}
+		return *v
+	case *[]time.Time:
+		if v == nil {
+			return nil
+		}
+		return *v
+	}
 	return a
 }
 
@@ -493,6 +550,12 @@ const (
 )
 
 func appendBind(b []byte, a any) ([]byte, error) {
+	// A LIST first, because MySQL has no array parameter: storm's lowering
+	// binds a whole key list as one JSON document and unpacks it with
+	// JSON_TABLE, so a slice is one length-encoded string rather than N values.
+	if doc, ok := appendJSONList(nil, a); ok {
+		return appendLenEnc(b, doc), nil
+	}
 	switch v := a.(type) {
 	case bool:
 		if v {
@@ -536,7 +599,9 @@ func appendBind(b []byte, a any) ([]byte, error) {
 	if sr, ok := a.(interface{ String() string }); ok {
 		return appendLenEnc(b, []byte(sr.String())), nil
 	}
-	return nil, fmt.Errorf("mydrv: no binding for %T", a)
+	return nil, fmt.Errorf("mydrv: no binding for %T (a list must be a slice of "+
+		"integers, strings, uuids, byte slices or times — it is bound as one JSON "+
+		"document, because MySQL has no array parameter)", a)
 }
 
 // appendDuration renders MySQL's TIME, which is a signed span and not a clock
