@@ -176,9 +176,24 @@ func (g *gen) cteSQL(c schema.CTE) (string, string) {
 		return "", ""
 	}
 	for _, a := range t.Aggregates {
-		if a.Name == c.Aggregate {
-			return pgsql.AggregateSelect(t.Name, a), pgsql.AggregateSuffix(a)
+		if a.Name != c.Aggregate {
+			continue
 		}
+		// Through the lowering, not PostgreSQL's. Unreachable on MySQL today —
+		// mysql.JoinSelect refuses a join with a CTE before this is called —
+		// but a leak that is only unreachable is a leak waiting for the
+		// refusal to be lifted.
+		sel, err := g.lw.AggregateSelect(t.Name, a)
+		if err != nil {
+			g.err = err
+			return "", ""
+		}
+		suf, err := g.lw.AggregateSuffix(a)
+		if err != nil {
+			g.err = err
+			return "", ""
+		}
+		return sel, suf
 	}
 	g.err = fmt.Errorf("codegen: CTE %s names aggregate %s.%s, which does not exist",
 		c.Alias, c.Table, c.Aggregate)

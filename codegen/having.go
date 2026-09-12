@@ -1,7 +1,6 @@
 package codegen
 
 import (
-	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -271,7 +270,13 @@ type havingSpec struct {
 }
 
 // havingSpecs enumerates the composers for a context.
-func havingSpecs(s *schema.Schema, tables []string) ([]havingSpec, error) {
+//
+// lw is the target's lowering, not PostgreSQL's. It was PostgreSQL's, and the
+// semi-join in a MySQL package came out with double-quoted identifiers — SQL
+// that parses nowhere. The context file is generated once per package rather
+// than per table, which is how it kept a hard-coded dialect while everything
+// generated per table went through the seam.
+func havingSpecs(lw lowering, s *schema.Schema, tables []string) ([]havingSpec, error) {
 	in := map[string]bool{}
 	for _, t := range tables {
 		in[t] = true
@@ -305,8 +310,10 @@ func havingSpecs(s *schema.Schema, tables []string) ([]havingSpec, error) {
 				ParentPkg: ppkg,
 				ChildPkg:  cpkg,
 				child:     child.Name,
-				PosHeader: pgsql.ExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0], liveIn(postgresLowering(), s, child.Name, "")),
-				NegHeader: pgsql.NotExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0], liveIn(postgresLowering(), s, child.Name, "")),
+				PosHeader: lw.ExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0],
+					string(liveIn(lw, s, child.Name, ""))),
+				NegHeader: lw.NotExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0],
+					string(liveIn(lw, s, child.Name, ""))),
 			})
 		}
 	}

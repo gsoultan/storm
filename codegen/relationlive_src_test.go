@@ -37,6 +37,7 @@ func (a *mdAuthor) Plans(p *storm.Plans)  { p.Named("Feed").With(&a.Posts) }
 type mdPost struct {
 	storm.Model
 	Title  string
+	Views  int64
 	Author mdAuthor
 }
 
@@ -130,7 +131,8 @@ func TestPlanLoadsEveryChildInTwoRoundTrips(t *testing.T) {
 		}
 		for i := 0; i < n; i++ {
 			post := &mdpost.Row{
-				ID: id(a, byte(0x40+i)), Title: "post", AuthorID: author.ID,
+				ID: id(a, byte(0x40+i)), Title: "post", Views: int64(10 * (i + 1)),
+				AuthorID: author.ID,
 			}
 			if err := mdpost.Insert(ctx, ex, post); err != nil {
 				t.Fatalf("insert post: %v", err)
@@ -257,5 +259,159 @@ type countingExecutor struct {
 func (c *countingExecutor) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
 	c.n++
 	return c.Executor.Query(ctx, sql, args)
+}
+
+// A declared JOIN, run rather than spelled. Its SQL has been asserted as text
+// since compile/mysql landed; nothing had checked which rows come back or
+// whether the ON clause correlates the right columns.
+func TestDeclaredJoinReturnsBothSidesRows(t *testing.T) {
+	ctx := context.Background()
+	got, err := ctxpkg.MdPostWithAuthor().All(ctx, ex)
+	if err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	// Four posts across three authors; the author with none contributes no row
+	// to an inner join, which is the join actually being a join.
+	if len(got) != 4 {
+		t.Fatalf("the join read %d rows, want 4", len(got))
+	}
+	for _, r := range got {
+		// The joined row embeds BOTH sides, so the far side's columns are
+		// there under its own row type rather than flattened into names.
+		if r.Author.Name == "" {
+			t.Errorf("a joined row has no author name: %+v", r)
+		}
+		if r.Title == "" {
+			t.Errorf("a joined row has no title: %+v", r)
+		}
+	}
+}
+
+// A declared AGGREGATE, likewise: GROUP BY, an aggregate function and a HAVING,
+// against real rows.
+func TestDeclaredAggregateGroupsAndFilters(t *testing.T) {
+	ctx := context.Background()
+	got, err := mdpost.New().AllByAuthor(ctx, ex)
+	if err != nil {
+		t.Fatalf("aggregate: %v", err)
+	}
+	// Two authors have posts; the third is absent because a group with no rows
+	// is no group, and HAVING count > 0 cannot resurrect it.
+	if len(got) != 2 {
+		t.Fatalf("the aggregate read %d groups, want 2", len(got))
+	}
+	byCount := map[int64]string{}
+	top := map[int64]int64{}
+	for _, g := range got {
+		// SUM over an integer column comes back as a DECIMAL on this engine,
+		// which is why the generated field is a Decimal and not an int64 — a
+		// sum can exceed the summed type.
+		byCount[g.Posts] = g.Views.V.String()
+		top[g.Posts] = g.TopViews.V
+	}
+	// Author 1 has three posts with 10, 20 and 30 views; author 2 has one with 10.
+	if v := byCount[3]; v != "60" {
+		t.Errorf("the three-post group sums to %s, want 60 (groups: %+v)", v, got)
+	}
+	if v := byCount[1]; v != "10" {
+		t.Errorf("the one-post group sums to %s, want 10 (groups: %+v)", v, got)
+	}
+	if top[3] != 30 {
+		t.Errorf("the three-post group's max is %d, want 30", top[3])
+	}
+}
+
+// A SEMI-JOIN: "authors who have a post", which must not multiply the parent by
+// its children the way a join would.
+func TestSemiJoinDoesNotMultiplyTheParent(t *testing.T) {
+	ctx := context.Background()
+	got, err := ctxpkg.MdAuthorHavingPosts(mdauthor.New()).All(ctx, ex)
+	if err != nil {
+		t.Fatalf("semi-join: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("read %d authors with posts, want 2 — a join would have said 4", len(got))
+	}
+	none, err := ctxpkg.MdAuthorNotHavingPosts(mdauthor.New()).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 1 {
+		t.Errorf("read %d authors without posts, want 1", len(none))
+	}
+}
+
+// A UNION, which on this back end has bare placeholders and a per-branch
+// soft-delete predicate. Ordering applies to the MERGE, which is the one thing
+// a per-table query cannot give.
+func TestUnionMergesBothTablesInOneOrder(t *testing.T) {
+	ctx := context.Background()
+	got, err := ctxpkg.Names(ctx, ex, 100)
+	if err != nil {
+		t.Fatalf("union: %v", err)
+	}
+	// Three authors and four posts.
+	if len(got) != 7 {
+		t.Fatalf("the union read %d rows, want 7", len(got))
+	}
+	kinds := map[string]int{}
+	for _, r := range got {
+		kinds[r.Kind]++
+	}
+	if kinds["author"] != 3 || kinds["post"] != 4 {
+		t.Errorf("the union produced %v, want 3 authors and 4 posts", kinds)
+	}
+	// The ordering applies across both branches, not within each.
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Text > got[i].Text {
+			t.Errorf("the merge is not ordered: %q then %q", got[i-1].Text, got[i].Text)
+			break
+		}
+	}
+}
+
+// A row lock inside a transaction, through the generated API.
+//
+// MySQL spells FOR SHARE and MariaDB spells LOCK IN SHARE MODE, and the clause
+// goes at the very end after LIMIT. Nothing had run one: the compile tests
+// assert the text and the shell gate PREPAREs it, but a lock that is not taken
+// inside a transaction is a no-op, and only a transaction can show it works.
+func TestRowLockingInsideATransaction(t *testing.T) {
+	ctx := context.Background()
+	tx, err := ex.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+
+	got, err := mdauthor.New().Where(mdauthor.ID.Eq(id(1, 1))).ForUpdate().All(ctx, tx, nil)
+	if err != nil {
+		t.Fatalf("FOR UPDATE: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("the locked read returned %d rows, want 1", len(got))
+	}
+	// SKIP LOCKED is the one a queue worker needs, and the one whose absence
+	// turns a claim into a deadlock.
+	skipped, err := mdauthor.New().Where(mdauthor.ID.Eq(id(1, 1))).
+		ForUpdateSkipLocked().All(ctx, tx, nil)
+	if err != nil {
+		t.Fatalf("FOR UPDATE SKIP LOCKED: %v", err)
+	}
+	if len(skipped) != 1 {
+		t.Errorf("the skip-locked read returned %d rows in its own transaction, want 1",
+			len(skipped))
+	}
+	// The shared form, which is where the two engines spell it differently.
+	shared, err := mdauthor.New().Where(mdauthor.ID.Eq(id(1, 1))).ForShare().All(ctx, tx, nil)
+	if err != nil {
+		t.Fatalf("FOR SHARE: %v", err)
+	}
+	if len(shared) != 1 {
+		t.Errorf("the shared read returned %d rows, want 1", len(shared))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 `

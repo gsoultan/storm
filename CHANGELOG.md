@@ -14,6 +14,38 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### The semi-join in a MySQL package was PostgreSQL SQL
+
+`havingSpecs` called `pgsql.ExistsOpen` unconditionally, so
+`AuthorHavingPosts` in a MySQL package came out with double-quoted identifiers
+— SQL that parses nowhere. It survived every unit test, both golden suites and
+both shell gates, because the context file is generated ONCE PER PACKAGE rather
+than per table, and so kept a hard-coded dialect while everything generated per
+table went through the seam.
+
+The existing seam gate checks that the lowering is ASSIGNED in one place; it
+cannot see a call that skips it. There is now a second AST gate that accounts
+for **every** direct reference to a dialect package from `codegen/`, with the
+reason each is dialect-independent — a conflict target, a lock's Go method
+name, a column-case convention, a traversal direction. Two more leaks turned up
+while writing the table: a join's CTE embedded PostgreSQL's aggregate SQL
+(unreachable today, because MySQL refuses a join with a CTE first, but a leak
+waiting for the refusal to be lifted), and the row-lock methods were generated
+from PostgreSQL's mode list rather than the target's.
+
+Generated PostgreSQL output changes by one COMMENT and nothing else.
+
+### Joins, aggregates, semi-joins, unions and row locks, run against both servers
+
+The end-to-end had one table, so nothing had ever loaded a relation, joined,
+grouped, merged or locked through generated code on MySQL. It now has two
+tables, a foreign key, a named plan, a declared join, a declared aggregate and
+a declared union, and it runs all of them against MySQL 8 and MariaDB 11.4 with
+real rows — asserting the ANSWERS, not the SQL: which parent each child was
+attached to, that a semi-join does not multiply the parent by its children,
+that the union's ordering applies to the merge rather than within each branch,
+and that a plan still costs exactly two round trips.
+
 ### Every fetch plan on a default model was broken on MySQL
 
 Three defects, all found by the same test: a generated package with TWO tables,

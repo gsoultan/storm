@@ -175,7 +175,7 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("}")
 	g.p("")
 	g.p("var err%sLocked = errors.New(", name)
-	g.p("\t%q)", pgsql.LockRefusedGrouped())
+	g.p("\t%q)", g.lw.LockRefusedGrouped())
 	g.p("")
 	g.p("var err%sOrdered = errors.New(", name)
 	g.p("\t%q)", "storm: Order() on an aggregation — its rows are groups, not table rows, "+
