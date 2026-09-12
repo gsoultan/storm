@@ -260,7 +260,7 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 	if os.Getenv(addrVar) == "" {
 		t.Skip(addrVar + " unset")
 	}
-	s, err := storm.Build(&mdAuthor{}, &mdPost{})
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, mdNames)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,6 +313,11 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		"TestChildTopUsesTheBatchLoader",
 		"TestChildQueryFiltersByItsParent",
 		"TestKeysetPagingOverTheParents",
+		"TestDeclaredJoinReturnsBothSidesRows",
+		"TestDeclaredAggregateGroupsAndFilters",
+		"TestSemiJoinDoesNotMultiplyTheParent",
+		"TestUnionMergesBothTablesInOneOrder",
+		"TestRowLockingInsideATransaction",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
@@ -335,7 +340,49 @@ func (a *mdAuthor) Plans(p *storm.Plans)  { p.Named("Feed").With(&a.Posts) }
 type mdPost struct {
 	storm.Model
 	Title  string
+	Views  int64
 	Author mdAuthor
 }
 
 func (p *mdPost) Schema(t *storm.Table) { t.Col(&p.Title).Size(120) }
+
+// A declared join, aggregate and union, so the live test reaches the
+// constructs that only ever had their SQL TEXT asserted. Each has a MySQL
+// lowering of its own — a join's ON clause, an aggregate's GROUP BY and
+// HAVING, a union's bare placeholders — and none had run against a server
+// through generated code.
+func (p *mdPost) Joins(j *storm.Joins) {
+	var a mdAuthor
+	j.Named("WithAuthor").
+		Inner(&a, &p.Author).
+		Take(&p.Title, "Title").
+		Take(&p.Views, "Views").
+		Take(&a.Name, "AuthorName")
+}
+
+func (p *mdPost) Aggregates(a *storm.Aggregates) {
+	byAuthor := a.Named("ByAuthor")
+	// Grouped by the relation, which is the foreign-key column storm derives
+	// from it — there is no AuthorID field to point at.
+	byAuthor.By(&p.Author)
+	n := byAuthor.Count("Posts")
+	byAuthor.Sum(&p.Views, "Views")
+	byAuthor.Max(&p.Views, "TopViews")
+	byAuthor.Having(a.Gt(n, 0))
+}
+
+// A union has no driving table, so it hangs off the schema rather than off
+// either model (ADR-0008).
+var mdNames = storm.Union("Names", func(u *storm.UnionSpec) {
+	var a mdAuthor
+	authors := u.From(&a)
+	authors.Take(&a.Name, "Text")
+	authors.Const("Kind", "author")
+
+	var p mdPost
+	posts := u.From(&p)
+	posts.Take(&p.Title, "Text")
+	posts.Const("Kind", "post")
+
+	u.OrderAsc("Text")
+})

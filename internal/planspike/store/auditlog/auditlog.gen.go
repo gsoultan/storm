@@ -88,7 +88,7 @@ type Query struct {
 	otoks [4]runtime.Tok
 	no    uint8
 
-	// lock is the row-lock mode: 0 none, then pgsql.LockMode order.
+	// lock is the row-lock mode: 0 none, then the dialect's mode order.
 	// It is part of the STATEMENT, so it selects the cache as well as
 	// the suffix.
 	lock uint8

@@ -191,7 +191,7 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	body.emitRelPlans(plans)
 	body.emitNamedPlans(named)
 
-	having, err := havingSpecs(s, names)
+	having, err := havingSpecs(loweringFor(o.Dialect), s, names)
 	if err != nil {
 		return nil, err
 	}

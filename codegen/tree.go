@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/gsoultan/storm/compile/pgsql"
 )
 
 // Tree-shaped query emission.
@@ -364,7 +362,7 @@ func (g *gen) treeQuery() {
 	g.p("\totoks [%d]runtime.Tok", g.budget(maxOrder))
 	g.p("\tno    uint8")
 	g.p("")
-	g.p("\t// lock is the row-lock mode: 0 none, then pgsql.LockMode order.")
+	g.p("\t// lock is the row-lock mode: 0 none, then the dialect's mode order.")
 	g.p("\t// It is part of the STATEMENT, so it selects the cache as well as")
 	g.p("\t// the suffix.")
 	g.p("\tlock uint8")
@@ -548,10 +546,10 @@ func (g *gen) treeQuery() {
 		"gives up the index walk that makes keyset pagination worth doing")
 	g.p("")
 	g.p("var errCountLocked = errors.New(")
-	g.p("\t%q)", pgsql.LockRefusedCounted())
+	g.p("\t%q)", g.lw.LockRefusedCounted())
 	g.p("")
 	g.p("var errExistsLocked = errors.New(")
-	g.p("\t%q)", pgsql.LockRefusedProbed())
+	g.p("\t%q)", g.lw.LockRefusedProbed())
 	g.p("")
 	g.p("var errTooComplex = errors.New(")
 	g.p("\t%q)", "storm: query has more predicates than the generated buffers hold "+
@@ -985,19 +983,18 @@ func (g *gen) treeBind() {
 func (g *gen) lockMethods() {
 	g.p("// Row locking.")
 	g.p("//")
-	for _, line := range pgsql.LockNotes() {
+	for _, line := range g.lw.LockNotes() {
 		if line == "" {
 			g.p("//")
 			continue
 		}
 		g.p("// %s", line)
 	}
-	for m := 1; m < pgsql.NumLockModes; m++ {
-		mode := pgsql.LockMode(m)
+	for m := 1; m < g.lw.NumLockModes; m++ {
 		g.p("")
 		g.p("// %s locks the rows this query returns, and %s",
-			pgsql.LockName(mode), pgsql.LockDoc(mode))
-		g.p("func (q Query) %s() Query { q.lock = %d; return q }", pgsql.LockName(mode), m)
+			g.lw.LockName(m), g.lw.LockDoc(m))
+		g.p("func (q Query) %s() Query { q.lock = %d; return q }", g.lw.LockName(m), m)
 	}
 	g.p("")
 }
