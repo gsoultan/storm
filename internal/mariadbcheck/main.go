@@ -55,4 +55,36 @@ func main() {
 	// And the shared four fifths, so a divergence there is caught here too.
 	emit("mc_select", sel+" WHERE `email` = ? ORDER BY `id` LIMIT ?", "@s, @n")
 	emit("mc_count", mysql.CountPrefix("mc_rows")+" WHERE `org_id` = ?", "@n")
+
+	// The recursive traversal. Shared with MySQL in shape, but run here too
+	// because the failure it shipped with was not a syntax error: MariaDB
+	// infers a recursive CTE column's type from the ANCHOR as well, so an
+	// un-cast path column is one key wide and the first append overflows it.
+	fmt.Println("DROP TABLE IF EXISTS `mc_nodes`;")
+	fmt.Println("CREATE TABLE `mc_nodes` (`id` BIGINT NOT NULL, `parent_id` BIGINT NULL," +
+		" PRIMARY KEY (`id`), KEY `ix_parent` (`parent_id`));")
+	fmt.Println("INSERT INTO `mc_nodes` VALUES (1,NULL),(2,1),(3,2),(4,3),(9,10),(10,9);")
+	fmt.Println("SET @roots='[1]';")
+	for label, dir := range map[string]int{
+		"mc_recursive_descend": mysql.Descend,
+		"mc_recursive_ascend":  mysql.Ascend,
+	} {
+		emit(label, mysql.Recursive("mc_nodes", []string{"id", "parent_id"}, "id", "parent_id",
+			"BIGINT", dir, ""), "@roots, @n")
+	}
+	// Labelled in the RESULT, not in a comment: the client strips comments, so
+	// a check anchored on one reads an empty string and passes for the reason
+	// it was written to catch.
+	fmt.Printf("SELECT 'mc_recursive_levels' AS `probe`, COUNT(*) AS `n` FROM (%s) `_c`;\n",
+		twoArgs(mysql.Recursive("mc_nodes", []string{"id", "parent_id"}, "id", "parent_id",
+			"BIGINT", mysql.Descend, ""), "'[1]'", "10"))
+	fmt.Printf("SELECT 'mc_recursive_cycle' AS `probe`, COUNT(*) AS `n` FROM (%s) `_c`;\n",
+		twoArgs(mysql.Recursive("mc_nodes", []string{"id", "parent_id"}, "id", "parent_id",
+			"BIGINT", mysql.Descend, ""), "'[9]'", "200"))
+}
+
+// twoArgs substitutes the two placeholders a traversal takes, so the statement
+// can be run directly rather than prepared.
+func twoArgs(sql, a, b string) string {
+	return strings.Replace(strings.Replace(sql, "?", a, 1), "?", b, 1)
 }

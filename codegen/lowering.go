@@ -85,6 +85,11 @@ type lowering struct {
 	Recursive func(table string, cols []string, key, parent, keyType string,
 		dir int, live string) string
 
+	// RecursiveMaxDepth is the deepest traversal whose cycle guard still holds,
+	// or 0 for no limit. A back end that accumulates visited keys in a
+	// fixed-width column has one; PostgreSQL's array has none.
+	RecursiveMaxDepth func(keyType string) int64
+
 	TopNWindow  func(table string, cols []string, key, keyType, live string) string
 	TopNLateral func(table string, cols []string, key, keyType, live string) string
 
@@ -237,6 +242,8 @@ func postgresLowering() lowering {
 		},
 		// PostgreSQL's own spelling, so the emitted text is unchanged.
 		KeyType: func(c *schema.Column) string { return c.Type.SQL() },
+		// An array has no declared width, so no depth is out of reach.
+		RecursiveMaxDepth: func(string) int64 { return 0 },
 		Recursive: func(t string, cols []string, key, parent, _ string, dir int, live string) string {
 			return pgsql.Recursive(t, cols, key, parent, dir, pgsql.Live(live))
 		},
@@ -346,9 +353,10 @@ func mysqlLowering() lowering {
 			}
 			return mysql.UnionSuffix(u), nil
 		},
-		AggregateSelect: mysql.AggregateSelect,
-		AggregateSuffix: mysql.AggregateSuffix,
-		KeyType:         mysql.ColumnType,
+		AggregateSelect:   mysql.AggregateSelect,
+		AggregateSuffix:   mysql.AggregateSuffix,
+		KeyType:           mysql.ColumnType,
+		RecursiveMaxDepth: mysql.MaxRecursionDepth,
 		Recursive: func(t string, cols []string, key, parent, keyType string, dir int, live string) string {
 			return mysql.Recursive(t, cols, key, parent, keyType, dir, mysql.Live(live))
 		},

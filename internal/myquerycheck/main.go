@@ -109,7 +109,7 @@ func main() {
 	}
 	fmt.Printf("INSERT INTO `my_users` VALUES %s;\n", strings.Join(vals, ","))
 	fmt.Println("ANALYZE TABLE `my_users`;")
-	fmt.Println("SET @s = 'u1@x.com'; SET @s2 = 'zz@x.com'; SET @n = 10; SET @i = 5; SET @j = '[1,2,3]'; SET @newid = 900001;")
+	fmt.Println("SET @s = 'u1@x.com'; SET @s2 = 'zz@x.com'; SET @n = 10; SET @i = 5; SET @j = '[1,2,3]'; SET @newid = 900001; SET @roots = '[1]';")
 
 	for _, s := range stmts {
 		// A single-quoted SQL string inside PREPARE: the only thing that needs
@@ -139,6 +139,45 @@ func main() {
 		strings.Replace(strings.Replace(
 			strings.Replace(mysql.TopNLateral("my_users", []string{"id", "email"}, "org_id", "BIGINT", ""),
 				"\x00order\x00", order, 1), "?", "'[1,2,3]'", 1), "?", "2", 1))
+
+	// The recursive traversal, which until now had no gate of ANY kind — not
+	// PREPAREd here, not run by the end-to-end. Its cycle guard is where the
+	// two engines part company hardest: PostgreSQL accumulates visited keys in
+	// an ARRAY and MySQL has none, so this is a HEX string joined with commas
+	// and tested with FIND_IN_SET.
+	//
+	// Run rather than merely prepared, because the failure that shipped was
+	// not a syntax error: MySQL infers a recursive CTE column's type from the
+	// ANCHOR, so an un-cast path column is exactly one key wide and the first
+	// append overflows it.
+	fmt.Println("DROP TABLE IF EXISTS `my_nodes`;")
+	fmt.Println("CREATE TABLE `my_nodes` (`id` BIGINT NOT NULL, `parent_id` BIGINT NULL, " +
+		"PRIMARY KEY (`id`), KEY `ix_parent` (`parent_id`));")
+	// A 1 -> 2 -> 3 -> 4 chain, and a 9 <-> 10 cycle.
+	fmt.Println("INSERT INTO `my_nodes` VALUES (1,NULL),(2,1),(3,2),(4,3),(9,10),(10,9);")
+	for label, dir := range map[string]int{"recursive_descend": mysql.Descend, "recursive_ascend": mysql.Ascend} {
+		sql := mysql.Recursive("my_nodes", []string{"id", "parent_id"}, "id", "parent_id",
+			"BIGINT", dir, "")
+		fmt.Printf("-- %s\n", label)
+		fmt.Printf("PREPARE `%s` FROM '%s';\n", label, strings.ReplaceAll(sql, "'", "''"))
+		fmt.Printf("EXECUTE `%s` USING @roots, @n;\n", label)
+		fmt.Printf("DEALLOCATE PREPARE `%s`;\n", label)
+	}
+	// The chain reaches all four levels...
+	//
+	// LABELLED IN THE RESULT, not in a comment: the client strips comments, so
+	// a check anchored on one reads an empty string and passes for the reason
+	// it was written to catch.
+	fmt.Printf("SELECT 'recursive_reaches_every_level' AS `probe`, COUNT(*) AS `n` FROM (%s) `_c`;\n",
+		strings.Replace(strings.Replace(
+			mysql.Recursive("my_nodes", []string{"id", "parent_id"}, "id", "parent_id", "BIGINT",
+				mysql.Descend, ""), "?", "'[1]'", 1), "?", "10", 1))
+	// ...and a cycle stops at the revisited key rather than at the depth bound,
+	// which is the difference between a guard and a bound.
+	fmt.Printf("SELECT 'recursive_cycle_terminates' AS `probe`, COUNT(*) AS `n` FROM (%s) `_c`;\n",
+		strings.Replace(strings.Replace(
+			mysql.Recursive("my_nodes", []string{"id", "parent_id"}, "id", "parent_id", "BIGINT",
+				mysql.Descend, ""), "?", "'[9]'", 1), "?", "200", 1))
 
 	// A grouped read, plain and rolled up. The rollup matters because MySQL
 	// spells it as a SUFFIX and has no GROUPING SETS at all, so this is the
