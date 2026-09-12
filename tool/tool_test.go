@@ -338,3 +338,130 @@ func TestCLI_RefusesMySQLOnlyIndexFactsForPostgres(t *testing.T) {
 		}
 	}
 }
+
+// The dialect has to be reachable from the COMMAND LINE, not just from
+// codegen.PackageOptions. Every engine-specific piece was built and none of it
+// could be asked for: `storm generate` always emitted PostgreSQL.
+func TestCLI_DialectReachesTheGenerator(t *testing.T) {
+	// NOT testmodel.All(): it carries a partial index, which MySQL has not, so
+	// the check refuses it before the generator runs — correctly, and that is a
+	// different test. This one is about whether the flag reaches the generator.
+	withModels(t, []any{&portableUser{}})
+	for _, tc := range []struct {
+		dialect  string
+		want     []string
+		unwanted []string
+	}{
+		{"postgres", []string{`"portable_users"`, "$1"}, []string{"`portable_users`"}},
+		{"mysql", []string{"`portable_users`", "?"}, []string{`\"portable_users\"`}},
+		{"mariadb", []string{"`portable_users`", "?"}, []string{`\"portable_users\"`}},
+	} {
+		t.Run(tc.dialect, func(t *testing.T) {
+			dir := filepath.Join(moduleScratch(t, "clidia"+tc.dialect), "store")
+			if err := run([]string{"generate", "-dialect", tc.dialect, dir}); err != nil {
+				t.Fatal(err)
+			}
+			src := readTree(t, dir)
+			for _, w := range tc.want {
+				if !strings.Contains(src, w) {
+					t.Errorf("the generated %s package never contains %q", tc.dialect, w)
+				}
+			}
+			for _, u := range tc.unwanted {
+				if strings.Contains(src, u) {
+					t.Errorf("the generated %s package still contains %q", tc.dialect, u)
+				}
+			}
+		})
+	}
+}
+
+// `storm ddl -dialect` must emit the DDL the chosen engine accepts, including
+// the one clause the two MySQL-family servers disagree about.
+func TestCLI_DDLPerDialect(t *testing.T) {
+	withModels(t, []any{&portableUser{}})
+	for _, tc := range []struct{ dialect, want string }{
+		{"postgres", `CREATE TABLE "portable_users"`},
+		{"mysql", "CREATE TABLE `portable_users`"},
+		{"mariadb", "CREATE TABLE `portable_users`"},
+	} {
+		t.Run(tc.dialect, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				if err := run([]string{"ddl", "-dialect", tc.dialect}); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("ddl -dialect %s does not contain %q:\n%s", tc.dialect, tc.want, out)
+			}
+		})
+	}
+}
+
+// An unknown dialect must name the ones storm knows, rather than silently
+// generating PostgreSQL — which is the failure mode that makes a default
+// dangerous.
+func TestCLI_UnknownDialectIsRefused(t *testing.T) {
+	withModels(t, testmodel.All())
+	err := run([]string{"ddl", "-dialect", "sqlite"})
+	if err == nil {
+		t.Fatal("an unknown dialect was accepted")
+	}
+	for _, want := range []string{"sqlite", "postgres", "mysql", "mariadb"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// The commands that read a live PostgreSQL catalogue have no MySQL form, and
+// must say so instead of connecting and failing somewhere deep.
+func TestCLI_CatalogueCommandsRefuseANonPostgresDialect(t *testing.T) {
+	withModels(t, testmodel.All())
+	for _, cmd := range []string{"diff", "verify", "explain", "import"} {
+		err := run([]string{cmd, "-dialect", "mysql", "x"})
+		if err == nil {
+			t.Fatalf("storm %s -dialect mysql was accepted", cmd)
+		}
+		if !strings.Contains(err.Error(), "PostgreSQL") {
+			t.Errorf("storm %s: the refusal does not say why: %v", cmd, err)
+		}
+	}
+}
+
+// portableUser is a model with nothing in it that only one engine has, so a
+// test about the DIALECT FLAG is not also a test about portability.
+type portableUser struct {
+	storm.Model
+	Email string
+	Name  string
+}
+
+func (u *portableUser) Schema(t *storm.Table) {
+	t.Col(&u.Email).Size(320)
+	t.Col(&u.Name).Size(120)
+	t.Unique(&u.Email)
+}
+
+func readTree(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	err := filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(p, ".go") {
+			return err
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		b.Write(src)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Len() == 0 {
+		t.Fatalf("no Go files under %s", dir)
+	}
+	return b.String()
+}

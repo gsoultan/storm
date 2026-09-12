@@ -322,10 +322,30 @@ is bounded with LRU eviction: it is keyed by SQL TEXT, which is not a closed set
 and the server's own `max_prepared_stmt_count` is 16382 — exhausting it fails
 every prepare on the server, including other clients'.
 
+**Errors speak storm's vocabulary, not MySQL's.** `mydrv.classify` maps the
+server's codes onto the same `runtime.ConstraintError` and the same sentinels
+pgxdrv uses — unique, foreign key, not null, check, deadlock, lock unavailable —
+so generated code that handles a unique violation on PostgreSQL handles it
+unchanged here. Proved against BOTH servers, because the codes differ (3819 vs
+4025 for a failed CHECK) and so does the punctuation each quotes the
+constraint's name with. No mapping is invented where the engine makes no
+distinction: MySQL has no exclusion constraint, and surfaces a serialization
+conflict AS a deadlock.
+
+**And the dialect is reachable from the command line.** `storm generate
+-dialect mysql|mariadb` and `storm ddl -dialect …`; every engine-specific piece
+existed and none of it could be asked for. The commands that read a live
+PostgreSQL catalogue — `diff`, `verify`, `explain`, `import`, `watch` — refuse a
+non-PostgreSQL dialect and say to apply `storm ddl -dialect …` with another
+migration tool, rather than connecting and failing somewhere deep in
+`pg_namespace`.
+
 Remaining limits, stated rather than fixed: result sets are materialised rather
 than streamed, `CopyFrom` is emulated with a multi-row INSERT (MySQL has no
-COPY), `Batch` is N round trips (the protocol has no pipeline), and `Addr` is
-host:port with no unix socket.
+COPY), `Batch` is N round trips (the protocol has no pipeline), `Addr` is
+host:port with no unix socket, and `migrate.Auto` is PostgreSQL-only — MySQL DDL
+is not transactional, so the one-transaction guarantee automigrate is built on
+does not exist there.
 
 Six defects the end-to-end found that the unit gates could not, all of the same
 shape — each piece worked and the seam between them did not:

@@ -121,6 +121,9 @@ usage:
   storm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
 flags:
+  -dialect    the engine to generate for: postgres (default), mysql, mariadb.
+              ddl and generate honour it; diff, verify, explain and import
+              read a live PostgreSQL catalogue and have no other form
   -dsn        PostgreSQL connection string (or $STORM_DSN)
   -schema     namespace to read/write (default "public")
   -out        migrations directory (default "db/migrations")
@@ -172,6 +175,8 @@ func run(args []string) error {
 	maxTrips := fs.Int("max-round-trips", 4, "lint: the most round trips a named plan may cost")
 	maxSeqRows := fs.Int("max-seq-rows", 10000, "explain: flag a seq scan the planner sizes at or above this")
 	pending := fs.Bool("pending", false, "verify the model against the migrations directory instead of the database")
+	dialectName := fs.String("dialect", "postgres",
+		"the engine to generate for: postgres, mysql or mariadb")
 	// Flags may appear ANYWHERE, including after a positional argument.
 	//
 	// Go's flag package stops at the first non-flag, so `storm diff init
@@ -204,18 +209,35 @@ func run(args []string) error {
 	// it for lacking the very thing it produces — and refused it with "no
 	// models registered — this binary is a template", which sends an adopter
 	// off to write by hand the file they just asked storm to write for them.
+	tgt, err := parseDialect(*dialectName)
+	if err != nil {
+		return err
+	}
+	// Migrations, drift, EXPLAIN and import all read a live PostgreSQL
+	// catalogue through pgx. Refusing here is better than connecting: a MySQL
+	// DSN handed to `storm diff` would fail somewhere deep with a message about
+	// pg_namespace, and the fix — that the command has no MySQL form — would
+	// not be in it.
+	if tgt.dialect != codegen.DialectPostgres {
+		switch cmd {
+		case "diff", "verify", "explain", "import", "watch":
+			return fmt.Errorf("storm %s reads a live PostgreSQL catalogue and has no %s form; "+
+				"apply the DDL from `storm ddl -dialect %s` with your own migration tool",
+				cmd, *dialectName, *dialectName)
+		}
+	}
+
 	var model *schema.Schema
 	if cmd != "import" {
 		var err error
 		if model, err = buildModel(); err != nil {
 			return err
 		}
-		// Every command here targets PostgreSQL except the one that asks about
-		// another dialect. What the model says for MySQL's sake — a prefix
-		// length, an invisible index — is refused before any of them emits SQL
-		// that quietly means something else.
+		// What the model says for one engine's sake — a prefix length, an
+		// invisible index, a partial unique — is refused before anything emits
+		// SQL that quietly means something else on the target actually chosen.
 		if cmd != "portable" {
-			if err := pgddl.Check(model); err != nil {
+			if err := tgt.check(model); err != nil {
 				return err
 			}
 		}
@@ -223,7 +245,11 @@ func run(args []string) error {
 
 	switch cmd {
 	case "ddl":
-		fmt.Print(pgddl.Create(model))
+		out, err := tgt.ddl(model)
+		if err != nil {
+			return err
+		}
+		fmt.Print(out)
 		return nil
 
 	case "diff":
@@ -247,7 +273,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		return generate(dir, model, *dsn, against)
+		return generate(dir, model, *dsn, against, tgt.dialect)
 
 	case "portable":
 		if nargs == 0 {
@@ -268,7 +294,7 @@ func run(args []string) error {
 			if err != nil {
 				return err
 			}
-			return verifyStale(*dsn, dir, model, against)
+			return verifyStale(*dsn, dir, model, against, tgt.dialect)
 		}
 		return verify(*dsn, *ns, model)
 
@@ -567,7 +593,7 @@ func parseRawSchema(v string) (RawSchema, error) {
 	return "", fmt.Errorf("-raw-schema %q: want %q or %q", v, RawAgainstModel, RawAgainstLive)
 }
 
-func generate(dir string, model *schema.Schema, dsn string, against RawSchema) error {
+func generate(dir string, model *schema.Schema, dsn string, against RawSchema, d codegen.Dialect) error {
 	// The import path is derived from the directory, which only means anything
 	// module-relative: gluing an ABSOLUTE path onto the module path produces
 	// an import that cannot compile — found the moment a test finally BUILT
@@ -589,6 +615,7 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema) e
 		PackageImport: hostMod + "/" + filepath.ToSlash(rel),
 		RawScanners:   scanners,
 		RawStatements: statements,
+		Dialect:       d,
 		// The models as Go types, not as schema: the staleness check asserts
 		// the STRUCT, which the schema no longer describes once relations have
 		// become foreign keys and mixins have been flattened.
@@ -717,7 +744,7 @@ func diff(dsn, ns, out, name string, model *schema.Schema, allowDestructive, con
 //
 // It compares bytes rather than regenerating in place, so a CI run cannot
 // "fix" the problem by rewriting the tree it was asked to check.
-func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema) error {
+func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema, d codegen.Dialect) error {
 	dir, rel, hostMod, err := resolveOutDir(dir)
 	if err != nil {
 		return err
@@ -736,6 +763,7 @@ func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema) error
 		PackageImport: hostMod + "/" + filepath.ToSlash(rel),
 		RawScanners:   scanners,
 		RawStatements: statements,
+		Dialect:       d,
 	})
 	if err != nil {
 		return err
@@ -914,6 +942,43 @@ func nextSeq(dir string) (int, error) {
 }
 
 var _ = strings.TrimSpace
+
+// target is the engine the command was asked for, and the two things that
+// differ because of it: which checker refuses an unportable model, and which
+// renderer emits its DDL.
+//
+// A struct rather than a switch at each site, for the reason codegen's lowering
+// is one: three sites choosing independently is three chances for one of them
+// to keep the default.
+type target struct {
+	dialect codegen.Dialect
+	check   func(*schema.Schema) error
+	ddl     func(*schema.Schema) (string, error)
+}
+
+func parseDialect(name string) (target, error) {
+	switch name {
+	case "postgres", "postgresql", "pg", "":
+		return target{
+			dialect: codegen.DialectPostgres,
+			check:   pgddl.Check,
+			ddl:     func(s *schema.Schema) (string, error) { return pgddl.Create(s), nil },
+		}, nil
+	case "mysql":
+		return target{
+			dialect: codegen.DialectMySQL,
+			check:   myddl.Check,
+			ddl:     func(s *schema.Schema) (string, error) { return myddl.CreateFor(s, myddl.MySQL) },
+		}, nil
+	case "mariadb":
+		return target{
+			dialect: codegen.DialectMariaDB,
+			check:   myddl.Check,
+			ddl:     func(s *schema.Schema) (string, error) { return myddl.CreateFor(s, myddl.MariaDB) },
+		}, nil
+	}
+	return target{}, fmt.Errorf("unknown dialect %q — storm knows postgres, mysql and mariadb", name)
+}
 
 // portable reports whether the model can be generated for another dialect.
 //
