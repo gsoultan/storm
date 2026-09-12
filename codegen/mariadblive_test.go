@@ -21,9 +21,23 @@ import (
 // Everything before this proved a piece — the SQL PREPAREs, mydec decodes the
 // bytes, the adapter satisfies the port. None of them proved the pieces fit,
 // and "each part works" is the claim that has been wrong twice in M9 already.
+//
+// Run twice, against BOTH engines, each with the dialect it was generated for.
+// One test reading one address could not tell which server it had reached, and
+// the MariaDB-dialect package contains SQL that MySQL rejects.
 func TestGeneratedMariaDBPackageRunsAgainstAServer(t *testing.T) {
-	if os.Getenv("STORM_MYSQL_ADDR") == "" {
-		t.Skip("STORM_MYSQL_ADDR unset")
+	runGeneratedLive(t, "mariadb", "STORM_MARIADB_ADDR",
+		[]string{"TestInsertSelectUpdateDelete", "TestInsertReturnsTheRow"})
+}
+
+func TestGeneratedMySQLPackageRunsAgainstAServer(t *testing.T) {
+	runGeneratedLive(t, "mysql", "STORM_MYSQL_ADDR",
+		[]string{"TestInsertSelectUpdateDelete"})
+}
+
+func runGeneratedLive(t *testing.T, dialect, addrVar string, want []string) {
+	if os.Getenv(addrVar) == "" {
+		t.Skip(addrVar + " unset")
 	}
 	// NOT buildSoftDelete's model: its t.Unique is scoped to the live rows,
 	// which is a PARTIAL unique index, and MySQL has none — myddl.Check
@@ -38,13 +52,13 @@ func TestGeneratedMariaDBPackageRunsAgainstAServer(t *testing.T) {
 	if err2 != nil {
 		t.Fatal(err2)
 	}
-	base := "mdlive" + strconv.Itoa(os.Getpid())
+	base := "mdlive" + dialect + strconv.Itoa(os.Getpid())
 	dir := filepath.Join(root, "internal", base)
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
-	files, err := pkgFor(t, s, dir, "mariadb")
+	files, err := pkgFor(t, s, dir, dialect)
 	if err != nil {
-		t.Fatalf("generating for MariaDB: %v", err)
+		t.Fatalf("generating for %s: %v", dialect, err)
 	}
 	var pkgDir string
 	for rel, src := range files {
@@ -63,7 +77,13 @@ func TestGeneratedMariaDBPackageRunsAgainstAServer(t *testing.T) {
 		t.Fatal("no per-table package generated")
 	}
 	pkg := filepath.Base(pkgDir)
-	src := strings.ReplaceAll(mariadbLiveSrc, "PKG", pkg)
+	returning := ""
+	if dialect == "mariadb" {
+		returning = mariadbReturningSrc
+	}
+	src := strings.ReplaceAll(mysqlLiveSrc, "RETURNINGTEST", returning)
+	src = strings.ReplaceAll(src, "PKG", pkg)
+	src = strings.ReplaceAll(src, "ADDRVAR", addrVar)
 	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base+"/"+pkg)
 	if err := os.WriteFile(filepath.Join(pkgDir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
@@ -71,14 +91,14 @@ func TestGeneratedMariaDBPackageRunsAgainstAServer(t *testing.T) {
 
 	cmd := exec.Command("go", "test", "-count=1", "-v", "./internal/"+base+"/"+pkg+"/")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "STORM_MYSQL_ADDR="+os.Getenv("STORM_MYSQL_ADDR"))
+	cmd.Env = append(os.Environ(), addrVar+"="+os.Getenv(addrVar))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the generated package does not run:\n%s", out)
 	}
 	// A subprocess that skipped is a green test that proved nothing — the trap
 	// the soft-delete live test already fell into once.
-	for _, name := range []string{"TestInsertSelectUpdateDelete", "TestInsertReturnsTheRow"} {
+	for _, name := range want {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
 		}

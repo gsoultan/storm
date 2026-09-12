@@ -2,7 +2,6 @@ package mydrv
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -43,7 +42,7 @@ func (c *conn) prepare(sql string) (*stmt, error) {
 		return nil, err
 	}
 	if p[0] == 0xff {
-		return nil, errors.New(string(p[9:]))
+		return nil, parseError(p)
 	}
 	s := &stmt{
 		c:       c,
@@ -140,7 +139,7 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 		return err
 	}
 	if p[0] == 0xff {
-		return errors.New(string(p[9:]))
+		return parseError(p)
 	}
 	if p[0] == 0x00 {
 		if s.c.onOK != nil {
@@ -174,7 +173,7 @@ func (s *stmt) exec(args []any, fn func(cols [][]byte) error) error {
 			return nil
 		}
 		if p[0] == 0xff {
-			return errors.New(string(p[9:]))
+			return parseError(p)
 		}
 		// Binary row: 0x00, then a null bitmap offset by two bits, then the
 		// values back to back in their wire encodings.

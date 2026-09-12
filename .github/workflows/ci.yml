@@ -21,9 +21,11 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      # MySQL is not a runtime target yet — storm cannot execute a query
-      # against it. It is here for the DDL and portability gate, which is what
-      # `compile/myddl` and `storm portable mysql` promise (ADR-0007).
+      # MySQL and MariaDB are runtime targets: storm generates for both and
+      # executes against both through runtime/mydrv. Two services rather than
+      # one, because the dialects DIFFER — the MariaDB-generated package is a
+      # syntax error on MySQL 8 — so a single server would leave half the
+      # generator untested.
       mysql:
         image: mysql:8
         env:
@@ -37,8 +39,23 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: storm
+          MARIADB_DATABASE: storm
+        ports: ["3307:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       STORM_DSN: postgres://storm:storm@localhost:5432/storm
+      # The adapter's live tests read these. Without them the whole of
+      # runtime/mydrv skips, and "the tests pass" would mean the unit half.
+      STORM_MYSQL_ADDR: 127.0.0.1:3306
+      STORM_MARIADB_ADDR: 127.0.0.1:3307
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -121,6 +138,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq mysql-client
           ./scripts/check/mysql.sh
+
+      # A separate gate, not a flag on the one above, because the point is that
+      # the two dialects DIFFER: MariaDB has INSERT ... RETURNING and has not
+      # got LATERAL, GROUPING(), ordered WITH ROLLUP or FOR SHARE. A gate that
+      # ran the shared four fifths twice would prove nothing about the fifth.
+      - name: mariadb dialect
+        env:
+          STORM_MARIADB_DSN: "127.0.0.1:3307"
+        run: ./scripts/check/mariadb.sh
 
       - name: benchmarks compile and run
         run: go test -run XXX -bench . -benchtime=1x ./bench/

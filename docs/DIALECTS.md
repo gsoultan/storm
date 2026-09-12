@@ -1,7 +1,7 @@
 ---
 tags: [storm, dialects, portability]
-updated: 2026-08-27
-status: partly implemented — MySQL DDL and the portability report are built
+updated: 2026-09-12
+status: implemented for PostgreSQL, MySQL 8 and MariaDB
 ---
 
 # Targets: SQL dialects and document stores
@@ -14,16 +14,17 @@ status: partly implemented — MySQL DDL and the portability report are built
 > column, with what to do instead. Verified by applying the emitted DDL to a
 > real MySQL 8 (`scripts/check/mysql.sh`).
 >
-> **Not built, and further away than it looks:** storm cannot generate a
-> *store* for MySQL — only tell you whether it could, and emit the schema.
-> A driver adapter is **not** the missing piece.
-> [ADR-0007](adr/0007-mysql-runtime-needs-a-second-decoder-family.md) has the
-> evidence: the `Executor` port hands back raw wire bytes and every scanner
-> decodes PostgreSQL *big-endian* binary, while every Go MySQL driver delivers
-> values already decoded through `database/sql/driver.Value` — and MySQL's
-> protocol is little-endian regardless. MySQL at run time is a second decoder
-> family plus a dialect-parameterised codegen, which is a milestone of its own.
-> SQL Server, Oracle and Mongo remain design.
+> **And storm now GENERATES for MySQL and MariaDB.** What
+> [ADR-0007](adr/0007-mysql-runtime-needs-a-second-decoder-family.md) said was
+> the real cost — a second decoder family, because the `Executor` port hands
+> back raw wire bytes and every scanner decoded PostgreSQL big-endian — is
+> built: `runtime/mydec` decodes the little-endian binary protocol,
+> `codegen` takes the dialect as a build-time parameter, `compile/mysql` and
+> `compile/mariadb` hold the SQL, and `runtime/mydrv` is a stdlib-only adapter
+> that speaks the wire directly rather than wrapping a `database/sql` driver
+> (which would hand back values already decoded, and force re-encoding).
+> A generated package does real CRUD against both engines, through a pool,
+> over TLS. SQL Server, Oracle and Mongo remain design.
 
 ## Why this strengthens the thesis rather than diluting it
 

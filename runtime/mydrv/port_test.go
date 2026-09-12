@@ -13,17 +13,26 @@ import (
 // methods is not a driver, and the compiler is the cheapest place to learn it.
 var _ runtime.Executor = (*mydrv.Conn)(nil)
 
-func addr(t testing.TB) string {
+func config(t testing.TB) mydrv.Config {
 	a := os.Getenv("STORM_MYSQL_ADDR")
 	if a == "" {
 		t.Skip("STORM_MYSQL_ADDR unset")
 	}
-	return a
+	return mydrv.Config{
+		Addr: a, User: "root", Password: "storm", Database: "storm",
+		// The probe servers are local containers with no certificate, so this
+		// asks for TLS only where it exists rather than requiring it.
+		TLS: mydrv.TLSPreferred,
+		// A container's root account authenticates for the first time here, so
+		// caching_sha2_password's full-auth exchange is unavoidable and the
+		// socket is loopback.
+		AllowCleartextPasswordOverPlaintext: true,
+	}
 }
 
 func open(t testing.TB) *mydrv.Conn {
 	t.Helper()
-	c, err := mydrv.Open(context.Background(), addr(t), "root", "storm", "storm")
+	c, err := mydrv.Open(context.Background(), config(t))
 	if err != nil {
 		t.Skipf("no server: %v", err)
 	}

@@ -13,38 +13,40 @@
 // never targets MySQL links nothing extra and one who does links no driver
 // either.
 //
-// # NOT YET PRODUCTION READY
+// # What it does and does not do
 //
-// Stated here rather than in a release note, because the gap is the kind that
-// bites in production and not in a test:
+// Implemented: TLS (Config.TLS, verified by default), mysql_native_password and
+// caching_sha2_password including the full-auth exchange, a bounded connection
+// pool with transactions, and real cancellation — a cancelled context sends
+// KILL QUERY from a second connection, so the statement stops on the SERVER and
+// not just in this process.
 //
-//   - **No TLS.** Every connection is plaintext. Do not point this at a
-//     database across a network you do not own.
-//   - **mysql_native_password only.** MySQL 8.4 turns that off by default, so
-//     this connects to MariaDB and to a MySQL configured for it.
-//     caching_sha2_password is not implemented.
-//   - **No connection pooling.** One Conn is one connection, and it is not safe
-//     for concurrent use.
-//   - **Context cancellation is a deadline, not a kill.** Cancelling does not
-//     send COM_KILL_QUERY, so a long statement runs to completion server-side.
-//   - **Bound parameters cover the types storm generates** and not the whole
-//     MySQL type table.
+// Known limits, stated here rather than in a release note:
 //
-// Those are the remaining work, and each one is a reason not to ship this
-// against a real database yet.
+//   - Result sets are MATERIALISED, not streamed. A query holds its rows in
+//     memory rather than the connection, which is what lets a pooled connection
+//     go back before the caller finishes reading. A million-row scan costs a
+//     million rows of memory.
+//   - CopyFrom is emulated with a multi-row INSERT, because MySQL has no COPY.
+//     See ErrNoCopyProtocol.
+//   - Batch is N round trips, because MySQL's protocol has no pipeline. See
+//     Conn.Batch.
+//   - Bound parameters cover the types storm generates and not the whole MySQL
+//     type table; an unbound type is an error, never a silent conversion.
+//   - Unix sockets are not supported: Config.Addr is host:port.
 package mydrv
 
 import (
 	"bufio"
-	"crypto/sha1"
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"net"
 )
 
 type conn struct {
-	c    net.Conn
+	c net.Conn
+	// id is the server's thread id for this connection. A second connection
+	// needs it to KILL QUERY the statement running on this one.
+	id   uint32
 	r    *bufio.Reader
 	seq  uint8
 	pkt  []byte   // reused packet buffer
@@ -60,6 +62,13 @@ type conn struct {
 // honour the caller's context.
 func newConn(nc net.Conn) *conn {
 	return &conn{c: nc, r: bufio.NewReaderSize(nc, 64<<10), pkt: make([]byte, 0, 64<<10)}
+}
+
+// upgrade swaps the socket for its TLS wrapper mid-handshake, and resets the
+// reader — anything buffered from the plaintext side is not part of the tunnel.
+func (c *conn) upgrade(tc net.Conn) {
+	c.c = tc
+	c.r = bufio.NewReaderSize(tc, 64<<10)
 }
 
 // readPacket reads one packet into c.pkt, REUSING the buffer. The returned
@@ -91,84 +100,6 @@ func (c *conn) writePacket(body []byte) error {
 	return nil
 }
 
-func (c *conn) handshake(user, pass, db string) error {
-	p, err := c.readPacket()
-	if err != nil {
-		return err
-	}
-	// Protocol 10: version string, thread id, then the 20-byte scramble in two
-	// pieces — the classic layout mysql_native_password uses.
-	i := 1
-	for i < len(p) && p[i] != 0 {
-		i++
-	}
-	i++    // server version NUL
-	i += 4 // thread id
-	salt := append([]byte{}, p[i:i+8]...)
-	i += 8 + 1 + 2 + 1 + 2 + 2 + 1 + 10
-	if i+12 <= len(p) {
-		salt = append(salt, p[i:i+12]...)
-	}
-
-	const (
-		clientLongPassword  = 1
-		clientLongFlag      = 4
-		clientConnectWithDB = 8
-		clientProtocol41    = 512
-		clientSecureConn    = 1 << 15
-		clientPluginAuth    = 1 << 19
-	)
-	flags := uint32(clientLongPassword | clientLongFlag | clientProtocol41 | clientSecureConn | clientPluginAuth)
-	if db != "" {
-		flags |= clientConnectWithDB
-	}
-
-	auth := nativePassword(pass, salt)
-	body := make([]byte, 0, 128)
-	body = binary.LittleEndian.AppendUint32(body, flags)
-	body = binary.LittleEndian.AppendUint32(body, 64<<20) // max packet
-	body = append(body, 45)                               // utf8mb4
-	body = append(body, make([]byte, 23)...)
-	body = append(body, user...)
-	body = append(body, 0)
-	body = append(body, byte(len(auth)))
-	body = append(body, auth...)
-	if db != "" {
-		body = append(body, db...)
-		body = append(body, 0)
-	}
-	body = append(body, "mysql_native_password"...)
-	body = append(body, 0)
-	if err := c.writePacket(body); err != nil {
-		return err
-	}
-	p, err = c.readPacket()
-	if err != nil {
-		return err
-	}
-	if p[0] == 0xff {
-		return fmt.Errorf("auth failed: %s", p[9:])
-	}
-	return nil
-}
-
-// nativePassword is SHA1(pass) XOR SHA1(salt + SHA1(SHA1(pass))).
-func nativePassword(pass string, salt []byte) []byte {
-	if pass == "" {
-		return nil
-	}
-	h1 := sha1.Sum([]byte(pass))
-	h2 := sha1.Sum(h1[:])
-	h := sha1.New()
-	h.Write(salt)
-	h.Write(h2[:])
-	out := h.Sum(nil)
-	for i := range out {
-		out[i] ^= h1[i]
-	}
-	return out
-}
-
 // query runs COM_QUERY and calls fn once per row with the column slices.
 //
 // The slices point INTO the packet buffer, which is reused: valid until the
@@ -186,10 +117,16 @@ func (c *conn) query(sql string, fn func(cols [][]byte) error) error {
 		return err
 	}
 	if p[0] == 0xff {
-		return errors.New(string(p[9:]))
+		return parseError(p)
 	}
 	if p[0] == 0x00 || p[0] == 0xfe {
-		return nil // OK packet: no result set
+		// Only an OK packet carries an affected-row count. This driver does not
+		// ask for CLIENT_DEPRECATE_EOF, so 0xfe here is an EOF, and reading a
+		// count out of it would be reading whatever followed.
+		if p[0] == 0x00 && c.onOK != nil {
+			c.onOK(p)
+		}
+		return nil // OK or EOF: no result set
 	}
 	nCols, _, _ := lenEncInt(p)
 	for i := uint64(0); i < nCols; i++ {
@@ -219,7 +156,7 @@ func (c *conn) query(sql string, fn func(cols [][]byte) error) error {
 			return nil // EOF
 		}
 		if p[0] == 0xff {
-			return errors.New(string(p[9:]))
+			return parseError(p)
 		}
 		off := 0
 		for i := 0; i < int(nCols); i++ {

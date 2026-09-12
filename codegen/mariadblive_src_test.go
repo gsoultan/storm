@@ -1,8 +1,12 @@
 package codegen_test
 
-// mariadbLiveSrc runs inside the generated package: real CRUD through storm's
+// mysqlLiveSrc runs inside the generated package: real CRUD through storm's
 // generated API, over storm's own MySQL adapter, against a real server.
-const mariadbLiveSrc = `package PKG_test
+//
+// ADDRVAR is the environment variable naming the server, and RETURNINGTEST is
+// the MariaDB-only half — MySQL 8 has no RETURNING, so the same source cannot
+// assert it against both.
+const mysqlLiveSrc = `package PKG_test
 
 import (
 	"context"
@@ -36,13 +40,19 @@ func (u *mdUser) Schema(t *storm.Table) {
 var ex runtime.Executor
 
 func TestMain(m *testing.M) {
-	addr := os.Getenv("STORM_MYSQL_ADDR")
+	addr := os.Getenv("ADDRVAR")
 	if addr == "" {
-		os.Stderr.WriteString("STORM_MYSQL_ADDR did not reach the generated package\n")
+		os.Stderr.WriteString("ADDRVAR did not reach the generated package\n")
 		os.Exit(1)
 	}
 	ctx := context.Background()
-	c, err := mydrv.Open(ctx, addr, "root", "storm", "storm")
+	// Through the POOL, not a bare connection: a pool is what an adopter
+	// passes, and it is the Executor whose concurrency and cancellation the
+	// generated code inherits.
+	c, err := mydrv.NewPool(ctx, mydrv.Config{
+		Addr: addr, User: "root", Password: "storm", Database: "storm",
+		AllowCleartextPasswordOverPlaintext: true,
+	})
 	must(err)
 	defer c.Close()
 	ex = c
@@ -162,7 +172,11 @@ func TestInsertSelectUpdateDelete(t *testing.T) {
 	}
 }
 
-// MariaDB can return the row it wrote, which MySQL 8 cannot — the difference
+RETURNINGTEST
+`
+
+// mariadbReturningSrc is appended only for MariaDB.
+const mariadbReturningSrc = `// MariaDB can return the row it wrote, which MySQL 8 cannot — the difference
 // that made it the target.
 //
 // Proved by a value the SERVER changes. storm sends every insertable column
