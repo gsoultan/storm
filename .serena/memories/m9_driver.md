@@ -93,12 +93,31 @@ auth handshake — the tedious half — but not a dependency that solves it.
 Reuse the packet buffer, point the column slices into it. Same validity contract
 as pgx's `RawValues` (good until the next row), which is why storm has Slabs.
 
-**So the four weeks is BREADTH, not risk.** The design is proven. What remains:
-`caching_sha2_password` (MySQL 8.4 disables native password; the spike only
-speaks native, hence testing on MariaDB), TLS, **the binary protocol —
-`COM_STMT_PREPARE`/`COM_STMT_EXECUTE`, without which `runtime/mydec` does not
-apply at all, and the largest single piece** — pooling, cancellation, error
-mapping.
+### The binary protocol works, and mydec decodes real bytes (2026-09-12)
+
+`COM_STMT_PREPARE`/`EXECUTE` and binary rows are implemented in the spike.
+**ADR-0007's second decoder family had never been handed bytes off a wire.** It
+has now, and it is correct: max int64, min int32/int16, bool, UTF-8,
+`DECIMAL(18,4)`, `DATETIME(6)` with microseconds, `DATE`.
+
+| 200 rows | allocs/row |
+|---|---|
+| binary rows, raw | 1.07 |
+| binary rows + mydec decoding | **1.04** |
+
+**Decoding is FREE.** The scanners read out of the raw bytes without allocating
+— the seam's whole design, measured end to end for the first time.
+
+**The length prefix is ASYMMETRIC and a driver must encode that.** A string or
+decimal wants the PAYLOAD; a temporal wants the LENGTH PREFIX KEPT, because
+`mydec.DateTime` reads `b[0]` as the component count and switches on 0/4/7/11.
+Strip it for both and every other column looks fine while temporals fail with
+"MySQL binary value has the wrong length". Cost the first run of the test.
+
+**So the four weeks is BREADTH, not risk.** What remains: `caching_sha2_password`
+(MySQL 8.4 disables native password; the spike speaks only native, hence testing
+on MariaDB), TLS, the full parameter type table, pooling, cancellation, error
+mapping, and the `runtime.Executor` adapter itself.
 
 Gotcha that cost the first run: without `CLIENT_DEPRECATE_EOF` the column
 definitions are followed by an EOF packet. Not consuming it means the first

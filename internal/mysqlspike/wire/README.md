@@ -32,6 +32,37 @@ is not satisfiable on top of a decoding driver.**
 a row costs no allocation to expose. The slices are valid until the next row —
 the same contract pgx's `RawValues` has, and the reason storm has Slabs.
 
+## The binary protocol works, and so does mydec
+
+`COM_STMT_PREPARE` / `COM_STMT_EXECUTE` and binary result rows are implemented,
+which makes `runtime/mydec` mean something: ADR-0007's second decoder family had
+never been handed bytes off a wire. It is now, and it decodes them correctly —
+max int64, min int32, min int16, bool, UTF-8 text, `DECIMAL(18,4)`, `DATETIME(6)`
+with microseconds, and `DATE`.
+
+| path (200 rows) | allocs/row | B/row |
+|---|---|---|
+| binary rows, raw | 1.07 | 4.3 |
+| binary rows **+ mydec decoding** | **1.04** | **4.2** |
+
+**Decoding is free.** The scanners read out of the raw bytes without allocating,
+which is the design the whole seam exists for, measured end to end for the first
+time.
+
+### The contract detail a driver must get right
+
+The length prefix is **asymmetric**, and the first run of this got it wrong:
+
+- a **string or decimal** wants the PAYLOAD — `mydec.Text` and `mydec.Decimal`
+  read the bytes themselves;
+- a **temporal** wants the LENGTH PREFIX KEPT — `mydec.DateTime` reads `b[0]` as
+  the component count and switches on 0/4/7/11, because MySQL packs a datetime
+  component-wise and the length is how you know whether the microseconds are
+  there.
+
+Strip it for both and every other column looks fine while the temporals fail
+with "MySQL binary value has the wrong length".
+
 ## What is missing, and why each matters
 
 - **`caching_sha2_password`.** MySQL 8.4 turns `mysql_native_password` off by
@@ -39,10 +70,8 @@ the same contract pgx's `RawValues` has, and the reason storm has Slabs.
   MariaDB. A driver needs both, and the sha2 exchange needs TLS or the server's
   public key.
 - **TLS.** Not optional for anything real.
-- **Prepared statements / binary protocol.** This uses `COM_QUERY`, so the bytes
-  are ASCII. `runtime/mydec` decodes the BINARY format (ADR-0007), so a real
-  driver must speak `COM_STMT_PREPARE`/`COM_STMT_EXECUTE` for mydec to apply at
-  all. **This is the largest single missing piece.**
+- **The full parameter type table.** `COM_STMT_EXECUTE` here binds `int64` and
+  `string` only; a driver needs every type storm can pass.
 - **`CLIENT_DEPRECATE_EOF`.** Not set here, which is why the column definitions
   are followed by an EOF packet the reader has to consume — the bug that made
   the first run return zero rows.
