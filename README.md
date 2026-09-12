@@ -73,7 +73,10 @@ actually accepts, `runtime/mydec` decodes the little-endian binary protocol, and
 `runtime/mydrv` is a **stdlib-only** adapter that speaks the wire directly — TLS,
 `caching_sha2_password`, a bounded pool, pinned transactions, and cancellation
 that sends `KILL QUERY` from a second connection rather than just walking away.
-An adopter who targets only PostgreSQL links none of it.
+Constraint violations arrive as the same `runtime.ConstraintError` PostgreSQL
+produces, so a handler is written once. `storm generate -dialect mysql` (or
+`mariadb`) is the whole of the wiring. An adopter who targets only PostgreSQL
+links none of it.
 
 The milestone log with
 every exit gate is [docs/PLAN.md](docs/PLAN.md), what would still stop a

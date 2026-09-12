@@ -392,3 +392,160 @@ func TestMariaDBNativePasswordStillWorks(t *testing.T) {
 		t.Errorf("SELECT 1 = %q", got)
 	}
 }
+
+// A constraint violation must arrive in storm's OWN vocabulary, not MySQL's.
+//
+// This is the parity that makes the dialect a build-time parameter rather than
+// a fork: generated code that handles a unique violation on PostgreSQL has to
+// handle it unchanged here. A driver that returned its native error would make
+// every caller switch on the engine.
+func TestConstraintViolationsSpeakStormsVocabulary(t *testing.T) {
+	// Both servers, because the CODES differ (MySQL says 3819 for a failed
+	// CHECK, MariaDB 4025) and so does the punctuation they quote the
+	// constraint's name with. A mapping proved against one engine is a mapping
+	// proved for half the target.
+	for _, engine := range []struct {
+		name string
+		cfg  func(testing.TB) mydrv.Config
+	}{{"mysql", config}, {"mariadb", mariaConfig}} {
+		t.Run(engine.name, func(t *testing.T) {
+			c, err := mydrv.Open(context.Background(), engine.cfg(t))
+			if err != nil {
+				t.Skipf("no server: %v", err)
+			}
+			defer c.Close()
+			constraintCases(t, c)
+		})
+	}
+}
+
+func constraintCases(t *testing.T, c *mydrv.Conn) {
+	ctx := context.Background()
+	mustExec(t, c, "DROP TABLE IF EXISTS `cv_child`")
+	mustExec(t, c, "DROP TABLE IF EXISTS `cv_probe`")
+	mustExec(t, c, "CREATE TABLE `cv_probe` (`id` BIGINT PRIMARY KEY, "+
+		"`email` VARCHAR(80) NOT NULL, `age` INT, "+
+		"UNIQUE KEY `cv_email_uq` (`email`), "+
+		"CONSTRAINT `cv_age_ck` CHECK (`age` >= 0)) ENGINE=InnoDB")
+	mustExec(t, c, "CREATE TABLE `cv_child` (`id` BIGINT PRIMARY KEY, `parent` BIGINT, "+
+		"CONSTRAINT `cv_parent_fk` FOREIGN KEY (`parent`) REFERENCES `cv_probe` (`id`)) "+
+		"ENGINE=InnoDB")
+	if _, err := c.Exec(ctx, "INSERT INTO `cv_probe` VALUES (?, ?, ?)",
+		[]any{int64(1), "a@x.com", int64(30)}); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		sql  string
+		args []any
+		kind error
+		// constraint is the name the caller should be able to read back. Empty
+		// means the server does not report one this driver can recover.
+		constraint string
+	}{
+		{"unique", "INSERT INTO `cv_probe` VALUES (?, ?, ?)",
+			[]any{int64(2), "a@x.com", int64(31)},
+			runtime.ErrUniqueViolation, "cv_email_uq"},
+		{"not null", "INSERT INTO `cv_probe` (`id`, `email`) VALUES (?, NULL)",
+			[]any{int64(3)}, runtime.ErrNotNullViolation, ""},
+		{"check", "INSERT INTO `cv_probe` VALUES (?, ?, ?)",
+			[]any{int64(4), "b@x.com", int64(-1)},
+			runtime.ErrCheckViolation, "cv_age_ck"},
+		{"foreign key", "INSERT INTO `cv_child` VALUES (?, ?)",
+			[]any{int64(1), int64(999)},
+			runtime.ErrForeignKeyViolation, "cv_parent_fk"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := c.Exec(ctx, tc.sql, tc.args)
+			if err == nil {
+				t.Fatal("the statement was accepted")
+			}
+			if !errors.Is(err, tc.kind) {
+				t.Fatalf("err = %v, want %v", err, tc.kind)
+			}
+			var ce *runtime.ConstraintError
+			if !errors.As(err, &ce) {
+				t.Fatalf("err = %v, want a *runtime.ConstraintError", err)
+			}
+			if tc.constraint != "" && ce.Constraint != tc.constraint {
+				t.Errorf("constraint = %q, want %q", ce.Constraint, tc.constraint)
+			}
+			// The server's own diagnostic must survive: it says which value
+			// collided, which the sentinel cannot.
+			var se *mydrv.Error
+			if !errors.As(err, &se) {
+				t.Errorf("the server's error was replaced rather than wrapped: %v", err)
+			}
+		})
+	}
+	t.Cleanup(func() {
+		_, _ = c.Exec(ctx, "DROP TABLE IF EXISTS `cv_child`", nil)
+		_, _ = c.Exec(ctx, "DROP TABLE IF EXISTS `cv_probe`", nil)
+	})
+}
+
+// A deadlock has to arrive as ErrDeadlock, because retrying is the only correct
+// response and a caller cannot decide to retry on an error it cannot name.
+func TestDeadlockIsNamed(t *testing.T) {
+	p, err := mydrv.NewPool(context.Background(), config(t))
+	if err != nil {
+		t.Skipf("no server: %v", err)
+	}
+	defer p.Close()
+	ctx := context.Background()
+	mustPool(t, p, "DROP TABLE IF EXISTS `dl_probe`")
+	mustPool(t, p, "CREATE TABLE `dl_probe` (`id` BIGINT PRIMARY KEY, `v` BIGINT) ENGINE=InnoDB")
+	mustPool(t, p, "INSERT INTO `dl_probe` VALUES (1, 0), (2, 0)")
+	t.Cleanup(func() { _, _ = p.Exec(ctx, "DROP TABLE IF EXISTS `dl_probe`", nil) })
+
+	// Two transactions taking the same two rows in opposite orders. One of them
+	// is rolled back by InnoDB as the deadlock's victim.
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i, order := range [][2]int64{{1, 2}, {2, 1}} {
+		wg.Add(1)
+		go func(i int, order [2]int64) {
+			defer wg.Done()
+			tx, err := p.Begin(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer tx.Rollback(ctx)
+			if _, err := tx.Exec(ctx, "UPDATE `dl_probe` SET `v` = `v` + 1 WHERE `id` = ?",
+				[]any{order[0]}); err != nil {
+				errs <- err
+				return
+			}
+			<-start
+			if _, err := tx.Exec(ctx, "UPDATE `dl_probe` SET `v` = `v` + 1 WHERE `id` = ?",
+				[]any{order[1]}); err != nil {
+				errs <- err
+				return
+			}
+			errs <- tx.Commit(ctx)
+		}(i, order)
+	}
+	time.Sleep(200 * time.Millisecond) // let both take their first lock
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	var deadlocked bool
+	for err := range errs {
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, runtime.ErrDeadlock) || errors.Is(err, runtime.ErrLockNotAvailable) {
+			deadlocked = true
+			continue
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !deadlocked {
+		t.Skip("the two transactions did not actually deadlock on this server")
+	}
+}

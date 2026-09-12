@@ -162,7 +162,7 @@ func (x *Conn) prepared(sql string) (*stmt, error) {
 	}
 	s, err := x.c.prepare(sql)
 	if err != nil {
-		return nil, err
+		return nil, classify(err)
 	}
 	x.sts[sql] = x.lru.PushFront(&entry{sql: sql, s: s})
 	for x.lru.Len() > x.maxStmts() {
@@ -206,7 +206,7 @@ func (x *Conn) once(ctx context.Context, sql string, args []any) (int64, error) 
 	if cerr := stop(); cerr != nil {
 		return 0, cerr
 	}
-	return n, err
+	return n, classify(err)
 }
 
 // rows buffers one result set's raw bytes.
@@ -263,7 +263,7 @@ func (x *Conn) Query(ctx context.Context, sql string, args []any) (runtime.Rows,
 		return nil, cerr
 	}
 	if err != nil {
-		return nil, err
+		return nil, classify(err)
 	}
 	return out, nil
 }
@@ -282,7 +282,7 @@ func (x *Conn) Exec(ctx context.Context, sql string, args []any) (int64, error) 
 	if code(err) == erUnsupportedPS && len(args) == 0 {
 		return x.simple(ctx, sql)
 	}
-	return n, err
+	return n, classify(err)
 }
 
 // simple runs a statement through COM_QUERY instead of the prepared protocol.
@@ -304,7 +304,7 @@ func (x *Conn) simple(ctx context.Context, sql string) (int64, error) {
 	if cerr := stop(); cerr != nil {
 		return 0, cerr
 	}
-	return n, err
+	return n, classify(err)
 }
 
 // ErrNoCopyProtocol is why CopyFrom is emulated.
