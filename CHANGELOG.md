@@ -14,6 +14,29 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `storm.AnyRef`'s discriminator is bounded — a SCHEMA CHANGE
+
+**If you use `storm.AnyRef`, your next `storm diff` proposes an ALTER.**
+
+Its type column held an unbounded `text`, and storm indexes it together with
+the id. MySQL cannot index a LONGTEXT without a key length; PostgreSQL refuses
+a prefix index. There is no index spelling that serves both, so the column is
+`varchar(64)` now — one more than PostgreSQL's identifier limit and equal to
+MySQL's, so every table name either engine can have fits and nothing a table
+name can be is rejected.
+
+### Every remaining construct now runs on both engines
+
+Many-to-many through a payload model, the self-referential many-to-many whose
+join table cannot tell its two columns apart by type, and `storm.AnyRef`
+including the orphan it exists to allow. With these, every construct storm
+generates has executed against MySQL 8 and MariaDB 11.4 with real data.
+
+`TestMySQLGeneratedPackageCompiles` — the cheap gate that needs no server —
+carries every portable type now, nullable and not. It passed through three
+missing decoder mappings because its fixture was a handful of strings and
+decimals. A type added to storm belongs in that struct.
+
 ### A date, a time or a JSON column did not COMPILE for MySQL
 
 Three holes in the decoder mapping, each of which refused the whole package or

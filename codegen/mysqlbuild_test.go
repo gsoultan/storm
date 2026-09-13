@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/codegen"
@@ -15,6 +16,16 @@ import (
 
 // A MySQL-portable model: no arrays, no inet, no tsvector, no ranges — the
 // types codegen's own supports() already refuses for this dialect.
+// EVERY portable type, nullable and not.
+//
+// The fixture used to be a handful of strings and decimals, and three decoder
+// mappings were missing without this gate saying so: a date assigned one value
+// from a two-value function, a TIME assigned a time.Duration to a
+// runtime.TimeOfDay, and JSON had no decoder at all. Each refused the package
+// or produced code that would not build — which is exactly what this gate is
+// for, and it passed because no column here had those types.
+//
+// A type added to storm belongs in this struct.
 type myPortable struct {
 	storm.Model
 	Email   string
@@ -25,6 +36,25 @@ type myPortable struct {
 	Note    *string
 	Amount  *storm.Decimal
 	Seen    *string
+
+	Small   int16
+	Medium  int32
+	Big     int64
+	Single  float32
+	Double  float64
+	Blob    []byte
+	Stamp   time.Time
+	Day     time.Time
+	Clock   storm.TimeOfDay
+	Doc     storm.JSON
+	OptBool *bool
+	OptBig  *int64
+	OptDbl  *float64
+	OptTime *time.Time
+	OptDay  *time.Time
+	OptClk  *storm.TimeOfDay
+	OptBlob []byte
+	OptDoc  *storm.JSON
 }
 
 func (m *myPortable) Schema(t *storm.Table) {
@@ -34,6 +64,8 @@ func (m *myPortable) Schema(t *storm.Table) {
 	t.Col(&m.Seen).Size(64)
 	t.Col(&m.Balance).Numeric(18, 4)
 	t.Col(&m.Amount).Numeric(18, 4)
+	t.Col(&m.Day).Date()
+	t.Col(&m.OptDay).Date()
 	t.Unique(&m.Email)
 	t.Index(&m.Name)
 }

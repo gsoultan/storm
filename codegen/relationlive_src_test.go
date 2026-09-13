@@ -26,6 +26,8 @@ import (
 	ctxpkg "IMPORTPATH"
 	"IMPORTPATH/mdattachment"
 	"IMPORTPATH/mdauthor"
+	"IMPORTPATH/mdevent"
+	"IMPORTPATH/mdfollow"
 	"IMPORTPATH/mdnode"
 	"IMPORTPATH/mdpost"
 	"IMPORTPATH/mdtag"
@@ -34,11 +36,15 @@ import (
 
 type mdAuthor struct {
 	storm.Model
-	Name  string
-	Posts []mdPost
+	Name    string
+	Posts   []mdPost
+	Follows []mdTag
 }
 
-func (a *mdAuthor) Schema(t *storm.Table) { t.Col(&a.Name).Size(80) }
+func (a *mdAuthor) Schema(t *storm.Table) {
+	t.Col(&a.Name).Size(80)
+	t.Through(&a.Follows, mdFollow{})
+}
 
 // A declared column subset, which has its own scan path and its own statement.
 func (a *mdAuthor) Projections(p *storm.Projections) { p.Named("Card", &a.Name) }
@@ -68,6 +74,11 @@ type mdTag struct {
 	storm.Model
 	Label string
 	Posts []mdPost
+	// A SELF-referential many-to-many: both sides are the same table, so the
+	// join table's two columns cannot be told apart by their type. On mdTag
+	// rather than mdNode, because mdNode also has a self FK and a table with
+	// both cannot say which relation a slice means.
+	Similar []mdTag
 }
 
 func (g *mdTag) Schema(t *storm.Table) { t.Col(&g.Label).Size(40) }
@@ -113,6 +124,36 @@ func (w *mdWide) Schema(t *storm.Table) {
 	t.Col(&w.Money).Numeric(18, 6)
 }
 
+// A join model with a PAYLOAD: the row records something the generated join
+// table has nowhere to put. t.Through names it, and its loader is a different
+// shape from the implicit many-to-many's.
+type mdFollow struct {
+	Author mdAuthor
+	Tag    mdTag
+	Since  time.Time
+	Reason string
+}
+
+func (f *mdFollow) Schema(t *storm.Table) {
+	t.PrimaryKey(&f.Author, &f.Tag)
+	t.Col(&f.Author).OnDelete(storm.Cascade)
+	t.Col(&f.Tag).OnDelete(storm.Cascade)
+	t.Col(&f.Reason).Size(40)
+}
+
+// The discriminator form of a polymorphic reference: a table name and an id,
+// with no foreign key, acknowledged where a reviewer sees it.
+type mdEvent struct {
+	storm.Model
+	Kind    string
+	Subject storm.AnyRef
+}
+
+func (e *mdEvent) Schema(t *storm.Table) {
+	t.Col(&e.Kind).Size(40)
+	t.Col(&e.Subject).AcknowledgeNoFK("events outlive the rows they describe, by design")
+}
+
 type mdNode struct {
 	storm.Model
 	Name     string
@@ -142,7 +183,7 @@ func TestMain(m *testing.M) {
 	defer p.Close()
 	ex = p
 
-	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, &mdWide{})
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, &mdWide{}, &mdFollow{}, &mdEvent{})
 	must(err)
 	ddl, err := myddl.CreateFor(s, myddl.TARGET)
 	must(err)
@@ -152,7 +193,8 @@ func TestMain(m *testing.M) {
 	// table. Off, drop everything, on.
 	_, _ = p.Exec(ctx, "SET FOREIGN_KEY_CHECKS = 0", nil)
 	for _, t := range []string{
-		"md_attachments", "md_post_md_tags", "md_tags", "md_posts", "md_authors", "md_nodes",
+		"md_attachments", "md_events", "md_follows", "md_post_md_tags",
+		"md_tag_similar", "md_tags", "md_posts", "md_authors", "md_nodes",
 		"md_wides",
 	} {
 		if _, err := p.Exec(ctx, "DROP TABLE IF EXISTS "+t, nil); err != nil {
@@ -1314,6 +1356,137 @@ func TestJSONPredicates(t *testing.T) {
 	}
 	if n := count("all keys partial", mdwide.Doc.HasAllKeys("a", "z")); n != 0 {
 		t.Errorf("HasAllKeys matched %d rows for a key that is not there, want 0", n)
+	}
+}
+
+// A many-to-many with a PAYLOAD: the join row records something a generated
+// join table has nowhere to put, so it is a declared model and its loader is a
+// different shape from the implicit form's.
+func TestManyToManyThroughAPayloadModel(t *testing.T) {
+	ctx := context.Background()
+	tag := &mdtag.Row{ID: id(0xf0, 1), Label: "followed"}
+	if err := mdtag.Insert(ctx, ex, tag); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_tags WHERE id = ?", []any{tag.ID}) })
+	since := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	if err := mdfollow.Insert(ctx, ex, &mdfollow.Row{
+		AuthorID: id(1, 1), TagID: tag.ID, Since: since, Reason: "curiosity",
+	}); err != nil {
+		t.Fatalf("insert the join row: %v", err)
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_follows", nil) })
+
+	got, err := ctxpkg.MdAuthorWithFollows().Where(mdauthor.ID.Eq(id(1, 1))).All(ctx, ex)
+	if err != nil {
+		t.Fatalf("through: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Follows) != 1 {
+		t.Fatalf("loaded %+v, want one author with one tag", got)
+	}
+	if got[0].Follows[0].Label != "followed" {
+		t.Errorf("the far side is %q", got[0].Follows[0].Label)
+	}
+
+	// The PAYLOAD is the point: it is reachable through the join model, which
+	// the implicit form has no name for.
+	rows, err := mdfollow.New().Where(mdfollow.AuthorID.Eq(id(1, 1))).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("read %d join rows, want 1", len(rows))
+	}
+	if rows[0].Reason != "curiosity" || !rows[0].Since.Equal(since) {
+		t.Errorf("the payload did not round-trip: %+v", rows[0])
+	}
+}
+
+// A SELF-referential many-to-many: both sides are the same table, so the join
+// table's two columns cannot be told apart by their type and the loader has to
+// know which end it is reading from.
+func TestSelfReferentialManyToMany(t *testing.T) {
+	ctx := context.Background()
+	a, b := id(0xf1, 1), id(0xf1, 2)
+	for _, n := range []struct {
+		id    [16]byte
+		label string
+	}{{a, "left"}, {b, "right"}} {
+		if err := mdtag.Insert(ctx, ex, &mdtag.Row{ID: n.id, Label: n.label}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = ex.Exec(ctx, "DELETE FROM md_tag_similar", nil)
+		_, _ = ex.Exec(ctx, "DELETE FROM md_tags WHERE label IN ('left','right')", nil)
+	})
+	if _, err := ex.Exec(ctx,
+		"INSERT INTO md_tag_similar (md_tag_id, similar_id) VALUES (?, ?)",
+		[]any{a, b}); err != nil {
+		t.Fatalf("link: %v", err)
+	}
+
+	got, err := ctxpkg.MdTagWithSimilar().Where(mdtag.ID.Eq(a)).All(ctx, ex)
+	if err != nil {
+		t.Fatalf("self-referential m2m: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("read %d tags, want 1", len(got))
+	}
+	if len(got[0].Similar) != 1 || got[0].Similar[0].ID != b {
+		t.Errorf("tag 'left' is similar to %+v, want just 'right'", got[0].Similar)
+	}
+	// And the row itself must NOT come back: a loader that read the join table
+	// without telling its two columns apart would return it.
+	for _, r := range got[0].Similar {
+		if r.ID == a {
+			t.Error("a tag was reported as similar to itself")
+		}
+	}
+}
+
+// storm.AnyRef: a table name and an id, with no foreign key. Its discriminator
+// is bounded rather than unbounded text, because a table name is bounded — and
+// because MySQL cannot index a LONGTEXT without a key length while PostgreSQL
+// refuses a prefix index, so there is no index spelling that serves both.
+func TestAnyRefRoundTripsAndIsIndexable(t *testing.T) {
+	ctx := context.Background()
+	e := &mdevent.Row{
+		ID: id(0xf2, 1), Kind: "created",
+		SubjectType: "md_authors", SubjectID: id(1, 1),
+	}
+	if err := mdevent.Insert(ctx, ex, e); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_events", nil) })
+
+	got, ok, err := mdevent.New().Where(mdevent.ID.Eq(e.ID)).One(ctx, ex)
+	if err != nil || !ok {
+		t.Fatalf("read back: %v ok=%v", err, ok)
+	}
+	if got.SubjectType != "md_authors" || got.SubjectID != id(1, 1) {
+		t.Errorf("the reference did not round-trip: %+v", got)
+	}
+
+	// An ORPHAN is allowed, which is the whole point of acknowledging no
+	// foreign key: an event outlives the row it describes.
+	orphan := &mdevent.Row{
+		ID: id(0xf2, 2), Kind: "deleted",
+		SubjectType: "md_authors", SubjectID: id(0xee, 0xee),
+	}
+	if err := mdevent.Insert(ctx, ex, orphan); err != nil {
+		t.Errorf("a reference to a row that is not there was refused: %v", err)
+	}
+
+	// And the pair is queryable, which is what the index is for.
+	n, err := mdevent.New().
+		Where(mdevent.SubjectType.Eq("md_authors"), mdevent.SubjectID.Eq(id(1, 1))).
+		Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("the reference matched %d rows, want 1", n)
 	}
 }
 `

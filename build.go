@@ -1183,6 +1183,11 @@ func arcVariants(t reflect.Type) (vs []reflect.Type, optional bool, ok bool) {
 
 var anyRefType = reflect.TypeOf(AnyRef{})
 
+// anyRefTypeSize bounds the discriminator. One more than PostgreSQL's
+// identifier limit of 63 and equal to MySQL's of 64, so every table name either
+// engine can have fits.
+const anyRefTypeSize = 64
+
 // buildAnyRef emits the (type, id) column pair and records the declaration.
 //
 // No foreign key and no CHECK, because there is nothing to point at: the whole
@@ -1200,7 +1205,17 @@ func (b *builder) buildAnyRef(mi *modelInfo, tbl *Table, f reflect.StructField, 
 	// The TYPE column carries the back-pointer, so t.Col(&a.Subject) resolves
 	// to something AcknowledgeNoFK can reach.
 	tc := &col{
-		sc:     &schema.Column{Name: ar.TypeColumn, Type: schema.Type{Name: schema.TypeText}, NotNull: true},
+		// BOUNDED, because what it holds is a table name and a table name is
+		// bounded: 63 characters on PostgreSQL, 64 on MySQL. Unbounded text
+		// costs nothing on PostgreSQL and cannot be INDEXED at all on MySQL
+		// without a key length — and PostgreSQL refuses a prefix index, so
+		// there is no index spelling that serves both. Sizing the column is
+		// the one fix that does, and it rejects nothing a table name can be.
+		sc: &schema.Column{
+			Name:    ar.TypeColumn,
+			Type:    schema.Type{Name: schema.TypeVarchar, Size: anyRefTypeSize},
+			NotNull: true,
+		},
 		field:  f,
 		anyRef: ar,
 	}

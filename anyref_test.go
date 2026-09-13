@@ -93,7 +93,13 @@ func TestAnyRefDDL(t *testing.T) {
 	}
 	ddl := pgddl.Create(s)
 	for _, want := range []string{
-		`"subject_type" text NOT NULL`,
+		// BOUNDED, not text. What it holds is a table name, and a table name
+		// is bounded — 63 characters on PostgreSQL, 64 on MySQL. Unbounded
+		// costs nothing here and cannot be INDEXED at all on MySQL without a
+		// key length, while PostgreSQL refuses a prefix index, so there is no
+		// index spelling that serves both. Sizing the column is the one fix
+		// that does, and it rejects nothing a table name can be.
+		`"subject_type" varchar(64) NOT NULL`,
 		`"subject_id" uuid NOT NULL`,
 		`("subject_type", "subject_id")`,
 	} {
