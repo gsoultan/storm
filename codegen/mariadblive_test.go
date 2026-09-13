@@ -285,7 +285,7 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		t.Skip(addrVar + " unset")
 	}
 	sweepGenerated(t, "mdrel")
-	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, &mdWide{}, mdNames)
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, &mdWide{}, &mdFollow{}, &mdEvent{}, mdNames)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,6 +358,9 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		"TestOffsetAndUnordered",
 		"TestEveryColumnTypeRoundTripsThroughGeneratedCode",
 		"TestJSONPredicates",
+		"TestManyToManyThroughAPayloadModel",
+		"TestSelfReferentialManyToMany",
+		"TestAnyRefRoundTripsAndIsIndexable",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
@@ -370,11 +373,15 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 // which is the same trick the single-table test plays.
 type mdAuthor struct {
 	storm.Model
-	Name  string
-	Posts []mdPost
+	Name    string
+	Posts   []mdPost
+	Follows []mdTag
 }
 
-func (a *mdAuthor) Schema(t *storm.Table) { t.Col(&a.Name).Size(80) }
+func (a *mdAuthor) Schema(t *storm.Table) {
+	t.Col(&a.Name).Size(80)
+	t.Through(&a.Follows, mdFollow{})
+}
 
 // A declared column subset, which has its own scan path and its own statement.
 func (a *mdAuthor) Projections(p *storm.Projections) { p.Named("Card", &a.Name) }
@@ -458,6 +465,36 @@ func (w *mdWide) Schema(t *storm.Table) {
 	t.Col(&w.Money).Numeric(18, 6)
 }
 
+// A join model with a PAYLOAD: the row records something the generated join
+// table has nowhere to put. t.Through names it, and its loader is a different
+// shape from the implicit many-to-many's.
+type mdFollow struct {
+	Author mdAuthor
+	Tag    mdTag
+	Since  time.Time
+	Reason string
+}
+
+func (f *mdFollow) Schema(t *storm.Table) {
+	t.PrimaryKey(&f.Author, &f.Tag)
+	t.Col(&f.Author).OnDelete(storm.Cascade)
+	t.Col(&f.Tag).OnDelete(storm.Cascade)
+	t.Col(&f.Reason).Size(40)
+}
+
+// The discriminator form of a polymorphic reference: a table name and an id,
+// with no foreign key, acknowledged where a reviewer sees it.
+type mdEvent struct {
+	storm.Model
+	Kind    string
+	Subject storm.AnyRef
+}
+
+func (e *mdEvent) Schema(t *storm.Table) {
+	t.Col(&e.Kind).Size(40)
+	t.Col(&e.Subject).AcknowledgeNoFK("events outlive the rows they describe, by design")
+}
+
 type mdNode struct {
 	storm.Model
 	Name     string
@@ -476,6 +513,11 @@ type mdTag struct {
 	storm.Model
 	Label string
 	Posts []mdPost
+	// A SELF-referential many-to-many: both sides are the same table, so the
+	// join table's two columns cannot be told apart by their type. On mdTag
+	// rather than mdNode, because mdNode also has a self FK and a table with
+	// both cannot say which relation a slice means.
+	Similar []mdTag
 }
 
 func (g *mdTag) Schema(t *storm.Table) { t.Col(&g.Label).Size(40) }
