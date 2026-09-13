@@ -563,9 +563,18 @@ func (b *builder) resolveArcs(mi *modelInfo) {
 	}
 
 	for _, arc := range mi.tbl.out.Arcs {
+		cols := make([]string, len(arc.Variants))
+		for i, v := range arc.Variants {
+			cols[i] = v.Column
+		}
 		mi.tbl.out.Checks = append(mi.tbl.out.Checks, &schema.Check{
 			Name: "ck_" + mi.tbl.out.Name + "_" + snake(arc.Field),
 			Expr: arcCheckExpr(arc),
+			// The columns as well as the expression: Expr is PostgreSQL's
+			// spelling, and a back end whose booleans do not cast with `::int`
+			// renders its own from these.
+			Arc:         cols,
+			ArcOptional: arc.Optional,
 		})
 		// A partial index per variant. Without them, "the attachments of this
 		// post" scans every attachment of every kind — and the whole reason to

@@ -354,6 +354,18 @@ type ForeignKey struct {
 type Check struct {
 	Name string
 	Expr string
+
+	// Arc names the columns of a polymorphic arc whose exactly-one constraint
+	// this check is, or is empty for a check the MODEL declared.
+	//
+	// The distinction is who wrote the expression. A declared check is the
+	// model's own SQL and every back end passes it through unchanged, because
+	// rewriting somebody's expression is guesswork. An arc's check is STORM's,
+	// so a back end may respell it — and must, since Expr is PostgreSQL's
+	// spelling and casts a boolean with `::int`, which parses nowhere else.
+	Arc []string
+	// ArcOptional makes the constraint at-most-one rather than exactly-one.
+	ArcOptional bool
 }
 
 // Exclude is an exclusion constraint — the correct answer to booking and

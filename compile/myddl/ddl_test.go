@@ -219,7 +219,12 @@ func TestCheck_RefusesWhatMySQLLacksAndDemandsAKeyLength(t *testing.T) {
 	}{
 		{"gin", &schema.Index{Name: "i", Method: "gin", Columns: []schema.IndexColumn{{Name: "slug"}}}, "gin"},
 		{"brin", &schema.Index{Name: "i", Method: "brin", Columns: []schema.IndexColumn{{Name: "score"}}}, "brin"},
-		{"partial", &schema.Index{Name: "i", Where: "score > 0", Columns: []schema.IndexColumn{{Name: "score"}}}, "partial"},
+		// A partial UNIQUE index only. Widening one changes ANSWERS — rows the
+		// predicate excluded could coexist and now conflict — which is the
+		// soft-delete case. The non-unique form is widened instead, and
+		// TestAPartialNonUniqueIndexIsWidenedRatherThanRefused says so.
+		{"partial unique", &schema.Index{Name: "i", Unique: true, Where: "score > 0",
+			Columns: []schema.IndexColumn{{Name: "score"}}}, "partial unique"},
 		{"include", &schema.Index{Name: "i", Include: []string{"score"}, Columns: []schema.IndexColumn{{Name: "slug"}}}, "INCLUDE"},
 		{"nulls not distinct", &schema.Index{Name: "i", Unique: true, NullsNotDistinct: true, Columns: []schema.IndexColumn{{Name: "slug"}}}, "NULLS NOT DISTINCT"},
 		{"opclass", &schema.Index{Name: "i", Columns: []schema.IndexColumn{{Name: "slug", OpClass: "text_pattern_ops"}}}, "operator class"},
@@ -329,5 +334,101 @@ func TestForeignKeyIsAnAlterWithItsActions(t *testing.T) {
 	})
 	if strings.Contains(plain, "ON DELETE") || strings.Contains(plain, "ON UPDATE") {
 		t.Errorf("an undeclared action was emitted:\n%s", plain)
+	}
+}
+
+// A partial NON-UNIQUE index is widened rather than refused.
+//
+// Dropping the predicate costs storage and a little scan time; it changes no
+// answer, because the rows it adds are rows the query does not ask for. The
+// unique form is refused, because there widening turns rows PostgreSQL accepts
+// into a constraint violation.
+//
+// This is not a hypothetical split. A polymorphic arc generates one partial
+// index per variant — WHERE <variant>_id IS NOT NULL — so refusing them refuses
+// storm.OneOfN on this target entirely.
+func TestAPartialNonUniqueIndexIsWidenedRatherThanRefused(t *testing.T) {
+	tbl := &schema.Table{
+		Name:       "attachments",
+		Columns:    []*schema.Column{col("id", schema.TypeUUID), col("post_id", schema.TypeUUID)},
+		PrimaryKey: []string{"id"},
+		Indexes: []*schema.Index{{
+			Name:    "ix_attachments_post_id",
+			Where:   `"post_id" IS NOT NULL`,
+			Columns: []schema.IndexColumn{{Name: "post_id"}},
+		}},
+	}
+	s := &schema.Schema{Tables: []*schema.Table{tbl}}
+	if err := myddl.Check(s); err != nil {
+		t.Fatalf("a partial non-unique index was refused: %v", err)
+	}
+	got := myddl.CreateIndex(tbl, tbl.Indexes[0])
+	if strings.Contains(got, "WHERE") {
+		t.Errorf("the predicate survived into MySQL DDL, which has no partial index:\n%s", got)
+	}
+	if !strings.Contains(got, "`post_id`") {
+		t.Errorf("the index lost its column:\n%s", got)
+	}
+
+	// ...and the unique form is still refused, because that one changes answers.
+	tbl.Indexes[0].Unique = true
+	err := myddl.Check(s)
+	if err == nil {
+		t.Fatal("a partial UNIQUE index was accepted")
+	}
+	if !strings.Contains(err.Error(), "partial unique") {
+		t.Errorf("the refusal does not name what it refused: %v", err)
+	}
+}
+
+// An arc's exactly-one CHECK, which storm writes rather than the model.
+//
+// PostgreSQL's spelling casts each comparison with `::int`, which parses
+// nowhere else — MySQL rejected the whole CREATE TABLE. Here a boolean already
+// is 1 or 0 in arithmetic, so the cast simply goes away. A check the MODEL
+// declared is passed through untouched, because rewriting somebody's
+// expression is guesswork.
+func TestAnArcCheckIsRespelledAndADeclaredOneIsNot(t *testing.T) {
+	tbl := &schema.Table{
+		Name: "attachments",
+		Columns: []*schema.Column{
+			col("id", schema.TypeUUID), col("post_id", schema.TypeUUID),
+			col("user_id", schema.TypeUUID),
+		},
+		PrimaryKey: []string{"id"},
+		Checks: []*schema.Check{
+			{
+				Name: "ck_attachments_subject",
+				Expr: `("post_id" IS NOT NULL)::int + ("user_id" IS NOT NULL)::int = 1`,
+				Arc:  []string{"post_id", "user_id"},
+			},
+			{Name: "ck_attachments_named", Expr: `char_length("id") > 0`},
+		},
+	}
+	got, err := myddl.CreateTable(tbl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The arc's, respelled.
+	if strings.Contains(got, "::int") {
+		t.Errorf("a PostgreSQL cast survived into MySQL DDL:\n%s", got)
+	}
+	want := "CHECK ((`post_id` IS NOT NULL) + (`user_id` IS NOT NULL) = 1)"
+	if !strings.Contains(got, want) {
+		t.Errorf("missing %q in:\n%s", want, got)
+	}
+	// The model's, untouched.
+	if !strings.Contains(got, `CHECK (char_length("id") > 0)`) {
+		t.Errorf("a declared check was rewritten:\n%s", got)
+	}
+
+	// At-most-one rather than exactly-one.
+	tbl.Checks[0].ArcOptional = true
+	got, err = myddl.CreateTable(tbl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "IS NOT NULL) <= 1)") {
+		t.Errorf("an optional arc is not at-most-one:\n%s", got)
 	}
 }

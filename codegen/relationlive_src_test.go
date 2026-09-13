@@ -23,9 +23,11 @@ import (
 	"github.com/gsoultan/storm/runtime/mydrv"
 
 	ctxpkg "IMPORTPATH"
+	"IMPORTPATH/mdattachment"
 	"IMPORTPATH/mdauthor"
 	"IMPORTPATH/mdnode"
 	"IMPORTPATH/mdpost"
+	"IMPORTPATH/mdtag"
 )
 
 type mdAuthor struct {
@@ -46,6 +48,7 @@ type mdPost struct {
 	Views     int64
 	DeletedAt *time.Time
 	Author    mdAuthor
+	Tags      []mdTag
 }
 
 func (p *mdPost) Schema(t *storm.Table) {
@@ -56,6 +59,27 @@ func (p *mdPost) Schema(t *storm.Table) {
 	t.SoftDelete(&p.DeletedAt)
 	t.Col(&p.Title).Size(120)
 }
+
+// The implicit MANY-TO-MANY: a slice on both sides and storm generates the join
+// table nobody declared. Its loader is a two-hop read no other test reaches.
+type mdTag struct {
+	storm.Model
+	Label string
+	Posts []mdPost
+}
+
+func (g *mdTag) Schema(t *storm.Table) { t.Col(&g.Label).Size(40) }
+
+// The polymorphic ARC: exactly one of the variants is set, enforced by the
+// database rather than by the caller. Its loader batches per variant, and the
+// CHECK that enforces exactly-one is a construct MySQL only gained in 8.0.16.
+type mdAttachment struct {
+	storm.Model
+	Filename string
+	Subject  storm.OneOf2[mdAuthor, mdPost]
+}
+
+func (a *mdAttachment) Schema(t *storm.Table) { t.Col(&a.Filename).Size(120) }
 
 type mdNode struct {
 	storm.Model
@@ -86,14 +110,23 @@ func TestMain(m *testing.M) {
 	defer p.Close()
 	ex = p
 
-	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{})
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{})
 	must(err)
 	ddl, err := myddl.CreateFor(s, myddl.TARGET)
 	must(err)
-	// Children first: the foreign key points the other way.
-	for _, t := range []string{"md_posts", "md_authors", "md_nodes"} {
-		_, _ = p.Exec(ctx, "DROP TABLE IF EXISTS " + "` + "`" + `" + t + "` + "`" + `", nil)
+	// Foreign-key checks off for the drops. Dropping in dependency order works
+	// until a table is added and the order is not updated with it — and the
+	// symptom is "table already exists" on the CREATE, which names the wrong
+	// table. Off, drop everything, on.
+	_, _ = p.Exec(ctx, "SET FOREIGN_KEY_CHECKS = 0", nil)
+	for _, t := range []string{
+		"md_attachments", "md_post_md_tags", "md_tags", "md_posts", "md_authors", "md_nodes",
+	} {
+		if _, err := p.Exec(ctx, "DROP TABLE IF EXISTS "+t, nil); err != nil {
+			panic("drop " + t + ": " + err.Error())
+		}
 	}
+	_, _ = p.Exec(ctx, "SET FOREIGN_KEY_CHECKS = 1", nil)
 	for _, stmt := range splitDDL(ddl) {
 		if _, err := p.Exec(ctx, stmt, nil); err != nil {
 			panic(stmt + ": " + err.Error())
@@ -740,5 +773,191 @@ func countPosts(t *testing.T, q mdpost.Query) int64 {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// The implicit MANY-TO-MANY, whose loader is a two-hop read: parents, then the
+// join table joined to the far side. Nothing else generates that shape.
+func TestManyToManyLoadsBothDirections(t *testing.T) {
+	ctx := context.Background()
+	tags := []struct {
+		id    byte
+		label string
+	}{{1, "go"}, {2, "sql"}}
+	for _, g := range tags {
+		if err := mdtag.Insert(ctx, ex, &mdtag.Row{ID: id(0x90, g.id), Label: g.label}); err != nil {
+			t.Fatalf("insert tag: %v", err)
+		}
+	}
+	// Post 1 carries both tags; post 2 carries one. The join table has no model,
+	// so it is written through the generated link helpers.
+	post1, post2 := id(1, 0x40), id(1, 0x41)
+	for _, l := range []struct{ post, tag [16]byte }{
+		{post1, id(0x90, 1)}, {post1, id(0x90, 2)}, {post2, id(0x90, 1)},
+	} {
+		if _, err := ex.Exec(ctx,
+			"INSERT INTO md_post_md_tags (md_post_id, md_tag_id) VALUES (?, ?)",
+			[]any{l.post, l.tag}); err != nil {
+			t.Fatalf("link: %v", err)
+		}
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_post_md_tags", nil) })
+
+	posts, err := ctxpkg.MdPostWithTags().Order(mdpost.ID.Asc()).All(ctx, ex)
+	if err != nil {
+		t.Fatalf("post -> tags: %v", err)
+	}
+	byPost := map[[16]byte]int{}
+	for _, p := range posts {
+		byPost[p.ID] = len(p.Tags)
+	}
+	if byPost[post1] != 2 {
+		t.Errorf("post 1 has %d tags, want 2", byPost[post1])
+	}
+	if byPost[post2] != 1 {
+		t.Errorf("post 2 has %d tags, want 1", byPost[post2])
+	}
+
+	// And the other way, which is a different generated loader rather than the
+	// same one read backwards.
+	tagRows, err := ctxpkg.MdTagWithPosts().Order(mdtag.ID.Asc()).All(ctx, ex)
+	if err != nil {
+		t.Fatalf("tag -> posts: %v", err)
+	}
+	if len(tagRows) != 2 {
+		t.Fatalf("read %d tags, want 2", len(tagRows))
+	}
+	if len(tagRows[0].Posts) != 2 {
+		t.Errorf("tag 'go' has %d posts, want 2", len(tagRows[0].Posts))
+	}
+	if len(tagRows[1].Posts) != 1 {
+		t.Errorf("tag 'sql' has %d posts, want 1", len(tagRows[1].Posts))
+	}
+}
+
+// The polymorphic ARC: exactly one variant, enforced by the DATABASE, and a
+// loader that batches per variant.
+func TestArcLoadsEveryVariantAndEnforcesExactlyOne(t *testing.T) {
+	ctx := context.Background()
+	// One attachment per variant.
+	toAuthor := mdattachment.Create()
+	toAuthor.SetFilename("author.txt")
+	toAuthor.SetMdAuthorID(id(1, 1))
+	if _, err := toAuthor.Insert(ctx, ex); err != nil {
+		t.Fatalf("attach to author: %v", err)
+	}
+	toPost := mdattachment.Create()
+	toPost.SetFilename("post.txt")
+	toPost.SetMdPostID(id(1, 0x40))
+	if _, err := toPost.Insert(ctx, ex); err != nil {
+		t.Fatalf("attach to post: %v", err)
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_attachments", nil) })
+
+	// BOTH variants set, and neither: the CHECK is the database's, so a caller
+	// cannot write a row that means two things or nothing.
+	both := mdattachment.Create()
+	both.SetFilename("both.txt")
+	both.SetMdAuthorID(id(1, 1))
+	both.SetMdPostID(id(1, 0x40))
+	if _, err := both.Insert(ctx, ex); err == nil {
+		t.Error("two variants at once passed the exactly-one CHECK")
+	}
+	none := mdattachment.Create()
+	none.SetFilename("none.txt")
+	if _, err := none.Insert(ctx, ex); err == nil {
+		t.Error("no variant at all passed the exactly-one CHECK")
+	}
+
+	// The loader resolves each row to its own variant, in one round trip per
+	// variant rather than one per row.
+	counted := &countingExecutor{Executor: ex}
+	rows, err := ctxpkg.MdAttachmentWithSubject().Order(mdattachment.ID.Asc()).All(ctx, counted)
+	if err != nil {
+		t.Fatalf("arc loader: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("read %d attachments, want 2", len(rows))
+	}
+	var sawAuthor, sawPost bool
+	for _, r := range rows {
+		switch {
+		case r.MdAuthorID.Valid:
+			sawAuthor = true
+		case r.MdPostID.Valid:
+			sawPost = true
+		default:
+			t.Errorf("an attachment resolved to no variant: %+v", r)
+		}
+	}
+	if !sawAuthor || !sawPost {
+		t.Error("the loader did not resolve both variants")
+	}
+	// One query for the parents and one per variant, not one per row.
+	if counted.n > 3 {
+		t.Errorf("the arc loader cost %d round trips, want at most 3", counted.n)
+	}
+}
+
+// The key storm has to supply itself on this target.
+//
+// PostgreSQL defaults it with gen_random_uuid(); MySQL and MariaDB have no
+// expression worth taking — UUID() is version 1 and embeds the server's MAC
+// address in a value that ends up in URLs — so the generated write path fills
+// it. Without that a caller who relied on the default got sixteen zero bytes,
+// which makes the SECOND insert a duplicate and the first row unfindable.
+func TestAKeyIsGeneratedWhenTheCallerDoesNotSetOne(t *testing.T) {
+	ctx := context.Background()
+	n := mdauthor.Create()
+	n.SetName("no-id-given")
+	row, err := n.Insert(ctx, ex)
+	if err != nil {
+		t.Fatalf("insert with no id: %v", err)
+	}
+	if row.ID == ([16]byte{}) {
+		t.Fatal("the row came back with sixteen zero bytes for a primary key")
+	}
+	t.Cleanup(func() { _ = mdauthor.Delete(ctx, ex, row.ID) })
+
+	// Version 7, so the key stays time-ordered: on this engine the primary key
+	// IS the clustered index.
+	if v := row.ID[6] >> 4; v != 7 {
+		t.Errorf("uuid version = %d, want 7", v)
+	}
+
+	// It is the key that actually landed, not one invented for the return.
+	got, ok, err := mdauthor.New().IDEq(row.ID).One(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.Name != "no-id-given" {
+		t.Errorf("the row is not findable by the key that was returned: %+v", got)
+	}
+
+	// A second insert must not collide, which sixteen zero bytes would.
+	n2 := mdauthor.Create()
+	n2.SetName("also-no-id")
+	row2, err := n2.Insert(ctx, ex)
+	if err != nil {
+		t.Fatalf("second insert with no id: %v", err)
+	}
+	t.Cleanup(func() { _ = mdauthor.Delete(ctx, ex, row2.ID) })
+	if row2.ID == row.ID {
+		t.Error("two inserts produced the same key")
+	}
+
+	// An id the caller DID set still wins: this supplies a missing key, it does
+	// not overrule a given one.
+	mine := id(0xa0, 1)
+	n3 := mdauthor.Create()
+	n3.SetID(mine)
+	n3.SetName("mine")
+	row3, err := n3.Insert(ctx, ex)
+	if err != nil {
+		t.Fatalf("insert with an id: %v", err)
+	}
+	t.Cleanup(func() { _ = mdauthor.Delete(ctx, ex, mine) })
+	if row3.ID != mine {
+		t.Errorf("the caller's id was replaced: %x", row3.ID)
+	}
 }
 `

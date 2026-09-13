@@ -85,6 +85,17 @@ type lowering struct {
 	Recursive func(table string, cols []string, key, parent, keyType string,
 		dir int, live string) string
 
+	// KeysAreClientSide says this target cannot express storm's uuid default,
+	// so the generated write path has to fill the key itself.
+	//
+	// MySQL's UUID() is version 1 — it embeds the SERVER'S MAC ADDRESS in a
+	// value that ends up in URLs, and it is a different version from the one
+	// the model asked for — so borrowing it would be worse than having none.
+	// Without this a caller who relied on the default got an all-zero primary
+	// key, which makes the second insert a duplicate and the first row
+	// unfindable by anything but a scan.
+	KeysAreClientSide bool
+
 	// RecursiveMaxDepth is the deepest traversal whose cycle guard still holds,
 	// or 0 for no limit. A back end that accumulates visited keys in a
 	// fixed-width column has one; PostgreSQL's array has none.
@@ -244,6 +255,8 @@ func postgresLowering() lowering {
 		KeyType: func(c *schema.Column) string { return c.Type.SQL() },
 		// An array has no declared width, so no depth is out of reach.
 		RecursiveMaxDepth: func(string) int64 { return 0 },
+		// gen_random_uuid() and uuidv7() are the server's job here.
+		KeysAreClientSide: false,
 		Recursive: func(t string, cols []string, key, parent, _ string, dir int, live string) string {
 			return pgsql.Recursive(t, cols, key, parent, dir, pgsql.Live(live))
 		},
@@ -357,6 +370,7 @@ func mysqlLowering() lowering {
 		AggregateSuffix:   mysql.AggregateSuffix,
 		KeyType:           mysql.ColumnType,
 		RecursiveMaxDepth: mysql.MaxRecursionDepth,
+		KeysAreClientSide: true,
 		Recursive: func(t string, cols []string, key, parent, keyType string, dir int, live string) string {
 			return mysql.Recursive(t, cols, key, parent, keyType, dir, mysql.Live(live))
 		},
