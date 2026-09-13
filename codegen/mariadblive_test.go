@@ -41,6 +41,7 @@ func runGeneratedLive(t *testing.T, dialect, addrVar string, want []string) {
 	if os.Getenv(addrVar) == "" {
 		t.Skip(addrVar + " unset")
 	}
+	sweepGenerated(t, "mdlive")
 	// NOT buildSoftDelete's model: its t.Unique is scoped to the live rows,
 	// which is a PARTIAL unique index, and MySQL has none — myddl.Check
 	// refuses it, correctly. On this engine a soft-delete table can have
@@ -91,7 +92,7 @@ func runGeneratedLive(t *testing.T, dialect, addrVar string, want []string) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command("go", "test", "-count=1", "-v", "./internal/"+base+"/"+pkg+"/")
+	cmd := exec.Command("go", "test", "-count=1", "-v", "-timeout", "120s", "./internal/"+base+"/"+pkg+"/")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), addrVar+"="+os.Getenv(addrVar))
 	out, err := cmd.CombinedOutput()
@@ -103,6 +104,29 @@ func runGeneratedLive(t *testing.T, dialect, addrVar string, want []string) {
 	for _, name := range want {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
+		}
+	}
+}
+
+// sweepGenerated removes packages an earlier run left behind.
+//
+// t.Cleanup does not run when a test is KILLED, and a live test against a
+// hung server is exactly the case that gets killed. The leftovers then join
+// ./... — they are inside the module — and break gofmt and the package count
+// for every later run, which reads as a failure in whatever ran next.
+func sweepGenerated(t *testing.T, prefix string) {
+	t.Helper()
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := filepath.Glob(filepath.Join(root, "internal", prefix+"*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range old {
+		if err := os.RemoveAll(d); err != nil {
+			t.Fatalf("removing a leftover generated package: %v", err)
 		}
 	}
 }
@@ -260,6 +284,7 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 	if os.Getenv(addrVar) == "" {
 		t.Skip(addrVar + " unset")
 	}
+	sweepGenerated(t, "mdrel")
 	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, mdNames)
 	if err != nil {
 		t.Fatal(err)
@@ -301,7 +326,7 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command("go", "test", "-count=1", "-v", "./internal/"+base+"/")
+	cmd := exec.Command("go", "test", "-count=1", "-v", "-timeout", "120s", "./internal/"+base+"/")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), addrVar+"="+os.Getenv(addrVar))
 	out, err := cmd.CombinedOutput()
@@ -326,6 +351,11 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		"TestManyToManyLoadsBothDirections",
 		"TestArcLoadsEveryVariantAndEnforcesExactlyOne",
 		"TestAKeyIsGeneratedWhenTheCallerDoesNotSetOne",
+		"TestUpdateWritesOnlyWhatWasSet",
+		"TestUpdateSkipsASoftDeletedRow",
+		"TestInsertAllLoadsEveryRow",
+		"TestAnyOfBracketsItsConjunctions",
+		"TestOffsetAndUnordered",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)

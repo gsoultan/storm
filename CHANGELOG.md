@@ -14,6 +14,36 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A NULL in a bulk insert HUNG the process
+
+`InsertAll` passes each column as a POINTER into the row — `Null[T].Ptr()` for
+a nullable one, which is nil when the column is unset — and the binder's type
+loop dereferenced every argument, including the null ones. `isNil` already
+reported them as NULL and the VALUE loop skipped them; the TYPE loop did not.
+
+It did not panic. On darwin/arm64 dereferencing a nil `*time.Time` faulted
+inside the runtime's own signal path and the goroutine came back "stack
+unavailable", so the failure presented as a query that never returned rather
+than as a crash. **Any bulk insert with a NULL in it stopped the process.**
+`deref` returns nil for a nil pointer now, which is what it means.
+
+The pool no longer waits forever either. A result set holds its connection
+until Close, so one missing Close removes a connection permanently and
+`MaxConns` of those makes every later query block on a context that may have no
+deadline. `Config.AcquireTimeout` bounds the wait and `ErrPoolExhausted` names
+the likely cause; a service that stops answering is worse than one that reports
+an error. It is also what turned the hang above from a mystery into a stack.
+
+### Update, bulk insert, AnyOf, offset and unordered, run for the first time
+
+`TestInsertSelectUpdateDelete` in the single-table end-to-end never updated —
+the name claimed a path nothing exercised. Now covered on both engines: a
+masked update writes only what was set and leaves a concurrent writer's column
+alone; a row that is not there reports it rather than succeeding silently; a
+soft-deleted row is not updatable; `AnyOf` brackets its conjunctions, with the
+crossed rows seeded so mis-bracketing changes the count; `Offset` starts where
+it says; `Unordered` loses no rows.
+
 ### A declared union returned DELETED rows — on every dialect, PostgreSQL included
 
 The context package's generator is built by hand rather than per table, and it

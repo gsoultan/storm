@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Authentication and TLS.
@@ -98,6 +99,17 @@ type Config struct {
 	// MaxPreparedStmts caps the per-connection prepared-statement cache. Zero
 	// means DefaultMaxPreparedStmts.
 	MaxPreparedStmts int
+
+	// AcquireTimeout bounds how long a caller waits for a pooled connection.
+	// Zero means DefaultAcquireTimeout; a negative value waits forever.
+	//
+	// It exists because the alternative is a HANG. A result set holds its
+	// connection until Close, so one caller who forgets to close takes a
+	// connection out of the pool permanently; MaxConns of those and every
+	// subsequent query blocks on a context that may have no deadline. A
+	// service that stops answering is worse than one that reports an error
+	// naming the cause.
+	AcquireTimeout time.Duration
 }
 
 // ErrCleartextRefused is why a first connection to a caching_sha2_password

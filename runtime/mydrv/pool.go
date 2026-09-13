@@ -11,12 +11,30 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/gsoultan/storm/runtime"
 )
 
 // ErrPoolClosed is returned by a Pool that has been closed.
 var ErrPoolClosed = errors.New("mydrv: the pool is closed")
+
+// DefaultAcquireTimeout bounds a wait for a pooled connection when
+// Config.AcquireTimeout is zero.
+//
+// Long enough that a busy pool under a burst still serves; short enough that a
+// LEAK is reported rather than hung on. Those are the two cases, and only the
+// second is a bug.
+const DefaultAcquireTimeout = 30 * time.Second
+
+// ErrPoolExhausted is returned when no connection became free in time.
+//
+// Almost always a result set that was never closed: rows hold their connection
+// until Close, so a missing one removes a connection from the pool for good.
+// Raising MaxConns hides that for MaxConns more queries.
+var ErrPoolExhausted = errors.New(
+	"mydrv: no pooled connection became free — every connection is checked out, which " +
+		"usually means a result set was not closed (rows hold their connection until Close)")
 
 // DefaultMaxConns is the cap when Config.MaxConns is zero.
 //
@@ -75,6 +93,8 @@ func (p *Pool) acquire(ctx context.Context) (*Conn, error) {
 		return c, nil
 	default:
 	}
+	wait, stop := p.waitFor()
+	defer stop()
 	select {
 	case c := <-p.idle:
 		return c, nil
@@ -87,7 +107,23 @@ func (p *Pool) acquire(ctx context.Context) (*Conn, error) {
 		return c, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-wait:
+		return nil, ErrPoolExhausted
 	}
+}
+
+// waitFor is the acquire deadline, or a channel that never fires when the
+// caller asked to wait indefinitely.
+func (p *Pool) waitFor() (<-chan time.Time, func()) {
+	d := p.cfg.AcquireTimeout
+	if d == 0 {
+		d = DefaultAcquireTimeout
+	}
+	if d < 0 {
+		return nil, func() {}
+	}
+	t := time.NewTimer(d)
+	return t.C, func() { t.Stop() }
 }
 
 // release returns a connection, or closes it and gives back its token.

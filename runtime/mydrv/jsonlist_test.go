@@ -145,3 +145,50 @@ func TestAListIsOneBoundValueWhateverItsLength(t *testing.T) {
 		t.Errorf("a list binds as type 0x%02x, want a string", ty)
 	}
 }
+
+// A NIL typed pointer among the arguments.
+//
+// It hung the process. Not panicked — on darwin/arm64 dereferencing a nil
+// *time.Time faulted inside the runtime's own signal path and the goroutine's
+// stack came back "unavailable", so the failure looked like a slow query rather
+// than a crash. Reachable from ordinary generated code: a bulk load's row
+// source passes Null[T].Ptr(), which is nil for every unset nullable column, so
+// ANY InsertAll with a NULL in it stopped the process.
+func TestANilPointerArgumentIsNilAndNotADereference(t *testing.T) {
+	var (
+		tp *time.Time
+		sp *string
+		ip *int64
+		bp *[]byte
+		up *[16]byte
+	)
+	for _, in := range []any{tp, sp, ip, bp, up} {
+		if got := deref(in); got != nil {
+			t.Errorf("deref(%T nil) = %#v, want nil", in, got)
+		}
+	}
+	// And a pointer that is NOT nil still unwraps.
+	now := time.Now()
+	if got := deref(&now); got != now {
+		t.Errorf("deref(&now) = %v, want %v", got, now)
+	}
+	s := "x"
+	if got := deref(&s); got != "x" {
+		t.Errorf("deref(&s) = %v", got)
+	}
+}
+
+// The binder must agree with isNil: an absent value is one NULL in the bitmap,
+// not a value with a type.
+func TestANilPointerBindsAsNull(t *testing.T) {
+	var tp *time.Time
+	if !isNil(any(tp)) {
+		t.Fatal("a nil *time.Time is not reported as nil")
+	}
+	// bindType runs on EVERY argument, including the null ones — the value
+	// loop skips them but the type loop does not, which is how a nil pointer
+	// reached deref at all.
+	if ty, _ := bindType(deref(any(tp))); ty != typeNull {
+		t.Errorf("a nil pointer binds as type 0x%02x, want NULL", ty)
+	}
+}
