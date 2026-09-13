@@ -35,16 +35,27 @@ type mdAuthor struct {
 }
 
 func (a *mdAuthor) Schema(t *storm.Table) { t.Col(&a.Name).Size(80) }
+
+// A declared column subset, which has its own scan path and its own statement.
+func (a *mdAuthor) Projections(p *storm.Projections) { p.Named("Card", &a.Name) }
 func (a *mdAuthor) Plans(p *storm.Plans)  { p.Named("Feed").With(&a.Posts) }
 
 type mdPost struct {
 	storm.Model
-	Title  string
-	Views  int64
-	Author mdAuthor
+	Title     string
+	Views     int64
+	DeletedAt *time.Time
+	Author    mdAuthor
 }
 
-func (p *mdPost) Schema(t *storm.Table) { t.Col(&p.Title).Size(120) }
+func (p *mdPost) Schema(t *storm.Table) {
+	// Soft delete on the CHILD, so the cross-table reads have something to
+	// exclude: a plan, a join, an aggregate and a union each have to carry the
+	// predicate to the right alias, which is a different problem from carrying
+	// it on a single-table read.
+	t.SoftDelete(&p.DeletedAt)
+	t.Col(&p.Title).Size(120)
+}
 
 type mdNode struct {
 	storm.Model
@@ -578,5 +589,156 @@ func namesOf(rows []mdnode.Row) map[string]bool {
 		out[r.Name] = true
 	}
 	return out
+}
+
+// A declared PROJECTION: a column subset with its own statement and its own
+// scan path, neither of which any other test reaches.
+func TestProjectionReadsItsSubset(t *testing.T) {
+	ctx := context.Background()
+	got, err := mdauthor.New().Order(mdauthor.ID.Asc()).AllCard(ctx, ex)
+	if err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("the projection read %d rows, want 3", len(got))
+	}
+	for _, r := range got {
+		if r.Name == "" {
+			t.Errorf("a projected row has no name: %+v", r)
+		}
+	}
+}
+
+// The UNIT OF WORK, whose whole claim is that it orders a flush by foreign key
+// so a child written before its parent still lands. Declaration order here is
+// deliberately wrong.
+func TestUnitFlushesInForeignKeyOrder(t *testing.T) {
+	ctx := context.Background()
+	authorID, postID := id(0x80, 1), id(0x80, 2)
+	u := ctxpkg.NewUnit()
+	// Child first. A flush in declaration order violates md_posts.author_id.
+	u.Add(mdpost.Table, mdpost.InsertOp(mdpost.Row{
+		ID: postID, Title: "unit", Views: 5, AuthorID: authorID,
+	}))
+	u.Add(mdauthor.Table, mdauthor.InsertOp(mdauthor.Row{ID: authorID, Name: "unit-author"}))
+	t.Cleanup(func() {
+		_ = mdpost.Delete(ctx, ex, postID)
+		_ = mdauthor.Delete(ctx, ex, authorID)
+	})
+
+	affected, err := u.Flush(ctx, ex)
+	if err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if len(affected) != 2 {
+		t.Fatalf("the flush reported %d results, want 2", len(affected))
+	}
+	for i, n := range affected {
+		if n != 1 {
+			t.Errorf("statement %d affected %d rows, want 1", i, n)
+		}
+	}
+	if got := countPosts(t, mdpost.New().Where(mdpost.ID.Eq(postID))); got != 1 {
+		t.Errorf("the child did not land: %d rows", got)
+	}
+}
+
+// SOFT DELETE across the cross-table reads, which is a different problem from
+// carrying the predicate on a single-table read: each of these has to attach it
+// to the right ALIAS, and a union has to attach it per BRANCH.
+func TestSoftDeleteReachesEveryCrossTableRead(t *testing.T) {
+	ctx := context.Background()
+	// Counted BEFORE and after, not against absolute numbers: these tests share
+	// a database and an earlier one's rows are not this one's business. A
+	// delta of exactly one is the claim either way.
+	before := crossTableCounts(t)
+
+	// Author 2's only post, so its disappearance is unambiguous.
+	victim := id(2, 0x40)
+	if err := mdpost.Delete(ctx, ex, victim); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	// The row survives — that is what makes it a soft delete — but no read
+	// returns it.
+	if got := countPosts(t, mdpost.New().Where(mdpost.ID.Eq(victim))); got != 0 {
+		t.Errorf("a soft-deleted row still reads back from its own table")
+	}
+
+	after := crossTableCounts(t)
+	for _, k := range []string{"plan", "batchLoader", "join", "union"} {
+		if got := before[k] - after[k]; got != 1 {
+			t.Errorf("%s: %d fewer rows after one soft delete, want 1 — "+
+				"the predicate did not reach it (%d then %d)",
+				k, got, before[k], after[k])
+		}
+	}
+	// Author 2's only post is gone, so its GROUP disappears rather than
+	// counting zero, and the semi-join stops matching it.
+	for _, k := range []string{"aggregate", "semiJoin"} {
+		if got := before[k] - after[k]; got != 1 {
+			t.Errorf("%s: %d fewer after one soft delete, want 1 (%d then %d)",
+				k, got, before[k], after[k])
+		}
+	}
+}
+
+// crossTableCounts is every read that spans tables, counted once.
+func crossTableCounts(t *testing.T) map[string]int {
+	t.Helper()
+	ctx := context.Background()
+	out := map[string]int{}
+
+	rows, err := ctxpkg.MdAuthorFeed().Order(mdauthor.ID.Asc()).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		out["plan"] += len(r.Posts)
+	}
+
+	// A different statement from the plan's In: this one is the batch loader.
+	top, err := ctxpkg.MdAuthorWithPosts().Order(mdauthor.ID.Asc()).
+		ChildOrder(mdpost.ID.Asc()).ChildTop(50).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range top {
+		out["batchLoader"] += len(r.Posts)
+	}
+
+	joined, err := ctxpkg.MdPostWithAuthor().All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out["join"] = len(joined)
+
+	groups, err := mdpost.New().AllByAuthor(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out["aggregate"] = len(groups)
+
+	names, err := ctxpkg.Names(ctx, ex, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out["union"] = len(names)
+
+	having, err := ctxpkg.MdAuthorHavingPosts(mdauthor.New()).All(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out["semiJoin"] = len(having)
+	return out
+}
+
+func countPosts(t *testing.T, q mdpost.Query) int64 {
+	t.Helper()
+	n, err := q.Count(context.Background(), ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 `

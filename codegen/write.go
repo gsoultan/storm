@@ -231,7 +231,14 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	g.p("// insParts and insPlaceholder come from the back end at build time; the")
 	g.p("// runtime splicer chooses none of them.")
 	g.p("var insParts = runtime.InsertParts{Open: %q, Sep: %q, Mid: %q, Close: %q}", open_, sep, mid, close_)
-	g.p("const insPlaceholder = %q", g.lw.Placeholder)
+	// The CARRIER, not the sigil string: an ordinal after a bare `?` is `?1`,
+	// which MySQL rejects. Empty means the zero value, which is PostgreSQL, so
+	// a PostgreSQL package does not mention it and stays byte-identical.
+	if g.lw.PlaceholderExpr == "" {
+		g.p("var insPlaceholder = runtime.Placeholder{}")
+	} else {
+		g.p("var insPlaceholder = %s", g.lw.PlaceholderExpr)
+	}
 	g.p("const insPrefix = %q", g.lw.InsertPrefix(g.t.Name))
 	g.p("const insReturning = %q", g.lw.ReturningClause(allReadable(g.t)))
 	g.p("")
@@ -704,7 +711,7 @@ func (g *gen) insType(ins []colInfo) {
 		g.p("\tsuffix := insReturning")
 		g.p("\t_ = conflict // this target has no conflict handling")
 	}
-	g.p("\treturn insCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))")
+	g.p("\treturn insCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
 	g.p("")
 
@@ -1097,7 +1104,12 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	for i := range ins {
 		g.p("\tmask |= 1 << %d", i)
 	}
-	g.p("\tst := stmtForInsert(mask, 0)")
+	// The NO-RETURN form, which Op next door already used and this did not. On
+	// a back end whose insert returns the row — MariaDB — the clause makes the
+	// server answer with a RESULT SET where the batch asked for a count, so
+	// every queued insert reported zero rows affected and a caller checking
+	// that believed nothing was written.
+	g.p("\tst := stmtForInsertNoReturn(mask, 0)")
 	g.p("\targs := make([]any, 0, %d)", len(ins))
 	for _, c := range ins {
 		g.p("\targs = append(args, %s)", writeArg(c, "r."+exportName(c.Name())))
@@ -1168,7 +1180,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 		g.p("\tsuffix := \"\"")
 		g.p("\t_ = conflict // this target has no conflict handling")
 	}
-	g.p("\treturn insOpCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))")
+	g.p("\treturn insOpCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
 	g.p("")
 

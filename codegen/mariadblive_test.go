@@ -320,6 +320,9 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		"TestRowLockingInsideATransaction",
 		"TestRecursiveDescendsAndAscends",
 		"TestRecursiveTerminatesOnACycle",
+		"TestProjectionReadsItsSubset",
+		"TestUnitFlushesInForeignKeyOrder",
+		"TestSoftDeleteReachesEveryCrossTableRead",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
@@ -337,16 +340,27 @@ type mdAuthor struct {
 }
 
 func (a *mdAuthor) Schema(t *storm.Table) { t.Col(&a.Name).Size(80) }
-func (a *mdAuthor) Plans(p *storm.Plans)  { p.Named("Feed").With(&a.Posts) }
+
+// A declared column subset, which has its own scan path and its own statement.
+func (a *mdAuthor) Projections(p *storm.Projections) { p.Named("Card", &a.Name) }
+func (a *mdAuthor) Plans(p *storm.Plans)             { p.Named("Feed").With(&a.Posts) }
 
 type mdPost struct {
 	storm.Model
-	Title  string
-	Views  int64
-	Author mdAuthor
+	Title     string
+	Views     int64
+	DeletedAt *time.Time
+	Author    mdAuthor
 }
 
-func (p *mdPost) Schema(t *storm.Table) { t.Col(&p.Title).Size(120) }
+func (p *mdPost) Schema(t *storm.Table) {
+	// Soft delete on the CHILD, so the cross-table reads have something to
+	// exclude: a plan, a join, an aggregate and a union each have to carry the
+	// predicate to the right alias, which is a different problem from carrying
+	// it on a single-table read.
+	t.SoftDelete(&p.DeletedAt)
+	t.Col(&p.Title).Size(120)
+}
 
 // A declared join, aggregate and union, so the live test reaches the
 // constructs that only ever had their SQL TEXT asserted. Each has a MySQL

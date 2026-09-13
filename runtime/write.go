@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"errors"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -141,6 +140,23 @@ type InsertParts struct {
 // SpliceInsert assembles an INSERT for one column set. Cold path: once per
 // distinct set of assigned columns.
 func SpliceInsert(prefix string, p InsertParts, cols []string, placeholder, suffix string) *Stmt {
+	ph := Placeholder{}
+	if placeholder != "" {
+		ph.Sigil = placeholder[0]
+	}
+	return SpliceInsertWith(prefix, p, cols, ph, suffix)
+}
+
+// SpliceInsertWith is SpliceInsert with the placeholder CARRIER rather than a
+// sigil string.
+//
+// The string form appends an ordinal unconditionally, which is PostgreSQL's
+// `$1` with the sigil swapped — on a bare back end that is `?1`, and MySQL
+// rejects it. The full-row insert escaped this because its SQL is a constant
+// fixed at generate time; every PARTIAL insert and every queued one goes
+// through here, so Create(), Ins and the whole unit of work were broken on
+// MySQL and nothing had run one.
+func SpliceInsertWith(prefix string, p InsertParts, cols []string, ph Placeholder, suffix string) *Stmt {
 	var b strings.Builder
 	b.WriteString(prefix)
 	b.WriteString(p.Open)
@@ -155,8 +171,7 @@ func SpliceInsert(prefix string, p InsertParts, cols []string, placeholder, suff
 		if i > 0 {
 			b.WriteString(p.Sep)
 		}
-		b.WriteString(placeholder)
-		b.WriteString(strconv.Itoa(i + 1))
+		ph.write(&b, i+1)
 	}
 	b.WriteString(p.Close)
 	b.WriteString(suffix)

@@ -283,3 +283,88 @@ func TestSoftDeleteBehaviourAgainstPostgres(t *testing.T) {
 		}
 	}
 }
+
+// The CONTEXT package's reads, which the test above does not see.
+//
+// genSoftDelete emits one table's package. The context file — unions, semi-join
+// headers, plans that span tables — is built by a DIFFERENT, hand-written
+// generator, and it went without the schema entirely: liveIn was asked for each
+// union branch's predicate against a nil schema and returned "" for all of
+// them, so a declared union returned deleted rows. On every dialect.
+//
+// Both dialects here, because the defect was in codegen rather than in a
+// lowering and a test against one would have proved half of it.
+func TestAContextPackagesUnionExcludesDeletedRows(t *testing.T) {
+	s, err := storm.Build(&sdParent{}, &sdChild{}, sdFeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []struct {
+		name    string
+		dialect codegen.Dialect
+		quote   string
+	}{
+		{"postgres", codegen.DialectPostgres, `"`},
+		{"mysql", codegen.DialectMySQL, "`"},
+		{"mariadb", codegen.DialectMariaDB, "`"},
+	} {
+		t.Run(d.name, func(t *testing.T) {
+			files, err := codegen.Package(s, codegen.PackageOptions{
+				Dir: filepath.Join(t.TempDir(), "store"), Import: "github.com/gsoultan/storm",
+				Dialect: d.dialect, Package: "store", PackageImport: "example.com/x/store",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			src := string(files["store.gen.go"])
+			i := strings.Index(src, "UNION")
+			if i < 0 {
+				t.Fatal("no union was generated")
+			}
+			// The branch that soft-deletes must carry the predicate; the branch
+			// that does not must NOT, or it names a column it has not got.
+			q := d.quote
+			live := "WHERE " + q + "deleted_at" + q + " IS NULL"
+			before, after := src[:i], src[i:]
+			if strings.Contains(before, live) {
+				t.Errorf("the branch with no soft delete was filtered:\n%s", before[max(0, len(before)-300):])
+			}
+			if !strings.Contains(after, live) {
+				t.Errorf("the soft-delete branch returns deleted rows:\n%s", after[:min(400, len(after))])
+			}
+		})
+	}
+}
+
+type sdParent struct {
+	storm.Model
+	Name     string
+	Children []sdChild
+}
+
+func (p *sdParent) Schema(t *storm.Table) { t.Col(&p.Name).Size(40) }
+
+type sdChild struct {
+	storm.Model
+	Label     string
+	DeletedAt *time.Time
+	Parent    sdParent
+}
+
+func (c *sdChild) Schema(t *storm.Table) {
+	t.SoftDelete(&c.DeletedAt)
+	t.Col(&c.Label).Size(40)
+}
+
+// The union that reads both, so one branch soft-deletes and the other does not.
+var sdFeed = storm.Union("Feed", func(u *storm.UnionSpec) {
+	var p sdParent
+	parents := u.From(&p)
+	parents.Take(&p.Name, "Text")
+
+	var c sdChild
+	children := u.From(&c)
+	children.Take(&c.Label, "Text")
+
+	u.OrderAsc("Text")
+})
