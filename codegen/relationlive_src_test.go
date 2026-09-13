@@ -960,4 +960,187 @@ func TestAKeyIsGeneratedWhenTheCallerDoesNotSetOne(t *testing.T) {
 		t.Errorf("the caller's id was replaced: %x", row3.ID)
 	}
 }
+
+// The UPDATE path, which the single-table end-to-end's name claims and does
+// not do: it is called TestInsertSelectUpdateDelete and never updates.
+func TestUpdateWritesOnlyWhatWasSet(t *testing.T) {
+	ctx := context.Background()
+	r := &mdpost.Row{ID: id(0xb0, 1), Title: "before", Views: 1, AuthorID: id(1, 1)}
+	if err := mdpost.Insert(ctx, ex, r); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_posts WHERE id = ?", []any{r.ID}) })
+
+	m := mdpost.Mutate(*r)
+	m.SetTitle("after")
+	if err := m.Update(ctx, ex); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, ok, err := mdpost.New().Where(mdpost.ID.Eq(r.ID)).One(ctx, ex)
+	if err != nil || !ok {
+		t.Fatalf("read back: %v ok=%v", err, ok)
+	}
+	if got.Title != "after" {
+		t.Errorf("title = %q, want after", got.Title)
+	}
+	// A masked update writes the columns that were SET and no others: an
+	// update that rewrote every column would clobber a concurrent writer's
+	// change to a field this caller never touched.
+	if got.Views != 1 {
+		t.Errorf("views = %d, want 1 — an unset column was rewritten", got.Views)
+	}
+
+	// A row that is not there affects nothing, and says so rather than
+	// reporting a silent success.
+	gone := mdpost.Mutate(mdpost.Row{ID: id(0xb0, 9), AuthorID: id(1, 1)})
+	gone.SetTitle("nobody")
+	if err := gone.Update(ctx, ex); err == nil {
+		t.Error("updating a row that does not exist reported success")
+	}
+}
+
+// A soft-deleted row must not be updatable: it is gone as far as every read is
+// concerned, and an update that still reached it would resurrect a value
+// nobody can see.
+func TestUpdateSkipsASoftDeletedRow(t *testing.T) {
+	ctx := context.Background()
+	r := &mdpost.Row{ID: id(0xb1, 1), Title: "doomed", AuthorID: id(1, 1)}
+	if err := mdpost.Insert(ctx, ex, r); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_posts WHERE id = ?", []any{r.ID}) })
+	if err := mdpost.Delete(ctx, ex, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	m := mdpost.Mutate(*r)
+	m.SetTitle("resurrected")
+	if err := m.Update(ctx, ex); err == nil {
+		t.Error("a soft-deleted row was updated")
+	}
+}
+
+// The bulk path. On this target CopyFrom is emulated with a multi-row INSERT —
+// one round trip, but a different statement from the per-row form.
+func TestInsertAllLoadsEveryRow(t *testing.T) {
+	ctx := context.Background()
+	rows := make([]mdpost.Row, 50)
+	for i := range rows {
+		rows[i] = mdpost.Row{
+			ID: id(0xc0, byte(i)), Title: "bulk", Views: int64(i), AuthorID: id(1, 1),
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = ex.Exec(ctx, "DELETE FROM md_posts WHERE title = ?", []any{"bulk"})
+	})
+	n, err := mdpost.InsertAll(ctx, ex, rows)
+	if err != nil {
+		t.Fatalf("bulk insert: %v", err)
+	}
+	if n != 50 {
+		t.Errorf("InsertAll reported %d rows, want 50", n)
+	}
+	got, err := mdpost.New().Where(mdpost.Title.Eq("bulk")).Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 50 {
+		t.Errorf("%d rows landed, want 50", got)
+	}
+}
+
+// AnyOf ORs whole conjunctions. Its parenthesisation is the thing to get wrong:
+// "a AND b OR c AND d" without brackets binds differently and returns rows
+// nobody asked for, with no error to notice.
+func TestAnyOfBracketsItsConjunctions(t *testing.T) {
+	ctx := context.Background()
+	// (title = 'x' AND views = 1) OR (title = 'y' AND views = 2)
+	// Their own author, so the scope is a single equality rather than a range:
+	// a uuid column has no ordering predicates, and inventing one would be a
+	// comparison of random bytes.
+	owner := id(0xd0, 0xff)
+	if err := mdauthor.Insert(ctx, ex, &mdauthor.Row{ID: owner, Name: "anyof"}); err != nil {
+		t.Fatal(err)
+	}
+	seed := []struct {
+		id    byte
+		title string
+		views int64
+	}{{1, "x", 1}, {2, "y", 2}, {3, "x", 2}, {4, "y", 1}}
+	for _, s := range seed {
+		if err := mdpost.Insert(ctx, ex, &mdpost.Row{
+			ID: id(0xd0, s.id), Title: s.title, Views: s.views, AuthorID: owner,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = ex.Exec(ctx, "DELETE FROM md_posts WHERE author_id = ?", []any{owner})
+		_, _ = ex.Exec(ctx, "DELETE FROM md_authors WHERE id = ?", []any{owner})
+	})
+
+	got, err := mdpost.New().
+		Where(mdpost.AuthorID.Eq(owner)).
+		AnyOf(
+			mdpost.And(mdpost.Title.Eq("x"), mdpost.Views.Eq(1)),
+			mdpost.And(mdpost.Title.Eq("y"), mdpost.Views.Eq(2)),
+		).Count(ctx, ex)
+	if err != nil {
+		t.Fatalf("AnyOf: %v", err)
+	}
+	// Exactly the two matching pairs. Mis-bracketed, "x AND 1 OR y AND 2" would
+	// still be two here, so the crossed rows are seeded to make it three or
+	// four when the brackets are wrong.
+	if got != 2 {
+		t.Errorf("AnyOf matched %d rows, want 2 — check the bracketing", got)
+	}
+
+	// And the negation, which brackets the whole disjunction rather than each
+	// branch.
+	not, err := mdpost.New().
+		Where(mdpost.AuthorID.Eq(owner)).
+		NotAnyOf(
+			mdpost.And(mdpost.Title.Eq("x"), mdpost.Views.Eq(1)),
+			mdpost.And(mdpost.Title.Eq("y"), mdpost.Views.Eq(2)),
+		).Count(ctx, ex)
+	if err != nil {
+		t.Fatalf("NotAnyOf: %v", err)
+	}
+	if not != 2 {
+		t.Errorf("NotAnyOf matched %d rows, want 2", not)
+	}
+}
+
+// Offset and Unordered: paging past a page, and the read that opts out of the
+// default ordering.
+func TestOffsetAndUnordered(t *testing.T) {
+	ctx := context.Background()
+	all, err := mdauthor.New().Order(mdauthor.ID.Asc()).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) < 3 {
+		t.Skipf("only %d authors", len(all))
+	}
+	page, err := mdauthor.New().Order(mdauthor.ID.Asc()).Limit(2).Offset(1).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatalf("offset: %v", err)
+	}
+	if len(page) != 2 {
+		t.Fatalf("the offset page has %d rows, want 2", len(page))
+	}
+	if page[0].ID != all[1].ID {
+		t.Errorf("offset 1 started at %x, want %x", page[0].ID, all[1].ID)
+	}
+
+	// Unordered drops the ORDER BY rather than replacing it. The rows are
+	// whatever the engine returns, so only the COUNT is assertable — which is
+	// the honest claim: it must not lose or duplicate rows.
+	un, err := mdauthor.New().Unordered().All(ctx, ex, nil)
+	if err != nil {
+		t.Fatalf("unordered: %v", err)
+	}
+	if len(un) != len(all) {
+		t.Errorf("unordered read %d rows, ordered read %d", len(un), len(all))
+	}
+}
 `

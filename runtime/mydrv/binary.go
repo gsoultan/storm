@@ -421,38 +421,54 @@ func isNil(a any) bool {
 // storm's predicate arena hands back pointers for bound values, so every type
 // arrives in both shapes. Written out rather than reflected over, for the
 // reason isNil is.
+// deref unwraps a pointer argument to the value it points at.
+//
+// A NIL pointer becomes nil, not a dereference. That is what it means — an
+// absent value, which isNil already reports as NULL — and dereferencing one
+// here did not merely panic: on darwin/arm64 it faulted inside the runtime's
+// own signal path and the process HUNG, with the goroutine's stack
+// unavailable. Reachable from ordinary generated code, because a bulk load's
+// row source passes Null[T].Ptr() and that is nil for every unset column.
 func deref(a any) any {
 	switch v := a.(type) {
 	case *string:
-		return *v
+		return derefOr(v)
 	case *int64:
-		return *v
+		return derefOr(v)
 	case *int32:
-		return *v
+		return derefOr(v)
 	case *int16:
-		return *v
+		return derefOr(v)
 	case *int8:
-		return *v
+		return derefOr(v)
 	case *int:
-		return *v
+		return derefOr(v)
 	case *uint64:
-		return *v
+		return derefOr(v)
 	case *bool:
-		return *v
+		return derefOr(v)
 	case *float32:
-		return *v
+		return derefOr(v)
 	case *float64:
-		return *v
+		return derefOr(v)
 	case *time.Time:
-		return *v
+		return derefOr(v)
 	case *time.Duration:
-		return *v
+		return derefOr(v)
 	case *[]byte:
-		return *v
+		return derefOr(v)
 	case *[16]byte:
-		return *v
+		return derefOr(v)
 	}
 	return derefList(a)
+}
+
+// derefOr is *p, or nil when p is nil.
+func derefOr[T any](p *T) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // derefList unwraps a pointer to a LIST.
