@@ -551,10 +551,18 @@ verifying default cannot connect to either and would push callers to
   the one-transaction guarantee automigrate is built on does not exist there. A
   half-applied plan is possible and storm will not pretend otherwise: use
   `storm ddl -dialect ...` with a migration tool that expects this.
-- **No partial indexes**, so a soft-delete table's uniqueness spans deleted rows
-  or nothing. `myddl.Check` refuses the live-scoped form rather than quietly
-  widening it, which means a model that works on PostgreSQL may not port —
-  correctly, and loudly.
+- **No partial UNIQUE indexes**, so a soft-delete table's uniqueness spans
+  deleted rows or nothing. `myddl.Check` refuses the live-scoped form rather
+  than quietly widening it, because widening THAT one changes answers: rows the
+  predicate excluded could coexist and now conflict. A partial NON-unique index
+  is widened instead and named in `docs/DIALECTS.md`, because it costs storage
+  and changes no answer.
+- **No upsert.** `ON DUPLICATE KEY UPDATE` names no conflict target, so
+  `OnConflictEmail()` would be a lie about which index it watched. Calling one
+  is a compile error naming exactly what is missing.
+- **`storm.SQL` is refused.** Its safety comes from PREPAREing every declared
+  statement against a real PostgreSQL, and there is no equivalent here;
+  generating with raw queries registered would ship them unchecked.
 - **`CopyFrom` is emulated** and `Batch` is N round trips. Both are engine
   limits with the alternatives rejected in writing at the call site: `LOAD DATA
   LOCAL INFILE` lets a server request arbitrary client files, and
@@ -565,6 +573,32 @@ verifying default cannot connect to either and would push callers to
   exercised by its author only. This is the same open item M8 carries for
   PostgreSQL, and it is the honest reason this section says "closed" about
   properties and not about the target.
+
+### P6.7 What running every construct actually found
+
+Worth recording, because the pattern is the finding. Each of these passed unit
+tests, golden tests and both shell gates, and failed the first time a real
+server saw it:
+
+| Defect | Why nothing caught it |
+|---|---|
+| Every fetch plan was a syntax error | The end-to-end had ONE table and had never loaded a relation |
+| A binary key could not cross a JSON document | No fixture had a uuid key on this path |
+| The connection collation broke every text `In` | Neither engine's gate compared a column to a `JSON_TABLE` column |
+| The semi-join emitted PostgreSQL SQL | The context file is generated once per PACKAGE, so it kept a hard-coded dialect |
+| A declared union returned DELETED rows, on every dialect | Same generator, missing its schema this time |
+| Every partial and queued INSERT was `?1` | The full-row insert uses SQL fixed at generate time and never reaches the splicer |
+| `InsertOp` reported zero rows on MariaDB | It asked for RETURNING where the batch wanted a count |
+| A NULL in a bulk insert HUNG the process | `Null[T].Ptr()` is a typed nil, and the type loop dereferenced what the value loop skipped |
+| A date, a time or a JSON column would not compile | The compile gate's fixture had none of those types |
+| A time of day was 1000× too large | `TimeOfDay` counts microseconds and `time.Duration` nanoseconds |
+| Recursive traversal's cycle guard was one key wide | It had no gate of any kind |
+| Arcs did not port at all | Their per-variant indexes are partial |
+
+**The rule this keeps proving:** a test that does not EXECUTE against the target
+proves the generator is consistent with itself and nothing more. The corollary
+is about fixtures — a one-table model cannot exercise a relation, so the
+end-to-end's model is part of its coverage rather than scaffolding.
 
 **Driver: sec · Challenger: dx.**
 

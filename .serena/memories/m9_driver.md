@@ -259,3 +259,44 @@ not execute against the target proves the generator is consistent with itself,
 nothing more.** The corollary is about fixtures — a one-table model cannot
 exercise a relation, and the end-to-end's model is therefore part of its
 coverage, not scaffolding.
+
+
+---
+
+# Full support on MySQL and MariaDB — 2026-09-13
+
+Every construct storm generates now RUNS on both engines with real data. Getting
+there found twelve defects in three days, all of the same shape: each passed
+unit tests, golden tests and both shell gates, and failed the first time a
+server saw it.
+
+The ones worth carrying forward:
+
+- **A declared union returned DELETED rows on EVERY dialect, PostgreSQL
+  included.** The context package's generator is hand-built and went without the
+  SCHEMA, so `liveIn` returned "" for every branch. Same generator had been
+  missing its LOWERING (the semi-join emitted PostgreSQL SQL). **A hand-built
+  constructor does not gain a field when the type does** — that is now two bugs
+  from one cause, and `TestOnlySetDialectResolvesADialect` only covers the
+  lowering half.
+- **A NULL in a bulk insert HUNG the process.** `Null[T].Ptr()` is a typed nil
+  and the binder's TYPE loop dereferenced what the VALUE loop skipped. On
+  darwin/arm64 that faulted inside the runtime's signal path and the goroutine
+  came back "stack unavailable" — it presented as a slow query, not a crash.
+  `Pool.AcquireTimeout` is what turned it from a mystery into a stack.
+- **`runtime.TimeOfDay` counts MICROSECONDS**, `time.Duration` nanoseconds. The
+  conversion is a division. A cast gives a value 1000× too large that stores and
+  renders without complaint.
+- **Partial indexes split.** Refusing a partial UNIQUE is right (widening
+  changes answers). Refusing a partial NON-unique refused `storm.OneOfN`
+  entirely, over an optimisation.
+- **`storm.AnyRef`'s discriminator had to be bounded** — MySQL cannot index a
+  LONGTEXT without a key length and PostgreSQL refuses a prefix index, so there
+  is no index spelling that serves both. A schema change for adopters.
+
+## The rule, restated
+
+A test that does not EXECUTE against the target proves the generator is
+consistent with itself and nothing more. And the fixture is part of the
+coverage: a one-table model cannot exercise a relation, a fixture without a date
+column cannot catch a missing date decoder, and both of those shipped.
