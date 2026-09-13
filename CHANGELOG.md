@@ -12,7 +12,25 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.13.0 — 2026-09-13
+
+**Full support on PostgreSQL, MySQL 8 and MariaDB.** Every construct storm
+generates now RUNS on all three with real data — plans, batch loaders, joins,
+aggregates, unions, semi-joins, recursive traversal, projections, the unit of
+work, many-to-many both implicit and through a payload model, polymorphic arcs,
+`storm.AnyRef`, row locking, soft delete across every cross-table read, and
+every scalar type that ports.
+
+**Regenerate, and expect one migration.** Generated output changes on every
+dialect, and `storm.AnyRef`'s discriminator column becomes `varchar(64)`.
+
+Getting there found twelve defects. Each passed unit tests, golden tests and
+both shell gates, and failed the first time a real server saw it — including
+two on PostgreSQL, which is the point: **a test that does not EXECUTE against
+the target proves the generator is consistent with itself and nothing more.**
+The fixture is part of the coverage too. A one-table model cannot exercise a
+relation; a fixture with no date column cannot catch a missing date decoder.
+Both of those shipped.
 
 ### `storm.AnyRef`'s discriminator is bounded — a SCHEMA CHANGE
 
