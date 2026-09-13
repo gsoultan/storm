@@ -24,6 +24,25 @@ every scalar type that ports.
 **Regenerate, and expect one migration.** Generated output changes on every
 dialect, and `storm.AnyRef`'s discriminator column becomes `varchar(64)`.
 
+#### Upgrading from v0.12.0 on PostgreSQL
+
+Exactly four lines change per generated table package, and only one of them
+changes behaviour:
+
+- `InsertOp` uses `stmtForInsertNoReturn`, so a **queued** insert no longer asks
+  for `RETURNING`. The affected count is unchanged — pgx reads it from the
+  command tag either way — and the server stops materialising rows nobody
+  reads. `Insert` is untouched and still returns the row.
+- `insPlaceholder` becomes a `runtime.Placeholder` and the splicer call becomes
+  `SpliceInsertWith`. Both emit the same `$1, $2`; the string form remains, so a
+  package generated before this still builds.
+
+Outside the generated code: `TimeOfDay.String()` renders one leading sign for a
+negative value, which PostgreSQL's `time` cannot be — so no existing value's
+rendering changes. And if your model uses `storm.AnyRef`, its discriminator
+column moves from `text` to `varchar(64)` and `storm diff` will propose the
+`ALTER`. Nothing a table name can be is rejected by the new bound.
+
 Getting there found twelve defects. Each passed unit tests, golden tests and
 both shell gates, and failed the first time a real server saw it — including
 two on PostgreSQL, which is the point: **a test that does not EXECUTE against
