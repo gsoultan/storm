@@ -574,6 +574,20 @@ verifying default cannot connect to either and would push callers to
   PostgreSQL, and it is the honest reason this section says "closed" about
   properties and not about the target.
 
+  Two things narrow it, and neither closes it. `scripts/check/outsider.sh` now
+  runs the ADOPTER'S path for MySQL: a module with a different path, outside
+  this tree, with no bootstrap — it generates, builds, passes `go vet`,
+  connects, applies its own DDL and reads a plan whose soft-deleted child must
+  not appear. That is the shape of the bug that shipped `generate` emitting
+  storm's own import path into other people's modules, and it is invisible from
+  inside this repository. And `TestSoakUnderConcurrentLoadWithCancellations`
+  puts the pool under sustained concurrent load — reads whose statement text
+  varies so the bounded cache evicts throughout, writes, cancelled reads whose
+  connections go straight back into use, and transactions that pin one — which
+  is where a leaked connection, a watcher that outlives its statement or a
+  connection returned in a state the next caller inherits would show, and a
+  single-query test cannot.
+
 ### P6.7 What running every construct actually found
 
 Worth recording, because the pattern is the finding. Each of these passed unit

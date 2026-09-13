@@ -396,11 +396,220 @@ elif ! diff -r "$TMP2/store-discovered" internal/store >diff2.out 2>&1; then
   sed 's/^/    /' diff2.out | head -10 >&2
 fi
 
+# The MySQL half. Same stranger, same absence of a bootstrap — a different
+# TARGET.
+#
+# Everything above proves an outsider can generate for PostgreSQL. The MySQL
+# path had been exercised only from inside storm's own module, which is the
+# blind spot that shipped `generate` emitting storm's import path into other
+# people's code. And it does more than build here: it CONNECTS, applies its own
+# DDL and runs the generated API, because a generated package that compiles is
+# not a generated package that works — twelve defects in three days said so.
+if [ -n "${STORM_MYSQL_ADDR:-}" ]; then
+  echo "== a stranger can generate for MySQL, and the result RUNS =="
+  # Back in the ORIGINAL stranger module: the bootstrap section above works in
+  # a second scratch module, and its module path is not this one's.
+  cd "$TMP"
+  mkdir -p mymodel cmd/mystorm cmd/myrun
+
+  # A PORTABLE model. The one above carries a text array, which MySQL has not,
+  # so it is refused — correctly, and that is a different test.
+  cat > mymodel/model.go <<'GOEOF'
+package mymodel
+
+import (
+	"time"
+
+	"github.com/gsoultan/storm"
+)
+
+type Shop struct {
+	storm.Model
+	Name   string
+	Orders []Order
+}
+
+func (s *Shop) Schema(t *storm.Table) {
+	t.Col(&s.Name).Size(80)
+	t.Unique(&s.Name)
+}
+
+func (s *Shop) Plans(p *storm.Plans) { p.Named("Book").With(&s.Orders) }
+
+type Order struct {
+	storm.Model
+	Ref       string
+	Total     storm.Decimal
+	PlacedAt  time.Time
+	Cancelled *time.Time
+	Shop      Shop
+}
+
+func (o *Order) Schema(t *storm.Table) {
+	t.SoftDelete(&o.Cancelled)
+	t.Col(&o.Ref).Size(40)
+	t.Col(&o.Total).Numeric(18, 2)
+	t.Col(&o.Shop).OnDelete(storm.Cascade)
+	t.Index(&o.Shop)
+}
+
+func All() []any { return []any{&Shop{}, &Order{}} }
+GOEOF
+
+  cat > cmd/mystorm/main.go <<'GOEOF'
+package main
+
+import (
+	"example.com/outsider/mymodel"
+	"github.com/gsoultan/storm/tool"
+)
+
+func main() { tool.Main(mymodel.All(), nil) }
+GOEOF
+  if ! GOFLAGS=-mod=mod go mod tidy >tidy1.err 2>&1; then
+    note "go mod tidy failed for the MySQL model:"; sed 's/^/    /' tidy1.err | head -5 >&2
+  fi
+
+  if ! go run ./cmd/mystorm ddl -dialect mysql > my.sql 2>my.err; then
+    note "ddl -dialect mysql failed:"; sed 's/^/    /' my.err >&2
+  elif ! grep -q 'CREATE TABLE `shops`' my.sql; then
+    note "the MySQL ddl is not backticked — this is PostgreSQL output with a flag on it"
+    head -3 my.sql | sed 's/^/    /' >&2
+  fi
+
+  if ! go run ./cmd/mystorm generate -dialect mysql internal/mystore >mygen.out 2>mygen.err; then
+    note "generate -dialect mysql failed:"; sed 's/^/    /' mygen.err >&2
+  else
+    ctx="internal/mystore/mystore.gen.go"
+    if ! grep -q '"example.com/outsider/internal/mystore/' "$ctx"; then
+      note "the MySQL package does not import the host module"
+    fi
+    if ! grep -q '"github.com/gsoultan/storm/runtime/mydec"' internal/mystore/order/order.gen.go; then
+      note "the MySQL package does not use the MySQL decoder family"
+    fi
+  fi
+
+  # The part no gate had: the generated code RUNNING, from outside.
+  cat > cmd/myrun/main.go <<'GOEOF'
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/compile/myddl"
+	"github.com/gsoultan/storm/runtime/mydrv"
+
+	"example.com/outsider/mymodel"
+	store "example.com/outsider/internal/mystore"
+	"example.com/outsider/internal/mystore/order"
+	"example.com/outsider/internal/mystore/shop"
+)
+
+func main() {
+	ctx := context.Background()
+	pool, err := mydrv.NewPool(ctx, mydrv.Config{
+		Addr: os.Args[1], User: "root", Password: "storm", Database: "storm",
+		AllowCleartextPasswordOverPlaintext: true,
+	})
+	must(err)
+	defer pool.Close()
+
+	s, err := storm.Build(mymodel.All()...)
+	must(err)
+	ddl, err := myddl.CreateFor(s, myddl.MySQL)
+	must(err)
+	_, _ = pool.Exec(ctx, "SET FOREIGN_KEY_CHECKS = 0", nil)
+	for _, t := range []string{"orders", "shops"} {
+		_, err := pool.Exec(ctx, "DROP TABLE IF EXISTS "+t, nil)
+		must(err)
+	}
+	_, _ = pool.Exec(ctx, "SET FOREIGN_KEY_CHECKS = 1", nil)
+	for _, stmt := range strings.Split(ddl, ";") {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		_, err := pool.Exec(ctx, stmt, nil)
+		must(err)
+	}
+
+	// A shop with two orders, one of them cancelled.
+	sh := shop.Create()
+	sh.SetName("outsider")
+	shRow, err := sh.Insert(ctx, pool)
+	must(err)
+	if shRow.ID == ([16]byte{}) {
+		fail("the shop came back with no primary key")
+	}
+	total, err := storm.ParseDecimal("19.99")
+	must(err)
+	var kept [16]byte
+	for i := 0; i < 2; i++ {
+		o := order.Create()
+		o.SetRef(fmt.Sprintf("ref-%d", i))
+		o.SetTotal(total)
+		o.SetPlacedAt(time.Now().UTC())
+		o.SetShopID(shRow.ID)
+		row, err := o.Insert(ctx, pool)
+		must(err)
+		kept = row.ID
+	}
+	must(order.Delete(ctx, pool, kept))
+
+	// The plan: one shop, and only its LIVE order.
+	rows, err := store.ShopBook().All(ctx, pool)
+	must(err)
+	if len(rows) != 1 {
+		fail(fmt.Sprintf("the plan read %d shops, want 1", len(rows)))
+	}
+	if n := len(rows[0].Orders); n != 1 {
+		fail(fmt.Sprintf("the plan loaded %d orders, want 1 — a cancelled order is not live", n))
+	}
+	if rows[0].Orders[0].Total.String() != "19.99" {
+		fail("the decimal did not round-trip: " + rows[0].Orders[0].Total.String())
+	}
+	fmt.Println("outsider-mysql-ok")
+}
+
+func must(err error) {
+	if err != nil {
+		fail(err.Error())
+	}
+}
+
+func fail(msg string) {
+	fmt.Fprintln(os.Stderr, msg)
+	os.Exit(1)
+}
+GOEOF
+  if ! GOFLAGS=-mod=mod go mod tidy >tidy2.err 2>&1; then
+    note "go mod tidy failed after generating:"; sed 's/^/    /' tidy2.err | head -5 >&2
+  fi
+
+  if ! go build ./... >mybuild.err 2>&1; then
+    note "the MySQL package does not compile in a module that is not storm:"
+    sed 's/^/    /' mybuild.err | head -5 >&2
+  elif ! go vet ./... >myvet.err 2>&1; then
+    note "the MySQL package fails go vet:"; sed 's/^/    /' myvet.err | head -5 >&2
+  elif ! go run ./cmd/myrun "$STORM_MYSQL_ADDR" >myrun.out 2>myrun.err; then
+    note "a stranger's generated MySQL package does not run:"
+    sed 's/^/    /' myrun.err | head -8 >&2
+  elif ! grep -q 'outsider-mysql-ok' myrun.out; then
+    note "the MySQL run reported nothing"
+  fi
+fi
+
 cd "$REPO"
 rm -rf "$TMP2"
 
 if [ "$fail" -eq 0 ]; then
-  if [ -n "${STORM_DSN:-}" ]; then
+  if [ -n "${STORM_MYSQL_ADDR:-}" ]; then
+    echo "OK: a module outside this repository can model, generate, build and RUN — on PostgreSQL and MySQL"
+  elif [ -n "${STORM_DSN:-}" ]; then
     echo "OK: a module outside this repository can model, generate, build, migrate and verify"
   else
     echo "OK: a module outside this repository can model, generate and build (migration path skipped — no STORM_DSN)"
