@@ -3,6 +3,7 @@ package mydrv
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/gsoultan/storm/runtime"
 	"math"
 	"time"
 )
@@ -609,6 +610,12 @@ func appendBind(b []byte, a any) ([]byte, error) {
 		return appendLenEnc(b, []byte(v.Format("2006-01-02 15:04:05.000000"))), nil
 	case time.Duration:
 		return appendLenEnc(b, appendDuration(nil, v)), nil
+	case runtime.TimeOfDay:
+		// Explicitly, rather than through the String() fallback below: that
+		// renders PostgreSQL's TIME, which has no negatives, and produces
+		// "-30336:-15:00" for one. MySQL's TIME is a signed duration spanning
+		// -838:59:59 to 838:59:59, so a negative is an ordinary value here.
+		return appendLenEnc(b, appendDuration(nil, v.Duration())), nil
 	}
 	// Anything with a String() — runtime.Decimal is the one that matters — goes
 	// as its text, which is exactly how MySQL wants a DECIMAL bound.

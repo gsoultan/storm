@@ -161,6 +161,14 @@ func (t TimeOfDay) Duration() time.Duration {
 // String renders it the way PostgreSQL does: HH:MM:SS, with fractional
 // seconds only when there are any.
 func (t TimeOfDay) String() string {
+	// A negative value renders with ONE leading sign, not a sign on every
+	// component: Parts divides a negative through and yields "-30336:-15:00",
+	// which is not a time in any dialect. PostgreSQL's `time` cannot be
+	// negative so this never arose there; MySQL's TIME can, and storm maps
+	// TimeOfDay onto it.
+	if t < 0 {
+		return "-" + (-t).String()
+	}
 	h, m, s, us := t.Parts()
 	out := twoDigit(h) + ":" + twoDigit(m) + ":" + twoDigit(s)
 	if us == 0 {

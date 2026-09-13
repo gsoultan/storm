@@ -206,3 +206,59 @@ func TestDecodersDoNotAllocate(t *testing.T) {
 		t.Errorf("decoders allocate %.0f time(s) per row; the budget is 0", got)
 	}
 }
+
+// A TIME is MICROSECONDS once it is a runtime.TimeOfDay, and nanoseconds while
+// it is a time.Duration. A plain cast between them is a value a thousand times
+// too large — and one that stores and renders without complaint, which is the
+// kind of wrong answer this package exists to prevent.
+func TestTimeOfDayIsMicroseconds(t *testing.T) {
+	// 01:02:03.500000, packed the way MySQL sends it.
+	b := []byte{12, 0, 0, 0, 0, 0, 1, 2, 3, 0x20, 0xa1, 0x07, 0x00}
+	got, err := mydec.TimeOfDay(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := runtime.TimeOfDay((1*time.Hour + 2*time.Minute + 3*time.Second +
+		500*time.Millisecond) / time.Microsecond)
+	if got != want {
+		t.Errorf("TimeOfDay = %d, want %d", int64(got), int64(want))
+	}
+	if h, m, s, us := got.Parts(); h != 1 || m != 2 || s != 3 || us != 500000 {
+		t.Errorf("parts = %d:%d:%d.%06d, want 01:02:03.500000", h, m, s, us)
+	}
+}
+
+func TestNullTimeOfDay(t *testing.T) {
+	got, err := mydec.NullTimeOfDay(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Valid {
+		t.Error("a NULL came back valid")
+	}
+	b := []byte{8, 0, 0, 0, 0, 0, 1, 2, 3}
+	got, err = mydec.NullTimeOfDay(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Valid || got.V != runtime.TimeOfDay((1*time.Hour+2*time.Minute+3*time.Second)/time.Microsecond) {
+		t.Errorf("NullTimeOfDay = %+v", got)
+	}
+}
+
+// MySQL sends a JSON column as TEXT — its internal binary form never reaches a
+// client — so unlike PostgreSQL there is no version byte to strip. Stripping
+// one would eat the opening brace.
+func TestJSONKeepsItsFirstByte(t *testing.T) {
+	var sl runtime.Slab
+	doc := []byte(`{"a":1}`)
+	if got := mydec.JSONB(doc, &sl); string(got) != `{"a":1}` {
+		t.Errorf("JSONB = %s, want the whole document", got)
+	}
+	if got := mydec.JSON([]byte(`[1]`)); string(got) != `[1]` {
+		t.Errorf("JSON = %s", got)
+	}
+	if got := mydec.JSONB(nil, &sl); got != nil {
+		t.Errorf("an empty document decoded to %v, want nil", got)
+	}
+}

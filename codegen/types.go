@@ -238,6 +238,15 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 		return fmt.Sprintf("r.%s = "+d.q("Bytes")+"(rv[%d])", f, i)
 	}
 	if k == kindDate {
+		// FALLIBLE on a family whose date carries a length it can disagree
+		// with. PostgreSQL's is a fixed width and cannot fail, so it takes the
+		// single-value form and its output is unchanged.
+		if d.fallible[kindDate] {
+			if c.NotNull {
+				return fmt.Sprintf("r.%s, decErr = "+d.q("Date")+"(rv[%d])", f, i)
+			}
+			return fmt.Sprintf("r.%s, decErr = "+d.q("NullDate")+"(rv[%d])", f, i)
+		}
 		if c.NotNull {
 			return fmt.Sprintf("r.%s = "+d.q("Date")+"(rv[%d])", f, i)
 		}

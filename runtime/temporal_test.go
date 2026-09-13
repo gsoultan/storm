@@ -1,6 +1,8 @@
 package runtime_test
 
 import (
+	"strings"
+
 	"net/netip"
 	"testing"
 	"time"
@@ -217,5 +219,27 @@ func TestTimeOfDay_WireRoundTrip(t *testing.T) {
 	}
 	if _, err := runtime.NullTimeOfDay([]byte{1, 2, 3}); err == nil {
 		t.Error("a short wire value must be an error through the nullable path too")
+	}
+}
+
+// A negative time of day renders with ONE leading sign.
+//
+// Parts divides a negative value through and yields a sign on every component:
+// "-30336:-15:00", which is not a time in any dialect. PostgreSQL's `time`
+// cannot be negative so this never arose there; MySQL's TIME spans
+// -838:59:59 to 838:59:59 and storm maps TimeOfDay onto it.
+func TestNegativeTimeOfDayRendersOneSign(t *testing.T) {
+	v := runtime.TimeOfDay(-((30*time.Hour + 20*time.Minute + 10*time.Second) / time.Microsecond))
+	got := v.String()
+	if got != "-30:20:10" {
+		t.Errorf("String() = %q, want -30:20:10", got)
+	}
+	if strings.Count(got, "-") != 1 {
+		t.Errorf("%q carries more than one sign", got)
+	}
+	// The positive form is unchanged, which is what keeps PostgreSQL's output
+	// byte-identical.
+	if p := runtime.TimeOfDay((1*time.Hour + 2*time.Minute + 3*time.Second) / time.Microsecond); p.String() != "01:02:03" {
+		t.Errorf("a positive time renders %q", p.String())
 	}
 }
