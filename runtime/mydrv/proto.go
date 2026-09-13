@@ -35,6 +35,9 @@
 //     Conn.Batch.
 //   - Bound parameters cover the types storm generates and not the whole MySQL
 //     type table; an unbound type is an error, never a silent conversion.
+//   - A pooled connection is waited for, not waited on forever:
+//     Config.AcquireTimeout bounds it and ErrPoolExhausted names the usual
+//     cause, which is a result set that was never closed.
 package mydrv
 
 import (

@@ -43,6 +43,8 @@ answers do not is widened, and named here.
 | bound key list | one array parameter, unnested | one JSON document, `JSON_TABLE` | No array parameter. A BINARY key travels as hex and returns through `UNHEX`, which keeps the comparison on the key's index |
 | arc exactly-one CHECK | `(…)::int + (…)::int = 1` | `(…) + (…) = 1` | A boolean is already 1 or 0 in arithmetic here. storm wrote this expression, so storm respells it; a check the MODEL declared is passed through untouched |
 | `migrate.Auto` | yes | **PostgreSQL-only** | MySQL DDL is not transactional, so the one-transaction guarantee automigrate is built on does not exist. Use `storm ddl -dialect …` with your own tool |
+| `storm.AnyRef` discriminator | `varchar(64)` | `varchar(64)` | It holds a table name, which is bounded — and an unbounded one cannot be indexed here without a key length, while PostgreSQL refuses a prefix index |
+| `HasAnyKey` / `HasAllKeys` | `?\|` and `?&` | `JSON_OVERLAPS` / `JSON_CONTAINS` over `JSON_KEYS` | No such operators. One bound value either way, so the statement's shape does not depend on how many keys were asked for. The value is not cast: MariaDB has no `CAST(… AS JSON)` |
 | `storm.SQL` escape hatch | validated by PREPARE | **refused** | The allow-list is built by PREPAREing against a real PostgreSQL. Generating for MySQL with raw queries registered would ship them unchecked |
 
 ## Why this strengthens the thesis rather than diluting it
