@@ -99,7 +99,7 @@ func CreateTableFor(t *schema.Table, tgt Target) (string, error) {
 		// MySQL 8.0.16+ enforces CHECK. Earlier versions PARSED and ignored
 		// it, which is worse than refusing it, but 8.0.16 is four years old
 		// and the alternative is dropping the constraint silently.
-		parts = append(parts, "    CONSTRAINT "+Ident(ck.Name)+" CHECK ("+ck.Expr+")")
+		parts = append(parts, "    CONSTRAINT "+Ident(ck.Name)+" CHECK ("+checkExpr(ck)+")")
 	}
 	b.WriteString(strings.Join(parts, ",\n"))
 	b.WriteString("\n);")
@@ -145,6 +145,32 @@ func ColumnDefFor(table string, c *schema.Column, tgt Target) (string, error) {
 		b.WriteString(" NOT NULL")
 	}
 	return b.String(), nil
+}
+
+// checkExpr is a check constraint's expression in MySQL's spelling.
+//
+// A check the MODEL declared is passed through: it is the model's own SQL, and
+// rewriting somebody's expression is guesswork — the same choice a generated
+// column's expression gets. An ARC's check is storm's own, and its PostgreSQL
+// spelling casts each comparison with `::int`, which parses nowhere else. Here
+// a boolean already IS 1 or 0 in arithmetic, so the cast simply goes away.
+func checkExpr(ck *schema.Check) string {
+	if len(ck.Arc) == 0 {
+		return ck.Expr
+	}
+	var b strings.Builder
+	for i, c := range ck.Arc {
+		if i > 0 {
+			b.WriteString(" + ")
+		}
+		b.WriteString("(" + Ident(c) + " IS NOT NULL)")
+	}
+	if ck.ArcOptional {
+		b.WriteString(" <= 1")
+	} else {
+		b.WriteString(" = 1")
+	}
+	return b.String()
 }
 
 // TypeSQL maps a storm type to MySQL, or says why it cannot.
@@ -299,8 +325,18 @@ func Check(s *schema.Schema) error {
 //
 // What MySQL has that PostgreSQL does not — a prefix length on a key, a
 // FULLTEXT index, an INVISIBLE index — is rendered here; what it lacks is
-// refused by Check, never dropped: a partial index without its WHERE is a
-// different index, and emitting it would be a wrong answer with no symptom.
+// refused by Check.
+//
+// A partial index is the one case that splits. Dropping the WHERE from a
+// partial UNIQUE index changes ANSWERS — rows the predicate excluded could
+// coexist and now conflict — so Check refuses it. Dropping it from a partial
+// NON-UNIQUE index changes only COST: the index carries rows a query will not
+// ask for, and every answer is the one PostgreSQL gives. Refusing that would
+// block a whole feature over an optimisation — a polymorphic arc's per-variant
+// lookup indexes are partial, so refusing them refuses arcs entirely — so it is
+// widened here. Recorded in docs/DIALECTS.md, because a difference that costs
+// storage rather than correctness belongs in the portability table and not in
+// an error a build cannot proceed past.
 func CreateIndex(t *schema.Table, ix *schema.Index) string {
 	var b strings.Builder
 	b.WriteString("CREATE ")
@@ -355,8 +391,13 @@ func checkIndex(t *schema.Table, ix *schema.Index, problems *[]string) {
 	default:
 		add("uses access method %q, which MySQL lacks", ix.Method)
 	}
-	if ix.Where != "" {
-		add("is partial (WHERE %s); MySQL has no partial index and the rows it excludes would be indexed too", ix.Where)
+	if ix.Where != "" && ix.Unique {
+		// A partial UNIQUE index is refused, because widening it CHANGES
+		// ANSWERS: rows the predicate excluded could coexist and now conflict.
+		// That is the soft-delete case, where two deleted rows may share an
+		// email and a widened index would refuse the second.
+		add("is a partial unique index (WHERE %s); MySQL has none, and indexing the rows "+
+			"the predicate excludes would refuse rows PostgreSQL accepts", ix.Where)
 	}
 	if len(ix.Include) > 0 {
 		add("carries INCLUDE columns; MySQL has no covering clause — append them as trailing keys instead")

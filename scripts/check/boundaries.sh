@@ -49,10 +49,16 @@ if go list -deps . 2>/dev/null | grep -q 'jackc/pgx'; then
 fi
 
 echo "== core packages are stdlib-only =="
+# A third-party import is one whose FIRST path element carries a dot — a
+# domain. Matching a dot anywhere flags the standard library's own internals:
+# crypto/rand pulls in crypto/internal/entropy/v1.0.0, whose dot is a version
+# rather than a host, and the gate reported the standard library as a
+# third-party dependency.
+outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/storm' | grep -E '^[^/]+\.[^/]+/'; }
 for p in ./schema ./compile/pgddl ./compile/pgsql ./codegen; do
-  if go list -deps "$p" 2>/dev/null | grep -v '^github.com/gsoultan/storm' | grep -q '\.'; then
+  if outsiders "$p" | grep -q .; then
     note "$p has a third-party dependency:"
-    go list -deps "$p" | grep -v '^github.com/gsoultan/storm' | grep '\.' | sed 's/^/    /'
+    outsiders "$p" | sed 's/^/    /'
   fi
 done
 

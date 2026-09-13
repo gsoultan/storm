@@ -26,6 +26,25 @@ status: implemented for PostgreSQL, MySQL 8 and MariaDB
 > A generated package does real CRUD against both engines, through a pool,
 > over TLS. SQL Server, Oracle and Mongo remain design.
 
+## What differs on MySQL and MariaDB, and why
+
+Every item is a decision, not an omission. A construct storm cannot express on a
+target is REFUSED at generate time; a construct whose cost differs but whose
+answers do not is widened, and named here.
+
+| Construct | PostgreSQL | MySQL / MariaDB | Why |
+|---|---|---|---|
+| uuid primary key | `DEFAULT gen_random_uuid()` | generated **client-side**, v7 | `UUID()` is version 1: it embeds the SERVER'S MAC ADDRESS in a value that ends up in URLs, and it is a different version from the one the model asked for. v7 keeps the key time-ordered, which matters more here because the primary key IS the clustered index |
+| partial UNIQUE index | native | **refused** | Widening it changes ANSWERS: rows the predicate excluded could coexist and now conflict. This is soft delete's live-scoped uniqueness |
+| partial non-unique index | native | widened to a plain index | Costs storage and a little scan time; changes no answer. Refusing it would refuse `storm.OneOfN` entirely, whose per-variant lookup indexes are partial |
+| `INSERT … RETURNING` | yes | MySQL no, MariaDB yes | On MySQL `Insert` leaves the caller's row unchanged and the doc comment says so at the call site |
+| upsert | `ON CONFLICT <target>` | **not generated** | `ON DUPLICATE KEY UPDATE` names no target — it fires on ANY unique key — so `OnConflictEmail()` would be a lie about which index it watched. Calling it is a compile error naming what is missing |
+| recursive cycle guard | an array of visited keys | a HEX string with `FIND_IN_SET`, bounded | No array type. The path column has a fixed width, so a traversal deeper than it can hold is refused rather than left to the server's `sql_mode` to turn an overflow into an error rather than a truncation |
+| bound key list | one array parameter, unnested | one JSON document, `JSON_TABLE` | No array parameter. A BINARY key travels as hex and returns through `UNHEX`, which keeps the comparison on the key's index |
+| arc exactly-one CHECK | `(…)::int + (…)::int = 1` | `(…) + (…) = 1` | A boolean is already 1 or 0 in arithmetic here. storm wrote this expression, so storm respells it; a check the MODEL declared is passed through untouched |
+| `migrate.Auto` | yes | **PostgreSQL-only** | MySQL DDL is not transactional, so the one-transaction guarantee automigrate is built on does not exist. Use `storm ddl -dialect …` with your own tool |
+| `storm.SQL` escape hatch | validated by PREPARE | **refused** | The allow-list is built by PREPAREing against a real PostgreSQL. Generating for MySQL with raw queries registered would ship them unchecked |
+
 ## Why this strengthens the thesis rather than diluting it
 
 GORM, Ent, and Bun branch on dialect **per query, at runtime**, because they

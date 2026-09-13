@@ -318,6 +318,84 @@ func mutAssign(c colInfo) string {
 // rejects the statement at run time. Generating only the keys that exist turns
 // that into a compile error, and renaming a constraint in the model breaks the
 // call site instead of production.
+// insInsertNoReturn is the tail of Ins.Insert for a back end with no returning
+// clause.
+//
+// Insert next door already splits this way; the masked form did not, so it ran
+// the write, found no rows to read and returned ErrNoRow — telling the caller
+// the insert failed AFTER it had succeeded. A caller who retries on that gets a
+// duplicate-key error on a row they already have.
+//
+// What comes back is what the caller assigned, plus the key if storm supplied
+// it. Not a re-read: recovering a server-computed value with a second SELECT
+// races every other writer, which is the same reason Insert does not.
+func (g *gen) insInsertNoReturn(ins []colInfo) {
+	g.p("\tst := stmtForInsert(n.set, n.conflict)")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn Row{}, st.Err")
+	g.p("\t}")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\tfor i := 0; i < nInsertable; i++ {")
+	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range ins {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\taffected, err := ex.Exec(ctx, st.SQL, args)")
+	g.p("\tif err != nil {")
+	g.p("\t\treturn Row{}, err")
+	g.p("\t}")
+	g.p("\tif affected == 0 {")
+	g.p("\t\treturn Row{}, runtime.ErrNoRow")
+	g.p("\t}")
+	g.p("\treturn n.row, nil")
+	g.p("}")
+	g.p("")
+}
+
+// clientSideKey is the uuid primary key this target cannot default, or "".
+//
+// A single-column uuid primary key with a model default is the shape
+// storm.Model produces, and the only one this applies to: a composite key or a
+// caller-supplied one was never the server's to fill.
+func (g *gen) clientSideKey() (field, bit string) {
+	if !g.lw.KeysAreClientSide || len(g.t.PrimaryKey) != 1 {
+		return "", ""
+	}
+	c := g.t.Column(g.t.PrimaryKey[0])
+	if c == nil || c.Type.Name != schema.TypeUUID || c.Default == "" {
+		return "", ""
+	}
+	return exportName(c.Name), "i" + exportName(c.Name)
+}
+
+// emitClientKey fills a uuid primary key the target cannot default.
+//
+// Only for a back end whose server has no expression for it: PostgreSQL leaves
+// this to gen_random_uuid() and emits nothing, so its generated code is
+// unchanged. Only when the caller did NOT set one, so an explicit id still
+// wins — this supplies a missing key, it does not overrule a given one.
+func (g *gen) emitClientKey(recv, mask string) {
+	field, bit := g.clientSideKey()
+	if field == "" {
+		return
+	}
+	g.p("\t// This target has no server-side default for a uuid key, so the key")
+	g.p("\t// is generated here rather than arriving as sixteen zero bytes — which")
+	g.p("\t// makes the SECOND insert a duplicate and the first row unfindable.")
+	g.p("\t// v7, so it stays time-ordered: on this engine the primary key IS the")
+	g.p("\t// clustered index and a scattered key is a write amplifier.")
+	g.p("\tif %s&%s == 0 {", mask, bit)
+	g.p("\t\t%s%s = runtime.NewUUIDv7()", recv, field)
+	g.p("\t\t%s |= %s", mask, bit)
+	g.p("\t}")
+}
+
 func (g *gen) upsertTargets(ins []colInfo) {
 	if g.lw.Upsert == nil {
 		// MySQL's ON DUPLICATE KEY UPDATE names no conflict target: it fires on
@@ -722,6 +800,11 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\tif n.set == 0 {")
 	g.p("\t\treturn Row{}, runtime.ErrNothingAssigned")
 	g.p("\t}")
+	g.emitClientKey("n.row.", "n.set")
+	if g.lw.noReturning {
+		g.insInsertNoReturn(ins)
+		return
+	}
 	g.p("\tst := stmtForInsert(n.set, n.conflict)")
 	g.p("\tif st.Err != nil {")
 	g.p("\t\t// A malformed token stream is a code-generation bug. Executing it")

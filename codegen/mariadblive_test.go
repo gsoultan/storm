@@ -260,7 +260,7 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 	if os.Getenv(addrVar) == "" {
 		t.Skip(addrVar + " unset")
 	}
-	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, mdNames)
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, mdNames)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,6 +323,9 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		"TestProjectionReadsItsSubset",
 		"TestUnitFlushesInForeignKeyOrder",
 		"TestSoftDeleteReachesEveryCrossTableRead",
+		"TestManyToManyLoadsBothDirections",
+		"TestArcLoadsEveryVariantAndEnforcesExactlyOne",
+		"TestAKeyIsGeneratedWhenTheCallerDoesNotSetOne",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
@@ -351,6 +354,7 @@ type mdPost struct {
 	Views     int64
 	DeletedAt *time.Time
 	Author    mdAuthor
+	Tags      []mdTag
 }
 
 func (p *mdPost) Schema(t *storm.Table) {
@@ -403,6 +407,27 @@ func (n *mdNode) Schema(t *storm.Table) {
 	t.Col(&n.Name).Size(60)
 	t.Col(&n.Parent).OnDelete(storm.Cascade)
 }
+
+// The implicit MANY-TO-MANY: a slice on both sides and storm generates the join
+// table nobody declared. Its loader is a two-hop read no other test reaches.
+type mdTag struct {
+	storm.Model
+	Label string
+	Posts []mdPost
+}
+
+func (g *mdTag) Schema(t *storm.Table) { t.Col(&g.Label).Size(40) }
+
+// The polymorphic ARC: exactly one of the variants is set, enforced by the
+// database rather than by the caller. Its loader batches per variant, and the
+// CHECK that enforces exactly-one is a construct MySQL only gained in 8.0.16.
+type mdAttachment struct {
+	storm.Model
+	Filename string
+	Subject  storm.OneOf2[mdAuthor, mdPost]
+}
+
+func (a *mdAttachment) Schema(t *storm.Table) { t.Col(&a.Filename).Size(120) }
 
 // A union has no driving table, so it hangs off the schema rather than off
 // either model (ADR-0008).
