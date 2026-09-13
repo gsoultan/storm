@@ -1317,8 +1317,8 @@ var insCols = [nInsertable]string{
 // insParts and insPlaceholder come from the back end at build time; the
 // runtime splicer chooses none of them.
 var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Close: ")"}
+var insPlaceholder = runtime.Placeholder{}
 
-const insPlaceholder = "$"
 const insPrefix = "INSERT INTO \"memberships\""
 const insReturning = " RETURNING \"user_id\", \"org_id\", \"role\", \"joined_at\""
 
@@ -1533,7 +1533,7 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 	if conflict > 0 {
 		suffix = upsertTail(conflict, mask) + insReturning
 	}
-	return insCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))
+	return insCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // Insert writes the assigned columns and reads every column back, so
@@ -1697,7 +1697,7 @@ func InsertOp(r Row) runtime.BatchOp {
 	mask |= 1 << 1
 	mask |= 1 << 2
 	mask |= 1 << 3
-	st := stmtForInsert(mask, 0)
+	st := stmtForInsertNoReturn(mask, 0)
 	args := make([]any, 0, 4)
 	args = append(args, r.UserID)
 	args = append(args, r.OrgID)
@@ -1767,7 +1767,7 @@ func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
 	if conflict > 0 {
 		suffix = upsertTail(conflict, mask)
 	}
-	return insOpCache.Put(key, runtime.SpliceInsert(insPrefix, insParts, cols, insPlaceholder, suffix))
+	return insOpCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // UpdateOp is this Mut's update as a queueable statement.

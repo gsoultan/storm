@@ -188,6 +188,13 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 
 	var body gen
 	body.setDialect(o.Dialect, o.Import)
+	// The SCHEMA, which this generator went without. Every per-table generator
+	// has one; this one is built by hand and so did not, and a union asked
+	// liveIn for its branches' soft-delete predicates against a nil schema and
+	// got "" for all of them — a declared union returned deleted rows, on every
+	// dialect. Same shape as the lowering it was missing before it: a hand-built
+	// constructor does not gain a field when the type does.
+	body.s = s
 	body.emitRelPlans(plans)
 	body.emitNamedPlans(named)
 

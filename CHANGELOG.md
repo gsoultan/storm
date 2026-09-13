@@ -14,6 +14,44 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A declared union returned DELETED rows — on every dialect, PostgreSQL included
+
+The context package's generator is built by hand rather than per table, and it
+went without the SCHEMA entirely. So `liveIn` was asked for each union branch's
+soft-delete predicate against a nil schema and returned `""` for all of them: a
+declared union over a soft-delete table returned the rows it had deleted.
+
+This is a **v0.10.0 defect on PostgreSQL**, whose headline was "soft delete
+reaches every read, including the cross-table ones". It did not reach this one.
+Found on MySQL only because that is where the cross-table reads were finally
+run with data; the same generator serves both.
+
+It is the same shape as the two before it — that generator was also missing its
+LOWERING, which is what made the semi-join emit PostgreSQL SQL. A hand-built
+constructor does not gain a field when the type does. The new gate builds a
+context package for a model with one soft-delete branch and one without, on all
+three dialects, and asserts each carries exactly what it should.
+
+### Every partial and queued INSERT was broken on MySQL
+
+`SpliceInsert` appended an ordinal to the placeholder unconditionally —
+PostgreSQL's `$1` with the sigil swapped, which on a bare back end is `?1` and
+MySQL rejects. A full-row `Insert` escaped it because its SQL is a constant
+fixed at generate time; `Create()`, `Ins`, `InsertOp` and the whole unit of work
+go through the splicer, and no test had run one. It takes the placeholder
+CARRIER now.
+
+And `InsertOp` used the RETURNING form. `stmtForInsertNoReturn` already existed
+next to it, with a comment explaining exactly why the batch path needs it, and
+`Op` already used it — `InsertOp` had simply never been switched over. On
+MariaDB, whose insert returns the row, that made the server answer a queued
+insert with a RESULT SET where the batch asked for a count, so every one
+reported zero rows affected and a caller checking that believed nothing was
+written. Queued PostgreSQL inserts stop asking for rows nobody reads, which is
+what the comment always said they did.
+
+**Regenerate.** Generated output changes on every dialect.
+
 ### Recursive traversal was broken on MySQL and MariaDB, and had no gate at all
 
 The construct with the least coverage of anything storm generates for these
@@ -38,6 +76,12 @@ the ANSWERS — four rows and two — because a guard that returns the depth
 bound's worth of rows is accepted by the server and wrong. Removing the guard
 reports 200. The end-to-end traverses a real tree on both engines: depth
 bounds, ancestors, and a cycle that must terminate.
+
+Also covered live for the first time, on both engines: declared PROJECTIONS,
+the unit-of-work flush in foreign-key order, and soft delete across every
+cross-table read — the plan, the batch loader, the join, the aggregate, the
+union and the semi-join, asserted as a delta of exactly one row each rather
+than against absolute counts.
 
 One test-harness bug worth recording: the first version of the gate anchored
 its assertion on a `-- label` comment, which the client strips. It read an
