@@ -14,6 +14,40 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A date, a time or a JSON column did not COMPILE for MySQL
+
+Three holes in the decoder mapping, each of which refused the whole package or
+produced code that would not build:
+
+- `mydec.Date` returns a value AND an error; the emitter used PostgreSQL's
+  single-value form, which cannot fail because its date is a fixed width.
+- `mydec.Duration` returns a `time.Duration` and the field is a
+  `runtime.TimeOfDay`, so the assignment did not compile.
+- `mydec.JSON` and `mydec.JSONB` did not exist at all.
+
+And a fourth that WOULD have compiled and been wrong: `runtime.TimeOfDay`
+counts MICROSECONDS while a `time.Duration` counts nanoseconds, so the
+conversion is a division and not a cast. A thousand-times-too-large value
+stores and renders without complaint.
+
+Two more found while testing it. Binding a `TimeOfDay` fell through to its
+`String()`, which renders PostgreSQL's `time` — a type with no negatives — and
+produced `-30336:-15:00` for one; MySQL's TIME is a signed duration spanning
+-838:59:59 to 838:59:59, so a negative is an ordinary value there. The binder
+handles it directly now, and `TimeOfDay.String()` renders one leading sign
+instead of one per component.
+
+`HasAnyKey` and `HasAllKeys` had no MySQL lowering, so a model with a JSON
+column was refused outright. PostgreSQL spells them `?|` and `?&`; here the
+keys come back from `JSON_KEYS` and the question becomes set overlap
+(`JSON_OVERLAPS`) or set containment (`JSON_CONTAINS`) — one bound value each
+way, so the statement's shape does not depend on how many keys were asked for.
+The bound value is not cast, because MariaDB has no `CAST(… AS JSON)` and both
+engines read a string as a document.
+
+Every scalar type that ports now round-trips through the GENERATED scanner
+against both servers, not just through the decoders.
+
 ### A NULL in a bulk insert HUNG the process
 
 `InsertAll` passes each column as a POINTER into the row — `Null[T].Ptr()` for

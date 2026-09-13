@@ -35,9 +35,11 @@ var frags = map[string]frag{
 	// In and NotIn are NOT here: their lowering needs the column's SQL type.
 	// See InFrag.
 
-	// JSON containment. A function, not an operator: JSON_CONTAINS(col, ?).
+	// JSON containment and key tests. Functions, not operators.
 	"JSONContains":    {"", ""}, // filled by init, which needs the wrap form
 	"JSONContainedBy": {"", ""},
+	"HasAnyKey":       {"", ""},
+	"HasAllKeys":      {"", ""},
 
 	"IsNull":    {" IS NULL", ""},
 	"IsNotNull": {" IS NOT NULL", ""},
@@ -49,6 +51,18 @@ var frags = map[string]frag{
 var wrapped = map[string]struct{ open, close string }{
 	"JSONContains":    {"JSON_CONTAINS(", ", " + Placeholder + ")"},
 	"JSONContainedBy": {"JSON_CONTAINS(" + Placeholder + ", ", ")"},
+
+	// PostgreSQL's `?|` and `?&` ask whether a document has ANY or ALL of a
+	// list of top-level keys. Here the keys come back as a JSON array from
+	// JSON_KEYS and the question becomes set overlap or set containment — one
+	// bound value either way, so the statement's shape does not depend on how
+	// many keys the caller passed.
+	//
+	// The bound value is NOT cast. MariaDB has no CAST(… AS JSON) and its JSON
+	// functions read a string as a document; MySQL's do too, so the uncast form
+	// is the one that runs on both.
+	"HasAnyKey":  {"JSON_OVERLAPS(JSON_KEYS(", "), " + Placeholder + ")"},
+	"HasAllKeys": {"JSON_CONTAINS(JSON_KEYS(", "), " + Placeholder + ")"},
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is

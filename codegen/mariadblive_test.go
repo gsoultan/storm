@@ -285,7 +285,7 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		t.Skip(addrVar + " unset")
 	}
 	sweepGenerated(t, "mdrel")
-	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, mdNames)
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, &mdWide{}, mdNames)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,6 +356,8 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 		"TestInsertAllLoadsEveryRow",
 		"TestAnyOfBracketsItsConjunctions",
 		"TestOffsetAndUnordered",
+		"TestEveryColumnTypeRoundTripsThroughGeneratedCode",
+		"TestJSONPredicates",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
@@ -426,6 +428,36 @@ func (p *mdPost) Aggregates(a *storm.Aggregates) {
 // fetch plan — and its cycle guard is the one construct that differs most
 // between the engines: PostgreSQL accumulates visited keys in an ARRAY, MySQL
 // has none and uses a HEX string with FIND_IN_SET.
+// Every scalar type that ports, so the GENERATED SCANNER for each one is
+// exercised against real server bytes. The driver's own round trip covers the
+// decoders; this covers the code that calls them, which is a different path and
+// the one every read goes through.
+type mdWide struct {
+	storm.Model
+	Flag    bool
+	Small   int16
+	Medium  int32
+	Big     int64
+	Single  float32
+	Double  float64
+	Text    string
+	Blob    []byte
+	Stamp   time.Time
+	Day     time.Time
+	Clock   storm.TimeOfDay
+	Money   storm.Decimal
+	Doc     storm.JSON
+	OptText *string
+	OptBig  *int64
+	OptDay  *time.Time
+}
+
+func (w *mdWide) Schema(t *storm.Table) {
+	t.Col(&w.Text).Size(80)
+	t.Col(&w.Day).Date()
+	t.Col(&w.Money).Numeric(18, 6)
+}
+
 type mdNode struct {
 	storm.Model
 	Name     string

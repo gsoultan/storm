@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"IMPORTPATH/mdnode"
 	"IMPORTPATH/mdpost"
 	"IMPORTPATH/mdtag"
+	"IMPORTPATH/mdwide"
 )
 
 type mdAuthor struct {
@@ -81,6 +83,36 @@ type mdAttachment struct {
 
 func (a *mdAttachment) Schema(t *storm.Table) { t.Col(&a.Filename).Size(120) }
 
+// Every scalar type that ports, so the GENERATED SCANNER for each one is
+// exercised against real server bytes. The driver's own round trip covers the
+// decoders; this covers the code that calls them, which is a different path and
+// the one every read goes through.
+type mdWide struct {
+	storm.Model
+	Flag    bool
+	Small   int16
+	Medium  int32
+	Big     int64
+	Single  float32
+	Double  float64
+	Text    string
+	Blob    []byte
+	Stamp   time.Time
+	Day     time.Time
+	Clock   storm.TimeOfDay
+	Money   storm.Decimal
+	Doc     storm.JSON
+	OptText *string
+	OptBig  *int64
+	OptDay  *time.Time
+}
+
+func (w *mdWide) Schema(t *storm.Table) {
+	t.Col(&w.Text).Size(80)
+	t.Col(&w.Day).Date()
+	t.Col(&w.Money).Numeric(18, 6)
+}
+
 type mdNode struct {
 	storm.Model
 	Name     string
@@ -110,7 +142,7 @@ func TestMain(m *testing.M) {
 	defer p.Close()
 	ex = p
 
-	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{})
+	s, err := storm.Build(&mdAuthor{}, &mdPost{}, &mdNode{}, &mdTag{}, &mdAttachment{}, &mdWide{})
 	must(err)
 	ddl, err := myddl.CreateFor(s, myddl.TARGET)
 	must(err)
@@ -121,6 +153,7 @@ func TestMain(m *testing.M) {
 	_, _ = p.Exec(ctx, "SET FOREIGN_KEY_CHECKS = 0", nil)
 	for _, t := range []string{
 		"md_attachments", "md_post_md_tags", "md_tags", "md_posts", "md_authors", "md_nodes",
+		"md_wides",
 	} {
 		if _, err := p.Exec(ctx, "DROP TABLE IF EXISTS "+t, nil); err != nil {
 			panic("drop " + t + ": " + err.Error())
@@ -1141,6 +1174,146 @@ func TestOffsetAndUnordered(t *testing.T) {
 	}
 	if len(un) != len(all) {
 		t.Errorf("unordered read %d rows, ordered read %d", len(un), len(all))
+	}
+}
+
+// Every scalar type that ports, written and read back through the GENERATED
+// code. The driver's own round trip covers the decoders; this covers the
+// scanner that calls them, which is the path every read takes.
+func TestEveryColumnTypeRoundTripsThroughGeneratedCode(t *testing.T) {
+	ctx := context.Background()
+	stamp := time.Date(2026, 9, 13, 23, 59, 58, 123456000, time.UTC)
+	day := time.Date(1999, 12, 31, 0, 0, 0, 0, time.UTC)
+	// MICROSECONDS: runtime.TimeOfDay counts them, not nanoseconds. Negative
+	// and over a day, because MySQL TIME is a signed duration and a decoder
+	// that models it as a clock reading loses both facts.
+	clock := storm.TimeOfDay(-((30*time.Hour + 20*time.Minute + 10*time.Second + 500*time.Millisecond) / time.Microsecond))
+	money, err := storm.ParseDecimal("-123456789012.345678")
+	if err != nil {
+		t.Fatal(err)
+	}
+	optText := "present"
+	optBig := int64(-99)
+
+	w := &mdwide.Row{
+		ID: id(0xe0, 1), Flag: true,
+		Small: -32768, Medium: 2147483647, Big: -9223372036854775808,
+		Single: 0.5, Double: -1.25,
+		Text:  "héllo — ünicode",
+		Blob:  []byte{0, 1, 2, 0xff},
+		Stamp: stamp, Day: day, Clock: clock, Money: money,
+		Doc:     storm.JSON("{\"a\": 1, \"b\": [2, 3]}"),
+		OptText: runtime.Null[string]{V: optText, Valid: true},
+		OptBig:  runtime.Null[int64]{V: optBig, Valid: true},
+	}
+	if err := mdwide.Insert(ctx, ex, w); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_wides", nil) })
+
+	got, ok, err := mdwide.New().Where(mdwide.ID.Eq(w.ID)).One(ctx, ex)
+	if err != nil || !ok {
+		t.Fatalf("read back: %v ok=%v", err, ok)
+	}
+	if got.Flag != true {
+		t.Errorf("bool = %v", got.Flag)
+	}
+	if got.Small != -32768 || got.Medium != 2147483647 || got.Big != -9223372036854775808 {
+		t.Errorf("integers = %d %d %d", got.Small, got.Medium, got.Big)
+	}
+	if got.Single != 0.5 || got.Double != -1.25 {
+		t.Errorf("floats = %v %v", got.Single, got.Double)
+	}
+	if got.Text != "héllo — ünicode" {
+		t.Errorf("text = %q", got.Text)
+	}
+	if string(got.Blob) != string([]byte{0, 1, 2, 0xff}) {
+		t.Errorf("blob = %v", got.Blob)
+	}
+	if !got.Stamp.Equal(stamp) {
+		t.Errorf("timestamp = %v, want %v", got.Stamp, stamp)
+	}
+	if !got.Day.Equal(day) {
+		t.Errorf("date = %v, want %v", got.Day, day)
+	}
+	// A TIME is a signed duration here, not a clock reading: it may exceed a
+	// day and it may be negative, and a decoder that models it as a time of day
+	// loses both facts.
+	if got.Clock != clock {
+		t.Errorf("time of day = %v, want %v", time.Duration(got.Clock), time.Duration(clock))
+	}
+	if got.Money.String() != money.String() {
+		t.Errorf("decimal = %s, want %s", got.Money, money)
+	}
+	if !strings.Contains(string(got.Doc), "\"a\"") {
+		t.Errorf("json = %s", got.Doc)
+	}
+	if !got.OptText.Valid || got.OptText.V != optText {
+		t.Errorf("nullable text = %+v", got.OptText)
+	}
+	if !got.OptBig.Valid || got.OptBig.V != optBig {
+		t.Errorf("nullable int = %+v", got.OptBig)
+	}
+	if got.OptDay.Valid {
+		t.Errorf("an unset nullable came back valid: %+v", got.OptDay)
+	}
+
+	// A second row with every nullable UNSET, so the NULL path is read through
+	// the generated scanner too — and so the bulk insert carries a NULL, which
+	// is what used to stop the process.
+	empty := mdwide.Row{ID: id(0xe0, 2), Text: "empty", Doc: storm.JSON("{}")}
+	if _, err := mdwide.InsertAll(ctx, ex, []mdwide.Row{empty}); err != nil {
+		t.Fatalf("bulk insert with NULLs: %v", err)
+	}
+	back, ok, err := mdwide.New().Where(mdwide.ID.Eq(empty.ID)).One(ctx, ex)
+	if err != nil || !ok {
+		t.Fatalf("read back the empty row: %v ok=%v", err, ok)
+	}
+	if back.OptText.Valid || back.OptBig.Valid || back.OptDay.Valid {
+		t.Errorf("an unset nullable came back valid: %+v", back)
+	}
+}
+
+// The JSON predicates. PostgreSQL spells them with operators — @>, <@, ?| and
+// ?& — and MySQL has none of those: containment is a function, and a key test
+// becomes set overlap or set containment over JSON_KEYS. One bound value each
+// way, so the statement's shape does not depend on how many keys were asked
+// for.
+func TestJSONPredicates(t *testing.T) {
+	ctx := context.Background()
+	rows := []mdwide.Row{
+		{ID: id(0xe1, 1), Text: "ab", Doc: storm.JSON("{\"a\": 1, \"b\": 2}")},
+		{ID: id(0xe1, 2), Text: "c", Doc: storm.JSON("{\"c\": 3}")},
+	}
+	for i := range rows {
+		if err := mdwide.Insert(ctx, ex, &rows[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _, _ = ex.Exec(ctx, "DELETE FROM md_wides", nil) })
+
+	count := func(name string, p mdwide.Pred) int64 {
+		t.Helper()
+		n, err := mdwide.New().Where(p).Count(ctx, ex)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return n
+	}
+	if n := count("contains", mdwide.Doc.Contains(storm.JSON("{\"a\": 1}"))); n != 1 {
+		t.Errorf("Contains matched %d rows, want 1", n)
+	}
+	// Any of these keys: the second row has none of them.
+	if n := count("any key", mdwide.Doc.HasAnyKey("a", "z")); n != 1 {
+		t.Errorf("HasAnyKey matched %d rows, want 1", n)
+	}
+	// All of them, so a document with only some must NOT match — the case that
+	// tells overlap from containment.
+	if n := count("all keys", mdwide.Doc.HasAllKeys("a", "b")); n != 1 {
+		t.Errorf("HasAllKeys matched %d rows, want 1", n)
+	}
+	if n := count("all keys partial", mdwide.Doc.HasAllKeys("a", "z")); n != 0 {
+		t.Errorf("HasAllKeys matched %d rows for a key that is not there, want 0", n)
 	}
 }
 `

@@ -331,3 +331,47 @@ func NullDuration(b []byte) (runtime.Null[time.Duration], error) {
 	}
 	return runtime.Null[time.Duration]{V: d, Valid: true}, nil
 }
+
+// JSONB is the document's bytes, copied into the slab.
+//
+// MySQL sends a JSON column as TEXT on the wire — its internal binary form is
+// never exposed to a client — so unlike PostgreSQL there is no version byte to
+// strip. The signature matches runtime.JSONB so the generated scanner is the
+// same shape on either family.
+func JSONB(b []byte, s *runtime.Slab) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return s.Bytes(b)
+}
+
+// JSON wraps the bytes in storm's JSON type, mirroring runtime.JSON's
+// conversion so the generated scanner reads the same on both families.
+func JSON(b []byte) runtime.JSON { return runtime.JSON(b) }
+
+// TimeOfDay reads a TIME as storm's time-of-day type.
+//
+// The value is a signed DURATION here, not a clock reading: MySQL's TIME spans
+// -838:59:59 to 838:59:59, so it may exceed a day and may be negative. Duration
+// does the decoding; this is the conversion the generated scanner needs, and it
+// exists so the scanner does not have to spell a cast that only one family
+// would need.
+func TimeOfDay(b []byte) (runtime.TimeOfDay, error) {
+	d, err := Duration(b)
+	// MICROSECONDS. runtime.TimeOfDay counts them; a time.Duration counts
+	// nanoseconds, so a plain cast is a value a thousand times too large — and
+	// one that still renders and stores without complaint.
+	return runtime.TimeOfDay(d / time.Microsecond), err
+}
+
+// NullTimeOfDay reads a nullable TIME.
+func NullTimeOfDay(b []byte) (runtime.Null[runtime.TimeOfDay], error) {
+	if b == nil {
+		return runtime.Null[runtime.TimeOfDay]{}, nil
+	}
+	d, err := Duration(b)
+	if err != nil {
+		return runtime.Null[runtime.TimeOfDay]{}, err
+	}
+	return runtime.Null[runtime.TimeOfDay]{V: runtime.TimeOfDay(d / time.Microsecond), Valid: true}, nil
+}

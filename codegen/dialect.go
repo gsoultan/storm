@@ -67,9 +67,13 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 				// MySQL's temporal types are packed component-wise and its
 				// TIME is a signed duration, so these are genuinely different
 				// functions rather than one name over different bytes.
-				"Timestamptz":  "DateTime",
-				"TimeOfDayErr": "Duration",
-				"NumericErr":   "Decimal",
+				"Timestamptz": "DateTime",
+				"NumericErr":  "Decimal",
+				// NOT "Duration": that returns a time.Duration and the field is
+				// a runtime.TimeOfDay, so the generated assignment would not
+				// compile. mydec.TimeOfDay is the conversion, kept there rather
+				// than as a cast the scanner would have to spell for one family.
+				"TimeOfDayErr": "TimeOfDay",
 				// The NULLABLE spellings, which were missing. nullName builds
 				// "Null"+the kind's PostgreSQL decoder name, so the rename has
 				// to cover those too — otherwise a nullable timestamp emits
@@ -77,7 +81,6 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 				// Nothing caught it because no MySQL fixture had a nullable
 				// temporal column, and a soft-delete model has one on day one.
 				"NullTimestamptz": "NullDateTime",
-				"NullTimeOfDay":   "NullDuration",
 			},
 			fallible: map[kind]bool{
 				// Every temporal type here reads a leading length and can be
