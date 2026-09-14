@@ -281,6 +281,40 @@ func TypeEnum(e *schema.Enum) string {
 //
 // All of them, not the first: finding them one deploy at a time is the failure
 // mode this replaces, and the same reasoning as Build's error list.
+// at is a declaration's position as a message prefix, or nothing.
+//
+// Every problem below names a table and usually a column, which an adopter
+// with forty models turns into a grep. With the line it is a jump. Empty when
+// the schema came from introspection or from a Build the tool did not
+// annotate, and then each message reads exactly as it did before.
+func at(pos string) string {
+	if pos == "" {
+		return ""
+	}
+	return pos + ": "
+}
+
+// colPos is the best position for a problem about a column: the field that
+// declared it, or the model it belongs to.
+func colPos(t *schema.Table, c *schema.Column) string {
+	if c != nil && c.Pos != "" {
+		return c.Pos
+	}
+	return t.Pos
+}
+
+// indexPos is the best position for a problem about an index: the first column
+// it names, or the model. An index is declared in a Schema method rather than
+// on a field, so the column is the nearest thing a reader can act on.
+func indexPos(t *schema.Table, ix *schema.Index) string {
+	if len(ix.Columns) > 0 {
+		if c := t.Column(ix.Columns[0].Name); c != nil && c.Pos != "" {
+			return c.Pos
+		}
+	}
+	return t.Pos
+}
+
 func Check(s *schema.Schema) error {
 	var problems []string
 	enums := map[string]*schema.Enum{}
@@ -290,25 +324,26 @@ func Check(s *schema.Schema) error {
 	for _, t := range s.Tables {
 		if len(t.Excludes) > 0 {
 			problems = append(problems, fmt.Sprintf(
-				"  %s: EXCLUDE constraints have no MySQL equivalent — the overlap they prevent "+
-					"becomes a race the application cannot win", t.Name))
+				"  %s%s: EXCLUDE constraints have no MySQL equivalent — the overlap they prevent "+
+					"becomes a race the application cannot win", at(t.Pos), t.Name))
 		}
 		for _, c := range t.Columns {
 			if c.Type.Enum {
 				if _, ok := enums[c.Type.Name]; !ok {
 					problems = append(problems, fmt.Sprintf(
-						"  %s.%s: enum %s is not declared in the schema", t.Name, c.Name, c.Type.Name))
+						"  %s%s.%s: enum %s is not declared in the schema",
+						at(colPos(t, c)), t.Name, c.Name, c.Type.Name))
 				}
 				continue
 			}
 			if _, err := TypeSQL(t.Name, c); err != nil {
-				problems = append(problems, "  "+err.Error())
+				problems = append(problems, "  "+at(colPos(t, c))+err.Error())
 			}
 		}
 		if len(t.PrimaryKey) == 0 {
 			problems = append(problems, fmt.Sprintf(
-				"  %s: MySQL's InnoDB gives every table a hidden clustered key when none is "+
-					"declared, which nothing can then reference", t.Name))
+				"  %s%s: MySQL's InnoDB gives every table a hidden clustered key when none is "+
+					"declared, which nothing can then reference", at(t.Pos), t.Name))
 		}
 		for _, ix := range t.Indexes {
 			checkIndex(t, ix, &problems)
@@ -378,7 +413,8 @@ func CreateIndex(t *schema.Table, ix *schema.Index) string {
 // checkIndex is the index half of Check.
 func checkIndex(t *schema.Table, ix *schema.Index, problems *[]string) {
 	add := func(format string, a ...any) {
-		*problems = append(*problems, fmt.Sprintf("  %s: index %s "+format, append([]any{t.Name, ix.Name}, a...)...))
+		*problems = append(*problems, fmt.Sprintf("  %s%s: index %s "+format,
+			append([]any{at(indexPos(t, ix)), t.Name, ix.Name}, a...)...))
 	}
 	switch ix.Method {
 	case "", "btree", "hash", "fulltext":

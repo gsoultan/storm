@@ -49,6 +49,16 @@ type Table struct {
 	// no Go type to remember.
 	GoName string
 
+	// Pos is where the model was DECLARED — "model/model.go:41" — or empty.
+	//
+	// A portability refusal names a table and a column, and an adopter with
+	// forty models turns that into a grep. With the line it is a jump. It is
+	// filled in by the tool, which parses the module to find the models
+	// anyway; storm.Build works from reflection and has no source to read, so
+	// a schema built by hand or by introspection simply has none and every
+	// message degrades to what it said before.
+	Pos string
+
 	// Columns are kept in declaration order: DDL column order is observable
 	// (SELECT *, COPY) so it must not be sorted.
 	Columns []*Column
@@ -235,9 +245,14 @@ type Relation struct {
 
 // Column is one attribute.
 type Column struct {
-	Name      string
-	Type      Type
-	NotNull   bool
+	Name    string
+	Type    Type
+	NotNull bool
+
+	// Pos is where the FIELD was declared, or empty. See Table.Pos: a column
+	// is what most refusals are actually about, so this is the one that
+	// usually matters.
+	Pos       string
 	Default   string // raw SQL expression; "" for none
 	Generated string // GENERATED ALWAYS AS (<expr>) STORED; "" for none
 	Identity  bool

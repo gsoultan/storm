@@ -432,3 +432,75 @@ func TestAnArcCheckIsRespelledAndADeclaredOneIsNot(t *testing.T) {
 		t.Errorf("an optional arc is not at-most-one:\n%s", got)
 	}
 }
+
+// A refusal names the LINE that declared the thing it refuses.
+//
+// v1's definition says an unsupported construct "fails generation, naming the
+// target and the source line". It named the target, the table and the column,
+// and never a line — which an adopter with forty models turns into a grep.
+func TestARefusalNamesTheDeclarationsLine(t *testing.T) {
+	arr := col("tags", schema.TypeText)
+	arr.Type.Array = true
+	arr.Pos = "model/model.go:12:2"
+	tbl := &schema.Table{
+		Name:       "docs",
+		Pos:        "model/model.go:8:6",
+		Columns:    []*schema.Column{col("id", schema.TypeUUID), arr},
+		PrimaryKey: []string{"id"},
+	}
+	s := &schema.Schema{Tables: []*schema.Table{tbl}}
+
+	err := myddl.Check(s)
+	if err == nil {
+		t.Fatal("an array column ported to MySQL")
+	}
+	if !strings.Contains(err.Error(), "model/model.go:12:2") {
+		t.Errorf("the refusal does not name the FIELD's line:\n%v", err)
+	}
+	// The rest of the message is unchanged: the line is a prefix, not a
+	// replacement for saying what is wrong and what to do.
+	for _, want := range []string{"docs.tags", "no array type", "normalise it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal lost %q:\n%v", want, err)
+		}
+	}
+
+	// An index problem names its first column's line, because an index is
+	// declared in a Schema method and the column is the nearest thing a reader
+	// can act on.
+	tbl.Columns = []*schema.Column{col("id", schema.TypeUUID), col("body", schema.TypeText)}
+	tbl.Columns[1].Pos = "model/model.go:11:2"
+	tbl.Indexes = []*schema.Index{{
+		Name: "ix_docs_body", Columns: []schema.IndexColumn{{Name: "body"}},
+	}}
+	err = myddl.Check(s)
+	if err == nil {
+		t.Fatal("an unbounded text column was indexed without a key length")
+	}
+	if !strings.Contains(err.Error(), "model/model.go:11:2") {
+		t.Errorf("the index refusal does not name a line:\n%v", err)
+	}
+}
+
+// A schema with no positions — from introspection, or from a Build the tool did
+// not annotate — reads exactly as it did before. The line is an addition, not a
+// requirement.
+func TestARefusalWithoutAPositionIsUnchanged(t *testing.T) {
+	arr := col("tags", schema.TypeText)
+	arr.Type.Array = true
+	s := &schema.Schema{Tables: []*schema.Table{{
+		Name:       "docs",
+		Columns:    []*schema.Column{col("id", schema.TypeUUID), arr},
+		PrimaryKey: []string{"id"},
+	}}}
+	err := myddl.Check(s)
+	if err == nil {
+		t.Fatal("an array column ported to MySQL")
+	}
+	if !strings.Contains(err.Error(), "  docs.tags is") {
+		t.Errorf("a message with no position is not the bare form:\n%v", err)
+	}
+	if strings.Contains(err.Error(), "::") {
+		t.Errorf("an empty position left a stray separator:\n%v", err)
+	}
+}

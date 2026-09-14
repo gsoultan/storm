@@ -297,6 +297,31 @@ func IsTrgmOpClass(class string) bool {
 const PgTrgmDDL = "DO $storm$ BEGIN CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public; " +
 	"EXCEPTION WHEN unique_violation OR duplicate_object THEN NULL; END $storm$;"
 
+// at is a declaration's position as a message prefix, or nothing.
+//
+// Every problem below names a table and an index, which an adopter with forty
+// models turns into a grep. With the line it is a jump. Empty when the schema
+// came from introspection or from a Build the tool did not annotate, and then
+// each message reads exactly as it did before.
+func at(pos string) string {
+	if pos == "" {
+		return ""
+	}
+	return pos + ": "
+}
+
+// indexPos is the best position for a problem about an index: the first column
+// it names, or the model. An index is declared in a Schema method rather than
+// on a field, so the column is the nearest thing a reader can act on.
+func indexPos(t *schema.Table, ix *schema.Index) string {
+	if len(ix.Columns) > 0 {
+		if c := t.Column(ix.Columns[0].Name); c != nil && c.Pos != "" {
+			return c.Pos
+		}
+	}
+	return t.Pos
+}
+
 // Check refuses what the model says that PostgreSQL cannot: the index facts
 // that exist for MySQL's sake. Silently dropping them would leave a TEXT
 // column's prefix index — the only way MySQL indexes such a column at all —
@@ -309,20 +334,20 @@ func Check(s *schema.Schema) error {
 			switch ix.Method {
 			case "fulltext", "spatial":
 				problems = append(problems, fmt.Sprintf(
-					"  %s: index %s is a MySQL %s index — PostgreSQL's full-text search is a tsvector column with a gin index",
-					t.Name, ix.Name, strings.ToUpper(ix.Method)))
+					"  %s%s: index %s is a MySQL %s index — PostgreSQL's full-text search is a tsvector column with a gin index",
+					at(indexPos(t, ix)), t.Name, ix.Name, strings.ToUpper(ix.Method)))
 			}
 			if ix.Invisible {
 				problems = append(problems, fmt.Sprintf(
-					"  %s: index %s is INVISIBLE, which PostgreSQL has no equivalent for — drop it, or leave it visible",
-					t.Name, ix.Name))
+					"  %s%s: index %s is INVISIBLE, which PostgreSQL has no equivalent for — drop it, or leave it visible",
+					at(indexPos(t, ix)), t.Name, ix.Name))
 			}
 			for _, c := range ix.Columns {
 				if c.Prefix > 0 {
 					problems = append(problems, fmt.Sprintf(
-						"  %s: index %s indexes a %d-character prefix of %s, which PostgreSQL cannot — "+
+						"  %s%s: index %s indexes a %d-character prefix of %s, which PostgreSQL cannot — "+
 							"index the whole column, or an expression: storm.IndexExpr(&m.%s, \"left(%%s, %d)\")",
-						t.Name, ix.Name, c.Prefix, c.Name, exportish(c.Name), c.Prefix))
+						at(indexPos(t, ix)), t.Name, ix.Name, c.Prefix, c.Name, exportish(c.Name), c.Prefix))
 				}
 			}
 		}

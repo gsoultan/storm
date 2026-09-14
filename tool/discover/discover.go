@@ -159,11 +159,19 @@ func Discover(start string) (*Result, error) {
 
 func collect(r *Result, scan *pkgScan, ip string) {
 	for name, pos := range scan.structs {
+		var fields map[string]string
+		if fp := scan.fields[name]; len(fp) > 0 {
+			fields = make(map[string]string, len(fp))
+			for f, p := range fp {
+				fields[f] = p.String()
+			}
+		}
 		r.Models = append(r.Models, Model{
 			ImportPath: ip,
 			PkgName:    scan.name,
 			TypeName:   name,
 			Pos:        pos.String(),
+			Fields:     fields,
 			Why:        scan.reasons[name],
 		})
 	}

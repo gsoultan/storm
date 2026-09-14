@@ -277,3 +277,43 @@ func TestDiscoverReportsUndeclarableQueries(t *testing.T) {
 		t.Error("a legitimate package-level declaration stopped being discovered")
 	}
 }
+
+// A model's FIELDS are located as well as the model itself.
+//
+// A portability refusal is almost always about a column, and a column comes
+// from a field. Without this the message can only name the table, which an
+// adopter with forty models turns into a grep — and v1's definition says the
+// refusal names the source LINE.
+func TestDiscoverLocatesFields(t *testing.T) {
+	r := discover(t, "basic")
+	var team *Model
+	for i := range r.Models {
+		if r.Models[i].TypeName == "Team" {
+			team = &r.Models[i]
+		}
+	}
+	if team == nil {
+		t.Fatal("Team was not discovered")
+	}
+	for _, f := range []string{"Name", "Members"} {
+		pos, ok := team.Fields[f]
+		if !ok {
+			t.Errorf("field %s has no position", f)
+			continue
+		}
+		if !strings.Contains(pos, "model.go:") {
+			t.Errorf("field %s is at %q, which names no file and line", f, pos)
+		}
+	}
+	// The two fields are on different lines, so a position that was really the
+	// struct's would show up here as one repeated value.
+	if team.Fields["Name"] == team.Fields["Members"] {
+		t.Errorf("every field reports the same position %q — that is the struct's, not the field's",
+			team.Fields["Name"])
+	}
+	// An EMBEDDED field has no name and is a mixin; its own declaration is
+	// where a reader has to go, so it is not recorded here.
+	if _, ok := team.Fields["Model"]; ok {
+		t.Error("an embedded field was recorded as a named one")
+	}
+}

@@ -134,6 +134,51 @@ fi
 # invisible from inside this repository: the one module here that carries a
 # generated shape assertion is examples/orders, which the root `go vet ./...`
 # does not reach because it is a separate module.
+# v1's definition says an unsupported construct "fails generation, naming the
+# target AND THE SOURCE LINE". It named the target, the table and the column and
+# never a line — which in a module with forty models is a grep. The position
+# comes from parsing the module, so it only exists out here: a schema built
+# inside storm's own tests has none, and this is the only gate that can see it.
+echo "== a refusal names the line that declared the thing it refuses =="
+mkdir -p unportable
+cat > unportable/model.go <<'GOEOF'
+package unportable
+
+import "github.com/gsoultan/storm"
+
+type Doc struct {
+	storm.Model
+	Title string
+	Tags  []string
+}
+
+func (d *Doc) Schema(t *storm.Table) { t.Col(&d.Title).Size(80) }
+
+func All() []any { return []any{&Doc{}} }
+GOEOF
+mkdir -p cmd/unportable
+cat > cmd/unportable/main.go <<'GOEOF'
+package main
+
+import (
+	"example.com/outsider/unportable"
+	"github.com/gsoultan/storm/tool"
+)
+
+func main() { tool.Main(unportable.All(), nil) }
+GOEOF
+if ! GOFLAGS=-mod=mod go mod tidy >tidy0.err 2>&1; then
+  note "go mod tidy failed for the unportable model:"; sed 's/^/    /' tidy0.err | head -3 >&2
+fi
+go run ./cmd/unportable portable mysql >port.out 2>port.err || true
+if ! grep -q 'no array type' port.err port.out 2>/dev/null; then
+  note "an array column ported to MySQL, or the refusal changed:"
+  sed 's/^/    /' port.err | head -3 >&2
+elif ! grep -qE 'unportable/model\.go:[0-9]+:[0-9]+' port.err port.out 2>/dev/null; then
+  note "the refusal does not name the line that declared the column:"
+  sed 's/^/    /' port.err | head -3 >&2
+fi
+
 echo "== and it passes go vet, which is what the adopter's CI runs =="
 if ! go vet ./... >vet.err 2>&1; then
   note "generated code fails go vet:"; sed 's/^/    /' vet.err | head -5 >&2

@@ -12,6 +12,38 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### A refusal names the line that declared what it refuses
+
+v1's definition says an unsupported construct "fails generation, naming the
+target **and the source line**". It named the target, the table and the column
+and never a line — which in a module with forty models is a grep rather than a
+jump. That is the last of v1's seven falsifiable claims that was not true.
+
+`tool/discover` already located every model while parsing the module for the
+bootstrap. It locates every FIELD now, and the tool hands both to the schema, so
+a portability refusal reads:
+
+```
+storm: this model does not port to MySQL:
+  model/model.go:9:2: docs.tags is text[]: MySQL has no array type — store it
+  as JSON, or normalise it into its own table
+```
+
+An index problem names its first column's line, because an index is declared in
+a `Schema` method and the column is the nearest thing a reader can act on.
+
+Best effort throughout, and never fatal. `storm.Build` works from reflection and
+reflection has no source positions; a schema from introspection, a model in a
+package discovery does not reach, or a column whose name does not invert to its
+field each simply has no position, and every message reads exactly as it did
+before. A portability refusal is the wrong place to learn that a directory could
+not be read.
+
+Only `scripts/check/outsider.sh` can see this — the position comes from parsing
+the ADOPTER'S module, so a schema built inside storm's own tests has none.
+
 ## v0.13.0 — 2026-09-13
 
 **Full support on PostgreSQL, MySQL 8 and MariaDB.** Every construct storm

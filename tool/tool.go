@@ -233,6 +233,9 @@ func run(args []string) error {
 		if model, err = buildModel(); err != nil {
 			return err
 		}
+		// Where each model was declared, so a refusal can name a line. Best
+		// effort and never fatal — see tool/positions.go.
+		annotate(model)
 		// What the model says for one engine's sake — a prefix length, an
 		// invisible index, a partial unique — is refused before anything emits
 		// SQL that quietly means something else on the target actually chosen.
