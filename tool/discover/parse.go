@@ -20,8 +20,12 @@ const stormPath = "github.com/gsoultan/storm"
 // file with its Schema method in another is entirely ordinary, so nothing can
 // be decided until the whole directory is parsed.
 type pkgScan struct {
-	name        string // package clause
-	structs     map[string]token.Position
+	name    string // package clause
+	structs map[string]token.Position
+	// fields is every named field of a model struct, so a refusal about a
+	// COLUMN can name the line that declared it rather than only the table.
+	// Keyed type name, then field name.
+	fields      map[string]map[string]token.Position
 	reasons     map[string]Reason
 	ignored     map[string]bool
 	queries     map[string]token.Position
@@ -54,6 +58,7 @@ type pkgScan struct {
 func newPkgScan() *pkgScan {
 	return &pkgScan{
 		structs:     map[string]token.Position{},
+		fields:      map[string]map[string]token.Position{},
 		reasons:     map[string]Reason{},
 		ignored:     map[string]bool{},
 		queries:     map[string]token.Position{},
@@ -76,6 +81,16 @@ func rank(r Reason) int {
 		return 2 // visible in the declaration
 	default:
 		return 1 // inferred from a method
+	}
+}
+
+// noteField records where a field was declared.
+func (p *pkgScan) noteField(typeName, field string, pos token.Position) {
+	if p.fields[typeName] == nil {
+		p.fields[typeName] = map[string]token.Position{}
+	}
+	if _, ok := p.fields[typeName][field]; !ok {
+		p.fields[typeName][field] = pos
 	}
 }
 
@@ -233,6 +248,15 @@ func scanGenDecl(fset *token.FileSet, d *ast.GenDecl, scan *pkgScan, is func(ast
 			}
 			if st.Fields == nil {
 				continue
+			}
+			// Every NAMED field, recorded before the embed walk below skips
+			// them: an embedded field has no name and is a mixin, and a
+			// refusal about one names the mixin's own declaration through its
+			// own type.
+			for _, fld := range st.Fields.List {
+				for _, n := range fld.Names {
+					scan.noteField(s.Name.Name, n.Name, fset.Position(n.Pos()))
+				}
 			}
 			for _, fld := range st.Fields.List {
 				if len(fld.Names) != 0 {

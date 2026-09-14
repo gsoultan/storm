@@ -47,7 +47,7 @@ they are called out here so the override is deliberate.
 | M5 | Typed escape hatch | ✅ | **PASSED 2026-08-25** — the gate query (window over CTE with lateral join) fully typed against live PG; mismatches fail generation naming column and fix; validation needs a server, not a schema | *(cleared)* |
 | M6 | First adopter: `anubis/authz` | ✅ | **PASSED 2026-08-25, in one day** — whole bounded context migrated; p95 did not regress (see M6 status) | *(cleared: kill line was 3 wks or a p95 regression)* |
 | M7 | Tooling gate + hardening | ✅ | **PASSED 2026-08-24** — explain/lint/verify(-stale,-pending) shipped and tested; fuzz corpus + injection suite in CI; coverage floors enforced | *(cleared)* |
-| M8 | v1.0 release (Postgres) | ◐ | docs, examples and `docs/STABILITY.md` exist; **v0.6.6 tagged 2026-09-07**. What v1.0 still waits on is a SECOND adopter — every wrong-answer bug so far was found by exercising a path no test reached | — |
+| M8 | v1.0 release (Postgres) | ◐ | docs, examples and `docs/STABILITY.md` exist; **v0.13.0 tagged 2026-09-13**, and all seven of v1's falsifiable claims now hold — the last, "naming the source line", closed 2026-09-14. What v1.0 still waits on is a SECOND adopter: every wrong-answer bug so far was found by exercising a path no test reached, and the twelve M9 found were all storm's own author doing it | — |
 | M9 | MySQL 8 + MariaDB | ✅ | **PASSED 2026-09-12 (v0.12.0)**, in 6 days — v0.11.0 claimed it and was wrong: every fetch plan on a default model was a syntax error, because the end-to-end had one table and had never loaded a relation — a generated package does real CRUD against MySQL 8 and MariaDB 11.4 through `runtime/mydrv`, each with the dialect it was generated for; the JSON_TABLE batch loader PREPAREs on both and uses the index; `boundaries.sh` and `TestOnlySetDialectAssignsTheLowering` hold the seam | *(cleared: the seam did not leak — every divergence landed in `compile/mysql`, `compile/mariadb` or `myddl`'s Target, and PostgreSQL output stayed byte-identical)* |
 
 **M9 scoped 2026-09-06, and the seam's second implementation now compiles.** ADR-0007 named three needs. Two were already met and nobody had checked: `runtime/mydec` exists, and `codegen` is parameterised at the decode site. The third — a wire-level MySQL client — is untouched and is the whole remaining cost.
@@ -1272,4 +1272,12 @@ Six sentences, all falsifiable:
 5. The ORM fails CI on a query that regressed its plan.
 6. storm emits migrations and never applies one.
 7. An unsupported construct on any configured target fails **generation**,
-   naming the target and the source line.
+   naming the target and the source line. ✅ **Closed 2026-09-14.** It named
+   the target, the table and the column and never a line, which in a module
+   with forty models is a grep. `tool/discover` already located every model
+   while parsing for the bootstrap; it locates every FIELD now, and the tool
+   hands both to the schema so a refusal reads
+   `model/model.go:9:2: docs.tags is text[]: MySQL has no array type — …`.
+   Best effort throughout: a schema from introspection has no positions and
+   every message reads exactly as it did before. Only `scripts/check/outsider.sh`
+   can see this, because the position comes from parsing the adopter's module.

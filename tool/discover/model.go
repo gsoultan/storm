@@ -14,6 +14,12 @@ type Model struct {
 	TypeName string
 	// Pos is file:line, for errors.
 	Pos string
+	// Fields is where each named field was declared, keyed by field name.
+	//
+	// A portability refusal is usually about a COLUMN, and a column comes from
+	// a field. Without this the message can only name the table, which an
+	// adopter with forty models turns into a grep.
+	Fields map[string]string
 	// Why records which rule matched, so `storm models` can explain itself
 	// and a surprise inclusion is traceable to a reason.
 	Why Reason
