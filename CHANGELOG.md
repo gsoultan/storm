@@ -53,6 +53,30 @@ installing `pg_trgm` — which storm's own DDL does, for trigram indexes — put
 dozens of functions in the namespace that no model declared, and the next diff
 proposed dropping them.
 
+### Partitioned tables, and the partitions storm must not touch
+
+`relkind = 'r'` excluded partitioned tables from introspection, so a schema
+using them imported as its PARTITIONS and not as the table they partition —
+five monthly tables, no `audit_log`. The diff was empty, which proved nothing:
+both sides were blind to the same object. Applying that DDL to a fresh database
+produced five standalone tables and nothing for the application to write to.
+
+`t.PartitionBy(storm.RangePartition, &a.OccurredAt)` declares it, and
+introspection reads `relkind IN ('r','p')` for columns, constraints and indexes
+as well as for the table itself.
+
+The rule that matters more than the syntax: **a partition storm did not create
+is one storm does not delete.** Partitions are usually made by a scheduled job,
+so they exist in the database and in no model — indistinguishable, to a naive
+diff, from a table whose declaration somebody removed. storm recognises them
+and leaves them alone; the parent is the declared thing and its partitions are
+data. A test inserts a row into a partition no model mentions and asserts both
+the plan and the row are untouched.
+
+Partitioning itself cannot be ALTERed, so a model that disagrees with the
+database says so and stops, rather than emitting a statement that would appear
+to succeed while every row kept routing to the old shape.
+
 ### Composite foreign keys
 
 A foreign key could only be expressed as a relation field, which is

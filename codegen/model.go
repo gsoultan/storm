@@ -74,8 +74,16 @@ func Model(s *schema.Schema, o ModelOptions) ([]byte, error) {
 	for _, e := range s.Enums {
 		body.enumType(e)
 	}
-	tables := make([]*schema.Table, len(s.Tables))
-	copy(tables, s.Tables)
+	// Partitions are not modelled. They are created by whatever creates them —
+	// usually a scheduled job — and storm neither makes nor drops them, so a
+	// model listing five monthly tables would describe the shape of last
+	// quarter rather than the schema. The PARENT carries the declaration.
+	tables := make([]*schema.Table, 0, len(s.Tables))
+	for _, t := range s.Tables {
+		if t.PartitionOf == "" {
+			tables = append(tables, t)
+		}
+	}
 	sort.Slice(tables, func(i, j int) bool { return tables[i].Name < tables[j].Name })
 	for _, t := range tables {
 		body.modelType(s, t)
@@ -320,6 +328,22 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 	if decls, vars := compositeFKDecls(s, t); len(decls) > 0 {
 		schemaLines = append(schemaLines, decls...)
 		varLines = append(varLines, vars...)
+	}
+
+	if p := t.Partition; p != nil {
+		ptrs := make([]string, 0, len(p.Columns))
+		ok := true
+		for _, col := range p.Columns {
+			if t.Column(col) == nil {
+				ok = false // an expression key, not a column list
+				break
+			}
+			ptrs = append(ptrs, "&m."+modelFieldName(s, t, col))
+		}
+		if ok {
+			schemaLines = append(schemaLines, fmt.Sprintf("t.PartitionBy(storm.%sPartition, %s)",
+				partitionConst(p.Strategy), strings.Join(ptrs, ", ")))
+		}
 	}
 
 	// The primary key, unless storm already knows it.
@@ -897,4 +921,16 @@ func indexLeadsWith(t *schema.Table, col string) bool {
 		}
 	}
 	return false
+}
+
+// partitionConst is the exported name of a strategy, for the emitted call.
+func partitionConst(strategy string) string {
+	switch strategy {
+	case "LIST":
+		return "List"
+	case "HASH":
+		return "Hash"
+	default:
+		return "Range"
+	}
 }

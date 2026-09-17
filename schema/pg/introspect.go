@@ -66,6 +66,9 @@ func Introspect(ctx context.Context, c Conn, namespace string) (_ *schema.Schema
 	if err := loadIndexes(ctx, c, namespace, s); err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
+	if err := loadPartitions(ctx, c, namespace, s); err != nil {
+		return nil, fmt.Errorf("partitions: %w", err)
+	}
 	if err := loadFunctions(ctx, c, namespace, s); err != nil {
 		return nil, fmt.Errorf("functions: %w", err)
 	}
@@ -113,7 +116,14 @@ func loadTables(ctx context.Context, c Conn, ns string, s *schema.Schema) error 
 		SELECT cl.relname, COALESCE(obj_description(cl.oid, 'pg_class'), '')
 		FROM pg_class cl
 		JOIN pg_namespace n ON n.oid = cl.relnamespace
-		WHERE n.nspname = $1 AND cl.relkind = 'r'
+		-- 'p' as well as 'r': a PARTITIONED table holds no rows itself and so
+		-- looks like nothing in pg_attribute's storage, but it is the table the
+		-- application writes to and the one every foreign key points at.
+		-- Reading only 'r' returned its partitions and not IT, so a model
+		-- imported from such a schema described five monthly tables and not the
+		-- one they are partitions of — and the diff was EMPTY, because both
+		-- sides were blind to the same thing.
+		WHERE n.nspname = $1 AND cl.relkind IN ('r', 'p')
 		  AND cl.relname NOT LIKE 'storm\_%'
 		ORDER BY cl.relname`, ns)
 	if err != nil {
@@ -156,7 +166,7 @@ func loadColumns(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		LEFT JOIN pg_type bt ON bt.oid = t.typelem
 		LEFT JOIN pg_attrdef d ON d.adrelid = cl.oid AND d.adnum = a.attnum AND a.attgenerated = ''
 		LEFT JOIN pg_attrdef gd ON gd.adrelid = cl.oid AND gd.adnum = a.attnum AND a.attgenerated <> ''
-		WHERE n.nspname = $1 AND cl.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped
+		WHERE n.nspname = $1 AND cl.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped
 		  AND cl.relname NOT LIKE 'storm\_%'
 		ORDER BY cl.relname, a.attnum`, ns)
 	if err != nil {
@@ -239,7 +249,7 @@ func loadConstraints(ctx context.Context, c Conn, ns string, s *schema.Schema) e
 		LEFT JOIN pg_class rf ON rf.oid = co.confrelid
 		LEFT JOIN LATERAL unnest(co.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
 		LEFT JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = k.attnum
-		WHERE n.nspname = $1 AND cl.relkind = 'r'
+		WHERE n.nspname = $1 AND cl.relkind IN ('r', 'p')
 		  AND cl.relname NOT LIKE 'storm\_%'
 		GROUP BY cl.relname, co.conname, co.contype, co.oid, rf.relname,
 		         co.confdeltype, co.confupdtype, co.condeferrable
@@ -320,7 +330,7 @@ func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		JOIN pg_class ic ON ic.oid = i.indexrelid
 		JOIN pg_am am ON am.oid = ic.relam
 		JOIN pg_namespace n ON n.oid = cl.relnamespace
-		WHERE n.nspname = $1 AND cl.relkind = 'r'
+		WHERE n.nspname = $1 AND cl.relkind IN ('r', 'p')
 		  AND cl.relname NOT LIKE 'storm\_%'
 		  AND NOT EXISTS (SELECT 1 FROM pg_constraint co WHERE co.conindid = i.indexrelid)
 		ORDER BY cl.relname, ic.relname`, ns)

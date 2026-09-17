@@ -87,6 +87,21 @@ type Table struct {
 	// about — an arc keeps referential integrity and this gives it up.
 	AnyRefs []*AnyRefField
 
+	// Partition is set when this table is PARTITIONED BY something. Its own
+	// rows live in its partitions, never in it.
+	Partition *Partition
+
+	// PartitionOf names the parent when this table IS a partition, and Bound
+	// is the FOR VALUES clause that says which rows it takes.
+	//
+	// storm records these so it can recognise a partition and LEAVE IT ALONE.
+	// Partitions are commonly created by a scheduled job — one per month is
+	// the usual shape — so they exist in the database and in no model, which
+	// is exactly what an ordinary table being dropped looks like. See
+	// migrate.Diff.
+	PartitionOf string
+	Bound       string
+
 	// Generated marks a table storm synthesized rather than one an adopter
 	// declared — today, the join table of an implicit many-to-many. It exists
 	// so `storm diff` can say where the table came from, and so discovery does
@@ -405,6 +420,15 @@ type ExcludePart struct {
 	Column   string
 	Expr     bool
 	Operator string
+}
+
+// Partition is a partitioning strategy: what a table is PARTITIONED BY.
+type Partition struct {
+	// Strategy is RANGE, LIST or HASH.
+	Strategy string
+	// Columns is the partition key. An expression key is held as its SQL text
+	// in a single entry, the way an index expression is.
+	Columns []string
 }
 
 // Enum is a native Postgres enum type.
