@@ -1111,13 +1111,20 @@ func (g *gen) emitToOnePlan(p relPlan) {
 	g.p("\t\tby[targets[i].%s] = i", childKeyField)
 	g.p("\t}")
 	g.p("\tfor i := range out {")
+	// out[i] is the PLAN row, which embeds Row and adds a field per loaded
+	// relation. Qualify the foreign key with .Row: when the relation's column
+	// is not spelled <field>_id — platform_api_keys.created_by references
+	// platform_users, so the column exports as CreatedBy and so does the
+	// relation — the outer field SHADOWS the embedded one, and the unqualified
+	// form reads the loaded *Row and does not compile. Qualifying is correct
+	// either way, so it is not conditional on the collision.
 	if p.KeyNullable {
-		g.p("\t\tkey, ok := out[i].%s.Get()", ownField)
+		g.p("\t\tkey, ok := out[i].Row.%s.Get()", ownField)
 		g.p("\t\tif !ok {")
 		g.p("\t\t\tcontinue")
 		g.p("\t\t}")
 	} else {
-		g.p("\t\tkey := out[i].%s", ownField)
+		g.p("\t\tkey := out[i].Row.%s", ownField)
 	}
 	g.p("\t\tj, ok := by[key]")
 	g.p("\t\tif !ok {")

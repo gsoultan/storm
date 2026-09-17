@@ -137,7 +137,7 @@ func (p ArticleWithAuthorQuery) All(ctx context.Context, ex runtime.Executor) ([
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].AuthorID
+		key := out[i].Row.AuthorID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database

@@ -151,7 +151,7 @@ func (p CommentWithAuthorQuery) All(ctx context.Context, ex runtime.Executor) ([
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].AuthorID
+		key := out[i].Row.AuthorID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
@@ -271,7 +271,7 @@ func (p CommentWithParentQuery) All(ctx context.Context, ex runtime.Executor) ([
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key, ok := out[i].ParentID.Get()
+		key, ok := out[i].Row.ParentID.Get()
 		if !ok {
 			continue
 		}
@@ -389,7 +389,7 @@ func (p CommentWithPostQuery) All(ctx context.Context, ex runtime.Executor) ([]C
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].PostID
+		key := out[i].Row.PostID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
@@ -691,7 +691,7 @@ func (p MembershipWithOrgQuery) All(ctx context.Context, ex runtime.Executor) ([
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].OrgID
+		key := out[i].Row.OrgID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
@@ -808,7 +808,7 @@ func (p MembershipWithUserQuery) All(ctx context.Context, ex runtime.Executor) (
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].UserID
+		key := out[i].Row.UserID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
@@ -1326,7 +1326,7 @@ func (p OrgWithParentQuery) All(ctx context.Context, ex runtime.Executor) ([]Org
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key, ok := out[i].ParentID.Get()
+		key, ok := out[i].Row.ParentID.Get()
 		if !ok {
 			continue
 		}
@@ -1627,7 +1627,7 @@ func (p PostWithAuthorQuery) All(ctx context.Context, ex runtime.Executor) ([]Po
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].AuthorID
+		key := out[i].Row.AuthorID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
@@ -2522,7 +2522,7 @@ func (p UserWithOrgQuery) All(ctx context.Context, ex runtime.Executor) ([]UserW
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].OrgID
+		key := out[i].Row.OrgID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
