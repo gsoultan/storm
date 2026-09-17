@@ -520,6 +520,10 @@ func (q *Query) leaf(p Pred) {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
+	if p.op == opIsNull || p.op == opIsNotNull {
+		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
+		return
+	}
 	switch p.col {
 	case 0:
 		if int(q.nr) >= 4 {

@@ -12,6 +12,23 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v0.14.2 — 2026-09-17
+
+**A wrong answer, silently.** `IS NULL` and `IS NOT NULL` bind no argument, but
+recording one still consumed a slot in its column's value arena — while the
+bind loop skipped it without advancing its cursor. The two desynchronised, and
+every predicate after the null check read one slot early.
+
+It needs three things to fire, which is why it survived: a null check, another
+predicate after it, and both columns in the SAME arena. Then the second
+predicate is bound to whatever the null check left behind — the zero value. On
+a real schema, `tenant = ? AND uri IS NOT NULL AND status = ?` matched nothing,
+while every PAIR of those three predicates matched correctly. No error, no
+warning, just the wrong rows.
+
+Anything relying on a query of that shape should be re-checked against this
+release. The fix is in codegen, so **regenerate**.
+
 ## v0.14.1 — 2026-09-17
 
 Two codegen refusals, both found by the second context of the first adopter
