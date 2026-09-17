@@ -773,6 +773,18 @@ func (g *gen) treePreds() {
 		g.p("\t\treturn")
 		g.p("\t}")
 	}
+	// IS NULL and IS NOT NULL bind nothing, so they must not consume an arena
+	// slot. The bind loop skips them (`case opIsNull, opIsNotNull: continue`)
+	// without advancing its cursor, so a leaf that DID advance one here
+	// desynchronised the two: every later predicate in the same arena read one
+	// slot early. `tenant = ? AND uri IS NOT NULL AND status = ?` bound the
+	// empty string to status and returned nothing — no error, no warning, just
+	// the wrong rows, and only when a null check preceded another predicate of
+	// the same type.
+	g.p("\tif p.op == opIsNull || p.op == opIsNotNull {")
+	g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
+	g.p("\t\treturn")
+	g.p("\t}")
 	g.p("\tswitch p.col {")
 	for i, c := range g.cols {
 		arena, cur := arenaFor(c)
