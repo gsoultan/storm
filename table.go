@@ -975,3 +975,44 @@ func (b *ColBuilder) NoIndex() *ColBuilder {
 // NoIndex suppresses the index storm creates for this foreign key. See
 // ColBuilder.NoIndex for when that is the right call.
 func (b *FKBuilder) NoIndex() *FKBuilder { b.d.noIndex = true; return b }
+
+// Partition strategies for PartitionBy.
+const (
+	RangePartition = "RANGE"
+	ListPartition  = "LIST"
+	HashPartition  = "HASH"
+)
+
+// PartitionBy declares the table PARTITIONED BY the given columns.
+//
+//	func (a *AuditLog) Schema(t *storm.Table) {
+//	    t.PartitionBy(storm.RangePartition, &a.OccurredAt)
+//	}
+//
+// The partitions themselves are NOT declared here, and storm neither creates
+// nor drops them. That is deliberate: partitions are usually made by a
+// scheduled job, so they exist in the database and in no model — and a tool
+// that treated "absent from the model" as "delete this" would propose dropping
+// last month's rows every time it ran. storm owns the parent; the partitions
+// are data.
+//
+// PostgreSQL requires every PRIMARY KEY and UNIQUE on a partitioned table to
+// contain the partition key. storm does not quietly widen one to comply: which
+// column belongs in a key is a statement about identity, and the CREATE fails
+// naming the table instead.
+func (t *Table) PartitionBy(strategy string, fields ...any) *Table {
+	switch strategy {
+	case RangePartition, ListPartition, HashPartition:
+	default:
+		t.errs.add(fmt.Errorf("%s: unknown partition strategy %q — use storm.RangePartition, "+
+			"storm.ListPartition or storm.HashPartition", t.out.Name, strategy))
+		return t
+	}
+	cols := t.names(fields)
+	if len(cols) == 0 {
+		t.errs.add(fmt.Errorf("%s: PartitionBy needs at least one column", t.out.Name))
+		return t
+	}
+	t.out.Partition = &schema.Partition{Strategy: strategy, Columns: cols}
+	return t
+}

@@ -165,6 +165,9 @@ func Diff(from, to *schema.Schema) Plan {
 	// created is a plan that fails halfway through a deployment.
 	var deferredFKs []Change
 	for _, t := range to.Tables {
+		if t.PartitionOf != "" {
+			continue // see dropped tables below
+		}
 		old := from.Table(t.Name)
 		if old == nil {
 			p.add(Change{SQL: strings.TrimRight(pgddl.CreateTable(t), "\n")})
@@ -185,6 +188,18 @@ func Diff(from, to *schema.Schema) Plan {
 
 	// Dropped tables, after the rest so foreign keys pointing at them are gone.
 	for _, t := range from.Tables {
+		// A PARTITION is never dropped for being absent from the model, and
+		// never created from one.
+		//
+		// Partitions are routinely made by a scheduled job — one per month is
+		// the ordinary shape — so they exist in the database and in no model,
+		// which is indistinguishable from an ordinary table somebody deleted a
+		// declaration for. Treating them alike means a diff whose first
+		// suggestion is to drop last month's audit log. The parent is the
+		// declared thing; its partitions are data.
+		if t.PartitionOf != "" {
+			continue
+		}
 		if to.Table(t.Name) == nil {
 			p.add(Change{
 				SQL:         "DROP TABLE " + pgddl.Ident(t.Name) + ";",
@@ -208,6 +223,21 @@ func Diff(from, to *schema.Schema) Plan {
 
 func diffTable(p *Plan, old, cur *schema.Table) {
 	q := pgddl.Ident(cur.Name)
+
+	// Partitioning cannot be altered. A table is created partitioned or it is
+	// not, so the only honest plan is to say so and stop: an ALTER that
+	// silently did nothing would leave a schema that looks migrated and
+	// routes every row to the wrong place.
+	if partitionDesc(old) != partitionDesc(cur) {
+		p.add(Change{
+			SQL: "-- cannot change the partitioning of " + cur.Name +
+				": PostgreSQL has no ALTER TABLE ... PARTITION BY",
+			Destructive: true,
+			Why: "table " + cur.Name + " is " + partitionDesc(old) + " in the database and " +
+				partitionDesc(cur) + " in the model; this needs a new table and a data move",
+		})
+		return
+	}
 
 	// Columns added.
 	for _, c := range cur.Columns {
@@ -493,4 +523,14 @@ func stripCasts(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// partitionDesc renders a table's partitioning for comparison and for the
+// message that explains a mismatch.
+func partitionDesc(t *schema.Table) string {
+	if t == nil || t.Partition == nil {
+		return "not partitioned"
+	}
+	return "partitioned by " + t.Partition.Strategy +
+		" (" + strings.Join(t.Partition.Columns, ", ") + ")"
 }

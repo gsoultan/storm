@@ -147,7 +147,16 @@ func CreateTable(t *schema.Table) string {
 		parts = append(parts, "    "+excludeDef(ex))
 	}
 	b.WriteString(strings.Join(parts, ",\n"))
-	b.WriteString("\n);\n")
+	b.WriteString("\n)")
+	if p := t.Partition; p != nil {
+		// PostgreSQL requires every UNIQUE and PRIMARY KEY on a partitioned
+		// table to CONTAIN the partition key, and rejects the CREATE
+		// otherwise. storm does not rewrite the key to satisfy that: a primary
+		// key silently widened is a different key, and which column to add is
+		// a decision about identity, not syntax. The refusal names the table.
+		b.WriteString(" PARTITION BY " + p.Strategy + " (" + strings.Join(p.Columns, ", ") + ")")
+	}
+	b.WriteString(";\n")
 
 	for _, ix := range t.Indexes {
 		b.WriteString(CreateIndex(t, ix))
