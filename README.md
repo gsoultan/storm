@@ -67,7 +67,7 @@ becomes a PARTIAL unique index scoped to the live rows, so a deleted row stops
 holding its email hostage, and the predicate reaches every read path — joins,
 aggregates, fetch plans and unions included.
 
-**Functions, views and triggers are part of the model** (unreleased), declared
+**Functions, views and triggers are part of the model** (v0.14.0), declared
 beside it with `storm.Function`, `storm.View` and `storm.Trigger`. The body is
 text — storm does not parse PL/pgSQL — but the lifecycle is storm's: creation
 order, change detection against the body PostgreSQL actually stored, and the
