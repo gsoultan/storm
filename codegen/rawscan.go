@@ -124,7 +124,7 @@ func ResolveRawScanner(rt reflect.Type, typeImport string, fields []RawField) (R
 		if want != oidGoType(f.OID) {
 			return RawScanner{}, fmt.Errorf(
 				"result column %d %q is %s but %s.%s is %s\n  → change the field to `%s %s`, or cast the column",
-				i+1, f.Name, tn, rt.Name(), fieldName, sf.Type, fieldName, oidGoType(f.OID))
+				i+1, f.Name, tn, rt.Name(), fieldName, goTypeName(sf.Type), fieldName, oidGoType(f.OID))
 		}
 		fed[fieldName] = true
 		rs.cols = append(rs.cols, rawCol{field: fieldName, kind: k, nullable: nullable})
@@ -146,9 +146,29 @@ func fieldShape(t reflect.Type) (string, bool) {
 	if t.Kind() == reflect.Struct && strings.HasPrefix(t.Name(), "Null[") &&
 		strings.HasPrefix(t.PkgPath(), "github.com/gsoultan/storm") {
 		v, _ := t.FieldByName("V")
-		return v.Type.String(), true
+		return goTypeName(v.Type), true
 	}
-	return t.String(), false
+	return goTypeName(t), false
+}
+
+// goTypeName is reflect's name for a type, spelled the way the type tables
+// spell it.
+//
+// reflect renders []byte as "[]uint8" — the same type under its other name —
+// while baseGoType renders bytea as "[]byte". Compared as strings they differ,
+// so EVERY raw query returning a bytea column was refused, with a message
+// asking for the declaration it had just been given:
+//
+//	totp_secret_enc is bytea but Row.TotpSecretEnc is []uint8
+//	  → change the field to `TotpSecretEnc []byte`
+//
+// Normalising here rather than at the comparison keeps the error message
+// right too: it is the same function that renders the "is" half.
+func goTypeName(t reflect.Type) string {
+	if s := t.String(); s == "[]uint8" {
+		return "[]byte"
+	}
+	return t.String()
 }
 
 // oidKind maps a wire type OID to the decoder kind and the SQL type name for

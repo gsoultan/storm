@@ -12,6 +12,26 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v0.14.1 — 2026-09-17
+
+Two codegen refusals, both found by the second context of the first adopter
+moving onto storm, and both of the same kind: generated code that did not
+compile, or a refusal asking for the declaration it had just been handed.
+
+- **A plan loader did not compile when the key field was shadowed.** storm
+  derives a relation's column as `snake(field)+"_id"`, so `CreatedBy` normally
+  becomes `created_by_id` and the Row's key field is `CreatedByID`. A schema
+  that spells the column `created_by` exports it as `CreatedBy` too — and the
+  plan row embeds Row and adds a field per loaded relation, so the relation
+  SHADOWS the key. The loader read the loaded `*Row` where it meant the key.
+  It now qualifies through the embedded `Row`, which is correct either way.
+
+- **No raw query could return a bytea column.** `reflect` spells `[]byte` as
+  `[]uint8` and the type tables spell bytea as `[]byte`; compared as strings
+  they differ, so every such query was refused with
+  `is []uint8 → change the field to []byte`. Normalised at the one place that
+  also renders the message.
+
 ## v0.14.0 — 2026-09-17
 
 A schema storm could not describe was a schema it could not own. This release
