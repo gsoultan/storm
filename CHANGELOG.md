@@ -12,7 +12,14 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v0.14.0 — 2026-09-17
+
+A schema storm could not describe was a schema it could not own. This release
+is the set of things anubis's schema had that storm had no way to say:
+functions, views, triggers, composite foreign keys and partitioned tables —
+plus the five things `storm import` was losing in silence while its header
+promised it had not. The gate is that the first adopter's whole live schema now
+imports to a model that diffs empty against the database it came from.
 
 ### Functions, views and triggers are part of the model
 
