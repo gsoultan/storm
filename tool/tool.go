@@ -321,7 +321,15 @@ func run(args []string) error {
 }
 
 func buildModel() (*schema.Schema, error) {
-	if len(Models) == 0 {
+	// No models AND no raw declarations means the binary was never pointed at
+	// a module — the template case the message describes.
+	//
+	// No models but SOME raw declarations is a real shape, and refusing it was
+	// wrong: a context can consist entirely of statements that belong to no
+	// table. Advisory locks are the example that found this — pg_advisory_lock
+	// is not a read of anything, and a context that only takes locks still
+	// needs its scanners generated and its statements registered.
+	if len(Models) == 0 && len(RawQueries) == 0 {
 		return nil, errors.New(
 			"no models registered — this binary is a template; generate one for your module\n" +
 				"       (see docs/EXAMPLE.md §2)")
