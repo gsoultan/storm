@@ -23,7 +23,15 @@ opt-in automigrate for databases whose cost of being wrong is low.
 
 **v0.6.6 is tagged.** The read path, migrations, relations, writes, the typed
 escape hatch and the tooling gate are built, benchmarked and hardened; the first
-adopter migrated a whole bounded context (M6) and runs on the published module.
+adopter migrated a whole bounded context (M6) and runs on the published module
+— and as of v0.15.0 that adopter runs **entirely** on storm: nine bounded
+contexts, sqlc removed, 300-odd queries. What that migration cost storm is
+worth stating plainly, because it is the argument for having a second adopter:
+it found composite foreign keys, partitioned tables, functions/views/triggers,
+a pinned-connection adapter, five things `storm import` was losing in silence,
+and one silent wrong answer — a null check consumed the arena slot the next
+predicate read, so `a = ? AND b IS NOT NULL AND c = ?` returned the wrong rows
+while every pair of those three returned the right ones.
 v0.3.0 added model discovery, declared aggregations and joins, full-text
 search, range types and typed constraint errors — and a MySQL DDL back end that
 is **not** a runtime target
