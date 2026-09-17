@@ -36,6 +36,13 @@ func TestMain(m *testing.M) {
 	// One pool, shared by every implementation under test: a benchmark
 	// comparison must match capacity on both sides.
 	cfg.MinConns, cfg.MaxConns = 8, 8
+	// Every pooled connection resolves unqualified names in the benchmark's
+	// own schema. A SET on one connection would not do: the pool hands out
+	// eight, and the seven that never ran it would read public.
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = "storm_bench"
 	// Through storm's constructor, so the fast parameter encoders are
 	// installed — otherwise the = ANY numbers below measure pgx's generic
 	// array codec and say nothing about storm.

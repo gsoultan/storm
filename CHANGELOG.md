@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-12
+updated: 2026-09-17
 ---
 
 # Changelog
@@ -13,6 +13,117 @@ Every entry names what changed and — where it matters — what it cost, becaus
 a release note that cannot be checked is marketing.
 
 ## Unreleased
+
+### Functions, views and triggers are part of the model
+
+storm generated DDL for tables, columns, indexes and constraints, and had no
+representation for anything with a SQL body. An adopter whose schema contained a
+function could not let storm own its DDL: `storm diff` did not see the function,
+so it neither created it nor preserved it, and the schema storm emitted was one
+the application could not run against.
+
+Declare them beside the models:
+
+```go
+storm.Build(&Grant{}, &Role{},
+    storm.Function("authorize", "p_identity uuid, p_permission text", "boolean").
+        Language("sql").Stable().Body(`SELECT ...`),
+    storm.View("active_grant", "SELECT id, role_id FROM grants WHERE revoked_at IS NULL"),
+    storm.Trigger("grants_bump", "grants",
+        `CREATE TRIGGER grants_bump AFTER INSERT ON grants
+         REFERENCING NEW TABLE AS newtab FOR EACH STATEMENT
+         EXECUTE FUNCTION bump_catalog()`))
+```
+
+The body is text because a PL/pgSQL body is a language storm does not parse, and
+inventing a DSL that covered a third of it would be worse than saying so. What
+storm owns is the lifecycle: creation order (tables, foreign keys, functions,
+views, triggers), whether a body has changed, and what must be dropped before it
+can be replaced. Bodies are compared as PostgreSQL stores them, through the same
+scratch-schema normalisation that CHECK expressions already use — so a body that
+does not compile fails `generate`, naming the column, rather than the first
+request that calls it.
+
+A trigger is replaced by DROP then CREATE, never `CREATE OR REPLACE TRIGGER`:
+that form inherits the existing trigger's enabled state, so a trigger somebody
+had disabled comes back disabled while the migration reports success.
+
+Objects owned by an extension are excluded from introspection. Without that,
+installing `pg_trgm` — which storm's own DDL does, for trigram indexes — put
+dozens of functions in the namespace that no model declared, and the next diff
+proposed dropping them.
+
+### Composite foreign keys
+
+A foreign key could only be expressed as a relation field, which is
+single-column. The keys that carry a tenant are not:
+
+```go
+func (g *Grant) Schema(t *storm.Table) {
+    var i Identity
+    t.ForeignKey(&g.IdentityID, &g.TenantID).
+        References(&i, &i.ID, &i.TenantID).
+        OnDelete(storm.Cascade)
+}
+```
+
+This is not a stylistic gap. A single-column key to `identities(id)` lets a row
+in tenant A reference a parent in tenant B; the database holds that line only if
+the tenant travels IN the key. Referencing columns that are neither a primary key
+nor a unique constraint is refused at Build, naming the model to change, rather
+than by PostgreSQL when the DDL is applied.
+
+### `storm import` stopped losing things it said it had kept
+
+The header promises that anything which did not survive the round trip is listed.
+Five things were dropped in silence, each found by diffing an imported model back
+against the database it came from:
+
+- **Composite primary keys were never emitted** — an import of a fifty-table
+  schema wrote not one `t.PrimaryKey`, so every table keyed on anything but `id`
+  came back keyed on nothing, and the foreign keys pointing at it stopped
+  resolving too.
+- **`UNIQUE` over a foreign-key column named a field that does not exist.** The
+  struct emitter turns a single-column FK into a relation field — `user_id`
+  becomes `User` — and `indexDecl` was taught that while `uniqueDecl` was not.
+  Every `(tenant_id, slug)` constraint in a multi-tenant schema hit it, and the
+  output did not compile.
+- **`NOT NULL` on a `bytea` column.** Nullability rides on the Go type
+  everywhere else, but `[]byte` has no non-pointer form, and storm reads every
+  `[]byte` as nullable. The columns this hit were the hash columns whose whole
+  purpose is being present.
+- **Foreign-key columns not spelled `<field>_id`.** Build derives a relation's
+  column as `snake(field)+"_id"`, so `grant_scopes.axis_code` came back as
+  `axis_code_id` — a column that does not exist, carrying a constraint that was
+  therefore not a foreign key. `.Named()` now pins it, and a rename carries the
+  key, the primary key, the indexes and the uniques with it instead of stranding
+  them.
+- **`storm.Model` brought defaults the table did not have.** The embed was
+  detected from column types alone, so a table whose `id` has no default gained
+  `gen_random_uuid()`. A differing default is overridden; an absent one now
+  declines the embed.
+
+`storm import` also emits `.NoIndex()` where the source database has no index on
+a foreign key. storm indexes every foreign key by default — without one, deleting
+a parent scans the child — but a model that cannot say "not here" cannot describe
+a database that made the other choice, and every diff proposed the index again.
+
+### Build resolves foreign keys after the Schema methods have run
+
+A primary key that is not the inferred `id` is declared in a `Schema` method,
+and those ran *after* relations were resolved. Any foreign key pointing at a
+table keyed on anything else was refused with "0-column primary key" — for a
+table whose key was one column. Foreign keys are now created in the earlier pass
+so `OnDelete` and `ConstraintName` have something to attach to, and their
+referenced column is filled in once every key is known.
+
+### The benchmark fixture no longer drops your `users` table
+
+`bench/schema.sql` opened with an unqualified `DROP TABLE IF EXISTS users`, so it
+resolved against whatever `STORM_DSN` pointed at. `users` is not a rare table
+name. The fixture lives in its own `storm_bench` schema, and the pool sets
+`search_path` rather than one connection running `SET` for eight.
+
 
 ### A refusal names the line that declared what it refuses
 

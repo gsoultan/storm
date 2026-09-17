@@ -37,6 +37,29 @@ type Table struct {
 	// declaration has to identify itself with.
 	acrossDeleted   map[string]bool
 	acrossDeletedIx map[*schema.Index]bool
+
+	// fks are the explicit t.ForeignKey declarations, held until every table's
+	// columns and keys exist — the referenced table is named by TYPE here, and
+	// the columns it is keyed on may themselves be declared in its own Schema
+	// method, which may not have run yet.
+	fks []*fkDecl
+
+	// noAutoIdx are the foreign-key columns that must NOT get storm's
+	// automatic index. Keyed by the column being built rather than by name, so
+	// a later t.Col(...).Named() cannot strand the entry.
+	noAutoIdx map[*col]bool
+}
+
+// fkDecl is one t.ForeignKey(...).References(...) call.
+type fkDecl struct {
+	cols      []string     // this table's columns, resolved at declaration
+	targetTyp reflect.Type // the referenced model
+	refOffs   []uintptr    // field offsets into the referenced model
+	name      string
+	onDelete  schema.Action
+	onUpdate  schema.Action
+	resolved  bool // References was called
+	noIndex   bool
 }
 
 // throughDecl is one t.Through call, held until the join model's own keys are
@@ -298,7 +321,77 @@ type ColBuilder struct {
 	c *col
 }
 
-func (b *ColBuilder) Named(n string) *ColBuilder { b.c.sc.Name = n; return b }
+// Named renames the column this field maps to.
+//
+// A renamed column takes its foreign key with it. The key was built from the
+// relation's DERIVED column name — snake(field)+"_id" — before any Schema
+// method ran, so renaming the column and not the key leaves the key naming a
+// column that no longer exists: the constraint is emitted against the wrong
+// name, and every later t.Col(&m.Field).OnDelete on the same field reports
+// "not a foreign key", because that is looked up BY column name.
+func (b *ColBuilder) Named(n string) *ColBuilder {
+	old := b.c.sc.Name
+	b.c.sc.Name = n
+	if old == n {
+		return b
+	}
+	renameCol(b.t.out, old, n)
+	return b
+}
+
+// renameCol rewrites every structural reference to a column storm had already
+// recorded under its derived name.
+//
+// A rename is not a property of the column alone: the primary key, the foreign
+// keys, the relations and every index and unique constraint name it too, and
+// each was populated before any Schema method ran. Fixing them one at a time as
+// each was found produced three separate "column does not exist" failures from
+// one rename, each in a different kind of DDL; this does the whole rename.
+//
+// Expressions — CHECK bodies, partial-index WHERE, generated columns — are NOT
+// rewritten. They are SQL text storm does not parse, and a textual substitution
+// inside one would corrupt a string literal that happens to contain the name.
+// A rename under an expression that mentions the old column is a build failure
+// against the scratch schema, which is where it belongs.
+func renameCol(t *schema.Table, old, n string) {
+	for i, c := range t.PrimaryKey {
+		if c == old {
+			t.PrimaryKey[i] = n
+		}
+	}
+	for _, fk := range t.ForeignKeys {
+		for i, c := range fk.Columns {
+			if c == old {
+				fk.Columns[i] = n
+			}
+		}
+	}
+	for _, rel := range t.Relations {
+		if rel.Column == old {
+			rel.Column = n
+		}
+	}
+	for _, u := range t.Uniques {
+		for i, c := range u.Columns {
+			if c == old {
+				u.Columns[i] = n
+			}
+		}
+	}
+	for _, ix := range t.Indexes {
+		for i, c := range ix.Columns {
+			if c.Name == old {
+				ix.Columns[i].Name = n
+			}
+		}
+		for i, c := range ix.Include {
+			if c == old {
+				ix.Include[i] = n
+			}
+		}
+	}
+}
+
 func (b *ColBuilder) Size(n int) *ColBuilder {
 	b.c.sc.Type.Name = schema.TypeVarchar
 	b.c.sc.Type.Size = n
@@ -766,3 +859,119 @@ func (b *IndexBuilder) AcrossDeleted() *IndexBuilder {
 	b.t.acrossDeletedIx[b.ix] = true
 	return b
 }
+
+// ForeignKey declares a foreign key over one or more columns.
+//
+// A single-column key is usually better said with a relation field — `Tenant
+// Tenant` builds the column, the key and the index together. This is for the
+// keys a relation field cannot express, and the common one is the COMPOSITE
+// key that carries a tenant:
+//
+//	func (g *Grant) Schema(t *storm.Table) {
+//	    var i Identity
+//	    t.ForeignKey(&g.IdentityID, &g.TenantID).
+//	        References(&i, &i.ID, &i.TenantID).
+//	        OnDelete(storm.Cascade)
+//	}
+//
+// That key is not a stylistic choice. A single-column key to identities(id)
+// lets a row in tenant A reference a parent in tenant B, and the database will
+// hold the line only if the tenant travels IN the key. Every such constraint a
+// model cannot express is one the schema silently loses.
+func (t *Table) ForeignKey(fields ...any) *FKBuilder {
+	d := &fkDecl{cols: t.names(fields)}
+	t.fks = append(t.fks, d)
+	return &FKBuilder{t: t, d: d}
+}
+
+// FKBuilder configures a foreign key after ForeignKey(...).
+type FKBuilder struct {
+	t *Table
+	d *fkDecl
+}
+
+// References names the table and columns the key points at.
+//
+// The target is a LOCAL VARIABLE of the referenced model and the columns are
+// field pointers into it, the same way a join names a column on another table:
+//
+//	var i Identity
+//	t.ForeignKey(&g.IdentityID, &g.TenantID).References(&i, &i.ID, &i.TenantID)
+//
+// Field pointers rather than column-name strings so the editor completes them
+// and a rename on the far side reaches this declaration instead of leaving a
+// string that still compiles and no longer resolves.
+func (b *FKBuilder) References(target any, cols ...any) *FKBuilder {
+	v := reflect.ValueOf(target)
+	if v.Kind() != reflect.Pointer || v.IsNil() || v.Elem().Kind() != reflect.Struct {
+		b.t.errs.add(fmt.Errorf(
+			"%s: References wants a pointer to a local model variable — "+
+				"var i Identity; t.ForeignKey(...).References(&i, &i.ID), got %T",
+			b.t.out.Name, target))
+		return b
+	}
+	if len(cols) != len(b.d.cols) {
+		b.t.errs.add(fmt.Errorf(
+			"%s: foreign key on (%s) references %d column(s); the two sides must match",
+			b.t.out.Name, strings.Join(b.d.cols, ", "), len(cols)))
+		return b
+	}
+	base := v.Pointer()
+	size := v.Elem().Type().Size()
+	offs := make([]uintptr, 0, len(cols))
+	for i, c := range cols {
+		cv := reflect.ValueOf(c)
+		if cv.Kind() != reflect.Pointer || cv.IsNil() {
+			b.t.errs.add(fmt.Errorf(
+				"%s: References argument %d wants a field pointer like &i.ID, got %T",
+				b.t.out.Name, i+1, c))
+			return b
+		}
+		got := cv.Pointer()
+		if got < base || got >= base+size {
+			b.t.errs.add(fmt.Errorf(
+				"%s: References argument %d does not point into the model passed as the target — "+
+					"take the pointers from the same local variable",
+				b.t.out.Name, i+1))
+			return b
+		}
+		offs = append(offs, got-base)
+	}
+	b.d.targetTyp = v.Elem().Type()
+	b.d.refOffs = offs
+	b.d.resolved = true
+	return b
+}
+
+// Named sets the constraint name. Without it storm generates one.
+func (b *FKBuilder) Named(n string) *FKBuilder { b.d.name = n; return b }
+
+// OnDelete sets the referential action for a deleted parent.
+func (b *FKBuilder) OnDelete(a Action) *FKBuilder { b.d.onDelete = schema.Action(a); return b }
+
+// OnUpdate sets the referential action for an updated parent key.
+func (b *FKBuilder) OnUpdate(a Action) *FKBuilder { b.d.onUpdate = schema.Action(a); return b }
+
+// NoIndex suppresses the index storm creates for this foreign key.
+//
+// storm indexes every foreign key by default, and that default is right far
+// more often than not: without an index on the child's key, deleting a parent
+// scans the whole child table, and so does every ON DELETE CASCADE behind it.
+//
+// It is a default rather than a rule because it is not always right — a small
+// lookup table, a column already covered by a wider index storm cannot see as
+// covering, or a write-heavy table where the index costs more than the delete
+// it would save. Saying so here is also how a model describes a database that
+// already made that choice; without it, storm could not represent such a
+// schema at all, and every diff proposed the index again.
+func (b *ColBuilder) NoIndex() *ColBuilder {
+	if b.t.noAutoIdx == nil {
+		b.t.noAutoIdx = map[*col]bool{}
+	}
+	b.t.noAutoIdx[b.c] = true
+	return b
+}
+
+// NoIndex suppresses the index storm creates for this foreign key. See
+// ColBuilder.NoIndex for when that is the right call.
+func (b *FKBuilder) NoIndex() *FKBuilder { b.d.noIndex = true; return b }

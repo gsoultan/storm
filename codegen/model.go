@@ -105,6 +105,9 @@ func Model(s *schema.Schema, o ModelOptions) ([]byte, error) {
 	for _, t := range tables {
 		g.p("\t\t&%s{},", modelName(t))
 	}
+	for _, line := range routineDecls(s) {
+		g.p("\t\t%s,", line)
+	}
 	g.p("\t}")
 	g.p("}")
 
@@ -147,7 +150,7 @@ func unportedFacts(s *schema.Schema) []string {
 			out = append(out, fmt.Sprintf("exclusion constraint %s on %s — re-declare with t.Exclude(...)", ex.Name, t.Name))
 		}
 		for _, u := range t.Uniques {
-			if _, ok := uniqueDecl(t, u); !ok {
+			if _, ok := uniqueDecl(s, t, u); !ok {
 				out = append(out, fmt.Sprintf("unique %s on %s — re-declare with t.Unique(...)", u.Name, t.Name))
 			}
 		}
@@ -207,8 +210,23 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 	}
 
 	var schemaLines []string
+	// Local variables the declarations below need: References names the far
+	// side with field pointers, which have to come from somewhere addressable.
+	var varLines []string
 	for _, c := range t.Columns {
 		if embedded && isModelColumn(c) {
+			// The FIELD is storm.Model's, but the DEFAULT may not be. Embedding
+			// declares gen_random_uuid() for the key and now() for both stamps;
+			// a table whose key defaults to uuidv7() means something different
+			// by it — v7 is time-ordered, so rows land next to each other in
+			// the index instead of scattering across it — and skipping the
+			// column outright silently replaced that with v4 on every table
+			// that embedded the mixin. Promoted fields are addressable, so the
+			// override names them exactly as the struct does.
+			if d := modelMixinDefault(c.Name); d != "" && c.Default != "" && c.Default != d {
+				schemaLines = append(schemaLines, fmt.Sprintf(
+					"t.Col(&m.%s).Default(%q)", exportName(c.Name), c.Default))
+			}
 			continue
 		}
 		if fk := fkBy[c.Name]; fk != nil {
@@ -220,7 +238,18 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 				} else {
 					g.p("\t%s *%s", field, modelName(target))
 				}
-				// The name first: a constraint storm would have called
+				// The COLUMN name first, where storm's convention cannot
+				// reproduce it. Build derives a relation's foreign-key column
+				// as snake(field)+"_id", so a column that is not spelled that
+				// way — grant_scopes.axis_code references scope_axes.code —
+				// comes back as axis_code_id: a column that does not exist,
+				// carrying a constraint that therefore is not a foreign key.
+				// The model then fails to build at all.
+				if fkColumnName(field) != c.Name {
+					schemaLines = append(schemaLines, fmt.Sprintf(
+						"t.Col(&m.%s).Named(%q)", field, c.Name))
+				}
+				// Then the constraint name: one storm would have called
 				// something else has to be stated, or the first migration
 				// renames it for nothing.
 				if fk.Name != "" && fk.Name != t.FKName(fk) {
@@ -230,6 +259,14 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 				if c := actionConst(fk.OnDelete); c != "" {
 					schemaLines = append(schemaLines, fmt.Sprintf(
 						"t.Col(&m.%s).OnDelete(storm.%s)", field, c))
+				}
+				// storm indexes every foreign key; this database does not. An
+				// imported model has to say so, or the first diff proposes an
+				// index the source schema deliberately never had — eighteen of
+				// them, for anubis.
+				if !indexLeadsWith(t, c.Name) {
+					schemaLines = append(schemaLines, fmt.Sprintf(
+						"t.Col(&m.%s).NoIndex()", field))
 				}
 				continue
 			}
@@ -260,7 +297,7 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 	// over" meant every imported model needed hand-editing before its first
 	// verify would pass, for facts storm can already say.
 	for _, u := range t.Uniques {
-		if line, ok := uniqueDecl(t, u); ok {
+		if line, ok := uniqueDecl(s, t, u); ok {
 			schemaLines = append(schemaLines, line)
 		}
 	}
@@ -276,10 +313,35 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 			schemaLines = append(schemaLines, line)
 		}
 	}
+	// The composite foreign keys. A relation field carries a single-column key
+	// and cannot carry these, so before t.ForeignKey existed they were dropped
+	// in silence — and in a multi-tenant schema they are the constraints that
+	// keep a child row and its parent in the SAME tenant.
+	if decls, vars := compositeFKDecls(s, t); len(decls) > 0 {
+		schemaLines = append(schemaLines, decls...)
+		varLines = append(varLines, vars...)
+	}
+
+	// The primary key, unless storm already knows it.
+	//
+	// It infers exactly one shape: the single column `id` that comes with an
+	// embedded storm.Model. EVERY other primary key — a composite one, or a
+	// single column called anything else — has to be declared, and until this
+	// was written none of them were: an import of a schema with fifty tables
+	// emitted not one t.PrimaryKey, under a header promising that nothing had
+	// been dropped. A table with no primary key is not a smaller model, it is
+	// a different one, and the foreign keys pointing AT it stop resolving too.
+	if pk := primaryKeyDecl(s, t, embedded); pk != "" {
+		schemaLines = append([]string{pk}, schemaLines...)
+	}
+
 	if len(schemaLines) == 0 {
 		return
 	}
 	g.p("func (m *%s) Schema(t *storm.Table) {", name)
+	for _, l := range varLines {
+		g.p("\t%s", l)
+	}
 	for _, l := range schemaLines {
 		g.p("\t%s", l)
 	}
@@ -478,6 +540,19 @@ func columnFacts(c *schema.Column) string {
 	if c.Default != "" {
 		fmt.Fprintf(&b, ".Default(%q)", c.Default)
 	}
+	// NOT NULL on a column whose Go type cannot say it.
+	//
+	// Nullability is carried by the type everywhere else — *T is nullable, T
+	// is not — but []byte has no non-pointer form that means NOT NULL:
+	// isNullable reads every []byte as nullable, and importGoType deliberately
+	// emits no pointer for one. So a NOT NULL bytea imported as []byte came
+	// back nullable, and the first diff proposed DROP NOT NULL on it. That is
+	// silent: it is not a column being dropped, it is a constraint, and the
+	// columns it happened to hit here were audit_log.entry_hash and every
+	// token_hash — the ones whose whole purpose is that they are always there.
+	if c.NotNull && goKind(c) == kindBytes {
+		b.WriteString(".NotNull()")
+	}
 	if c.Version {
 		b.WriteString(".Version()")
 	}
@@ -550,6 +625,15 @@ func embedsModel(t *schema.Table) bool {
 			continue
 		}
 		if c.Type.Name != want || !c.NotNull || c.Type.Array {
+			return false
+		}
+		// The embed brings DEFAULTS as well as columns: gen_random_uuid() for
+		// the key and now() for both stamps. A table whose column has a
+		// different default can still embed it and override the one line; a
+		// table whose column has NO default cannot, because "no default" is
+		// not something the embedded declaration can be talked out of. Such a
+		// table gets its three columns written out instead.
+		if c.Default == "" {
 			return false
 		}
 		delete(need, c.Name)
@@ -655,13 +739,16 @@ func actionConst(a schema.Action) string {
 // An expression-based unique is refused rather than guessed: the columns list
 // holds raw SQL there, and a wrong field pointer is a model that does not
 // compile. Those stay in the NOT CARRIED OVER list where a human sees them.
-func uniqueDecl(t *schema.Table, u *schema.Unique) (string, bool) {
+func uniqueDecl(s *schema.Schema, t *schema.Table, u *schema.Unique) (string, bool) {
 	cols := make([]string, 0, len(u.Columns))
 	for _, c := range u.Columns {
 		if t.Column(c) == nil {
 			return "", false
 		}
-		cols = append(cols, "&m."+exportName(c))
+		// modelFieldName, not exportName: a single-column foreign key became a
+		// RELATION field on the struct, so naming the column's own export here
+		// names a field that is not there. See modelcompile_test.go.
+		cols = append(cols, "&m."+modelFieldName(s, t, c))
 	}
 	if len(cols) == 0 {
 		return "", false
@@ -671,4 +758,143 @@ func uniqueDecl(t *schema.Table, u *schema.Unique) (string, bool) {
 		return fmt.Sprintf("t.UniqueNamed(%q, %s)", u.Name, list), true
 	}
 	return fmt.Sprintf("t.Unique(%s)", list), true
+}
+
+// routineDecls renders the SQL-bodied objects as storm declarations.
+//
+// They go in the SAME list as the models, because that is how Build takes them
+// and because an adopter who imports a database and gets back only its tables
+// has been handed a model that will propose dropping every function in it. The
+// whole value of `storm import` is that the first diff after it is empty.
+func routineDecls(s *schema.Schema) []string {
+	var out []string
+	for _, f := range s.Functions {
+		var b strings.Builder
+		fmt.Fprintf(&b, "storm.Function(%q, %q, %q)", f.Name, f.Args, f.Returns)
+		if f.Language != "plpgsql" {
+			fmt.Fprintf(&b, ".Language(%q)", f.Language)
+		}
+		switch f.Volatility {
+		case "STABLE":
+			b.WriteString(".Stable()")
+		case "IMMUTABLE":
+			b.WriteString(".Immutable()")
+		}
+		if f.Strict {
+			b.WriteString(".Strict()")
+		}
+		if f.Security == "DEFINER" {
+			b.WriteString(".SecurityDefiner()")
+		}
+		fmt.Fprintf(&b, ".Body(%s)", goStringLit(f.Body))
+		out = append(out, b.String())
+	}
+	for _, v := range s.Views {
+		out = append(out, fmt.Sprintf("storm.View(%q, %s)", v.Name, goStringLit(v.Def)))
+	}
+	for _, t := range s.Triggers {
+		out = append(out, fmt.Sprintf("storm.Trigger(%q, %q, %s)",
+			t.Name, t.Table, goStringLit(t.Def)))
+	}
+	return out
+}
+
+// primaryKeyDecl renders t.PrimaryKey(...) for a key storm would not infer, or
+// "" when the embedded storm.Model already says it.
+func primaryKeyDecl(s *schema.Schema, t *schema.Table, embedded bool) string {
+	if len(t.PrimaryKey) == 0 {
+		return ""
+	}
+	if embedded && len(t.PrimaryKey) == 1 && t.PrimaryKey[0] == "id" {
+		return ""
+	}
+	fields := make([]string, 0, len(t.PrimaryKey))
+	for _, col := range t.PrimaryKey {
+		if t.Column(col) == nil {
+			return ""
+		}
+		fields = append(fields, "&m."+modelFieldName(s, t, col))
+	}
+	return fmt.Sprintf("t.PrimaryKey(%s)", strings.Join(fields, ", "))
+}
+
+// fkColumnName mirrors Build's convention for a relation's foreign-key column.
+// It is duplicated rather than imported because codegen must not depend on the
+// root package; the two are held together by TestImportedModelRoundTrips.
+func fkColumnName(field string) string { return snakeOf(field) + "_id" }
+
+// modelMixinDefault is the default storm.Model already declares for one of its
+// three columns, or "" for a column it does not carry.
+func modelMixinDefault(col string) string {
+	switch col {
+	case "id":
+		return "gen_random_uuid()"
+	case "created_at", "updated_at":
+		return "now()"
+	}
+	return ""
+}
+
+// compositeFKDecls renders the multi-column foreign keys as t.ForeignKey
+// declarations, with the local variables they need.
+func compositeFKDecls(s *schema.Schema, t *schema.Table) (decls, vars []string) {
+	n := 0
+	for _, fk := range t.ForeignKeys {
+		if len(fk.Columns) < 2 {
+			continue // a relation field already carries this one
+		}
+		tgt := s.Table(fk.RefTable)
+		if tgt == nil || len(fk.RefColumns) != len(fk.Columns) {
+			continue // reported by unportedFacts
+		}
+		v := fmt.Sprintf("ref%d", n)
+		n++
+		vars = append(vars, fmt.Sprintf("var %s %s", v, modelName(tgt)))
+
+		here := make([]string, 0, len(fk.Columns))
+		for _, c := range fk.Columns {
+			here = append(here, "&m."+modelFieldName(s, t, c))
+		}
+		there := make([]string, 0, len(fk.RefColumns))
+		for _, c := range fk.RefColumns {
+			there = append(there, "&"+v+"."+modelFieldName(s, tgt, c))
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "t.ForeignKey(%s).References(&%s, %s)",
+			strings.Join(here, ", "), v, strings.Join(there, ", "))
+		if fk.Name != "" && fk.Name != t.FKName(fk) {
+			fmt.Fprintf(&b, ".Named(%q)", fk.Name)
+		}
+		if a := actionConst(fk.OnDelete); a != "" {
+			fmt.Fprintf(&b, ".OnDelete(storm.%s)", a)
+		}
+		if a := actionConst(fk.OnUpdate); a != "" {
+			fmt.Fprintf(&b, ".OnUpdate(storm.%s)", a)
+		}
+		if !indexLeadsWith(t, fk.Columns[0]) {
+			b.WriteString(".NoIndex()")
+		}
+		decls = append(decls, b.String())
+	}
+	return decls, vars
+}
+
+// indexLeadsWith reports whether some index or unique constraint on t starts
+// with col — which is what makes storm's automatic foreign-key index redundant,
+// and so what tells an importer the source database already covers it.
+func indexLeadsWith(t *schema.Table, col string) bool {
+	if len(t.PrimaryKey) > 0 && t.PrimaryKey[0] == col {
+		return true
+	}
+	for _, ix := range t.Indexes {
+		if len(ix.Columns) > 0 && ix.Columns[0].Name == col {
+			return true
+		}
+	}
+	for _, u := range t.Uniques {
+		if len(u.Columns) > 0 && u.Columns[0] == col {
+			return true
+		}
+	}
+	return false
 }

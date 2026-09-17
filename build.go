@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 	"unsafe"
@@ -48,8 +49,22 @@ func Build(models ...any) (*schema.Schema, error) {
 	// until every table they read from exists.
 	var unions []*UnionDecl
 	for _, m := range models {
-		if u, ok := m.(*UnionDecl); ok {
-			unions = append(unions, u)
+		switch d := m.(type) {
+		case *UnionDecl:
+			unions = append(unions, d)
+			continue
+		// The SQL-bodied objects need no resolution pass: they carry text, not
+		// field pointers, so there is nothing to look up and nothing that can
+		// fail here. What validates them is applying them to a scratch schema,
+		// which happens later and against a real server.
+		case *FunctionDecl:
+			b.outSch.Functions = append(b.outSch.Functions, d.f)
+			continue
+		case *ViewDecl:
+			b.outSch.Views = append(b.outSch.Views, d.v)
+			continue
+		case *TriggerDecl:
+			b.outSch.Triggers = append(b.outSch.Triggers, d.t)
 			continue
 		}
 		if err := b.register(m); err != nil {
@@ -70,6 +85,18 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.callSchemas(mi)
 	}
+	// Pass 4a0: the foreign keys whose target key was not known in pass 3.
+	// Immediately after callSchemas, because that is what declared it.
+	b.resolveDeferredFKs()
+
+	// Pass 4a1: the explicit t.ForeignKey declarations. Also after
+	// callSchemas: the columns they reference may be declared by the TARGET's
+	// Schema method, and a composite key usually points at a composite unique
+	// that is declared exactly there.
+	for _, mi := range b.ordered {
+		b.resolveExplicitFKs(mi)
+	}
+
 	// Pass 4a: the AnyRef acknowledgement, which IS a user declaration and so
 	// cannot be checked before they have run.
 	for _, mi := range b.ordered {
@@ -121,9 +148,29 @@ func Build(models ...any) (*schema.Schema, error) {
 	}
 	// Pass 5: index every foreign key nothing already covers. Last, so a user
 	// index leading with the same column suppresses the redundant one.
+	//
+	// Read off the foreign keys themselves rather than a list collected in
+	// pass 3: a column renamed by t.Col(...).Named in pass 4 updates the key,
+	// and a second copy of the name recorded earlier would still say what the
+	// column used to be — which is an index CREATEd on a column that does not
+	// exist, so the whole schema fails to apply.
 	for _, mi := range b.ordered {
-		for _, c := range mi.fkCols {
-			if !indexedFirst(mi.tbl.out, c) {
+		skip := map[string]bool{}
+		for c := range mi.tbl.noAutoIdx {
+			skip[c.sc.Name] = true
+		}
+		for _, d := range mi.tbl.fks {
+			if d.noIndex {
+				for _, c := range d.cols {
+					skip[c] = true
+				}
+			}
+		}
+		for _, fk := range mi.tbl.out.ForeignKeys {
+			if len(fk.Columns) != 1 {
+				continue
+			}
+			if c := fk.Columns[0]; !skip[c] && !indexedFirst(mi.tbl.out, c) {
 				mi.tbl.out.Indexes = append(mi.tbl.out.Indexes,
 					&schema.Index{Columns: []schema.IndexColumn{{Name: c}}})
 			}
@@ -157,6 +204,22 @@ type builder struct {
 	ordered []*modelInfo
 	enums   map[string]*schema.Enum
 	outSch  *schema.Schema
+
+	// Relations whose target had no usable primary key YET. A primary key that
+	// is not the inferred `id` is declared in the target's Schema method, and
+	// those run in pass 4 — after this one. Resolving here would refuse every
+	// foreign key pointing at a table keyed on anything else, which is what it
+	// did: a reference to a table keyed on `code` reported a "0-column primary
+	// key" for a table whose key was one column.
+	deferredFKs []*deferredFK
+}
+
+// deferredFK is a foreign key whose referenced column is not known yet.
+type deferredFK struct {
+	fk  *schema.ForeignKey
+	rel *relation
+	src *Table
+	tgt *modelInfo
 }
 
 type modelInfo struct {
@@ -167,7 +230,6 @@ type modelInfo struct {
 	// selfLink is the field of the one self-referential many-to-many this
 	// model is allowed. A second is ambiguous rather than unsupported.
 	selfLink string
-	fkCols   []string
 	arcCols  []arcCol
 }
 
@@ -482,21 +544,27 @@ func (b *builder) resolveRelations(mi *modelInfo) {
 		if rel.toMany {
 			continue // validated in pass 3b
 		}
-		pk := tgt.tbl.out.PrimaryKey
-		if len(pk) != 1 {
-			b.errs.add(fmt.Errorf("%s.%s: %s has a %d-column primary key; declare the foreign key explicitly",
-				mi.tbl.out.Name, rel.fieldName, tgt.tbl.out.Name, len(pk)))
-			continue
+		fk := &schema.ForeignKey{
+			Columns:  []string{rel.colName},
+			RefTable: tgt.tbl.out.Name,
 		}
-		// Adopt the referenced key's type so uuid/bigserial both work.
-		if refCol := tgt.tbl.out.Column(pk[0]); refCol != nil && rel.col != nil {
-			rel.col.sc.Type = refCol.Type
+		// The foreign key is created whether or not the target's key is known
+		// yet, because everything else in the model attaches to THIS object:
+		// t.Col(...).OnDelete and .ConstraintName look the column up and
+		// refuse it when no foreign key carries it. Deferring the object
+		// rather than the column turned one unresolved key into three errors.
+		if pk := tgt.tbl.out.PrimaryKey; len(pk) == 1 {
+			// Adopt the referenced key's type so uuid/bigserial both work.
+			if refCol := tgt.tbl.out.Column(pk[0]); refCol != nil && rel.col != nil {
+				rel.col.sc.Type = refCol.Type
+			}
+			fk.RefColumns = []string{pk[0]}
+		} else {
+			b.deferredFKs = append(b.deferredFKs, &deferredFK{
+				fk: fk, rel: rel, src: mi.tbl, tgt: tgt,
+			})
 		}
-		mi.tbl.out.ForeignKeys = append(mi.tbl.out.ForeignKeys, &schema.ForeignKey{
-			Columns:    []string{rel.colName},
-			RefTable:   tgt.tbl.out.Name,
-			RefColumns: []string{pk[0]},
-		})
+		mi.tbl.out.ForeignKeys = append(mi.tbl.out.ForeignKeys, fk)
 		mi.tbl.out.Relations = append(mi.tbl.out.Relations, &schema.Relation{
 			Field:    rel.fieldName,
 			Target:   tgt.tbl.out.Name,
@@ -505,7 +573,6 @@ func (b *builder) resolveRelations(mi *modelInfo) {
 			Owner:    true,
 			Nullable: rel.nullable,
 		})
-		mi.fkCols = append(mi.fkCols, rel.colName)
 	}
 	b.resolveArcs(mi)
 }
@@ -559,7 +626,6 @@ func (b *builder) resolveArcs(mi *modelInfo) {
 			RefColumns: []string{pk[0]},
 			OnDelete:   schema.Cascade,
 		})
-		mi.fkCols = append(mi.fkCols, ac.variant.Column)
 	}
 
 	for _, arc := range mi.tbl.out.Arcs {
@@ -1333,4 +1399,126 @@ func isModelColumn(name string) bool {
 		return true
 	}
 	return false
+}
+
+// resolveDeferredFKs points the foreign keys held back in pass 3 at their
+// target's primary key, now that every Schema method has declared one.
+//
+// A target still without a single-column key is a real error and reported here
+// instead — one message per relation, naming what the key actually is.
+func (b *builder) resolveDeferredFKs() {
+	for _, d := range b.deferredFKs {
+		pk := d.tgt.tbl.out.PrimaryKey
+		if len(pk) != 1 {
+			b.errs.add(fmt.Errorf(
+				"%s.%s: %s has a %d-column primary key; declare the foreign key explicitly",
+				d.src.out.Name, d.rel.fieldName, d.tgt.tbl.out.Name, len(pk)))
+			continue
+		}
+		if refCol := d.tgt.tbl.out.Column(pk[0]); refCol != nil && d.rel.col != nil {
+			d.rel.col.sc.Type = refCol.Type
+		}
+		d.fk.RefColumns = []string{pk[0]}
+	}
+}
+
+// resolveExplicitFKs turns each t.ForeignKey declaration into a foreign key,
+// now that every model's columns and keys exist.
+func (b *builder) resolveExplicitFKs(mi *modelInfo) {
+	for _, d := range mi.tbl.fks {
+		if !d.resolved {
+			b.errs.add(fmt.Errorf(
+				"%s: t.ForeignKey(%s) has no References — say what it points at",
+				mi.tbl.out.Name, strings.Join(d.cols, ", ")))
+			continue
+		}
+		tgt := b.byType[d.targetTyp]
+		if tgt == nil || tgt.tbl == nil {
+			b.errs.add(fmt.Errorf(
+				"%s: foreign key on (%s) references %s, which is not registered — pass it to Build",
+				mi.tbl.out.Name, strings.Join(d.cols, ", "), d.targetTyp.Name()))
+			continue
+		}
+		refCols := make([]string, 0, len(d.refOffs))
+		for _, off := range d.refOffs {
+			c, ok := tgt.tbl.off[off]
+			if !ok {
+				b.errs.add(fmt.Errorf(
+					"%s: foreign key on (%s) references a field of %s that is not a column",
+					mi.tbl.out.Name, strings.Join(d.cols, ", "), d.targetTyp.Name()))
+				refCols = nil
+				break
+			}
+			refCols = append(refCols, c.sc.Name)
+		}
+		if refCols == nil {
+			continue
+		}
+		// PostgreSQL requires the referenced columns to be a primary key or a
+		// unique constraint, and says so only when the DDL is applied. Saying
+		// it HERE names the model that has to change rather than the generated
+		// statement that failed, and catches it even for an adopter who never
+		// applies the DDL storm emits.
+		if !keyedOn(tgt.tbl.out, refCols) {
+			b.errs.add(fmt.Errorf(
+				"%s: foreign key on (%s) references %s(%s), which is not its primary key "+
+					"and has no unique constraint — add t.Unique(...) on %s",
+				mi.tbl.out.Name, strings.Join(d.cols, ", "), tgt.tbl.out.Name,
+				strings.Join(refCols, ", "), d.targetTyp.Name()))
+			continue
+		}
+		mi.tbl.out.ForeignKeys = append(mi.tbl.out.ForeignKeys, &schema.ForeignKey{
+			Name:       d.name,
+			Columns:    d.cols,
+			RefTable:   tgt.tbl.out.Name,
+			RefColumns: refCols,
+			OnDelete:   d.onDelete,
+			OnUpdate:   d.onUpdate,
+		})
+	}
+}
+
+// keyedOn reports whether cols are exactly the table's primary key or one of
+// its unique constraints — in any order, which is what PostgreSQL accepts.
+func keyedOn(t *schema.Table, cols []string) bool {
+	if sameSet(t.PrimaryKey, cols) {
+		return true
+	}
+	for _, u := range t.Uniques {
+		if sameSet(u.Columns, cols) {
+			return true
+		}
+	}
+	// A unique INDEX is a valid target too, and a partial one is NOT — its
+	// uniqueness holds only over the rows matching its predicate, so the
+	// database refuses it as a reference target.
+	for _, ix := range t.Indexes {
+		if !ix.Unique || ix.Where != "" {
+			continue
+		}
+		names := make([]string, 0, len(ix.Columns))
+		for _, c := range ix.Columns {
+			names = append(names, c.Name)
+		}
+		if sameSet(names, cols) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameSet(a, b []string) bool {
+	if len(a) != len(b) || len(a) == 0 {
+		return false
+	}
+	x := append([]string(nil), a...)
+	y := append([]string(nil), b...)
+	slices.Sort(x)
+	slices.Sort(y)
+	for i := range x {
+		if x[i] != y[i] {
+			return false
+		}
+	}
+	return true
 }
