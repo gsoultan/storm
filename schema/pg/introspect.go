@@ -66,6 +66,15 @@ func Introspect(ctx context.Context, c Conn, namespace string) (_ *schema.Schema
 	if err := loadIndexes(ctx, c, namespace, s); err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
+	if err := loadFunctions(ctx, c, namespace, s); err != nil {
+		return nil, fmt.Errorf("functions: %w", err)
+	}
+	if err := loadViews(ctx, c, namespace, s); err != nil {
+		return nil, fmt.Errorf("views: %w", err)
+	}
+	if err := loadTriggers(ctx, c, namespace, s); err != nil {
+		return nil, fmt.Errorf("triggers: %w", err)
+	}
 	s.Normalize()
 	return s, nil
 }

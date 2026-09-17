@@ -23,6 +23,14 @@ type Schema struct {
 	// Unions are the declared UNION reads. They hang off the schema rather
 	// than a table because a union has no driving table — see ADR-0008.
 	Unions []*Union
+
+	// The SQL-bodied objects (routine.go). They sit at schema level rather
+	// than on a table for the reason a union does: a function belongs to no
+	// table, a view reads several, and a trigger is owned by the table it
+	// names but is created and dropped independently of it.
+	Functions []*Function
+	Views     []*View
+	Triggers  []*Trigger
 }
 
 // Union finds a declared union by name.
@@ -452,6 +460,29 @@ func (t *Table) Column(name string) *Column {
 func (s *Schema) Normalize() {
 	slices.SortStableFunc(s.Tables, func(a, b *Table) int { return cmp.Compare(a.Name, b.Name) })
 	slices.SortStableFunc(s.Enums, func(a, b *Enum) int { return cmp.Compare(a.Name, b.Name) })
+	// Functions sort by signature, not name: PostgreSQL allows overloads, so
+	// two entries here can share a name and only the arguments separate them.
+	slices.SortStableFunc(s.Functions, func(a, b *Function) int {
+		return cmp.Compare(a.Signature(), b.Signature())
+	})
+	slices.SortStableFunc(s.Views, func(a, b *View) int { return cmp.Compare(a.Name, b.Name) })
+	// A trigger name is unique per TABLE, not per schema — two tables may each
+	// have a `set_updated_at`. Sorting by name alone is therefore not a total
+	// order, and an unstable one makes generated DDL differ between runs.
+	slices.SortStableFunc(s.Triggers, func(a, b *Trigger) int {
+		if c := cmp.Compare(a.Table, b.Table); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Name, b.Name)
+	})
+	for _, f := range s.Functions {
+		if f.Volatility == "" {
+			f.Volatility = "VOLATILE"
+		}
+		if f.Security == "" {
+			f.Security = "INVOKER"
+		}
+	}
 	for _, t := range s.Tables {
 		t.normalize()
 	}

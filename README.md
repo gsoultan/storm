@@ -67,6 +67,18 @@ becomes a PARTIAL unique index scoped to the live rows, so a deleted row stops
 holding its email hostage, and the predicate reaches every read path — joins,
 aggregates, fetch plans and unions included.
 
+**Functions, views and triggers are part of the model** (unreleased), declared
+beside it with `storm.Function`, `storm.View` and `storm.Trigger`. The body is
+text — storm does not parse PL/pgSQL — but the lifecycle is storm's: creation
+order, change detection against the body PostgreSQL actually stored, and the
+drop-then-create a trigger needs so a disabled one does not come back disabled.
+**Composite foreign keys** land with them, via `t.ForeignKey(...).References(...)`:
+a single-column key to `identities(id)` lets a row in one tenant reference a
+parent in another, and only a key carrying the tenant stops it. Together these
+were what stood between an existing schema and letting storm own its DDL — the
+first adopter's whole schema, 28 functions and 38 triggers included, now imports
+to a model that diffs empty against the database it came from.
+
 **MySQL 8 and MariaDB are runtime targets.** The dialect is a build-time
 parameter, `compile/mysql` and `compile/mariadb` hold the SQL each engine
 actually accepts, `runtime/mydec` decodes the little-endian binary protocol, and

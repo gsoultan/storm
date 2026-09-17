@@ -86,6 +86,33 @@ func Create(s *schema.Schema) string {
 		b.WriteString("\n")
 		b.WriteString(fks.String())
 	}
+	// Then the SQL-bodied objects, in dependency order: a function's body may
+	// read a table, a view's definition may call a function, and a trigger
+	// needs both its table and the function it executes.
+	//
+	// The one order this does NOT satisfy is a LANGUAGE sql function whose body
+	// reads a VIEW — PostgreSQL parses `sql` bodies at CREATE time (unlike
+	// plpgsql, which it only syntax-checks), so such a function must follow the
+	// view it reads. storm emits functions first and lets that case fail loudly
+	// naming the missing view, rather than deferring validation with
+	// check_function_bodies = off: the whole point of applying the model to a
+	// scratch schema is that a body which cannot resolve is caught HERE, at
+	// generation time, and not by the first request that calls it.
+	for _, f := range s.Functions {
+		b.WriteString("\n")
+		b.WriteString(CreateFunction(f))
+		b.WriteString("\n")
+	}
+	for _, v := range s.Views {
+		b.WriteString("\n")
+		b.WriteString(CreateView(v))
+		b.WriteString("\n")
+	}
+	for _, t := range s.Triggers {
+		b.WriteString("\n")
+		b.WriteString(CreateTrigger(t))
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 

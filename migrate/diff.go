@@ -177,6 +177,12 @@ func Diff(from, to *schema.Schema) Plan {
 	}
 	p.Changes = append(p.Changes, deferredFKs...)
 
+	// The SQL-bodied objects come after every table exists and before anything
+	// is dropped: a function's body reads tables, and a view over a table that
+	// is about to go has to be dropped before the table, not after.
+	addRoutines(&p, from, to)
+	dropRoutines(&p, from, to)
+
 	// Dropped tables, after the rest so foreign keys pointing at them are gone.
 	for _, t := range from.Tables {
 		if to.Table(t.Name) == nil {

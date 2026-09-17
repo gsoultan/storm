@@ -12,12 +12,20 @@ import (
 	"github.com/gsoultan/storm/schema"
 )
 
-// argusLike is the shape that broke the on-ramp: a jsonb column, and an index
-// over a foreign-key column.
+// argusLike is the shape that broke the on-ramp: a jsonb column, an index
+// over a foreign-key column, and a UNIQUE over one.
 //
-// Both survived because the only check on an imported model was that it
+// They survived because the only check on an imported model was that it
 // PARSES. A model that parses can still name a type it does not import and a
 // field that does not exist, and this one named both.
+//
+// The unique arrived after the index was fixed and in the same way: the struct
+// emitter turns a single-column foreign key into a RELATION field — user_id
+// becomes User — so every OTHER emitter that names a field has to make the
+// same substitution. indexDecl was taught to; uniqueDecl was not, and emitted
+// `t.Unique(&m.UserID)` against a struct whose field is User. A unique over a
+// foreign key is what every `(tenant_id, slug)` constraint in a multi-tenant
+// schema is, so this reached an adopter immediately.
 func argusLike() *schema.Schema {
 	return &schema.Schema{Tables: []*schema.Table{
 		{
@@ -42,6 +50,9 @@ func argusLike() *schema.Schema {
 				Name: "recovery_codes_user_idx", Method: "btree",
 				Columns: []schema.IndexColumn{{Name: "user_id"}},
 				Where:   "used_at IS NULL",
+			}},
+			Uniques: []*schema.Unique{{
+				Name: "recovery_codes_user_id_posture_key", Columns: []string{"user_id", "posture"},
 			}},
 		},
 	}}
