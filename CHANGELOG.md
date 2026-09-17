@@ -12,6 +12,24 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v0.15.0 — 2026-09-17
+
+Two things an adopter could not express, both found by the same migration.
+
+- **`pgxdrv.Conn` adapts ONE pinned connection.** Pool and Tx cover statements
+  and transactions; this covers state that lives on a SESSION. A session-scoped
+  advisory lock is the case: `pg_advisory_lock` is held by the connection that
+  took it, so taking it through a pool means releasing it on whichever
+  connection the pool hands out next — which releases nothing and leaks the
+  lock until that connection is recycled.
+
+- **A context of only raw declarations can generate.** `buildModel` refused
+  zero models outright, but a context whose statements belong to no table is a
+  real shape — advisory locks again — and it still needs its scanners emitted
+  and its statements registered. The refusal now fires only when there are no
+  models AND no raw declarations, which is the template case the message
+  actually describes.
+
 ## v0.14.2 — 2026-09-17
 
 **A wrong answer, silently.** `IS NULL` and `IS NOT NULL` bind no argument, but
