@@ -83,3 +83,40 @@ anubis does not use that name.
 is telling you the tool is unreachable, not that their case is exotic. It took
 being a stranger (P4) to see it, because from inside the repo the hand-rolled
 generator looked like a reasonable adopter choice.
+
+---
+
+# What the full migration cost the GATES — 2026-09-18
+
+The first adopter moving entirely onto storm (nine bounded contexts, sqlc
+removed) brought new code faster than it brought tests, and CI went red for
+**five consecutive commits** without anyone noticing:
+
+- `compile/pgddl` 85.1% against a floor of 90. `routine.go` arrived with the
+  functions/views/triggers the migration needed; `DropFunction` and `DropView`
+  had never been called at all.
+- `runtime/pgxdrv` 82.0% against 85. `conn.go` — the pinned-connection adapter
+  — had a live test for what it exists for (a session-scoped advisory lock a
+  pool cannot hold) and nothing for the failure side, where every method
+  classifies the driver's error.
+- `maybeIdent` in pgddl was dead code. Deleted, not tested.
+
+## The gate that could not say why
+
+`scripts/check/coverage.sh` ran its suite with `>/dev/null 2>&1`, so a failure
+there printed one line with no test name in it. That matters more than it
+sounds: the coverage run is the **only** one built with `-coverpkg`, so it
+compiles every package differently from the plain `-race -shuffle` run above it
+and CAN fail where that one passes. At `11da08f` it did, and the message could
+not say which test. It keeps its output now.
+
+**That failure was INTERMITTENT.** Three clean local runs under the same
+instrumentation afterwards, and CI green on the next commit. It is not fixed —
+it is diagnosable. When it recurs the gate names the test.
+
+## The lesson
+
+A floor is a ratchet, and a ratchet only works if someone looks at it. Five
+commits landed on a red CI. The adopter migration is the strongest evidence the
+project has for a second adopter, and it is also the first time storm's own
+gates were outrun by its own work.
