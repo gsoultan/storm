@@ -461,13 +461,6 @@ func Ident(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
-func maybeIdent(s string, isExpr bool) string {
-	if isExpr {
-		return s
-	}
-	return Ident(s)
-}
-
 func quoteLit(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }

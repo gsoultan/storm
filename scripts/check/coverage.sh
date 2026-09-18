@@ -39,10 +39,18 @@ prof=$(mktemp)
 trap 'rm -f "$prof"' EXIT
 
 echo "== measuring =="
-if ! go test -count=1 -coverpkg=./... -coverprofile="$prof" ./... >/dev/null 2>&1; then
+# The output is KEPT. It used to go to /dev/null, so a suite that failed here
+# and nowhere else — this is the only run built with -coverpkg, which compiles
+# every package differently from the plain one above it — reported one line
+# with no test name in it, and finding out cost a CI round trip.
+out=$(mktemp)
+if ! go test -count=1 -coverpkg=./... -coverprofile="$prof" ./... >"$out" 2>&1; then
   echo "FAILED: the test suite must pass before coverage means anything"
+  grep -E "^(--- )?FAIL|^# |panic:" "$out" | head -20 | sed 's/^/    /'
+  rm -f "$out"
   exit 1
 fi
+rm -f "$out"
 
 fail=0
 for entry in "${FLOORS[@]}"; do
