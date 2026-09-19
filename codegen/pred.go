@@ -31,6 +31,7 @@ func (g *gen) predType() {
 		{"tod", "tod runtime.TimeOfDay"}, {"bol", "bol bool"},
 		{"rng", "rng runtime.TstzRange"},
 		{"jsn", "jsn runtime.JSON"},
+		{"byt", "byt []byte"},
 	} {
 		if ts.preds[sl.name] {
 			g.p("\t%s", sl.decl)
@@ -69,6 +70,12 @@ func predCtor(c colInfo, op string, i int) string {
 		set = "rng: v"
 	case kindJSONB:
 		set = "jsn: v"
+	case kindBytes:
+		// Its own field for the TimeOfDay reason one type over: the Pred
+		// field, the arena and the slot reader must name the same place. A
+		// []byte in the shared int64 slot does not even compile, which is the
+		// only reason this one announced itself.
+		set = "byt: v"
 	case kindTSVector:
 		// The search TERM is a string and rides the text arena; the column it
 		// is matched against is the tsvector.
