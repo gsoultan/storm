@@ -26,6 +26,7 @@ type Row struct {
 	Title       string
 	Body        string
 	PublishedAt runtime.Null[time.Time]
+	ViewCount   int32
 	AuthorID    [16]byte
 }
 
@@ -38,33 +39,34 @@ const (
 	opGte              runtime.Op = 4
 	opLt               runtime.Op = 5
 	opLte              runtime.Op = 6
-	opLike             runtime.Op = 7
-	opILike            runtime.Op = 8
-	opMatches          runtime.Op = 9
-	opWebSearch        runtime.Op = 10
-	opOverlaps         runtime.Op = 11
-	opContainsRange    runtime.Op = 12
-	opContainedBy      runtime.Op = 13
-	opIn               runtime.Op = 14
-	opNotIn            runtime.Op = 15
-	opArrayContains    runtime.Op = 16
-	opArrayContainedBy runtime.Op = 17
-	opArrayOverlaps    runtime.Op = 18
-	opJSONContains     runtime.Op = 19
-	opJSONContainedBy  runtime.Op = 20
-	opHasAnyKey        runtime.Op = 21
-	opHasAllKeys       runtime.Op = 22
-	opIsNull           runtime.Op = 23
-	opIsNotNull        runtime.Op = 24
+	opEqLower          runtime.Op = 7
+	opLike             runtime.Op = 8
+	opILike            runtime.Op = 9
+	opMatches          runtime.Op = 10
+	opWebSearch        runtime.Op = 11
+	opOverlaps         runtime.Op = 12
+	opContainsRange    runtime.Op = 13
+	opContainedBy      runtime.Op = 14
+	opIn               runtime.Op = 15
+	opNotIn            runtime.Op = 16
+	opArrayContains    runtime.Op = 17
+	opArrayContainedBy runtime.Op = 18
+	opArrayOverlaps    runtime.Op = 19
+	opJSONContains     runtime.Op = 20
+	opJSONContainedBy  runtime.Op = 21
+	opHasAnyKey        runtime.Op = 22
+	opHasAllKeys       runtime.Op = 23
+	opIsNull           runtime.Op = 24
+	opIsNotNull        runtime.Op = 25
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 25
-	opNotExists runtime.Op = 26
+	opExists    runtime.Op = 26
+	opNotExists runtime.Op = 27
 )
 
-const nCols = 7
+const nCols = 8
 
 // Query is a value type: composing one allocates nothing. Predicates
 // are a postfix token stream, so disjunction and negation are
@@ -74,14 +76,16 @@ type Query struct {
 	nt   uint8
 	top  uint8 // top-level conjuncts, ANDed at compile time
 
-	strs        [6]string
-	raws        [4][16]byte
-	tims        [4]time.Time
-	ns, nr, ntm uint8
+	strs            [6]string
+	nums            [6]int64
+	raws            [4][16]byte
+	tims            [4]time.Time
+	ns, nn, nr, ntm uint8
 
-	anyRaw   [3][][16]byte
-	anyStr   [3][]string
-	nar, nas uint8
+	anyRaw          [3][][16]byte
+	anyStr          [3][]string
+	anyI32          [3][]int32
+	nar, nas, nai32 uint8
 
 	// Order terms live in their own buffer and are appended to the stream
 	// after the predicate tree. Sharing one buffer would let a Where after
@@ -219,6 +223,13 @@ func (q *Query) cursor(col uint32, r Row) {
 		q.tims[q.ntm] = r.PublishedAt.V
 		q.ntm++
 	case 6:
+		if int(q.nn) >= len(q.nums) {
+			q.over = true
+			return
+		}
+		q.nums[q.nn] = int64(r.ViewCount)
+		q.nn++
+	case 7:
 		if int(q.nr) >= len(q.raws) {
 			q.over = true
 			return
@@ -372,11 +383,13 @@ func (q Query) stream(buf *[21]runtime.Tok) []runtime.Tok {
 type Pred struct {
 	col    uint8
 	op     runtime.Op
+	num    int64
 	str    string
 	raw    [16]byte
 	tim    time.Time
 	anyRaw [][16]byte
 	anyStr []string
+	anyI32 []int32
 }
 
 // Typed column handles. The type of the handle is what makes
@@ -388,7 +401,8 @@ var (
 	Title       = TextCol{3}
 	Body        = TextCol{4}
 	PublishedAt = NullTimeCol{5}
-	AuthorID    = UUIDCol{6}
+	ViewCount   = Int32Col{6}
+	AuthorID    = UUIDCol{7}
 )
 
 // UUIDCol addresses a uuid column.
@@ -443,15 +457,16 @@ func (h TextCol) DescNullsLast() Sort {
 	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
 }
 
-func (h TextCol) Eq(v string) Pred    { return Pred{col: h.c, op: opEq, str: v} }
-func (h TextCol) NotEq(v string) Pred { return Pred{col: h.c, op: opNotEq, str: v} }
-func (h TextCol) Gt(v string) Pred    { return Pred{col: h.c, op: opGt, str: v} }
-func (h TextCol) Gte(v string) Pred   { return Pred{col: h.c, op: opGte, str: v} }
-func (h TextCol) Lt(v string) Pred    { return Pred{col: h.c, op: opLt, str: v} }
-func (h TextCol) Lte(v string) Pred   { return Pred{col: h.c, op: opLte, str: v} }
-func (h TextCol) Like(v string) Pred  { return Pred{col: h.c, op: opLike, str: v} }
-func (h TextCol) ILike(v string) Pred { return Pred{col: h.c, op: opILike, str: v} }
-func (h TextCol) In(v ...string) Pred { return Pred{col: h.c, op: opIn, anyStr: v} }
+func (h TextCol) Eq(v string) Pred      { return Pred{col: h.c, op: opEq, str: v} }
+func (h TextCol) NotEq(v string) Pred   { return Pred{col: h.c, op: opNotEq, str: v} }
+func (h TextCol) Gt(v string) Pred      { return Pred{col: h.c, op: opGt, str: v} }
+func (h TextCol) Gte(v string) Pred     { return Pred{col: h.c, op: opGte, str: v} }
+func (h TextCol) Lt(v string) Pred      { return Pred{col: h.c, op: opLt, str: v} }
+func (h TextCol) Lte(v string) Pred     { return Pred{col: h.c, op: opLte, str: v} }
+func (h TextCol) EqLower(v string) Pred { return Pred{col: h.c, op: opEqLower, str: v} }
+func (h TextCol) Like(v string) Pred    { return Pred{col: h.c, op: opLike, str: v} }
+func (h TextCol) ILike(v string) Pred   { return Pred{col: h.c, op: opILike, str: v} }
+func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: v} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
@@ -478,6 +493,31 @@ func (h NullTimeCol) Lt(v time.Time) Pred    { return Pred{col: h.c, op: opLt, t
 func (h NullTimeCol) Lte(v time.Time) Pred   { return Pred{col: h.c, op: opLte, tim: v} }
 func (h NullTimeCol) IsNull() Pred           { return Pred{col: h.c, op: opIsNull} }
 func (h NullTimeCol) IsNotNull() Pred        { return Pred{col: h.c, op: opIsNotNull} }
+
+// Int32Col addresses a int4 column.
+type Int32Col struct{ c uint8 }
+
+func (h Int32Col) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
+func (h Int32Col) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
+func (h Int32Col) AscNullsFirst() Sort {
+	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
+}
+func (h Int32Col) DescNullsLast() Sort {
+	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
+}
+
+func (h Int32Col) Eq(v int32) Pred    { return Pred{col: h.c, op: opEq, num: int64(v)} }
+func (h Int32Col) NotEq(v int32) Pred { return Pred{col: h.c, op: opNotEq, num: int64(v)} }
+func (h Int32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int64(v)} }
+func (h Int32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
+func (h Int32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
+func (h Int32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
+func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: v} }
+
+// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
+// comparison NULL for every row and the result empty —
+// PostgreSQL's rule for NOT IN, not storm's.
+func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: v} }
 
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
@@ -642,6 +682,13 @@ func (q *Query) leaf(p Pred) {
 			q.anyStr[q.nas] = p.anyStr
 			q.nas++
 		case 6:
+			if int(q.nai32) >= 3 {
+				q.over = true
+				return
+			}
+			q.anyI32[q.nai32] = p.anyI32
+			q.nai32++
+		case 7:
 			if int(q.nar) >= 3 {
 				q.over = true
 				return
@@ -700,6 +747,13 @@ func (q *Query) leaf(p Pred) {
 		q.tims[q.ntm] = p.tim
 		q.ntm++
 	case 6:
+		if int(q.nn) >= 6 {
+			q.over = true
+			return
+		}
+		q.nums[q.nn] = p.num
+		q.nn++
+	case 7:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
@@ -714,8 +768,8 @@ func (q *Query) leaf(p Pred) {
 // least one related row; HasNoPosts() matches the rest. Both compose
 // under Where/Any/Not like any predicate, because both lower to constant
 // fragments: no bound value, one compiled statement per structure.
-func HasComments() Pred   { return Pred{col: 7, op: opExists} }
-func HasNoComments() Pred { return Pred{col: 7, op: opNotExists} }
+func HasComments() Pred   { return Pred{col: 8, op: opExists} }
+func HasNoComments() Pred { return Pred{col: 8, op: opNotExists} }
 
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
 func (q Query) IDEq(v [16]byte) Query              { return q.Where(ID.Eq(v)) }
@@ -740,6 +794,7 @@ func (q Query) TitleGt(v string) Query             { return q.Where(Title.Gt(v))
 func (q Query) TitleGte(v string) Query            { return q.Where(Title.Gte(v)) }
 func (q Query) TitleLt(v string) Query             { return q.Where(Title.Lt(v)) }
 func (q Query) TitleLte(v string) Query            { return q.Where(Title.Lte(v)) }
+func (q Query) TitleEqLower(v string) Query        { return q.Where(Title.EqLower(v)) }
 func (q Query) TitleLike(v string) Query           { return q.Where(Title.Like(v)) }
 func (q Query) TitleILike(v string) Query          { return q.Where(Title.ILike(v)) }
 func (q Query) TitleIn(v ...string) Query          { return q.Where(Title.In(v...)) }
@@ -750,6 +805,7 @@ func (q Query) BodyGt(v string) Query              { return q.Where(Body.Gt(v)) 
 func (q Query) BodyGte(v string) Query             { return q.Where(Body.Gte(v)) }
 func (q Query) BodyLt(v string) Query              { return q.Where(Body.Lt(v)) }
 func (q Query) BodyLte(v string) Query             { return q.Where(Body.Lte(v)) }
+func (q Query) BodyEqLower(v string) Query         { return q.Where(Body.EqLower(v)) }
 func (q Query) BodyLike(v string) Query            { return q.Where(Body.Like(v)) }
 func (q Query) BodyILike(v string) Query           { return q.Where(Body.ILike(v)) }
 func (q Query) BodyIn(v ...string) Query           { return q.Where(Body.In(v...)) }
@@ -762,12 +818,20 @@ func (q Query) PublishedAtLt(v time.Time) Query    { return q.Where(PublishedAt.
 func (q Query) PublishedAtLte(v time.Time) Query   { return q.Where(PublishedAt.Lte(v)) }
 func (q Query) PublishedAtIsNull() Query           { return q.Where(PublishedAt.IsNull()) }
 func (q Query) PublishedAtIsNotNull() Query        { return q.Where(PublishedAt.IsNotNull()) }
+func (q Query) ViewCountEq(v int32) Query          { return q.Where(ViewCount.Eq(v)) }
+func (q Query) ViewCountNotEq(v int32) Query       { return q.Where(ViewCount.NotEq(v)) }
+func (q Query) ViewCountGt(v int32) Query          { return q.Where(ViewCount.Gt(v)) }
+func (q Query) ViewCountGte(v int32) Query         { return q.Where(ViewCount.Gte(v)) }
+func (q Query) ViewCountLt(v int32) Query          { return q.Where(ViewCount.Lt(v)) }
+func (q Query) ViewCountLte(v int32) Query         { return q.Where(ViewCount.Lte(v)) }
+func (q Query) ViewCountIn(v ...int32) Query       { return q.Where(ViewCount.In(v...)) }
+func (q Query) ViewCountNotIn(v ...int32) Query    { return q.Where(ViewCount.NotIn(v...)) }
 func (q Query) AuthorIDEq(v [16]byte) Query        { return q.Where(AuthorID.Eq(v)) }
 func (q Query) AuthorIDNotEq(v [16]byte) Query     { return q.Where(AuthorID.NotEq(v)) }
 func (q Query) AuthorIDIn(v ...[16]byte) Query     { return q.Where(AuthorID.In(v...)) }
 func (q Query) AuthorIDNotIn(v ...[16]byte) Query  { return q.Where(AuthorID.NotIn(v...)) }
 
-const selectPrefix = `SELECT "id", "created_at", "updated_at", "title", "body", "published_at", "author_id" FROM "posts"`
+const selectPrefix = `SELECT "id", "created_at", "updated_at", "title", "body", "published_at", "view_count", "author_id" FROM "posts"`
 const countPrefix = `SELECT count(*) FROM "posts"`
 const existsPrefix = `SELECT 1 FROM "posts"`
 const existsSuffix = ` LIMIT 1`
@@ -840,6 +904,12 @@ var orderTable = [nCols][4]string{
 		"\"published_at\" ASC NULLS FIRST",
 		"\"published_at\" DESC NULLS LAST",
 	},
+	{ // view_count
+		"\"view_count\"",
+		"\"view_count\" DESC",
+		"\"view_count\" ASC NULLS FIRST",
+		"\"view_count\" DESC NULLS LAST",
+	},
 	{ // author_id
 		"\"author_id\"",
 		"\"author_id\" DESC",
@@ -857,6 +927,7 @@ var identTable = [nCols]string{
 	"\"title\"",
 	"\"body\"",
 	"\"published_at\"",
+	"\"view_count\"",
 	"\"author_id\"",
 }
 
@@ -890,11 +961,12 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [8][27]runtime.Frag{
+var fragTable = [9][28]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
 		{A: "\"id\" <> $", B: ""},
+		{},
 		{},
 		{},
 		{},
@@ -948,6 +1020,7 @@ var fragTable = [8][27]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 	},
 	{ // updated_at
 		{}, // opNone
@@ -977,6 +1050,7 @@ var fragTable = [8][27]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 	},
 	{ // title
 		{}, // opNone
@@ -986,6 +1060,7 @@ var fragTable = [8][27]runtime.Frag{
 		{A: "\"title\" >= $", B: ""},
 		{A: "\"title\" < $", B: ""},
 		{A: "\"title\" <= $", B: ""},
+		{A: "lower(\"title\") = lower($", B: ")"},
 		{A: "\"title\" LIKE $", B: ""},
 		{A: "\"title\" ILIKE $", B: ""},
 		{},
@@ -1015,6 +1090,7 @@ var fragTable = [8][27]runtime.Frag{
 		{A: "\"body\" >= $", B: ""},
 		{A: "\"body\" < $", B: ""},
 		{A: "\"body\" <= $", B: ""},
+		{A: "lower(\"body\") = lower($", B: ")"},
 		{A: "\"body\" LIKE $", B: ""},
 		{A: "\"body\" ILIKE $", B: ""},
 		{},
@@ -1060,8 +1136,39 @@ var fragTable = [8][27]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"published_at\" IS NULL", B: ""},
 		{A: "\"published_at\" IS NOT NULL", B: ""},
+		{},
+		{},
+	},
+	{ // view_count
+		{}, // opNone
+		{A: "\"view_count\" = $", B: ""},
+		{A: "\"view_count\" <> $", B: ""},
+		{A: "\"view_count\" > $", B: ""},
+		{A: "\"view_count\" >= $", B: ""},
+		{A: "\"view_count\" < $", B: ""},
+		{A: "\"view_count\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "\"view_count\" = ANY($", B: ")"},
+		{A: "\"view_count\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -1069,6 +1176,7 @@ var fragTable = [8][27]runtime.Frag{
 		{}, // opNone
 		{A: "\"author_id\" = $", B: ""},
 		{A: "\"author_id\" <> $", B: ""},
+		{},
 		{},
 		{},
 		{},
@@ -1096,6 +1204,7 @@ var fragTable = [8][27]runtime.Frag{
 	},
 	{ // relation Comments (pseudo-column)
 		{}, // opNone
+		{},
 		{},
 		{},
 		{},
@@ -1284,17 +1393,20 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	r.Title = sl.Str(rv[3])
 	r.Body = sl.Str(rv[4])
 	r.PublishedAt = runtime.Nullable(rv[5], runtime.Timestamptz)
-	copy(r.AuthorID[:], rv[6])
+	r.ViewCount = runtime.Int4(rv[6])
+	copy(r.AuthorID[:], rv[7])
 	return nil
 }
 
 type binder struct {
 	vals   []any
 	strs   [6]string
+	nums   [6]int64
 	raws   [4][16]byte
 	tims   [4]time.Time
 	anyRaw [3][][16]byte
 	anyStr [3][]string
+	anyI32 [3][]int32
 	limit  int64
 	offset int64
 }
@@ -1325,6 +1437,9 @@ func putBinder(b *binder) {
 	for i := range b.anyStr {
 		b.anyStr[i] = nil
 	}
+	for i := range b.anyI32 {
+		b.anyI32[i] = nil
+	}
 	binders.Put(b)
 }
 
@@ -1333,7 +1448,7 @@ func putBinder(b *binder) {
 // Count and Exists stop here: their statements carry no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
-	var ns, nr, ntm, nar, nas uint8
+	var ns, nn, nr, ntm, nar, nas, nai32 uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
 		// KLeaf binds a predicate's value; KCol binds a keyset cursor's.
@@ -1362,6 +1477,10 @@ func (q Query) bindPreds(b *binder) []any {
 				v = append(v, &b.anyStr[nas])
 				nas++
 			case 6:
+				b.anyI32[nai32] = q.anyI32[nai32]
+				v = append(v, &b.anyI32[nai32])
+				nai32++
+			case 7:
 				b.anyRaw[nar] = q.anyRaw[nar]
 				v = append(v, &b.anyRaw[nar])
 				nar++
@@ -1394,6 +1513,10 @@ func (q Query) bindPreds(b *binder) []any {
 			v = append(v, &b.tims[ntm])
 			ntm++
 		case 6:
+			b.nums[nn] = q.nums[nn]
+			v = append(v, &b.nums[nn])
+			nn++
+		case 7:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
@@ -1616,7 +1739,7 @@ func batchTopByAuthorIDWindowSQL(order []Sort) string {
 	for i, t := range toks {
 		terms[i] = orderOf(t.Op(), t.Col())
 	}
-	sql := runtime.SpliceOrder("SELECT \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"author_id\" FROM (SELECT \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"author_id\", row_number() OVER (PARTITION BY \"author_id\"\x00order\x00) AS \"_storm_rn\" FROM \"posts\" WHERE \"author_id\" = ANY($1)) \"_storm_t\" WHERE \"_storm_rn\" <= $2", terms, " ORDER BY ", ", ")
+	sql := runtime.SpliceOrder("SELECT \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"view_count\", \"author_id\" FROM (SELECT \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"view_count\", \"author_id\", row_number() OVER (PARTITION BY \"author_id\"\x00order\x00) AS \"_storm_rn\" FROM \"posts\" WHERE \"author_id\" = ANY($1)) \"_storm_t\" WHERE \"_storm_rn\" <= $2", terms, " ORDER BY ", ", ")
 	return batchTopByAuthorIDWindowCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL
 }
 
@@ -1640,13 +1763,13 @@ func batchTopByAuthorIDLateralSQL(order []Sort) string {
 	for i, t := range toks {
 		terms[i] = orderOf(t.Op(), t.Col())
 	}
-	sql := runtime.SpliceOrder("SELECT \"_storm_c\".\"id\", \"_storm_c\".\"created_at\", \"_storm_c\".\"updated_at\", \"_storm_c\".\"title\", \"_storm_c\".\"body\", \"_storm_c\".\"published_at\", \"_storm_c\".\"author_id\" FROM unnest($1::uuid[]) AS \"_storm_p\"(\"_storm_k\") CROSS JOIN LATERAL (SELECT \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"author_id\" FROM \"posts\" WHERE \"author_id\" = \"_storm_p\".\"_storm_k\"\x00order\x00 LIMIT $2) \"_storm_c\"", terms, " ORDER BY ", ", ")
+	sql := runtime.SpliceOrder("SELECT \"_storm_c\".\"id\", \"_storm_c\".\"created_at\", \"_storm_c\".\"updated_at\", \"_storm_c\".\"title\", \"_storm_c\".\"body\", \"_storm_c\".\"published_at\", \"_storm_c\".\"view_count\", \"_storm_c\".\"author_id\" FROM unnest($1::uuid[]) AS \"_storm_p\"(\"_storm_k\") CROSS JOIN LATERAL (SELECT \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"view_count\", \"author_id\" FROM \"posts\" WHERE \"author_id\" = \"_storm_p\".\"_storm_k\"\x00order\x00 LIMIT $2) \"_storm_c\"", terms, " ORDER BY ", ", ")
 	return batchTopByAuthorIDLateralCache.Put(toks, &runtime.Stmt{SQL: sql, NArg: 2}).SQL
 }
 
 // insertSQL does not vary: the column list is fixed by the table, so
 // the placeholders are known at build time and nothing is spliced.
-const insertSQL = `INSERT INTO "posts" ("id", "created_at", "updated_at", "title", "body", "published_at", "author_id") VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING "id", "created_at", "updated_at", "title", "body", "published_at", "author_id"`
+const insertSQL = `INSERT INTO "posts" ("id", "created_at", "updated_at", "title", "body", "published_at", "view_count", "author_id") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING "id", "created_at", "updated_at", "title", "body", "published_at", "view_count", "author_id"`
 
 const updatePrefix = `UPDATE "posts" SET `
 const deletePrefix = `DELETE FROM "posts"`
@@ -1658,10 +1781,11 @@ const (
 	dTitle       uint64 = 1 << 1
 	dBody        uint64 = 1 << 2
 	dPublishedAt uint64 = 1 << 3
-	dAuthorID    uint64 = 1 << 4
+	dViewCount   uint64 = 1 << 4
+	dAuthorID    uint64 = 1 << 5
 )
 
-const nUpdatable = 5
+const nUpdatable = 6
 
 // setFrags is every assignment this table can make, lowered at build time.
 var setFrags = [nUpdatable]runtime.Frag{
@@ -1669,7 +1793,20 @@ var setFrags = [nUpdatable]runtime.Frag{
 	{A: "\"title\" = $", B: ""},        // title
 	{A: "\"body\" = $", B: ""},         // body
 	{A: "\"published_at\" = $", B: ""}, // published_at
+	{A: "\"view_count\" = $", B: ""},   // view_count
 	{A: "\"author_id\" = $", B: ""},    // author_id
+}
+
+// exprFrags is the SERVER-side assignment each column may take instead
+// of a bound value. A zero Frag means the column admits none. None of
+// these end in a placeholder sigil, so none consumes an argument slot.
+var exprFrags = [nUpdatable]runtime.Frag{
+	{A: "\"updated_at\" = now()", B: ""},   // updated_at = the database's clock
+	{},                                     // title has no server-side form
+	{},                                     // body has no server-side form
+	{A: "\"published_at\" = now()", B: ""}, // published_at = the database's clock
+	{A: "\"view_count\" = \"view_count\" + 1", B: ""}, // view_count = its own value plus one
+	{}, // author_id has no server-side form
 }
 
 // pkFrags addresses one row.
@@ -1687,10 +1824,11 @@ const (
 	iTitle       uint64 = 1 << 3
 	iBody        uint64 = 1 << 4
 	iPublishedAt uint64 = 1 << 5
-	iAuthorID    uint64 = 1 << 6
+	iViewCount   uint64 = 1 << 6
+	iAuthorID    uint64 = 1 << 7
 )
 
-const nInsertable = 7
+const nInsertable = 8
 
 // insCols is the quoted column name for each insert bit.
 var insCols = [nInsertable]string{
@@ -1700,6 +1838,7 @@ var insCols = [nInsertable]string{
 	"\"title\"",
 	"\"body\"",
 	"\"published_at\"",
+	"\"view_count\"",
 	"\"author_id\"",
 }
 
@@ -1709,7 +1848,7 @@ var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Clo
 var insPlaceholder = runtime.Placeholder{}
 
 const insPrefix = "INSERT INTO \"posts\""
-const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"author_id\""
+const insReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"view_count\", \"author_id\""
 
 var insCache = runtime.NewMaskCache()
 
@@ -1718,6 +1857,17 @@ var insCache = runtime.NewMaskCache()
 // batch the statement that asks for rows back.
 var insOpCache = runtime.NewMaskCache()
 var updCache = runtime.NewMaskCache()
+
+// updOpCache is the batch path's, for the same reason as insOpCache:
+// an UPDATE that let the database compute a value reads the row back,
+// and a batch does not read rows.
+var updOpCache = runtime.NewMaskCache()
+
+// updReturning refreshes the staged row after the database computed
+// part of it. Without it m.Row() would hold what the row held BEFORE
+// the statement, so a caller reading back the counter it just
+// incremented would get the old number and never know.
+const updReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"title\", \"body\", \"published_at\", \"view_count\", \"author_id\""
 
 // Masks reports how many distinct UPDATE shapes have compiled.
 func Masks() int { return updCache.Masks() }
@@ -1728,16 +1878,39 @@ func Masks() int { return updCache.Masks() }
 type Mut struct {
 	row   Row
 	dirty uint64
+	expr  uint64
 }
 
 // Mutate stages a row read from the database.
 func Mutate(r Row) Mut { return Mut{row: r} }
 
+// MutateKey stages an update addressed by primary key alone, for a
+// caller that has not read the row.
+//
+// Only assigned columns are written, so the fields left zero here are
+// never referenced — the staged row is an address, not a value. It
+// pairs with the server-side setters: one statement, no prior read.
+func MutateKey(iD [16]byte) Mut {
+	return Mut{row: Row{
+		ID: iD,
+	}}
+}
+
 // Row returns the staged values.
 func (m Mut) Row() Row { return m.row }
 
-// Dirty reports the assigned-column mask, which is also the statement key.
+// Dirty reports the columns assigned a bound value.
 func (m Mut) Dirty() uint64 { return m.dirty }
+
+// Expr reports the columns assigned a server-side expression. Together
+// with Dirty it is the statement key: the same column written two ways
+// is two different statements, and one cannot bind the other's args.
+func (m Mut) Expr() uint64 { return m.expr }
+
+// key is this Mut's statement identity.
+func (m Mut) key() runtime.MaskKey {
+	return runtime.MaskKey{Dirty: m.dirty, Expr: m.expr}
+}
 
 // Setters. There is deliberately no setter for the primary key, for an
 // Immutable column, or for the version column: the absence of a method is
@@ -1745,21 +1918,47 @@ func (m Mut) Dirty() uint64 { return m.dirty }
 func (m *Mut) SetUpdatedAt(v time.Time) {
 	m.row.UpdatedAt = v
 	m.dirty |= dUpdatedAt
+	m.expr &^= dUpdatedAt
+}
+
+// SetUpdatedAtNow assigns the database's clock, not this process's.
+//
+// Binding time.Now() instead would record when THIS server
+// thought it was. Servers skew, so rows written seconds apart
+// can land out of order, and an event stamped by a fast clock
+// reads as preceding the thing that caused it.
+func (m *Mut) SetUpdatedAtNow() {
+	m.expr |= dUpdatedAt
+	m.dirty &^= dUpdatedAt
 }
 
 func (m *Mut) SetTitle(v string) {
 	m.row.Title = v
 	m.dirty |= dTitle
+	m.expr &^= dTitle
 }
 
 func (m *Mut) SetBody(v string) {
 	m.row.Body = v
 	m.dirty |= dBody
+	m.expr &^= dBody
 }
 
 func (m *Mut) SetPublishedAt(v time.Time) {
 	m.row.PublishedAt = runtime.Null[time.Time]{V: v, Valid: true}
 	m.dirty |= dPublishedAt
+	m.expr &^= dPublishedAt
+}
+
+// SetPublishedAtNow assigns the database's clock, not this process's.
+//
+// Binding time.Now() instead would record when THIS server
+// thought it was. Servers skew, so rows written seconds apart
+// can land out of order, and an event stamped by a fast clock
+// reads as preceding the thing that caused it.
+func (m *Mut) SetPublishedAtNow() {
+	m.expr |= dPublishedAt
+	m.dirty &^= dPublishedAt
 }
 
 // SetPublishedAtNull writes SQL NULL. It is a separate method because a
@@ -1767,11 +1966,29 @@ func (m *Mut) SetPublishedAt(v time.Time) {
 func (m *Mut) SetPublishedAtNull() {
 	m.row.PublishedAt = runtime.Null[time.Time]{}
 	m.dirty |= dPublishedAt
+	m.expr &^= dPublishedAt
+}
+
+func (m *Mut) SetViewCount(v int32) {
+	m.row.ViewCount = v
+	m.dirty |= dViewCount
+	m.expr &^= dViewCount
+}
+
+// IncViewCount adds one to the column's OWN value, in the database.
+//
+// Computing it in Go makes it a read-modify-write: two callers
+// who both read N both write N+1, and one increment is lost
+// with nothing to show that it happened.
+func (m *Mut) IncViewCount() {
+	m.expr |= dViewCount
+	m.dirty &^= dViewCount
 }
 
 func (m *Mut) SetAuthorID(v [16]byte) {
 	m.row.AuthorID = v
 	m.dirty |= dAuthorID
+	m.expr &^= dAuthorID
 }
 
 // Ins stages a new row. Unlike Mut it has a setter for every insertable
@@ -1836,6 +2053,11 @@ func (n *Ins) SetPublishedAtNull() {
 	n.set |= iPublishedAt
 }
 
+func (n *Ins) SetViewCount(v int32) {
+	n.row.ViewCount = v
+	n.set |= iViewCount
+}
+
 func (n *Ins) SetAuthorID(v [16]byte) {
 	n.row.AuthorID = v
 	n.set |= iAuthorID
@@ -1886,7 +2108,7 @@ var conflictSpecs = []string{
 
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
-	set := make([]string, 0, 5)
+	set := make([]string, 0, 6)
 	switch i {
 	case 0:
 		if mask&(1<<2) != 0 {
@@ -1902,6 +2124,9 @@ func assignable(i uint8, mask uint64) []string {
 			set = append(set, "published_at")
 		}
 		if mask&(1<<6) != 0 {
+			set = append(set, "view_count")
+		}
+		if mask&(1<<7) != 0 {
 			set = append(set, "author_id")
 		}
 	}
@@ -1956,6 +2181,7 @@ var assignFor = map[string]string{
 	"title":        "\"title\" = EXCLUDED.\"title\"",
 	"body":         "\"body\" = EXCLUDED.\"body\"",
 	"published_at": "\"published_at\" = EXCLUDED.\"published_at\"",
+	"view_count":   "\"view_count\" = EXCLUDED.\"view_count\"",
 	"author_id":    "\"author_id\" = EXCLUDED.\"author_id\"",
 }
 
@@ -1965,7 +2191,7 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 	// The conflict clause is part of the statement, so it must be part of
 	// the key. Packing it above the column bits keeps one cache for both.
 	key := mask | uint64(conflict)<<nInsertable
-	if st := insCache.Get(key); st != nil {
+	if st := insCache.Get(runtime.MaskKey{Dirty: key}); st != nil {
 		return st
 	}
 	cols := make([]string, 0, nInsertable)
@@ -1978,7 +2204,7 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 	if conflict > 0 {
 		suffix = upsertTail(conflict, mask) + insReturning
 	}
-	return insCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
+	return insCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // Insert writes the assigned columns and reads every column back, so
@@ -2013,6 +2239,8 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		case 5:
 			args = append(args, n.row.PublishedAt.Arg())
 		case 6:
+			args = append(args, n.row.ViewCount)
+		case 7:
 			args = append(args, n.row.AuthorID)
 		}
 	}
@@ -2051,13 +2279,14 @@ func Inserts() int { return insCache.Masks() }
 // not treat a zero as 'unset': that guess is why other ORMs cannot insert
 // a false, a 0 or an empty string into a column with a default.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
-	args := make([]any, 0, 7)
+	args := make([]any, 0, 8)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
 	args = append(args, r.Title)
 	args = append(args, r.Body)
 	args = append(args, r.PublishedAt.Arg())
+	args = append(args, r.ViewCount)
 	args = append(args, r.AuthorID)
 	rows, err := ex.Query(ctx, insertSQL, args)
 	if err != nil {
@@ -2091,6 +2320,7 @@ var copyCols = []string{
 	"title",
 	"body",
 	"published_at",
+	"view_count",
 	"author_id",
 }
 
@@ -2098,7 +2328,7 @@ var copyCols = []string{
 type rowSource struct {
 	rows []Row
 	i    int
-	buf  [7]any
+	buf  [8]any
 }
 
 func (s *rowSource) Next() bool {
@@ -2122,7 +2352,8 @@ func (s *rowSource) Values() []any {
 	s.buf[3] = &r.Title
 	s.buf[4] = &r.Body
 	s.buf[5] = r.PublishedAt.Ptr()
-	s.buf[6] = &r.AuthorID
+	s.buf[6] = &r.ViewCount
+	s.buf[7] = &r.AuthorID
 	return s.buf[:]
 }
 
@@ -2160,14 +2391,16 @@ func InsertOp(r Row) runtime.BatchOp {
 	mask |= 1 << 4
 	mask |= 1 << 5
 	mask |= 1 << 6
+	mask |= 1 << 7
 	st := stmtForInsertNoReturn(mask, 0)
-	args := make([]any, 0, 7)
+	args := make([]any, 0, 8)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
 	args = append(args, r.UpdatedAt)
 	args = append(args, r.Title)
 	args = append(args, r.Body)
 	args = append(args, r.PublishedAt.Arg())
+	args = append(args, r.ViewCount)
 	args = append(args, r.AuthorID)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}
 }
@@ -2215,6 +2448,8 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		case 5:
 			args = append(args, n.row.PublishedAt.Arg())
 		case 6:
+			args = append(args, n.row.ViewCount)
+		case 7:
 			args = append(args, n.row.AuthorID)
 		}
 	}
@@ -2226,7 +2461,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 // one would hand a batch the statement that asks for rows back.
 func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
 	key := mask | uint64(conflict)<<nInsertable
-	if st := insOpCache.Get(key); st != nil {
+	if st := insOpCache.Get(runtime.MaskKey{Dirty: key}); st != nil {
 		return st
 	}
 	cols := make([]string, 0, nInsertable)
@@ -2239,7 +2474,7 @@ func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
 	if conflict > 0 {
 		suffix = upsertTail(conflict, mask)
 	}
-	return insOpCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
+	return insOpCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // UpdateOp is this Mut's update as a queueable statement.
@@ -2247,11 +2482,15 @@ func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
 // The optimistic lock still applies, but the caller must check the
 // affected count the batch reports: a stale write inside a batch is not
 // an error the driver raises, it is a zero the caller has to notice.
+//
+// A server-side assignment is queued like any other, but the staged row
+// is NOT refreshed: a batch reports counts, not rows. Use Update when
+// the computed value is the thing you need.
 func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
-	if m.dirty == 0 {
+	if m.dirty == 0 && m.expr == 0 {
 		return runtime.BatchOp{}, false
 	}
-	st := stmtForMask(m.dirty)
+	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
 	for i := 0; i < nUpdatable; i++ {
 		if m.dirty&(1<<uint(i)) == 0 {
@@ -2267,6 +2506,8 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 		case 3:
 			args = append(args, m.row.PublishedAt.Arg())
 		case 4:
+			args = append(args, m.row.ViewCount)
+		case 5:
 			args = append(args, m.row.AuthorID)
 		}
 	}
@@ -2283,23 +2524,45 @@ func DeleteOp(iD [16]byte) runtime.BatchOp {
 // batch by foreign key without knowing what any of them are.
 const Table = "posts"
 
-// stmtForMask compiles the UPDATE for one dirty mask, once.
-func stmtForMask(mask uint64) *runtime.Stmt {
-	if st := updCache.Get(mask); st != nil {
+// stmtForKey compiles the UPDATE for one (dirty, expr) pair, once.
+//
+// The pair is the identity, not the dirty mask alone: the same column
+// assigned a bound value and assigned a server-side expression are two
+// different statements, and the arguments of one do not fit the other.
+//
+// ret picks the cache as well as the suffix. The batch path passes
+// false — it cannot read rows back, so it must not ask for them.
+func stmtForKey(k runtime.MaskKey, ret bool) *runtime.Stmt {
+	cache := updCache
+	if !ret {
+		cache = updOpCache
+	}
+	if st := cache.Get(k); st != nil {
 		return st
 	}
 	set := make([]runtime.Frag, 0, nUpdatable+1)
 	for i := 0; i < nUpdatable; i++ {
-		if mask&(1<<uint(i)) != 0 {
+		// An expression wins: a column set both ways cannot happen,
+		// because each setter clears the other's bit.
+		switch {
+		case k.Expr&(1<<uint(i)) != 0:
+			set = append(set, exprFrags[i])
+		case k.Dirty&(1<<uint(i)) != 0:
 			set = append(set, setFrags[i])
 		}
 	}
 	where := make([]runtime.Frag, 0, 2)
 	where = append(where, pkFrags[:]...)
-	return updCache.Put(mask, runtime.SpliceSections(updatePrefix, []runtime.Section{
+	// Only an expression needs reading back. A plain UPDATE already
+	// knows every value it wrote, so it pays no RETURNING.
+	suffix := ""
+	if ret && k.Expr != 0 {
+		suffix = updReturning
+	}
+	return cache.Put(k, runtime.SpliceSections(updatePrefix, []runtime.Section{
 		{Lead: "", Sep: ", ", Frags: set},
 		{Lead: " WHERE ", Sep: " AND ", Frags: where},
-	}, ""))
+	}, suffix))
 }
 
 // Update writes the assigned columns of one row.
@@ -2307,11 +2570,16 @@ func stmtForMask(mask uint64) *runtime.Stmt {
 // Assigning nothing is not an error and issues no statement — an UPDATE
 // with an empty SET list is not valid SQL, and a caller looping over
 // possibly-changed fields should not have to special-case the empty case.
+//
+// An assignment the DATABASE computes is read back in the same
+// statement, so m.Row() is the row that now exists rather than the
+// one that used to. A second SELECT would race every other writer,
+// which is the same reason Insert reads its row back.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
-	if m.dirty == 0 {
+	if m.dirty == 0 && m.expr == 0 {
 		return nil
 	}
-	st := stmtForMask(m.dirty)
+	st := stmtForKey(m.key(), true)
 	if st.Err != nil {
 		// A malformed token stream is a code-generation bug. Executing it
 		// would run a query whose filter is not the one that was asked for.
@@ -2332,10 +2600,15 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		case 3:
 			args = append(args, m.row.PublishedAt.Arg())
 		case 4:
+			args = append(args, m.row.ViewCount)
+		case 5:
 			args = append(args, m.row.AuthorID)
 		}
 	}
 	args = append(args, m.row.ID)
+	if m.expr != 0 {
+		return m.updateReturning(ctx, ex, st, args)
+	}
 	n, err := ex.Exec(ctx, st.SQL, args)
 	if err != nil {
 		return err
@@ -2344,6 +2617,38 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return runtime.ErrNoRow
 	}
 	m.dirty = 0
+	m.expr = 0
+	return nil
+}
+
+// updateReturning runs an UPDATE that let the database compute part of
+// the row, and reads the whole row back into the staged copy.
+//
+// Every column, not just the computed ones: a trigger may have touched
+// anything, and a staged row that is fresh in two fields and stale in
+// the rest is harder to reason about than one that is simply current.
+func (m *Mut) updateReturning(ctx context.Context, ex runtime.Executor, st *runtime.Stmt, args []any) error {
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return runtime.ErrNoRow
+	}
+	// The staged row owns this arena, the way an inserted row does.
+	var sl runtime.Slab
+	if err := scan(rows.RawValues(), &m.row, &sl); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	m.dirty = 0
+	m.expr = 0
 	return nil
 }
 

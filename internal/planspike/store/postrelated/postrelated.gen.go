@@ -33,30 +33,31 @@ const (
 	opGte              runtime.Op = 4
 	opLt               runtime.Op = 5
 	opLte              runtime.Op = 6
-	opLike             runtime.Op = 7
-	opILike            runtime.Op = 8
-	opMatches          runtime.Op = 9
-	opWebSearch        runtime.Op = 10
-	opOverlaps         runtime.Op = 11
-	opContainsRange    runtime.Op = 12
-	opContainedBy      runtime.Op = 13
-	opIn               runtime.Op = 14
-	opNotIn            runtime.Op = 15
-	opArrayContains    runtime.Op = 16
-	opArrayContainedBy runtime.Op = 17
-	opArrayOverlaps    runtime.Op = 18
-	opJSONContains     runtime.Op = 19
-	opJSONContainedBy  runtime.Op = 20
-	opHasAnyKey        runtime.Op = 21
-	opHasAllKeys       runtime.Op = 22
-	opIsNull           runtime.Op = 23
-	opIsNotNull        runtime.Op = 24
+	opEqLower          runtime.Op = 7
+	opLike             runtime.Op = 8
+	opILike            runtime.Op = 9
+	opMatches          runtime.Op = 10
+	opWebSearch        runtime.Op = 11
+	opOverlaps         runtime.Op = 12
+	opContainsRange    runtime.Op = 13
+	opContainedBy      runtime.Op = 14
+	opIn               runtime.Op = 15
+	opNotIn            runtime.Op = 16
+	opArrayContains    runtime.Op = 17
+	opArrayContainedBy runtime.Op = 18
+	opArrayOverlaps    runtime.Op = 19
+	opJSONContains     runtime.Op = 20
+	opJSONContainedBy  runtime.Op = 21
+	opHasAnyKey        runtime.Op = 22
+	opHasAllKeys       runtime.Op = 23
+	opIsNull           runtime.Op = 24
+	opIsNotNull        runtime.Op = 25
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 25
-	opNotExists runtime.Op = 26
+	opExists    runtime.Op = 26
+	opNotExists runtime.Op = 27
 )
 
 const nCols = 2
@@ -641,11 +642,12 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [2][27]runtime.Frag{
+var fragTable = [2][28]runtime.Frag{
 	{ // post_id
 		{}, // opNone
 		{A: "\"post_id\" = $", B: ""},
 		{A: "\"post_id\" <> $", B: ""},
+		{},
 		{},
 		{},
 		{},
@@ -675,6 +677,7 @@ var fragTable = [2][27]runtime.Frag{
 		{}, // opNone
 		{A: "\"related_id\" = $", B: ""},
 		{A: "\"related_id\" <> $", B: ""},
+		{},
 		{},
 		{},
 		{},
@@ -1084,6 +1087,11 @@ const nUpdatable = 0
 // setFrags is every assignment this table can make, lowered at build time.
 var setFrags = [nUpdatable]runtime.Frag{}
 
+// exprFrags is the SERVER-side assignment each column may take instead
+// of a bound value. A zero Frag means the column admits none. None of
+// these end in a placeholder sigil, so none consumes an argument slot.
+var exprFrags = [nUpdatable]runtime.Frag{}
+
 // pkFrags addresses one row.
 var pkFrags = [2]runtime.Frag{
 	{A: "\"post_id\" = $", B: ""},    // post_id
@@ -1122,6 +1130,17 @@ var insCache = runtime.NewMaskCache()
 var insOpCache = runtime.NewMaskCache()
 var updCache = runtime.NewMaskCache()
 
+// updOpCache is the batch path's, for the same reason as insOpCache:
+// an UPDATE that let the database compute a value reads the row back,
+// and a batch does not read rows.
+var updOpCache = runtime.NewMaskCache()
+
+// updReturning refreshes the staged row after the database computed
+// part of it. Without it m.Row() would hold what the row held BEFORE
+// the statement, so a caller reading back the counter it just
+// incremented would get the old number and never know.
+const updReturning = " RETURNING \"post_id\", \"related_id\""
+
 // Masks reports how many distinct UPDATE shapes have compiled.
 func Masks() int { return updCache.Masks() }
 
@@ -1131,16 +1150,40 @@ func Masks() int { return updCache.Masks() }
 type Mut struct {
 	row   Row
 	dirty uint64
+	expr  uint64
 }
 
 // Mutate stages a row read from the database.
 func Mutate(r Row) Mut { return Mut{row: r} }
 
+// MutateKey stages an update addressed by primary key alone, for a
+// caller that has not read the row.
+//
+// Only assigned columns are written, so the fields left zero here are
+// never referenced — the staged row is an address, not a value. It
+// pairs with the server-side setters: one statement, no prior read.
+func MutateKey(postID [16]byte, relatedID [16]byte) Mut {
+	return Mut{row: Row{
+		PostID:    postID,
+		RelatedID: relatedID,
+	}}
+}
+
 // Row returns the staged values.
 func (m Mut) Row() Row { return m.row }
 
-// Dirty reports the assigned-column mask, which is also the statement key.
+// Dirty reports the columns assigned a bound value.
 func (m Mut) Dirty() uint64 { return m.dirty }
+
+// Expr reports the columns assigned a server-side expression. Together
+// with Dirty it is the statement key: the same column written two ways
+// is two different statements, and one cannot bind the other's args.
+func (m Mut) Expr() uint64 { return m.expr }
+
+// key is this Mut's statement identity.
+func (m Mut) key() runtime.MaskKey {
+	return runtime.MaskKey{Dirty: m.dirty, Expr: m.expr}
+}
 
 // Setters. There is deliberately no setter for the primary key, for an
 // Immutable column, or for the version column: the absence of a method is
@@ -1284,7 +1327,7 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 	// The conflict clause is part of the statement, so it must be part of
 	// the key. Packing it above the column bits keeps one cache for both.
 	key := mask | uint64(conflict)<<nInsertable
-	if st := insCache.Get(key); st != nil {
+	if st := insCache.Get(runtime.MaskKey{Dirty: key}); st != nil {
 		return st
 	}
 	cols := make([]string, 0, nInsertable)
@@ -1297,7 +1340,7 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 	if conflict > 0 {
 		suffix = upsertTail(conflict, mask) + insReturning
 	}
-	return insCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
+	return insCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // Insert writes the assigned columns and reads every column back, so
@@ -1500,7 +1543,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 // one would hand a batch the statement that asks for rows back.
 func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
 	key := mask | uint64(conflict)<<nInsertable
-	if st := insOpCache.Get(key); st != nil {
+	if st := insOpCache.Get(runtime.MaskKey{Dirty: key}); st != nil {
 		return st
 	}
 	cols := make([]string, 0, nInsertable)
@@ -1513,7 +1556,7 @@ func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
 	if conflict > 0 {
 		suffix = upsertTail(conflict, mask)
 	}
-	return insOpCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
+	return insOpCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // UpdateOp is this Mut's update as a queueable statement.
@@ -1521,11 +1564,15 @@ func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
 // The optimistic lock still applies, but the caller must check the
 // affected count the batch reports: a stale write inside a batch is not
 // an error the driver raises, it is a zero the caller has to notice.
+//
+// A server-side assignment is queued like any other, but the staged row
+// is NOT refreshed: a batch reports counts, not rows. Use Update when
+// the computed value is the thing you need.
 func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
-	if m.dirty == 0 {
+	if m.dirty == 0 && m.expr == 0 {
 		return runtime.BatchOp{}, false
 	}
-	st := stmtForMask(m.dirty)
+	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
 	for i := 0; i < nUpdatable; i++ {
 		if m.dirty&(1<<uint(i)) == 0 {
@@ -1548,23 +1595,45 @@ func DeleteOp(postID [16]byte, relatedID [16]byte) runtime.BatchOp {
 // batch by foreign key without knowing what any of them are.
 const Table = "post_related"
 
-// stmtForMask compiles the UPDATE for one dirty mask, once.
-func stmtForMask(mask uint64) *runtime.Stmt {
-	if st := updCache.Get(mask); st != nil {
+// stmtForKey compiles the UPDATE for one (dirty, expr) pair, once.
+//
+// The pair is the identity, not the dirty mask alone: the same column
+// assigned a bound value and assigned a server-side expression are two
+// different statements, and the arguments of one do not fit the other.
+//
+// ret picks the cache as well as the suffix. The batch path passes
+// false — it cannot read rows back, so it must not ask for them.
+func stmtForKey(k runtime.MaskKey, ret bool) *runtime.Stmt {
+	cache := updCache
+	if !ret {
+		cache = updOpCache
+	}
+	if st := cache.Get(k); st != nil {
 		return st
 	}
 	set := make([]runtime.Frag, 0, nUpdatable+1)
 	for i := 0; i < nUpdatable; i++ {
-		if mask&(1<<uint(i)) != 0 {
+		// An expression wins: a column set both ways cannot happen,
+		// because each setter clears the other's bit.
+		switch {
+		case k.Expr&(1<<uint(i)) != 0:
+			set = append(set, exprFrags[i])
+		case k.Dirty&(1<<uint(i)) != 0:
 			set = append(set, setFrags[i])
 		}
 	}
 	where := make([]runtime.Frag, 0, 3)
 	where = append(where, pkFrags[:]...)
-	return updCache.Put(mask, runtime.SpliceSections(updatePrefix, []runtime.Section{
+	// Only an expression needs reading back. A plain UPDATE already
+	// knows every value it wrote, so it pays no RETURNING.
+	suffix := ""
+	if ret && k.Expr != 0 {
+		suffix = updReturning
+	}
+	return cache.Put(k, runtime.SpliceSections(updatePrefix, []runtime.Section{
 		{Lead: "", Sep: ", ", Frags: set},
 		{Lead: " WHERE ", Sep: " AND ", Frags: where},
-	}, ""))
+	}, suffix))
 }
 
 // Update writes the assigned columns of one row.
@@ -1572,11 +1641,16 @@ func stmtForMask(mask uint64) *runtime.Stmt {
 // Assigning nothing is not an error and issues no statement — an UPDATE
 // with an empty SET list is not valid SQL, and a caller looping over
 // possibly-changed fields should not have to special-case the empty case.
+//
+// An assignment the DATABASE computes is read back in the same
+// statement, so m.Row() is the row that now exists rather than the
+// one that used to. A second SELECT would race every other writer,
+// which is the same reason Insert reads its row back.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
-	if m.dirty == 0 {
+	if m.dirty == 0 && m.expr == 0 {
 		return nil
 	}
-	st := stmtForMask(m.dirty)
+	st := stmtForKey(m.key(), true)
 	if st.Err != nil {
 		// A malformed token stream is a code-generation bug. Executing it
 		// would run a query whose filter is not the one that was asked for.
@@ -1592,6 +1666,9 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 	}
 	args = append(args, m.row.PostID)
 	args = append(args, m.row.RelatedID)
+	if m.expr != 0 {
+		return m.updateReturning(ctx, ex, st, args)
+	}
 	n, err := ex.Exec(ctx, st.SQL, args)
 	if err != nil {
 		return err
@@ -1600,6 +1677,38 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return runtime.ErrNoRow
 	}
 	m.dirty = 0
+	m.expr = 0
+	return nil
+}
+
+// updateReturning runs an UPDATE that let the database compute part of
+// the row, and reads the whole row back into the staged copy.
+//
+// Every column, not just the computed ones: a trigger may have touched
+// anything, and a staged row that is fresh in two fields and stale in
+// the rest is harder to reason about than one that is simply current.
+func (m *Mut) updateReturning(ctx context.Context, ex runtime.Executor, st *runtime.Stmt, args []any) error {
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return runtime.ErrNoRow
+	}
+	// The staged row owns this arena, the way an inserted row does.
+	var sl runtime.Slab
+	if err := scan(rows.RawValues(), &m.row, &sl); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	m.dirty = 0
+	m.expr = 0
 	return nil
 }
 

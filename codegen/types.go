@@ -412,6 +412,10 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		return false
 	case "Like", "ILike":
 		return k == kindText
+	case "EqLower":
+		// Text only. lower() on anything else is either a no-op the planner
+		// has to see through or a cast nobody asked for.
+		return k == kindText
 	case "Gt", "Gte", "Lt", "Lte":
 		// A range has no useful < or >: PostgreSQL defines one for sorting, and
 		// almost every caller who reaches for it means Overlaps.

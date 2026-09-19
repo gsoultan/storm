@@ -122,6 +122,7 @@ type lowering struct {
 	DeletePrefix    func(string) string
 	SetFrag         func(string) (string, string)
 	BumpFrag        func(string) (string, string)
+	NowFrag         func(string) (string, string)
 
 	SetLead, SetSep     string
 	WhereLead, WhereSep string
@@ -292,6 +293,7 @@ func postgresLowering() lowering {
 		DeletePrefix:    pgsql.DeletePrefix,
 		SetFrag:         pgsql.SetFrag,
 		BumpFrag:        pgsql.BumpFrag,
+		NowFrag:         pgsql.NowFrag,
 		SetLead:         pgsql.SetLead,
 		SetSep:          pgsql.SetSep,
 		WhereLead:       pgsql.WhereLead,
@@ -407,6 +409,7 @@ func mysqlLowering() lowering {
 		DeletePrefix:    mysql.DeletePrefix,
 		SetFrag:         mysql.SetFrag,
 		BumpFrag:        mysql.BumpFrag,
+		NowFrag:         mysql.NowFrag,
 		SetLead:         mysql.SetLead,
 		SetSep:          mysql.SetSep,
 		WhereLead:       mysql.WhereLead,

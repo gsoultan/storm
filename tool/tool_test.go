@@ -20,13 +20,25 @@ import (
 // derives import paths from the module root, so t.TempDir() — outside it — is
 // now rejected; the old tests used it anyway, and their generated files
 // carried broken import paths that nothing noticed because nothing built them.
+// moduleScratch is a directory inside the module for the CLI to generate into.
+//
+// Inside, because the generator derives a package's import path from where it
+// sits relative to the module root, and a directory outside has none.
+//
+// The leading underscore is what keeps `go test ./...` deterministic: the go
+// tool ignores directories named that way, so a package list taken while one
+// of these exists does not try to load it and fail. Without it a shuffled run
+// could fail with "no required module provides package …/clistale<pid>/store"
+// — a red suite naming a package nobody wrote, which is the worst kind of
+// flake to inherit. Nothing imports or compiles what lands here; the tests
+// generate, re-generate and hash it.
 func moduleScratch(t *testing.T, name string) string {
 	t.Helper()
 	root, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := filepath.Join(root, "internal", name+strconv.Itoa(os.Getpid()))
+	d := filepath.Join(root, "internal", "_"+name+strconv.Itoa(os.Getpid()))
 	t.Cleanup(func() { os.RemoveAll(d) })
 	return d
 }

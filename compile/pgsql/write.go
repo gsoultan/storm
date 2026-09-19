@@ -79,6 +79,16 @@ func SetFrag(col string) (a, b string) { return Ident(col) + " = " + Placeholder
 // the winner had in memory.
 func BumpFrag(col string) (a, b string) { return Ident(col) + " = " + Ident(col) + " + 1", "" }
 
+// NowFrag assigns a column the DATABASE's clock rather than the caller's.
+//
+// These are not the same fact. Application servers skew, and a revocation
+// stamped from one that runs fast appears to precede the token it revoked,
+// which is unreadable afterwards. now() is transaction start, so every row a
+// transaction stamps carries one consistent instant — which is also why a
+// caller cannot reproduce it by reading the clock once and binding the value:
+// they would be binding THEIR clock.
+func NowFrag(col string) (a, b string) { return Ident(col) + " = now()", "" }
+
 // DeletePrefix introduces a delete.
 func DeletePrefix(table string) string { return "DELETE FROM " + Ident(table) }
 
