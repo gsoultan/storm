@@ -68,31 +68,45 @@ func SpliceSectionsWith(prefix string, secs []Section, suffix string, ph Placeho
 
 // MaskCache maps a dirty mask to a compiled statement.
 type MaskCache struct {
-	last atomic.Uint64
-	hot  atomic.Pointer[Stmt]
+	hot atomic.Pointer[maskEntry]
 
 	mu      sync.RWMutex
-	entries map[uint64]*Stmt
+	entries map[uint64]*maskEntry
 }
 
-func NewMaskCache() *MaskCache { return &MaskCache{entries: map[uint64]*Stmt{}} }
+// maskEntry pairs a mask with its statement so the warm path can publish both
+// in ONE atomic store.
+//
+// They were two atomics — a uint64 and a *Stmt — written in sequence. Two
+// goroutines warming different masks could interleave those writes and leave
+// the mask from one beside the statement from the other, after which a hit
+// handed back an UPDATE compiled for a different column set and the caller
+// bound its arguments against those placeholders. Every access was atomic, so
+// it was not a data race and -race could not see it; only the pairing was
+// unsynchronised. Interning the pair and publishing the pointer makes the
+// mismatch unrepresentable.
+type maskEntry struct {
+	mask uint64
+	stmt *Stmt
+}
 
-// Get returns the statement for a mask, or nil. Allocation-free, and on the
-// common case of one mask repeated it is two atomic loads and a compare.
+func NewMaskCache() *MaskCache { return &MaskCache{entries: map[uint64]*maskEntry{}} }
+
+// Get returns the statement for a mask, or nil. Allocation-free — the entry is
+// interned by Put — and on the common case of one mask repeated it is one
+// atomic load and a compare.
 func (c *MaskCache) Get(mask uint64) *Stmt {
-	if c.last.Load() == mask {
-		if st := c.hot.Load(); st != nil {
-			return st
-		}
+	if h := c.hot.Load(); h != nil && h.mask == mask {
+		return h.stmt
 	}
 	c.mu.RLock()
-	st := c.entries[mask]
+	e := c.entries[mask]
 	c.mu.RUnlock()
-	if st != nil {
-		c.hot.Store(st)
-		c.last.Store(mask)
+	if e == nil {
+		return nil
 	}
-	return st
+	c.hot.Store(e)
+	return e.stmt
 }
 
 // Put interns a statement. Two goroutines compiling the same mask is harmless;
@@ -102,12 +116,13 @@ func (c *MaskCache) Put(mask uint64, st *Stmt) *Stmt {
 	c.mu.Lock()
 	if prev, ok := c.entries[mask]; ok {
 		c.mu.Unlock()
-		return prev
+		c.hot.Store(prev)
+		return prev.stmt
 	}
-	c.entries[mask] = st
+	e := &maskEntry{mask: mask, stmt: st}
+	c.entries[mask] = e
 	c.mu.Unlock()
-	c.hot.Store(st)
-	c.last.Store(mask)
+	c.hot.Store(e)
 	return st
 }
 

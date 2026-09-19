@@ -39,6 +39,7 @@ var arenaTable = []struct {
 	{"bools", "nbo", "bools [%d]bool", maxBool},
 	{"rngs", "nrg", "rngs [%d]runtime.TstzRange", maxRng},
 	{"jsns", "njs", "jsns [%d]runtime.JSON", maxJSON},
+	{"byts", "nby", "byts [%d][]byte", maxBytes},
 }
 
 // cursorFor is the cursor variable for an arena field name.
@@ -246,11 +247,22 @@ func arenaFor(c colInfo) (arena, cursor string) {
 		// string arena would reach pgx as text, which has no implicit cast to
 		// jsonb in an operator position.
 		return "jsns", "njs"
-	case kindBytes, kindTextArray, kindUUIDArray, kindInt8Array, kindInt4Array,
+	case kindBytes:
+		// Its own arena for the jsonb reason: a []byte fits neither the shared
+		// int64 slot nor the string arena, which would reach pgx as text and
+		// be compared to a bytea column as its escaped rendering rather than
+		// its bytes.
+		//
+		// bytea used to have no predicates at all, which made every
+		// hash-keyed table unreachable from a builder — refresh tokens,
+		// one-time tokens, session cookies are all looked up by digest and by
+		// nothing else.
+		return "byts", "nby"
+	case kindTextArray, kindUUIDArray, kindInt8Array, kindInt4Array,
 		kindDecimalArray, kindInterval:
 		// No arena. None is a value a predicate binds or an ordering compares
-		// — an array's operators take LISTS, which live in list slots, and
-		// bytea offers no predicates at all — so there is nothing to store.
+		// — an array's operators take LISTS, which live in list slots — so
+		// there is nothing to store.
 		return "", ""
 	default:
 		return "nums", "nn"
@@ -260,7 +272,7 @@ func arenaFor(c colInfo) (arena, cursor string) {
 func arenaStore(c colInfo, v string) string {
 	switch c.kind {
 	case kindText, kindTSVector, kindUUID, kindTimestamptz, kindDate, kindNumeric,
-		kindInet, kindTimeOfDay, kindBool, kindTstzRange, kindJSONB:
+		kindInet, kindTimeOfDay, kindBool, kindTstzRange, kindJSONB, kindBytes:
 		return v
 	case kindFloat4, kindFloat8:
 		return "float64(" + v + ")"
@@ -283,6 +295,10 @@ const (
 	maxRng   = 4
 	maxPfx   = 4
 	maxJSON  = 2
+	// A bytea predicate is almost always a hash lookup — one per query, by the
+	// unique index on the digest. Two leaves room for a range over a prefix
+	// without paying for slots nobody fills.
+	maxBytes = 2
 	// List values are an arena like every other value type, for the reason
 	// every other value type is one: a Query can carry more than one predicate
 	// on the same slot. It used to be a single field, so a second In on a text
@@ -842,6 +858,8 @@ func predSlotFor(c colInfo) string {
 		return "p.pfx"
 	case kindJSONB:
 		return "p.jsn"
+	case kindBytes:
+		return "p.byt"
 	default:
 		return "p.num"
 	}

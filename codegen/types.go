@@ -437,8 +437,15 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		// Comparing a tsvector for equality asks whether two documents have
 		// identical lexeme vectors, which nobody means; the match operators
 		// are the whole reason the column exists.
+		// bytea is NOT in this list, and used to be. The reasons above are
+		// about comparisons that surprise — a whole-document jsonb match, an
+		// order-sensitive array match — and none of them is true of bytea,
+		// where equality is byte for byte and is exactly what a hash lookup
+		// means. Excluding it made every digest-keyed table unreachable from
+		// a builder: refresh tokens, one-time tokens and session cookies are
+		// all looked up by hash and by nothing else.
 		switch k {
-		case kindTSVector, kindBytes, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array, kindInt4Array,
+		case kindTSVector, kindJSONB, kindTextArray, kindUUIDArray, kindInt8Array, kindInt4Array,
 			kindDecimalArray:
 			return false
 		case kindInterval:
