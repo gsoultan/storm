@@ -43,6 +43,13 @@ var frags = map[string]frag{
 
 	"IsNull":    {" IS NULL", ""},
 	"IsNotNull": {" IS NOT NULL", ""},
+
+	// Case-insensitive equality written as the expression an index can be
+	// built on. MySQL's default collations are already case-insensitive, so
+	// this is usually redundant here — but it must exist and must mean the
+	// same thing, or a model that is portable stops being portable at the
+	// first case-insensitive lookup.
+	"EqLower": {") = LOWER(" + Placeholder, ")"},
 }
 
 // wrapped are the operators that are FUNCTIONS in MySQL. They take the
@@ -65,6 +72,12 @@ var wrapped = map[string]struct{ open, close string }{
 	"HasAllKeys": {"JSON_CONTAINS(JSON_KEYS(", "), " + Placeholder + ")"},
 }
 
+// prefixes wrap the IDENTIFIER for operators whose left side is an expression
+// rather than the bare column. Absent means no prefix.
+var prefixes = map[string]string{
+	"EqLower": "LOWER(",
+}
+
 // Frag lowers one operator applied to one already-quoted identifier. ok is
 // false when this back end has no lowering for the operator — which is a
 // generation error naming the operator and the dialect, never a silent drop.
@@ -76,7 +89,7 @@ func Frag(op, ident string) (a, b string, ok bool) {
 	if !ok {
 		return "", "", false
 	}
-	return ident + f.a, f.b, true
+	return prefixes[op] + ident + f.a, f.b, true
 }
 
 // InFrag lowers list membership, which is the operator that could have sunk M9.

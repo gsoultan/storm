@@ -186,6 +186,9 @@ type Post struct {
 	Title       string
 	Body        string
 	PublishedAt *time.Time
+	// A counter no reader may compute: two views that both read 7 and both
+	// write 8 lose one, and nothing in the row records that it happened.
+	ViewCount int32
 
 	Author   User
 	Comments []Comment
@@ -198,6 +201,7 @@ type Post struct {
 func (p *Post) Schema(t *storm.Table) {
 	t.Col(&p.Author).OnDelete(storm.Cascade)
 	t.Col(&p.Title).Size(300)
+	t.Col(&p.ViewCount).Default("0")
 	t.Index(&p.Author, storm.NullsLast(storm.Desc(&p.PublishedAt)))
 }
 

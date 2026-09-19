@@ -181,6 +181,16 @@ func SetFrag(col string) (a, b string) { return Ident(col) + " = " + Placeholder
 // BumpFrag increments a version column from its own value.
 func BumpFrag(col string) (a, b string) { return Ident(col) + " = " + Ident(col) + " + 1", "" }
 
+// NowFrag assigns a column the database's clock rather than the caller's.
+//
+// The explicit (6) is not decoration: bare CURRENT_TIMESTAMP carries zero
+// fractional digits, so two rows stamped in the same second would compare
+// equal and an ordering built on the column would be arbitrary between them.
+//
+// Unlike Postgres's now(), MySQL's is STATEMENT start, not transaction start,
+// so two statements in one transaction can stamp different instants.
+func NowFrag(col string) (a, b string) { return Ident(col) + " = CURRENT_TIMESTAMP(6)", "" }
+
 // InsertPrefix introduces a masked insert.
 func InsertPrefix(table string) string { return "INSERT INTO " + Ident(table) }
 

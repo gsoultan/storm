@@ -240,9 +240,10 @@ article.Titel.Eq("x")                // compile error: undefined
 |---|---|
 | every kind | `Asc` `Desc` `AscNullsFirst` `DescNullsLast` |
 | `UUIDCol` | `Eq` `NotEq` `In` `NotIn` |
-| `TextCol` | `Eq` `NotEq` `In` `NotIn` `Gt` `Gte` `Lt` `Lte` `Like` `ILike` |
+| `TextCol` | `Eq` `NotEq` `EqLower` `In` `NotIn` `Gt` `Gte` `Lt` `Lte` `Like` `ILike` |
 | `TimeCol`, `DecimalCol`, numeric | `Eq` `NotEq` `Gt` `Gte` `Lt` `Lte` |
 | `BoolCol` | `Eq` `NotEq` |
+| `BytesCol` | `Eq` `NotEq` |
 | nullable (`NullTimeCol`, …) | + `IsNull` `IsNotNull` |
 | `TSVectorCol` | `Matches` `WebSearch` |
 | array (`TextArrayCol`, …) | `Contains` `ContainedBy` `Overlaps` |
@@ -252,6 +253,13 @@ article.Titel.Eq("x")                // compile error: undefined
 There is no `Between`, no `HasPrefix`/`HasSuffix`, and no jsonb `Path` — the
 list above is the whole vocabulary, and it is generated from the column's type
 rather than written by hand.
+
+`EqLower` is case-insensitive equality lowered as `lower(col) = lower($1)`,
+which is the shape that matches an index declared with `storm.Lower`. It is a
+separate operator rather than a flag on `Eq` because the two produce different
+SQL, and a reader should be able to tell which one a call site asked for.
+Comparing the bare column cannot use the expression index — on a sign-in
+lookup that is a sequential scan per attempt.
 
 Compare Ent's free functions (`user.AgeGTE(18)`, a flat namespace of hundreds)
 and Bun/GORM's `"age >= ?"`. Methods on typed handles give a smaller namespace,
@@ -660,6 +668,35 @@ err := m.Update(ctx, ex)
 
 One compiled statement per distinct dirty mask, so a hundred call sites that set
 the same two columns share one statement.
+
+### Assignments the database computes
+
+Some values must not come from Go. A timestamp bound from `time.Now()` records
+when *this* server thought it was, and servers skew; a counter incremented in
+Go is a read-modify-write, so two concurrent writers both read N and both write
+N+1 and one increment vanishes.
+
+Timestamp columns get a `Set…Now`, integer columns an `Inc…`:
+
+```go
+m := session.MutateKey(id)   // no prior read: the address is all it needs
+m.SetLastSeenAtNow()         // last_seen_at = now()
+m.IncViewCount()             // view_count = view_count + 1
+err := m.Update(ctx, ex)     // ONE round trip
+```
+
+The expression is chosen by storm from the column's type — there is no way to
+pass SQL text, which keeps statement fragments out of Go and the statement
+cache bounded. A column assigned both ways keeps the last call: the two setters
+clear each other, so a column is never assigned twice in one statement.
+
+`Update` reads the row back in the same statement when an expression was used,
+so `m.Row()` is the row that now exists rather than the one that used to. The
+batch form (`UpdateOp`) does not, because a batch reports counts, not rows.
+
+`MutateKey` is not generated for a table with a version column: an optimistic
+lock needs the version that was read, and an address alone carries zero and
+matches nothing.
 
 ## 9. Unit of work — explicit, batched, FK-ordered
 

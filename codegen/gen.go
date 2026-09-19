@@ -322,6 +322,12 @@ var ops = []opDef{
 	{name: "Gte", args: 1},
 	{name: "Lt", args: 1},
 	{name: "Lte", args: 1},
+	// Case-insensitive equality, lowered as lower(col) = lower($1) so it
+	// matches an index declared with storm.Lower. Its own operator rather
+	// than a flag on Eq: the two produce different SQL and therefore
+	// different statements, and a caller should be able to see which one
+	// they asked for at the call site.
+	{name: "EqLower", args: 1},
 	{name: "Like", args: 1},
 	{name: "ILike", args: 1},
 	{name: "Matches", args: 1},

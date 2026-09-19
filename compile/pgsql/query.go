@@ -154,6 +154,23 @@ var frags = map[string]struct{ a, b string }{
 	"HasAllKeys":      {" ?& " + Placeholder, ""},
 	"IsNull":          {" IS NULL", ""},
 	"IsNotNull":       {" IS NOT NULL", ""},
+	// Case-insensitive equality, spelled the way the INDEX is. A unique index
+	// on lower(username) is only reachable by a predicate whose left side is
+	// the same expression: `"username" = lower($1)` reads the whole table.
+	// So the column is wrapped too — see prefixes.
+	"EqLower": {") = lower(" + Placeholder, ")"},
+}
+
+// prefixes wrap the IDENTIFIER for operators whose left side is an expression
+// rather than the bare column. An operator absent here takes no prefix, which
+// is every operator that compares the column itself.
+//
+// This is what makes an expression index reachable. The planner matches a
+// predicate to `CREATE INDEX ... (lower(username))` by comparing expression
+// trees, so the query has to say lower(username) — not username, and not
+// upper(), and not a collation.
+var prefixes = map[string]string{
+	"EqLower": "lower(",
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is
@@ -163,7 +180,7 @@ func Frag(op, ident string) (a, b string, ok bool) {
 	if !ok {
 		return "", "", false
 	}
-	return ident + f.a, f.b, true
+	return prefixes[op] + ident + f.a, f.b, true
 }
 
 // Ordering.

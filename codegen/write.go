@@ -58,6 +58,34 @@ func updatable(t *schema.Table) []colInfo {
 	return out
 }
 
+// setExpr is the server-side assignment a column may take INSTEAD of a bound
+// value. storm picks it from the column's type; a caller never supplies SQL.
+//
+// That restriction is the whole design. The reason these assignments exist is
+// that the database must compute them — a timestamp so every row a transaction
+// stamps agrees and no app-server clock skew leaks in, a counter so two
+// concurrent writers cannot both read N and both write N+1. Letting a caller
+// pass arbitrary text would put statement fragments back in Go, which is what
+// the builder exists to prevent, and would unbound the statement cache besides.
+type setExpr uint8
+
+const (
+	exprNone setExpr = iota
+	exprNow
+	exprInc
+)
+
+// colExpr reports which expression a column admits, if any.
+func colExpr(c *schema.Column) setExpr {
+	switch goKind(c) {
+	case kindTimestamptz:
+		return exprNow
+	case kindInt2, kindInt4, kindInt8:
+		return exprInc
+	}
+	return exprNone
+}
+
 func versionCol(t *schema.Table) *schema.Column {
 	for _, c := range t.Columns {
 		if c.Version {
@@ -112,7 +140,7 @@ func (g *gen) writes() {
 	}
 
 	g.writeConsts(ins, upd, pk)
-	g.mutType(upd)
+	g.mutType(upd, pk)
 	g.insType(ins)
 	g.insertFn(ins)
 	g.copyFn(ins)
@@ -168,6 +196,25 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	for _, c := range upd {
 		a, b := g.lw.SetFrag(c.Name())
 		g.p("\t{A: %q, B: %q}, // %s", a, b, c.Name())
+	}
+	g.p("}")
+	g.p("")
+
+	g.p("// exprFrags is the SERVER-side assignment each column may take instead")
+	g.p("// of a bound value. A zero Frag means the column admits none. None of")
+	g.p("// these end in a placeholder sigil, so none consumes an argument slot.")
+	g.p("var exprFrags = [nUpdatable]runtime.Frag{")
+	for _, c := range upd {
+		switch colExpr(c.col) {
+		case exprNow:
+			a, b := g.lw.NowFrag(c.Name())
+			g.p("\t{A: %q, B: %q}, // %s = the database's clock", a, b, c.Name())
+		case exprInc:
+			a, b := g.lw.BumpFrag(c.Name())
+			g.p("\t{A: %q, B: %q}, // %s = its own value plus one", a, b, c.Name())
+		default:
+			g.p("\t{}, // %s has no server-side form", c.Name())
+		}
 	}
 	g.p("}")
 	g.p("")
@@ -249,29 +296,83 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	g.p("// batch the statement that asks for rows back.")
 	g.p("var insOpCache = runtime.NewMaskCache()")
 	g.p("var updCache = runtime.NewMaskCache()")
+	if g.lw.canReturn() {
+		g.p("")
+		g.p("// updOpCache is the batch path's, for the same reason as insOpCache:")
+		g.p("// an UPDATE that let the database compute a value reads the row back,")
+		g.p("// and a batch does not read rows.")
+		g.p("var updOpCache = runtime.NewMaskCache()")
+		g.p("")
+		g.p("// updReturning refreshes the staged row after the database computed")
+		g.p("// part of it. Without it m.Row() would hold what the row held BEFORE")
+		g.p("// the statement, so a caller reading back the counter it just")
+		g.p("// incremented would get the old number and never know.")
+		g.p("const updReturning = %q", g.lw.ReturningClause(allReadable(g.t)))
+	}
 	g.p("")
 	g.p("// Masks reports how many distinct UPDATE shapes have compiled.")
 	g.p("func Masks() int { return updCache.Masks() }")
 	g.p("")
 }
 
-func (g *gen) mutType(upd []colInfo) {
+func (g *gen) mutType(upd, pk []colInfo) {
 	g.p("// Mut is a row staged for update: the values, plus which of them were")
 	g.p("// actually assigned. An UPDATE writes the assigned ones and no others,")
 	g.p("// so a read-modify-write cannot clobber a column it never looked at.")
 	g.p("type Mut struct {")
 	g.p("\trow   Row")
 	g.p("\tdirty uint64")
+	g.p("\texpr  uint64")
 	g.p("}")
 	g.p("")
 	g.p("// Mutate stages a row read from the database.")
 	g.p("func Mutate(r Row) Mut { return Mut{row: r} }")
 	g.p("")
+	// A caller who has not read the row still has a legitimate update to make
+	// when the DATABASE computes the value: `last_seen_at = now()` needs no
+	// prior value, and a SELECT to obtain one would be a round trip that
+	// changes nothing about the statement that follows.
+	if versionCol(g.t) == nil {
+		params := make([]string, len(pk))
+		for i, c := range pk {
+			params[i] = fmt.Sprintf("%s %s", lowerFirst(exportName(c.Name())), c.goBase)
+		}
+		g.p("// MutateKey stages an update addressed by primary key alone, for a")
+		g.p("// caller that has not read the row.")
+		g.p("//")
+		g.p("// Only assigned columns are written, so the fields left zero here are")
+		g.p("// never referenced — the staged row is an address, not a value. It")
+		g.p("// pairs with the server-side setters: one statement, no prior read.")
+		g.p("func MutateKey(%s) Mut {", strings.Join(params, ", "))
+		g.p("\treturn Mut{row: Row{")
+		for i, c := range pk {
+			g.p("\t\t%s: %s,", exportName(c.Name()), lowerFirst(exportName(pk[i].Name())))
+		}
+		g.p("\t}}")
+		g.p("}")
+		g.p("")
+	} else {
+		g.p("// There is no MutateKey on this table. The version column makes every")
+		g.p("// update an optimistic lock, and a lock needs the version that was")
+		g.p("// READ — an address alone would carry zero and match nothing, which")
+		g.p("// reads as ErrStaleWrite and tells the caller the wrong story.")
+		g.p("")
+	}
 	g.p("// Row returns the staged values.")
 	g.p("func (m Mut) Row() Row { return m.row }")
 	g.p("")
-	g.p("// Dirty reports the assigned-column mask, which is also the statement key.")
+	g.p("// Dirty reports the columns assigned a bound value.")
 	g.p("func (m Mut) Dirty() uint64 { return m.dirty }")
+	g.p("")
+	g.p("// Expr reports the columns assigned a server-side expression. Together")
+	g.p("// with Dirty it is the statement key: the same column written two ways")
+	g.p("// is two different statements, and one cannot bind the other's args.")
+	g.p("func (m Mut) Expr() uint64 { return m.expr }")
+	g.p("")
+	g.p("// key is this Mut's statement identity.")
+	g.p("func (m Mut) key() runtime.MaskKey {")
+	g.p("\treturn runtime.MaskKey{Dirty: m.dirty, Expr: m.expr}")
+	g.p("}")
 	g.p("")
 	g.p("// Setters. There is deliberately no setter for the primary key, for an")
 	g.p("// Immutable column, or for the version column: the absence of a method is")
@@ -284,8 +385,37 @@ func (g *gen) mutType(upd []colInfo) {
 		g.p("func (m *Mut) Set%s(v %s) {", n, c.goBase)
 		g.p("\tm.row.%s = %s", n, mutAssign(c))
 		g.p("\tm.dirty |= d%s", n)
+		g.p("\tm.expr &^= d%s", n)
 		g.p("}")
 		g.p("")
+		// The server-side form, where the column has one. It takes no argument
+		// because there is nothing for the caller to supply: the point is that
+		// the DATABASE computes the value.
+		switch colExpr(c.col) {
+		case exprNow:
+			g.p("// Set%sNow assigns the database's clock, not this process's.", n)
+			g.p("//")
+			g.p("// Binding time.Now() instead would record when THIS server")
+			g.p("// thought it was. Servers skew, so rows written seconds apart")
+			g.p("// can land out of order, and an event stamped by a fast clock")
+			g.p("// reads as preceding the thing that caused it.")
+			g.p("func (m *Mut) Set%sNow() {", n)
+			g.p("\tm.expr |= d%s", n)
+			g.p("\tm.dirty &^= d%s", n)
+			g.p("}")
+			g.p("")
+		case exprInc:
+			g.p("// Inc%s adds one to the column's OWN value, in the database.", n)
+			g.p("//")
+			g.p("// Computing it in Go makes it a read-modify-write: two callers")
+			g.p("// who both read N both write N+1, and one increment is lost")
+			g.p("// with nothing to show that it happened.")
+			g.p("func (m *Mut) Inc%s() {", n)
+			g.p("\tm.expr |= d%s", n)
+			g.p("\tm.dirty &^= d%s", n)
+			g.p("}")
+			g.p("")
+		}
 		if isNullable(c.col) {
 			// Writing NULL needs its own method. Overloading the setter with a
 			// sentinel value would make NULL and the zero value the same
@@ -295,6 +425,7 @@ func (g *gen) mutType(upd []colInfo) {
 			g.p("func (m *Mut) Set%sNull() {", n)
 			g.p("\tm.row.%s = runtime.Null[%s]{}", n, c.goBase)
 			g.p("\tm.dirty |= d%s", n)
+			g.p("\tm.expr &^= d%s", n)
 			g.p("}")
 			g.p("")
 		}
@@ -768,7 +899,7 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\t// The conflict clause is part of the statement, so it must be part of")
 	g.p("\t// the key. Packing it above the column bits keeps one cache for both.")
 	g.p("\tkey := mask | uint64(conflict)<<nInsertable")
-	g.p("\tif st := insCache.Get(key); st != nil {")
+	g.p("\tif st := insCache.Get(runtime.MaskKey{Dirty: key}); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
 	g.p("\tcols := make([]string, 0, nInsertable)")
@@ -789,7 +920,7 @@ func (g *gen) insType(ins []colInfo) {
 		g.p("\tsuffix := insReturning")
 		g.p("\t_ = conflict // this target has no conflict handling")
 	}
-	g.p("\treturn insCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))")
+	g.p("\treturn insCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
 	g.p("")
 
@@ -938,14 +1069,37 @@ func (g *gen) insertFnNoReturn(ins []colInfo) {
 func (g *gen) updateFn(upd, pk []colInfo) {
 	hasVersion := versionCol(g.t) != nil
 
-	g.p("// stmtForMask compiles the UPDATE for one dirty mask, once.")
-	g.p("func stmtForMask(mask uint64) *runtime.Stmt {")
-	g.p("\tif st := updCache.Get(mask); st != nil {")
+	refresh := g.lw.canReturn()
+
+	g.p("// stmtForKey compiles the UPDATE for one (dirty, expr) pair, once.")
+	g.p("//")
+	g.p("// The pair is the identity, not the dirty mask alone: the same column")
+	g.p("// assigned a bound value and assigned a server-side expression are two")
+	g.p("// different statements, and the arguments of one do not fit the other.")
+	if refresh {
+		g.p("//")
+		g.p("// ret picks the cache as well as the suffix. The batch path passes")
+		g.p("// false — it cannot read rows back, so it must not ask for them.")
+		g.p("func stmtForKey(k runtime.MaskKey, ret bool) *runtime.Stmt {")
+		g.p("\tcache := updCache")
+		g.p("\tif !ret {")
+		g.p("\t\tcache = updOpCache")
+		g.p("\t}")
+	} else {
+		g.p("func stmtForKey(k runtime.MaskKey) *runtime.Stmt {")
+		g.p("\tcache := updCache")
+	}
+	g.p("\tif st := cache.Get(k); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
 	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
 	g.p("\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\tif mask&(1<<uint(i)) != 0 {")
+	g.p("\t\t// An expression wins: a column set both ways cannot happen,")
+	g.p("\t\t// because each setter clears the other's bit.")
+	g.p("\t\tswitch {")
+	g.p("\t\tcase k.Expr&(1<<uint(i)) != 0:")
+	g.p("\t\t\tset = append(set, exprFrags[i])")
+	g.p("\t\tcase k.Dirty&(1<<uint(i)) != 0:")
 	g.p("\t\t\tset = append(set, setFrags[i])")
 	g.p("\t\t}")
 	g.p("\t}")
@@ -980,10 +1134,23 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 		g.p("\t// A deleted row is not updatable: every read here says it is gone.")
 		g.p("\twhere = append(where, runtime.Frag{A: %s})", lit(alive))
 	}
-	g.p("\treturn updCache.Put(mask, %s(updatePrefix, []runtime.Section{", g.spliceFn())
+	tail := g.spliceTail()
+	if refresh {
+		g.p("\t// Only an expression needs reading back. A plain UPDATE already")
+		g.p("\t// knows every value it wrote, so it pays no RETURNING.")
+		g.p("\tsuffix := \"\"")
+		g.p("\tif ret && k.Expr != 0 {")
+		g.p("\t\tsuffix = updReturning")
+		g.p("\t}")
+		tail = "suffix"
+		if g.lw.PlaceholderExpr != "" {
+			tail += ", " + g.lw.PlaceholderExpr
+		}
+	}
+	g.p("\treturn cache.Put(k, %s(updatePrefix, []runtime.Section{", g.spliceFn())
 	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
 	g.p("\t\t{Lead: %q, Sep: %q, Frags: where},", g.lw.WhereLead, g.lw.WhereSep)
-	g.p("\t}, %s))", g.spliceTail())
+	g.p("\t}, %s))", tail)
 	g.p("}")
 	g.p("")
 
@@ -999,11 +1166,27 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 	g.p("// Assigning nothing is not an error and issues no statement — an UPDATE")
 	g.p("// with an empty SET list is not valid SQL, and a caller looping over")
 	g.p("// possibly-changed fields should not have to special-case the empty case.")
+	if refresh {
+		g.p("//")
+		g.p("// An assignment the DATABASE computes is read back in the same")
+		g.p("// statement, so m.Row() is the row that now exists rather than the")
+		g.p("// one that used to. A second SELECT would race every other writer,")
+		g.p("// which is the same reason Insert reads its row back.")
+	} else {
+		g.p("//")
+		g.p("// An assignment the database computes is NOT read back: the %s", g.lw.name)
+		g.p("// target cannot return the row it wrote. m.Row() keeps the value the")
+		g.p("// column had before the statement, and the database keeps the new one.")
+	}
 	g.p("func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {")
-	g.p("\tif m.dirty == 0 {")
+	g.p("\tif m.dirty == 0 && m.expr == 0 {")
 	g.p("\t\treturn nil")
 	g.p("\t}")
-	g.p("\tst := stmtForMask(m.dirty)")
+	if refresh {
+		g.p("\tst := stmtForKey(m.key(), true)")
+	} else {
+		g.p("\tst := stmtForKey(m.key())")
+	}
 	g.p("\tif st.Err != nil {")
 	g.p("\t\t// A malformed token stream is a code-generation bug. Executing it")
 	g.p("\t\t// would run a query whose filter is not the one that was asked for.")
@@ -1027,24 +1210,64 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 	if v := versionCol(g.t); v != nil {
 		g.p("\targs = append(args, m.row.%s)", exportName(v.Name))
 	}
+	miss := "runtime.ErrNoRow"
+	if hasVersion {
+		miss = "runtime.ErrStaleWrite"
+	}
+	if refresh {
+		g.p("\tif m.expr != 0 {")
+		g.p("\t\treturn m.updateReturning(ctx, ex, st, args)")
+		g.p("\t}")
+	}
 	g.p("\tn, err := ex.Exec(ctx, st.SQL, args)")
 	g.p("\tif err != nil {")
 	g.p("\t\treturn err")
 	g.p("\t}")
 	g.p("\tif n == 0 {")
-	if hasVersion {
-		g.p("\t\treturn runtime.ErrStaleWrite")
-	} else {
-		g.p("\t\treturn runtime.ErrNoRow")
-	}
+	g.p("\t\treturn %s", miss)
 	g.p("\t}")
 	g.p("\tm.dirty = 0")
+	g.p("\tm.expr = 0")
 	if v := versionCol(g.t); v != nil {
 		g.p("\tm.row.%s++ // the database incremented it; keep the staged row usable", exportName(v.Name))
 	}
 	g.p("\treturn nil")
 	g.p("}")
 	g.p("")
+
+	if refresh {
+		g.p("// updateReturning runs an UPDATE that let the database compute part of")
+		g.p("// the row, and reads the whole row back into the staged copy.")
+		g.p("//")
+		g.p("// Every column, not just the computed ones: a trigger may have touched")
+		g.p("// anything, and a staged row that is fresh in two fields and stale in")
+		g.p("// the rest is harder to reason about than one that is simply current.")
+		g.p("func (m *Mut) updateReturning(ctx context.Context, ex runtime.Executor, st *runtime.Stmt, args []any) error {")
+		g.p("\trows, err := ex.Query(ctx, st.SQL, args)")
+		g.p("\tif err != nil {")
+		g.p("\t\treturn err")
+		g.p("\t}")
+		g.p("\tdefer rows.Close()")
+		g.p("\tif !rows.Next() {")
+		g.p("\t\tif err := rows.Err(); err != nil {")
+		g.p("\t\t\treturn err")
+		g.p("\t\t}")
+		g.p("\t\treturn %s", miss)
+		g.p("\t}")
+		g.p("\t// The staged row owns this arena, the way an inserted row does.")
+		g.p("\tvar sl runtime.Slab")
+		g.p("\tif err := scan(rows.RawValues(), &m.row, &sl); err != nil {")
+		g.p("\t\treturn err")
+		g.p("\t}")
+		g.p("\tif err := rows.Err(); err != nil {")
+		g.p("\t\treturn err")
+		g.p("\t}")
+		g.p("\tm.dirty = 0")
+		g.p("\tm.expr = 0")
+		g.p("\treturn nil")
+		g.p("}")
+		g.p("")
+	}
 }
 
 // softDeleteFns replaces Delete on a table that deletes by marking.
@@ -1245,7 +1468,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	g.p("// one would hand a batch the statement that asks for rows back.")
 	g.p("func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {")
 	g.p("\tkey := mask | uint64(conflict)<<nInsertable")
-	g.p("\tif st := insOpCache.Get(key); st != nil {")
+	g.p("\tif st := insOpCache.Get(runtime.MaskKey{Dirty: key}); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
 	g.p("\tcols := make([]string, 0, nInsertable)")
@@ -1263,7 +1486,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 		g.p("\tsuffix := \"\"")
 		g.p("\t_ = conflict // this target has no conflict handling")
 	}
-	g.p("\treturn insOpCache.Put(key, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))")
+	g.p("\treturn insOpCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))")
 	g.p("}")
 	g.p("")
 
@@ -1272,11 +1495,19 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	g.p("// The optimistic lock still applies, but the caller must check the")
 	g.p("// affected count the batch reports: a stale write inside a batch is not")
 	g.p("// an error the driver raises, it is a zero the caller has to notice.")
+	g.p("//")
+	g.p("// A server-side assignment is queued like any other, but the staged row")
+	g.p("// is NOT refreshed: a batch reports counts, not rows. Use Update when")
+	g.p("// the computed value is the thing you need.")
 	g.p("func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {")
-	g.p("\tif m.dirty == 0 {")
+	g.p("\tif m.dirty == 0 && m.expr == 0 {")
 	g.p("\t\treturn runtime.BatchOp{}, false")
 	g.p("\t}")
-	g.p("\tst := stmtForMask(m.dirty)")
+	if g.lw.canReturn() {
+		g.p("\tst := stmtForKey(m.key(), false)")
+	} else {
+		g.p("\tst := stmtForKey(m.key())")
+	}
 	g.p("\targs := make([]any, 0, st.NArg)")
 	g.p("\tfor i := 0; i < nUpdatable; i++ {")
 	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")

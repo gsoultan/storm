@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-17
+updated: 2026-09-19
 ---
 
 # Changelog
@@ -11,6 +11,62 @@ may change with a minor bump; what is promised, and for how long, is
 
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
+
+## v0.16.0 — 2026-09-19
+
+Three things an adopter had to write as SQL, and a cache that could answer with
+the wrong statement.
+
+- **A warm `MaskCache` hit could return another mask's UPDATE.** The mask and
+  the statement were published as two separate atomics, written in sequence.
+  Two goroutines warming different masks interleave those writes and leave the
+  mask from one beside the statement from the other; the next hit on that mask
+  returns an UPDATE compiled for a different column set, and the caller binds
+  its arguments against those placeholders. Wrong columns written, or a bind
+  error, depending on the two masks.
+
+  Every access was atomic, so this was never a data race and `-race` could not
+  see it — only the *pairing* was unsynchronised. `TreeCache` already had the
+  shape right: one atomic pointer carrying key and value together. `MaskCache`
+  does the same now, interning the pair in `Put` so `Get` stays
+  allocation-free. The test fails on round 0 before the fix.
+
+- **`bytea` is a builder predicate.** It was excluded from `Eq` alongside jsonb
+  and arrays, whose equality genuinely surprises. bytea's does not: it is byte
+  for byte, which is exactly what a hash lookup means. Excluding it made every
+  digest-keyed table unreachable from a builder — refresh tokens, one-time
+  tokens and session cookies are all looked up by hash and by nothing else.
+
+- **Assignments the database computes.** A timestamp bound from `time.Now()`
+  records when *that server* thought it was, and servers skew; a counter
+  incremented in Go is a read-modify-write, so two concurrent writers both read
+  N, both write N+1, and one increment vanishes with nothing to show it
+  happened. Timestamp columns now get `Set…Now`, integer columns `Inc…`, and
+  the expression is chosen by storm from the column's TYPE — there is no way to
+  pass SQL text, which keeps fragments out of Go and the statement cache
+  bounded.
+
+  `Update` reads the row back in the same statement when an expression was
+  used, so `Row()` is the row that now exists rather than the one that used to;
+  a second SELECT would race every other writer. `MutateKey` addresses an
+  update by primary key alone, for the caller who has nothing to read first —
+  `last_seen_at = now()` needs no prior value, and fetching one would be a
+  round trip that changes nothing. It is not generated for a table with a
+  version column: an optimistic lock needs the version that was READ.
+
+- **`EqLower` reaches an expression index.** `storm.Lower(&u.Email)` could
+  declare a unique index on `lower(email)`, but no predicate could match it:
+  the planner compares expression trees, so `"email" = $1` reads the whole
+  table. `EqLower` lowers to `lower("email") = lower($1)`. It is its own
+  operator rather than a flag on `Eq` because the two produce different SQL,
+  and a call site should say which one it asked for. Proven with EXPLAIN, with
+  `Eq` as the control: if both reached the index the test would prove nothing.
+
+Also: `tool`'s CLI tests wrote their scratch package into the module as
+`internal/clistale<pid>`, so a shuffled `go test ./...` could list it mid-life
+and fail with "no required module provides package" — a red suite naming a
+package nobody wrote. The directory is now `_`-prefixed, which the go tool
+ignores.
 
 ## v0.15.0 — 2026-09-17
 

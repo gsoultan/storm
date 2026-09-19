@@ -26,8 +26,8 @@ func TestMaskCacheHitMatchesTheMaskAskedFor(t *testing.T) {
 		c := NewMaskCache()
 		a := &Stmt{SQL: "A", NArg: 1}
 		b := &Stmt{SQL: "B", NArg: 2}
-		c.Put(1, a)
-		c.Put(2, b)
+		c.Put(MaskKey{Dirty: 1}, a)
+		c.Put(MaskKey{Dirty: 2}, b)
 
 		var wg sync.WaitGroup
 		bad := make(chan string, perMask*2)
@@ -42,7 +42,7 @@ func TestMaskCacheHitMatchesTheMaskAskedFor(t *testing.T) {
 					defer wg.Done()
 					<-start
 					for i := 0; i < spins; i++ {
-						if got := c.Get(mask); got != nil && got != want {
+						if got := c.Get(MaskKey{Dirty: mask}); got != nil && got != want {
 							select {
 							case bad <- "statement " + got.SQL + " returned for mask of " + want.SQL:
 							default:
@@ -65,11 +65,11 @@ func TestMaskCacheHitMatchesTheMaskAskedFor(t *testing.T) {
 // The warm path is on every write. It must not allocate.
 func TestMaskCacheGetDoesNotAllocate(t *testing.T) {
 	c := NewMaskCache()
-	c.Put(1, &Stmt{SQL: "A"})
-	c.Put(2, &Stmt{SQL: "B"})
+	c.Put(MaskKey{Dirty: 1}, &Stmt{SQL: "A"})
+	c.Put(MaskKey{Dirty: 2}, &Stmt{SQL: "B"})
 	if n := testing.AllocsPerRun(1000, func() {
-		c.Get(1)
-		c.Get(2)
+		c.Get(MaskKey{Dirty: 1})
+		c.Get(MaskKey{Dirty: 2})
 	}); n != 0 {
 		t.Fatalf("Get allocates %v times per pair; the entry is interned and should just be published", n)
 	}

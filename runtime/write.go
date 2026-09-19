@@ -71,10 +71,10 @@ type MaskCache struct {
 	hot atomic.Pointer[maskEntry]
 
 	mu      sync.RWMutex
-	entries map[uint64]*maskEntry
+	entries map[MaskKey]*maskEntry
 }
 
-// maskEntry pairs a mask with its statement so the warm path can publish both
+// maskEntry pairs a key with its statement so the warm path can publish both
 // in ONE atomic store.
 //
 // They were two atomics — a uint64 and a *Stmt — written in sequence. Two
@@ -86,21 +86,29 @@ type MaskCache struct {
 // unsynchronised. Interning the pair and publishing the pointer makes the
 // mismatch unrepresentable.
 type maskEntry struct {
-	mask uint64
+	key  MaskKey
 	stmt *Stmt
 }
 
-func NewMaskCache() *MaskCache { return &MaskCache{entries: map[uint64]*maskEntry{}} }
+// MaskKey identifies one UPDATE shape.
+//
+// Dirty is the columns assigned a bound value; Expr is the columns assigned a
+// server-side expression instead. They are separate because the two produce
+// different SQL for the same column — one a placeholder, one an expression —
+// and a statement compiled for one cannot bind the arguments of the other.
+type MaskKey struct{ Dirty, Expr uint64 }
 
-// Get returns the statement for a mask, or nil. Allocation-free — the entry is
-// interned by Put — and on the common case of one mask repeated it is one
+func NewMaskCache() *MaskCache { return &MaskCache{entries: map[MaskKey]*maskEntry{}} }
+
+// Get returns the statement for a key, or nil. Allocation-free — the entry is
+// interned by Put — and on the common case of one shape repeated it is one
 // atomic load and a compare.
-func (c *MaskCache) Get(mask uint64) *Stmt {
-	if h := c.hot.Load(); h != nil && h.mask == mask {
+func (c *MaskCache) Get(k MaskKey) *Stmt {
+	if h := c.hot.Load(); h != nil && h.key == k {
 		return h.stmt
 	}
 	c.mu.RLock()
-	e := c.entries[mask]
+	e := c.entries[k]
 	c.mu.RUnlock()
 	if e == nil {
 		return nil
@@ -109,18 +117,18 @@ func (c *MaskCache) Get(mask uint64) *Stmt {
 	return e.stmt
 }
 
-// Put interns a statement. Two goroutines compiling the same mask is harmless;
+// Put interns a statement. Two goroutines compiling the same key is harmless;
 // the first one interned wins and both return the same pointer, so a shape
 // never has two slab hints racing.
-func (c *MaskCache) Put(mask uint64, st *Stmt) *Stmt {
+func (c *MaskCache) Put(k MaskKey, st *Stmt) *Stmt {
 	c.mu.Lock()
-	if prev, ok := c.entries[mask]; ok {
+	if prev, ok := c.entries[k]; ok {
 		c.mu.Unlock()
 		c.hot.Store(prev)
 		return prev.stmt
 	}
-	e := &maskEntry{mask: mask, stmt: st}
-	c.entries[mask] = e
+	e := &maskEntry{key: k, stmt: st}
+	c.entries[k] = e
 	c.mu.Unlock()
 	c.hot.Store(e)
 	return st
