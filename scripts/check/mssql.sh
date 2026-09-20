@@ -97,10 +97,14 @@ cov() { # <package> <floor>
 }
 cov ./runtime/msdrv 55
 cov ./runtime/msdec 85
-# tool, whole. The other job measures it without a SQL Server and therefore
-# without the escape hatch's SQL Server half, so its floor there is two points
-# lower and says why.
-cov ./tool 75
+# tool is NOT floored here, and that is a deliberate answer to a question this
+# gate asked and got wrong once. No single job can measure it whole: the other
+# one has PostgreSQL and no SQL Server (69%), this one has SQL Server and no
+# PostgreSQL (54%), and only a developer with both sees 83%. A floor is a
+# tripwire against code nothing runs, and the SQL Server half of the escape
+# hatch IS run — by the three live tests in this job, which fail the build
+# directly. A number neither environment can reach is instrument noise, not a
+# gate.
 
 if [ "$fail" -eq 0 ]; then
   echo "OK: storm's SQL Server DDL applies, and every statement it lowers runs"
