@@ -224,6 +224,44 @@ both 83%. It is floored once, where the view is widest. `msdrv` and `msdec` are
 floored in `scripts/check/mssql.sh` for the same reason. A number no environment
 can reach is instrument noise rather than a gate.
 
+### Introspection, and what it unblocked
+
+`schema/mssql.Introspect` reads `sys.tables` and friends into the IR, and
+`storm import -dialect mssql` turns a live database into a Go model. Tested as a
+ROUND TRIP — model → DDL → server → model — because a field-by-field assertion
+passes while every string width is silently halved.
+
+Three things the catalogue makes you handle:
+
+- `max_length` is BYTES and an nvarchar's characters are two of them.
+- A default is stored with the catalogue's own parentheses: `((0))`,
+  `(newid())`. Peeled, but only while they wrap the WHOLE expression.
+- `-schema` defaults to "public", which is not a SQL Server convention at all —
+  it maps to `dbo` here, or the default imports nothing and says nothing.
+
+storm's enums are an NVARCHAR and a CHECK here, so there is nothing to read
+back. The CHECK is imported as a check and the enum-ness is NOT invented; the
+test asserts no enum appears.
+
+### migrate.Auto for SQL Server: the option is open, the work is a milestone
+
+Introspection was the prerequisite and it exists now. The port itself is not a
+dialect switch:
+
+- `migrate/diff.go` calls `pgddl.` in 21 places and builds `Change.SQL` inline.
+  A DDL seam inside migrate is what it needs — the `codegen.lowering` of DDL.
+- The advisory lock is `pg_advisory_lock`; SQL Server's is `sp_getapplock`.
+- Normalisation goes through a scratch SCHEMA and a `search_path`; there is no
+  `search_path` here, so it wants a scratch DATABASE (which the raw-query path
+  already does).
+- `CREATE INDEX CONCURRENTLY` has no free equivalent: `WITH (ONLINE = ON)` is
+  Enterprise-only, so `NoTransaction` means something different.
+
+And it is the one component that WRITES DDL to a production database, which is
+the last place to hurry. `storm ddl -dialect mssql` covers the stated path —
+ADR-0001 says DDL is migration-mediated — so this is a FEATURE decision rather
+than a gap in what M10 shipped.
+
 ### M10 is done
 
 Lowering, DDL, TDS client, decoder family, codegen, upsert and bulk load — all
