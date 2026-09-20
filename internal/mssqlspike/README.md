@@ -1,4 +1,4 @@
-# M10 driver spike — what go-mssqldb costs, and what SQL Server has
+# M10: the driver measurement, and the gate that came out of it
 
 `docs/PLAN.md` set the rule at M9 and it applies again: the driver question is
 "a fork that exposes the result rows, or an implementation of the protocol
@@ -9,8 +9,18 @@ reached 1.07 allocations per row where the best library path cost 8.07. This is
 the same measurement for SQL Server, plus the half M9 did not need — whether
 the engine has the constructs the milestone's exit gate names at all.
 
-A SEPARATE module, so storm's own `go.mod` gains no SQL Server dependency for a
-measurement.
+A SEPARATE module, so storm's own `go.mod` gains no SQL Server dependency — not
+for the measurement below, and not for the gate this grew into.
+
+**What this is now.** It started as two questions asked before M10 began. It is
+also where `scripts/check/mssql.sh` runs: the borrowed client is used to carry
+storm's own emitted text to a server, so `compile/mssql` and `compile/msddl` are
+executed rather than only rendered. `ddl_test.go` applies the DDL, and
+`lowering_test.go` and `declared_test.go` PREPARE and EXECUTE every statement
+the lowering can produce. That gate exists BEFORE `runtime/msdrv` does, on
+purpose: the SQL is the half that can be proven with somebody else's client, and
+proving it after writing a driver against untested SQL is the order M9 showed
+is expensive.
 
 ## Running it
 
@@ -21,8 +31,12 @@ image is Azure SQL Edge, which reports as 15.0 (the SQL Server 2019 level):
       -e MSSQL_SA_PASSWORD='Storm!Passw0rd' mcr.microsoft.com/azure-sql-edge:latest
 
     STORM_MSSQL_DSN='sqlserver://sa:Storm%21Passw0rd@<ip>:1433?encrypt=disable' \
-      go test -run TestEveryConstruct -v
-    STORM_MSSQL_DSN=... go test -run XXX -bench . -benchtime 30x
+      go test ./...                                   # the gate
+    STORM_MSSQL_DSN=... go test -run XXX -bench . -benchtime 30x   # the measurement
+
+Or from the repository root, which is what CI runs:
+
+    STORM_MSSQL_DSN=... ./scripts/check/mssql.sh
 
 ## Result 1: the engine has everything M10's gate names
 

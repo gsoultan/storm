@@ -67,6 +67,12 @@ check: test    ## everything CI gates on — run this before opening a PR
 	@# pushing. A gate CI runs and the pre-PR target skips is a gate you learn
 	@# about from GitHub.
 	STORM_DSN='$(DSN)' ./scripts/check/outsider.sh
+	@# M10's gate. Skips silently without STORM_MSSQL_DSN, because a SQL Server
+	@# is the one service a developer is least likely to have running — but it
+	@# is in `check` rather than only in CI for the reason the outsider note
+	@# above gives: a gate CI runs and the pre-PR target skips is a gate you
+	@# learn about from GitHub.
+	./scripts/check/mssql.sh
 
 example:       ## the Go kit example: its own module, generated and tested
 	cd examples/orders && \

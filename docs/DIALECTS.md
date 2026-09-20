@@ -47,6 +47,40 @@ answers do not is widened, and named here.
 | `HasAnyKey` / `HasAllKeys` | `?\|` and `?&` | `JSON_OVERLAPS` / `JSON_CONTAINS` over `JSON_KEYS` | No such operators. One bound value either way, so the statement's shape does not depend on how many keys were asked for. The value is not cast: MariaDB has no `CAST(… AS JSON)` |
 | `storm.SQL` escape hatch | validated by PREPARE | **refused** | The allow-list is built by PREPAREing against a real PostgreSQL. Generating for MySQL with raw queries registered would ship them unchecked |
 
+## What differs on SQL Server, and why
+
+Measured 2026-09-20 against Azure SQL Edge 15.0 (arm64) and gated in CI against
+`mcr.microsoft.com/mssql/server`. The lowering is `compile/mssql` and
+`compile/msddl`; `scripts/check/mssql.sh` runs every statement of it.
+
+The shape of the list is different from MySQL's. MySQL's differences are mostly
+things it LACKS; SQL Server's are mostly things it POSITIONS differently — and
+three of the entries below are capabilities MySQL had to refuse.
+
+| Construct | PostgreSQL | SQL Server | Why |
+|---|---|---|---|
+| placeholder | `$1` | `@p1` | Parameters are NAMED, and a name is an identifier, so `@1` is a syntax error rather than a terse `@p1`. Because they are names, a reused ordinal binds ONCE — which MySQL's positional `?` cannot do, and which is what makes the two rows below possible |
+| keyset row comparison | `(a, b) > ($1, $2)` | expanded to an OR-chain | There is no row constructor. The expansion mentions each name twice and binds each value once |
+| declared parameter in two union branches | one value | one value | Named, so this crosses unchanged. `compile/mysql` refuses it outright |
+| row cap | `LIMIT n OFFSET m` | `OFFSET m ROWS FETCH NEXT n ROWS ONLY` | A clause OF `ORDER BY`, so a capped read with no ordering is a syntax error — `ORDER BY (SELECT NULL)` is the fallback. The operands are also REVERSED, so the paging arguments bind offset first |
+| existence probe cap | `LIMIT 1` | `SELECT TOP 1` | `TOP` needs no ordering, which is exactly what a probe has none of |
+| `RETURNING` | a trailing clause | `OUTPUT`, **positional** | It sits between the assignments and the predicate. At the end it is a syntax error, so the insert carries it in its punctuation and the update hands it to a splicer that knows where it goes |
+| row lock | `FOR UPDATE` suffix | `WITH (UPDLOCK, ROWLOCK)` **table hint** | Attached to the table reference in `FROM`, not the end of the statement. `SKIP LOCKED` is `READPAST`; `FOR SHARE` is `REPEATABLEREAD`, not `HOLDLOCK`, which would be SERIALIZABLE and take range locks nobody asked for |
+| uuid primary key | `DEFAULT gen_random_uuid()` | `DEFAULT NEWID()` | Server-side, and a real v4. **Not** client-side, unlike MySQL — with a default and an `OUTPUT` clause, an insert that names no key comes back carrying one. `uuidv7()` is refused: `NEWID()` is v4 and `NEWSEQUENTIALID()` derives from the server's MAC |
+| partial UNIQUE index | native | **native** | Filtered indexes exist, so soft delete's live-scoped uniqueness ports. This is the refusal MySQL cannot avoid |
+| covering index | `INCLUDE` | `INCLUDE` | Also native. MySQL has no covering clause and rewrites them as trailing keys |
+| nullable UNIQUE | many NULL rows | **translated** to a filtered index | `UNIQUE` treats NULLs as EQUAL here and accepts exactly one. That changes ANSWERS, so `WHERE col IS NOT NULL` is added — which indexes exactly the rows PostgreSQL's index constrained. `NULLS NOT DISTINCT` is therefore the plain form here, and the one MySQL refuses |
+| `GROUPING SETS` / `CUBE` / `GROUPING()` | native | **native** | All three, in the function spelling. MySQL has only `WITH ROLLUP` and refuses the rest |
+| `LATERAL` | `CROSS JOIN LATERAL` | `CROSS APPLY` | Same construct, different keyword. MariaDB has neither |
+| bound key list | one array parameter, unnested | one JSON document, `OPENJSON … WITH` | No array parameter. Unlike MySQL there is no hex round trip: a uuid is `UNIQUEIDENTIFIER`, so it travels as its own text and returns as itself, leaving no expression wrapped around the indexed column |
+| recursive cycle guard | an array of visited keys | an `NVARCHAR(MAX)` path with `CHARINDEX` | No array type — but no declared width either, so unlike MySQL there is no depth at which the guard silently stops guarding. The server's own 100-level ceiling is lifted with `OPTION (MAXRECURSION 0)`, because the real bound is the caller's depth parameter |
+| arc exactly-one CHECK | `(…)::int + (…)::int = 1` | `CASE WHEN … THEN 1 ELSE 0 END + … = 1` | A predicate is not a value here, so there is no arithmetic coercion to lean on |
+| `FILTER (WHERE …)` | native | **refused** | No such clause. The rewrite changes what the aggregate counts rather than how it is spelled |
+| JSON containment | `@>`, `<@` | **refused** | Through the 2019 level the JSON support is `JSON_VALUE`, `JSON_QUERY`, `ISJSON` and `OPENJSON` — there is no containment predicate at all. `HasAnyKey` IS expressible, through `OPENJSON` over both sides |
+| numeric `RANGE` frame | `RANGE BETWEEN 3 PRECEDING` | **refused** | `RANGE` takes only `UNBOUNDED` and `CURRENT ROW`. `ROWS` accepts the offset, but the two differ over ties |
+| upsert | `ON CONFLICT <target>` | **not generated yet** | `MERGE` names a target and would serve, but it is a different STATEMENT rather than a clause on the insert — so it is a lowering of its own rather than a spelling |
+| `ON DELETE RESTRICT` | `RESTRICT` | `NO ACTION` | No such keyword; `NO ACTION` is what it means, and the difference PostgreSQL draws is not observable through a constraint storm generates, which is never `DEFERRABLE` |
+
 ## Why this strengthens the thesis rather than diluting it
 
 GORM, Ent, and Bun branch on dialect **per query, at runtime**, because they

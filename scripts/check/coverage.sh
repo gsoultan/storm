@@ -26,6 +26,12 @@ declare -a FLOORS=(
   "github.com/gsoultan/storm/compile/mariadb 80"
   "github.com/gsoultan/storm/runtime/mydec 90"
   "github.com/gsoultan/storm/compile/myddl 85"
+  # M10's two, at the level they landed. The SQL Server lowering has a live
+  # gate too (scripts/check/mssql.sh), but that one runs in a separate module
+  # and needs a server, so it contributes nothing here — which is exactly why
+  # these floors matter: they are what holds when the server is not there.
+  "github.com/gsoultan/storm/compile/mssql 85"
+  "github.com/gsoultan/storm/compile/msddl 85"
   "github.com/gsoultan/storm/compile/pgsql 80"
   "github.com/gsoultan/storm/compile/pgddl 90"
   "github.com/gsoultan/storm/codegen 85"

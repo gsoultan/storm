@@ -426,7 +426,7 @@ and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 `TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a PostgreSQL identifier,
 placeholder or output clause reaches MySQL SQL, verified both ways.
 
-| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | + a TDS client, measured — see below |
+| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **lowering done and executing**; TDS client next |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |
 
@@ -451,6 +451,29 @@ go-sql-driver's 8.07 and `runtime/mydrv`'s 1.07; every column is boxed into a
 So **M10 is a lowering and a TDS client**, exactly the shape M9 turned out to
 be, and TDS — a token stream with a login sequence, collation negotiation and
 optional encryption — is the harder protocol. Hence three weeks → five.
+
+**The lowering half landed 2026-09-20, and it EXECUTES.** `compile/mssql` and
+`compile/msddl` are written, and `scripts/check/mssql.sh` applies the DDL and
+then PREPAREs and EXECUTEs every statement the lowering can produce — base reads
+in every shape `stmtFor` builds, all seven lock modes, the IN list, the expanded
+keyset comparison, both semi-joins, both top-N forms, both recursion directions,
+insert/update/delete with `OUTPUT`, soft delete, and the declared reads
+(`ROLLUP`, `CUBE`, `GROUPING SETS`, a join with a CTE, a union). Against a
+server, before the driver exists, which is P6.7's rule applied in the only order
+that makes it cheap.
+
+Four things had to change outside `compile/` to make it expressible, and each is
+a thing the seam could not say as M9 left it: `runtime.Placeholder` gained a
+`Prefix` (`@1` is a syntax error, `@p1` is a name), `runtime.Lowering` gained
+`RowCmpExpand` (no row constructor) and `OrderFallback` (the row cap is a clause
+OF `ORDER BY`), and the write splicer gained `SpliceSectionsOutput` (`OUTPUT` is
+positional). A fifth was a latent PostgreSQL assumption the third dialect found:
+`takesArg` tested a fragment's last byte against the SET `{$, ?}` rather than
+asking the carrier, so every SQL Server predicate came out as a bare sigil
+binding nothing.
+
+What remains of M10 is the TDS client, `runtime/msdec`, the codegen wiring that
+needs both, and `MERGE` for upsert.
 
 Two things make it cheaper than M9 was: the seam is **proven** rather than
 discovered mid-flight (`codegen` takes the dialect as a build-time parameter and

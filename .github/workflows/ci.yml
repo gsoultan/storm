@@ -46,6 +46,22 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      # SQL Server, for M10. The REAL image, not Azure SQL Edge: Edge is the
+      # only engine with an arm64 build and so is what a developer on Apple
+      # silicon runs locally, but it is a subset at the 2019 level. CI is where
+      # the authoritative answer comes from, which is the half of M9's loop
+      # that has to move here because there is no local full server.
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Storm!Passw0rd
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Storm!Passw0rd' -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
       mariadb:
         image: mariadb:11.4
         env:
@@ -63,6 +79,10 @@ jobs:
       # runtime/mydrv skips, and "the tests pass" would mean the unit half.
       STORM_MYSQL_ADDR: 127.0.0.1:3306
       STORM_MARIADB_ADDR: 127.0.0.1:3307
+      # The SQL Server gate reads this. Without it internal/mssqlspike skips
+      # entirely and "the tests pass" would mean the two dialects that already
+      # had a server.
+      STORM_MSSQL_DSN: sqlserver://sa:Storm%21Passw0rd@127.0.0.1:1433?encrypt=disable
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -121,6 +141,16 @@ jobs:
           # it. That gap let storm emit code failing vet from v0.3.0 to v0.6.2.
           go vet ./...
           go test -race ./orders/
+
+      # M10: does the SQL storm emits for SQL Server run on SQL Server?
+      #
+      # Before runtime/msdrv exists, deliberately. The lowering is the half that
+      # can be proven with a borrowed client, and P6.7's rule is that a test
+      # which does not EXECUTE proves the generator is consistent with itself
+      # and nothing more — so it is proven first rather than after a driver is
+      # written against untested SQL.
+      - name: sql server dialect
+        run: ./scripts/check/mssql.sh
 
       # Every statement the generated code can issue, planned by the server.
       # This is the only gate for "storm emitted SQL PostgreSQL rejects" — a
