@@ -46,8 +46,12 @@ declare -a FLOORS=(
   # 68, not 70, and the two points are a statement about this ENVIRONMENT
   # rather than about the tests. tool gained the SQL Server half of the
   # storm.SQL escape hatch, whose tests need a server this job has not got, so
-  # what is measured here is the package MINUS that file. The whole package is
-  # floored at 75 in scripts/check/mssql.sh, which has one.
+  # what is measured here is the package MINUS that file.
+  #
+  # It is floored HERE and nowhere else. No job can measure the package whole —
+  # the SQL Server job has no PostgreSQL and sees 54% — so this is the best
+  # view anything has, and the half it cannot see is covered by tests that run
+  # in that job and fail the build on their own.
   "github.com/gsoultan/storm/tool 68"
 )
 
