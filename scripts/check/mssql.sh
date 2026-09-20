@@ -92,7 +92,7 @@ fi
 # what disagreement looks like in production.
 echo "== a SQL Server migration plan applies, and the next plan is empty =="
 out=$(mktemp)
-if ! go test -count=1 -v -run 'TestMSSQLMigrationRoundTrip|TestMSSQLAltersApply' ./migrate/ >"$out" 2>&1; then
+if ! go test -count=1 -v -run 'TestMSSQLMigrationRoundTrip|TestMSSQLAltersApply|TestAutoMSSQL' ./migrate/ >"$out" 2>&1; then
   note "the server refused a statement migrate emitted, or the re-diff was not empty:"
   grep -E -- "^ *--- FAIL" "$out" | head -10 | sed 's/^/    /'
   # WITH the lines below it. The statement and the server's own words are what
@@ -132,6 +132,29 @@ cov ./runtime/msdec 85
 # The introspector, whose every query reads a catalogue — which is not
 # something a fake can be honest about, so it has no unit half at all.
 cov ./schema/mssql 75
+# The SQL Server half of the CLI, RUN. Three of these are storm.SQL's whole
+# safety story — a server of the TARGET's own kind types every declared
+# statement — and the fourth is `storm verify -pending`: write the migration the
+# tool would write, replay it, and demand the model have nothing left to ask
+# for.
+#
+# This used to be a CI step of its own pointing at ./tool/, and it kept passing
+# after the code moved to ./tool/mstool/ because `go test -run` with no matches
+# is a success. It is counted here now, for exactly that reason.
+echo "== the escape hatch and the migration replay run against a server =="
+out=$(mktemp)
+if ! go test -count=1 -v ./tool/mstool/ >"$out" 2>&1; then
+  note "the SQL Server half of the CLI failed:"
+  grep -E -- "^ *--- FAIL" "$out" | head -10 | sed 's/^/    /'
+  grep -E -A14 -- "--- FAIL" "$out" | head -60 | sed 's/^/    /'
+fi
+ran=$(grep -c -E -- "--- PASS: (TestRawQuer|TestVerifyPending)" "$out")
+echo "== $ran of them reached the server =="
+if [ "$ran" -lt 4 ]; then
+  note "only $ran of 4 server-backed CLI tests ran; the rest skipped rather than passed"
+fi
+rm -f "$out"
+
 # The SQL Server half of the CLI: the escape hatch's validator, `storm import`,
 # and the dialer `storm diff` normalises through.
 #

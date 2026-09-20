@@ -52,6 +52,40 @@ Found while building it, in code that was already shipping: a new table's
 not append them itself. PostgreSQL's does, SQL Server's does not, and a diff
 builds one table at a time — so the property is now pinned for both.
 
+### Automigrate for SQL Server, and the last two PostgreSQL-only commands
+
+**`migrate.AutoMSSQL`** is `Auto` for SQL Server: same promises, three kept by a
+different mechanism, and one kept more easily.
+
+- The lock is `sp_getapplock` with `@LockOwner = 'Session'`, polled at
+  `@LockTimeout = 0` for the reason `Auto` polls `pg_try_advisory_lock`.
+- The step bound is `SET LOCK_TIMEOUT`, on the session, because there is no
+  `SET LOCAL` here — which costs nothing, since the session is storm's own and
+  closes with the call.
+- There is no namespace to point at. Unqualified DDL lands in the login's
+  DEFAULT schema, so `AutoMSSQL` REFUSES to start when that is not the schema it
+  was asked to migrate, naming both. Writing tables into one schema while
+  diffing another produces a plan that never empties.
+- And it is ONE transaction, always. PostgreSQL's plan splits three ways — enum
+  labels first and alone, then the transaction, then the steps that cannot be in
+  one — and every split is a place a failure can leave the schema half moved.
+  Neither split exists here, and SQL Server's DDL is transactional, so a failure
+  anywhere leaves the schema exactly where it began. There is a live test that
+  makes a real plan fail half way and checks the first step did not survive.
+
+**`storm verify -pending` and `-stale`** work for SQL Server. `-stale` needed
+nothing but the gate lifted — it was already dialect-generic. `-pending` replays
+into a scratch DATABASE, one `Exec` per file, and its live test writes the
+migration the tool would write, replays it, and demands the model have nothing
+left to ask for.
+
+Two things found on the way. `NormalizeMSSQL` now holds a process-wide mutex
+around its scratch database: the name is per-pid so a crashed run cleans itself
+up, which left two goroutines in one process sharing it. And the CI step for the
+`storm.SQL` validator had been pointing at `./tool/` since the package split —
+`go test -run` with no matches is a success, so it had stopped gating. It is
+counted in `scripts/check/mssql.sh` now, like everything else there.
+
 **`tool/mstool`** is new, and is a package because of a coverage floor. `tool`
 was one package split across two CI jobs — PostgreSQL and no SQL Server in one,
 SQL Server and no PostgreSQL in the other — so no floor either job could measure

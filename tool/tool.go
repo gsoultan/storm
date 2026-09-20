@@ -247,16 +247,6 @@ func run(args []string) error {
 			if tgt.dialect != codegen.DialectMSSQL {
 				return refuse()
 			}
-			// ...except the two verify modes that REPLAY migration files
-			// through a scratch namespace. That path sets a search_path and
-			// applies the files storm itself wrote, and neither has been
-			// built for a scratch database yet.
-			if cmd == "verify" && (*pending || *stale) {
-				return fmt.Errorf("storm verify -pending and -stale replay migration files "+
-					"through a scratch PostgreSQL schema and have no %s form yet; "+
-					"plain `storm verify` compares the model against the live database",
-					*dialectName)
-			}
 		}
 	}
 
@@ -334,7 +324,7 @@ func run(args []string) error {
 
 	case "verify":
 		if *pending {
-			return verifyPending(*dsn, *out, model)
+			return verifyPending(tgt.dialect, *dsn, *out, model)
 		}
 		if *stale {
 			dir := "internal/store"
@@ -886,22 +876,31 @@ func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema, d cod
 // migration would contain, so the failure prints its own fix. It needs a
 // database (the same dev database ADR-0001 already assumes) but never touches
 // a real namespace — the scratch schema is dropped on every exit path.
-func verifyPending(dsn, out string, model *schema.Schema) error {
-	c, ctx, done, err := connect(dsn)
+func verifyPending(dialect codegen.Dialect, dsn, out string, model *schema.Schema) error {
+	files, err := pendingFiles(out)
 	if err != nil {
 		return err
 	}
-	defer done()
-
-	scratch := fmt.Sprintf("storm_pending_%d", os.Getpid())
-	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
-		return fmt.Errorf("create scratch schema: %w", err)
+	plan, err := replayAndDiff(dialect, dsn, files, model)
+	if err != nil {
+		return err
 	}
-	defer func() { _, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE") }()
+	if plan.Empty() {
+		fmt.Printf("✓ %d migration(s) carry every model change\n", len(files))
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "the model has %d change(s) no migration carries:\n\n%s\n",
+		len(plan.Changes), plan.SQL())
+	return fmt.Errorf("model changed without a migration — run 'storm diff <name>' and commit the result")
+}
 
+// pendingFiles is which files replay, in the order they replay. The same
+// decision for every dialect, which is why it is here and not beside either
+// replayer.
+func pendingFiles(out string) ([]string, error) {
 	files, err := filepath.Glob(filepath.Join(out, "*.up.sql"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// A directory holding .sql files that are not *.up.sql replays NOTHING,
 	// and the diff that follows then reports the whole model as pending —
@@ -913,7 +912,7 @@ func verifyPending(dsn, out string, model *schema.Schema) error {
 	// the first thing a new project sees.
 	if len(files) == 0 {
 		if other, _ := filepath.Glob(filepath.Join(out, "*.sql")); len(other) > 0 {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"no migrations replayed: storm reads %s, and %d file(s) in that directory "+
 					"do not match — e.g. %s\n"+
 					"       replaying nothing would report your whole model as pending; "+
@@ -922,34 +921,49 @@ func verifyPending(dsn, out string, model *schema.Schema) error {
 		}
 	}
 	sort.Strings(files) // the numbered prefix is the replay order
+	return files, nil
+}
+
+// replayAndDiff applies the migrations to a scratch namespace and reports what
+// the model still wants.
+//
+// A scratch SCHEMA on PostgreSQL and a scratch DATABASE on SQL Server, for the
+// reason normalisation splits the same way: there is no search_path there. See
+// tool/mstool.ReplayAndDiff.
+func replayAndDiff(dialect codegen.Dialect, dsn string, files []string,
+	model *schema.Schema) (migrate.Plan, error) {
+
+	if dialect == codegen.DialectMSSQL {
+		return mstool.ReplayAndDiff(context.Background(), dsn, files, model)
+	}
+	c, ctx, done, err := connect(dsn)
+	if err != nil {
+		return migrate.Plan{}, err
+	}
+	defer done()
+
+	scratch := fmt.Sprintf("storm_pending_%d", os.Getpid())
+	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
+		return migrate.Plan{}, fmt.Errorf("create scratch schema: %w", err)
+	}
+	defer func() { _, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE") }()
 	// The search path is set once, on the session, and NOT prepended to each
 	// file: a multi-statement string runs as one implicit transaction, and a
 	// file holding CREATE INDEX CONCURRENTLY would fail inside it — with an
 	// error that reads as if the migration were wrong.
 	if _, err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
-		return err
+		return migrate.Plan{}, err
 	}
 	for _, f := range files {
 		sql, err := os.ReadFile(f)
 		if err != nil {
-			return err
+			return migrate.Plan{}, err
 		}
 		if _, err := c.Exec(ctx, string(sql)); err != nil {
-			return fmt.Errorf("replaying %s: %w", filepath.Base(f), err)
+			return migrate.Plan{}, fmt.Errorf("replaying %s: %w", filepath.Base(f), err)
 		}
 	}
-
-	plan, err := migrate.For(ctx, c, scratch, model)
-	if err != nil {
-		return err
-	}
-	if plan.Empty() {
-		fmt.Printf("✓ %d migration(s) carry every model change\n", len(files))
-		return nil
-	}
-	fmt.Fprintf(os.Stderr, "the model has %d change(s) no migration carries:\n\n%s\n",
-		len(plan.Changes), plan.SQL())
-	return fmt.Errorf("model changed without a migration — run 'storm diff <name>' and commit the result")
+	return migrate.For(ctx, c, scratch, model)
 }
 
 func verify(dialect codegen.Dialect, dsn, ns string, model *schema.Schema) error {

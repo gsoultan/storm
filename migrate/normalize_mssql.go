@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/gsoultan/storm/compile/msddl"
 	"github.com/gsoultan/storm/runtime"
@@ -42,6 +43,10 @@ type MSSQLConn interface {
 // every exit path, including failure.
 type MSSQLDialer func(ctx context.Context, database string) (MSSQLConn, func(), error)
 
+// normalizeMSSQL serialises this process's use of the scratch database, whose
+// name is shared by everything in it. See NormalizeMSSQL.
+var normalizeMSSQL sync.Mutex
+
 // NormalizeMSSQL renders a schema as DDL, applies it to a scratch database,
 // reads it back, and drops the database. The result is the model expressed
 // exactly as SQL Server would store it — which is the only form worth diffing,
@@ -54,6 +59,18 @@ func NormalizeMSSQL(ctx context.Context, dial MSSQLDialer, s *schema.Schema) (_ 
 	// Per-process, for the reason Normalize's scratch schema is: two storm
 	// processes against one server — two test binaries, two CI jobs — would
 	// otherwise share a database, and one drops it mid-apply of the other.
+	//
+	// Per-process and not per-CALL on purpose: a name derived from the pid is
+	// self-cleaning, because the next run with that pid drops whatever a
+	// crashed one left behind. A unique name per call would leak a database
+	// nothing knows to remove.
+	//
+	// Which leaves the callers inside ONE process, who would share the name.
+	// AutoMSSQL serialises them on the migration lock, but ForMSSQL is also
+	// reachable directly — two goroutines running `storm diff` against one
+	// server — so the mutex closes that rather than leaving it to a comment.
+	normalizeMSSQL.Lock()
+	defer normalizeMSSQL.Unlock()
 	name := fmt.Sprintf("storm_normalize_%d", os.Getpid())
 
 	admin, closeAdmin, err := dial(ctx, "master")

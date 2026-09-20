@@ -22,9 +22,11 @@ package migrate_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +34,7 @@ import (
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/runtime/msdrv"
 	"github.com/gsoultan/storm/schema"
+	msintro "github.com/gsoultan/storm/schema/mssql"
 )
 
 type migStatus string
@@ -255,4 +258,183 @@ func TestMSSQLAltersApply(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Automigrate, APPLIED.
+//
+// migrate.AutoMSSQL is the one path in storm that writes DDL to a database
+// nobody reviewed first, so every property it claims is checked here against a
+// server rather than against a rendering. The four that matter: it converges,
+// it refuses to lose data, a failure leaves the schema where it began, and
+// twenty replicas starting together apply it once.
+
+func autoOpts(t *testing.T) migrate.AutoOptions {
+	return migrate.AutoOptions{Logf: t.Logf}
+}
+
+func TestAutoMSSQLAppliesAndThenHasNothingToDo(t *testing.T) {
+	ctx, dial, _ := targetDB(t)
+	want := build(t)
+
+	res, err := migrate.AutoMSSQL(ctx, dial, want, autoOpts(t))
+	if err != nil {
+		t.Fatalf("AutoMSSQL: %v", err)
+	}
+	if res.Empty() {
+		t.Fatal("an empty database was migrated with no steps")
+	}
+
+	// Convergence, which is the whole promise. A second call that applied
+	// anything would be a migration that runs on every start.
+	again, err := migrate.AutoMSSQL(ctx, dial, want, autoOpts(t))
+	if err != nil {
+		t.Fatalf("second AutoMSSQL: %v", err)
+	}
+	if !again.Empty() {
+		t.Fatalf("the second run applied %d step(s):\n%s", len(again.Applied), again.SQL())
+	}
+}
+
+func TestAutoMSSQLRefusesToLoseDataAndAppliesNothing(t *testing.T) {
+	ctx, dial, _ := targetDB(t)
+	want := build(t)
+	if _, err := migrate.AutoMSSQL(ctx, dial, want, autoOpts(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A model with a column removed. The refusal is of the WHOLE plan, not of
+	// the destructive step in it: a half-applied schema is worse than an
+	// unapplied one.
+	shrunk := build(t)
+	tb := shrunk.Table("mig_orgs")
+	cols := tb.Columns[:0]
+	for _, c := range tb.Columns {
+		if c.Name != "note" {
+			cols = append(cols, c)
+		}
+	}
+	tb.Columns = cols
+
+	_, err := migrate.AutoMSSQL(ctx, dial, shrunk, autoOpts(t))
+	var de *migrate.DestructiveError
+	if !errors.As(err, &de) {
+		t.Fatalf("dropping a column returned %v, want *DestructiveError", err)
+	}
+	if !msColumnExists(t, ctx, dial, "mig_orgs", "note") {
+		t.Error("the column was dropped by a call that returned DestructiveError")
+	}
+}
+
+// One transaction, all or nothing — the property SQL Server's transactional
+// DDL makes available and MySQL's does not.
+//
+// The failing step is real rather than injected: adding a NOT NULL column with
+// no default to a table that HAS ROWS is exactly what the destructive flag
+// warns about, and with AllowDestructive the server is allowed to refuse it.
+// The step before it must not survive.
+func TestAutoMSSQLRollsBackTheWholePlan(t *testing.T) {
+	ctx, dial, _ := targetDB(t)
+	if _, err := migrate.AutoMSSQL(ctx, dial, build(t), autoOpts(t)); err != nil {
+		t.Fatal(err)
+	}
+	// Only the columns with neither a default nor NULL allowed: everything else
+	// in this model has one, and naming fewer columns is fewer ways to be wrong
+	// about a model that is not what this test is about.
+	msExec(t, ctx, dial, "INSERT INTO [mig_orgs] ([name], [balance], [active], [opened], [status]) "+
+		"VALUES ('acme', 0, 0, '2026-01-01', 'new')")
+
+	// Appended in this order and applied in it: schema.Normalize sorts tables
+	// and constraints but never columns, so declaration order is the order the
+	// diff walks them and the order the plan applies them.
+	want := build(t)
+	tb := want.Table("mig_orgs")
+	tb.Columns = append(tb.Columns,
+		&schema.Column{Name: "first_ok", Type: schema.Type{Name: schema.TypeVarchar, Size: 10}},
+		&schema.Column{Name: "then_fails", Type: schema.Type{Name: schema.TypeVarchar, Size: 10}, NotNull: true},
+	)
+
+	_, err := migrate.AutoMSSQL(ctx, dial, want, migrate.AutoOptions{
+		AllowDestructive: true, Logf: t.Logf,
+	})
+	if err == nil {
+		t.Fatal("a NOT NULL column with no default was added to a table with rows")
+	}
+	if msColumnExists(t, ctx, dial, "mig_orgs", "first_ok") {
+		t.Errorf("the step before the failure stayed applied — the transaction did not roll back: %v", err)
+	}
+}
+
+// Twenty replicas starting together apply the migration once. Four here,
+// because four is enough to lose a race and twenty is only slower.
+func TestAutoMSSQLConcurrentCallersApplyOnce(t *testing.T) {
+	ctx, dial, _ := targetDB(t)
+	want := build(t)
+
+	const n = 4
+	var wg sync.WaitGroup
+	results := make([]migrate.Result, n)
+	errs := make([]error, n)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = migrate.AutoMSSQL(ctx, dial, want, migrate.AutoOptions{
+				LockWait: 60 * time.Second,
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	applied := 0
+	for i := range results {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if !results[i].Empty() {
+			applied++
+		}
+	}
+	if applied != 1 {
+		t.Errorf("%d of %d callers applied a plan; exactly one should have", applied, n)
+	}
+}
+
+// The guard for the one thing SQL Server cannot do: point unqualified DDL at a
+// chosen schema. Refusing beats writing into dbo while diffing something else.
+func TestAutoMSSQLRefusesASchemaTheLoginDoesNotDefaultTo(t *testing.T) {
+	ctx, dial, _ := targetDB(t)
+	_, err := migrate.AutoMSSQL(ctx, dial, build(t), migrate.AutoOptions{Schema: "sales"})
+	if err == nil {
+		t.Fatal("migrating a schema the unqualified DDL will not land in was allowed")
+	}
+	if !strings.Contains(err.Error(), "sales") || !strings.Contains(err.Error(), "dbo") {
+		t.Errorf("the refusal must name both schemas: %v", err)
+	}
+}
+
+func msExec(t *testing.T, ctx context.Context, dial migrate.MSSQLDialer, sql string) {
+	t.Helper()
+	c, closeC, err := dial(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeC()
+	if _, err := c.Exec(ctx, sql, nil); err != nil {
+		t.Fatalf("%s\n%v", sql, err)
+	}
+}
+
+func msColumnExists(t *testing.T, ctx context.Context, dial migrate.MSSQLDialer, table, col string) bool {
+	t.Helper()
+	c, closeC, err := dial(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeC()
+	s, err := msintro.Introspect(ctx, c, "dbo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb := s.Table(table)
+	return tb != nil && tb.Column(col) != nil
 }
