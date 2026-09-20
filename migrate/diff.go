@@ -11,10 +11,8 @@
 package migrate
 
 import (
-	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -55,6 +53,12 @@ const NoTransactionMarker = "-- storm:no-transaction"
 // Plan is an ordered set of changes.
 type Plan struct {
 	Changes []Change
+
+	// dialect is what the changes are written IN, remembered so Concurrently
+	// can render them again. The zero value is PostgreSQL, which keeps a
+	// hand-built Plan{Changes: ...} — tool does that to render a subset —
+	// meaning what it always did.
+	dialect Dialect
 }
 
 // Empty reports whether the two schemas already agree.
@@ -94,15 +98,23 @@ func (p Plan) SQL() string {
 // The rewritten changes are marked NoTransaction, because that is the price:
 // CREATE INDEX CONCURRENTLY cannot run inside a transaction block, so each
 // has to be applied as a single statement outside one.
+//
+// On a back end with no non-blocking index build this returns the plan
+// unchanged rather than approximating one. SQL Server's WITH (ONLINE = ON) is
+// Enterprise-only; see the seam's field comment.
 func (p Plan) Concurrently(live *schema.Schema) Plan {
-	out := Plan{Changes: make([]Change, 0, len(p.Changes))}
+	d, err := ddlFor(p.dialect, nil)
+	if err != nil || d.CreateIndexConcurrently == nil {
+		return p
+	}
+	out := Plan{Changes: make([]Change, 0, len(p.Changes)), dialect: p.dialect}
 	for _, c := range p.Changes {
 		switch {
 		case c.index != nil && c.table != nil && live != nil && live.Table(c.table.Name) != nil:
-			c.SQL = pgddl.CreateIndexConcurrently(c.table, c.index)
+			c.SQL = d.CreateIndexConcurrently(c.table, c.index)
 			c.NoTransaction = true
 		case c.dropIndex != "":
-			c.SQL = pgddl.DropIndexConcurrently(c.dropIndex)
+			c.SQL = d.DropIndexConcurrently(c.dropIndex)
 			c.NoTransaction = true
 		}
 		out.Changes = append(out.Changes, c)
@@ -118,9 +130,30 @@ func (p Plan) Concurrently(live *schema.Schema) Plan {
 // leading transaction of their own; `storm diff` gives them a file of their own.
 func (c Change) AddsEnumValue() bool { return c.addsEnumValue }
 
-// Diff computes the changes that take `from` to `to`. Both are normalised
-// first, so the result does not depend on declaration order.
+// Diff computes the changes that take `from` to `to` in PostgreSQL. Both are
+// normalised first, so the result does not depend on declaration order.
+//
+// It returns no error because it cannot fail: every renderer in postgresDDL
+// returns a literal nil, and the enum step has nothing to refuse. DiffFor is
+// the form to use for any other target. TestPostgresRenderersCannotFail holds
+// that property in place.
 func Diff(from, to *schema.Schema) Plan {
+	p, _ := DiffFor(from, to, Postgres)
+	return p
+}
+
+// DiffFor computes the changes that take `from` to `to` in one dialect.
+//
+// Both schemas must already be in that dialect's CATALOGUE form — what the
+// server stores, not what the model declares. For PostgreSQL that means
+// Normalize; for SQL Server, NormalizeMSSQL. An un-normalised model diffs
+// against a live database as a long list of changes that are not real, which
+// is the one failure mode a migration tool must not have.
+//
+// The error is a RENDERING failure — a model the target cannot express — and
+// the first one wins. Run the dialect's own Check first if you want all of
+// them at once; that is what it is for.
+func DiffFor(from, to *schema.Schema, dialect Dialect) (Plan, error) {
 	if from == nil {
 		from = &schema.Schema{}
 	}
@@ -130,33 +163,17 @@ func Diff(from, to *schema.Schema) Plan {
 	from.Normalize()
 	to.Normalize()
 
-	var p Plan
+	d, err := ddlFor(dialect, enumsOf(to))
+	if err != nil {
+		return Plan{}, err
+	}
+	b := &planner{d: d}
+	b.p.dialect = dialect
 
 	// Enums before tables that use them.
-	for _, e := range to.Enums {
-		old := from.Enum(e.Name)
-		if old == nil {
-			p.add(Change{SQL: pgddl.CreateEnum(e)})
-			continue
-		}
-		// Labels can be appended but never removed or reordered in place.
-		for _, l := range e.Labels {
-			if !contains(old.Labels, l) {
-				p.add(Change{
-					SQL: fmt.Sprintf("ALTER TYPE %s ADD VALUE %s;",
-						pgddl.Ident(e.Name), quote(l)),
-					addsEnumValue: true,
-				})
-			}
-		}
-		for _, l := range old.Labels {
-			if !contains(e.Labels, l) {
-				p.add(Change{
-					SQL:         fmt.Sprintf("-- cannot remove enum label %s from %s: PostgreSQL has no DROP VALUE", quote(l), e.Name),
-					Destructive: true,
-					Why:         "enum label " + l + " removed from the model; recreate the type by hand",
-				})
-			}
+	if d.Enums != nil {
+		if err := d.Enums(&b.p, from, to); err != nil {
+			return Plan{}, err
 		}
 	}
 
@@ -170,21 +187,28 @@ func Diff(from, to *schema.Schema) Plan {
 		}
 		old := from.Table(t.Name)
 		if old == nil {
-			p.add(Change{SQL: strings.TrimRight(pgddl.CreateTable(t), "\n")})
+			b.add(Change{SQL: b.sql(d.CreateTable(t))})
 			for _, fk := range t.ForeignKeys {
-				deferredFKs = append(deferredFKs, Change{SQL: pgddl.AddForeignKey(t, fk)})
+				deferredFKs = append(deferredFKs, Change{SQL: d.AddForeignKey(t, fk)})
 			}
 			continue
 		}
-		diffTable(&p, old, t)
+		diffTable(b, old, t)
 	}
-	p.Changes = append(p.Changes, deferredFKs...)
+	b.p.Changes = append(b.p.Changes, deferredFKs...)
 
 	// The SQL-bodied objects come after every table exists and before anything
 	// is dropped: a function's body reads tables, and a view over a table that
 	// is about to go has to be dropped before the table, not after.
-	addRoutines(&p, from, to)
-	dropRoutines(&p, from, to)
+	//
+	// PostgreSQL-only, and gated on the dialect rather than on the schemas
+	// being empty: schema has no routine model for any other target yet, so a
+	// SQL Server plan that reached here would render PostgreSQL function
+	// bodies from whatever a future introspector started filling in.
+	if d.DropEnums != nil {
+		addRoutines(&b.p, from, to)
+		dropRoutines(&b.p, from, to)
+	}
 
 	// Dropped tables, after the rest so foreign keys pointing at them are gone.
 	for _, t := range from.Tables {
@@ -201,40 +225,58 @@ func Diff(from, to *schema.Schema) Plan {
 			continue
 		}
 		if to.Table(t.Name) == nil {
-			p.add(Change{
-				SQL:         "DROP TABLE " + pgddl.Ident(t.Name) + ";",
+			b.add(Change{
+				SQL:         d.DropTable(t),
 				Destructive: true,
 				Why:         "table " + t.Name + " is no longer in the model",
 			})
 		}
 	}
 	// Dropped enums last: a table using one may have just been dropped.
-	for _, e := range from.Enums {
-		if to.Enum(e.Name) == nil {
-			p.add(Change{
-				SQL:         "DROP TYPE " + pgddl.Ident(e.Name) + ";",
-				Destructive: true,
-				Why:         "enum " + e.Name + " is no longer in the model",
-			})
-		}
+	if d.DropEnums != nil {
+		d.DropEnums(&b.p, from, to)
 	}
-	return p
+	return b.p, b.err
 }
 
-func diffTable(p *Plan, old, cur *schema.Table) {
-	q := pgddl.Ident(cur.Name)
+// planner carries the plan being built, the renderers building it, and the
+// first rendering failure.
+//
+// The alternative to carrying the error is to check it at every call site or
+// to drop it, and dropping it is how a migration comes to be silently missing
+// a table. Once a render has failed nothing more is collected: the plan is
+// about to be discarded, and a partial one is worse than none.
+type planner struct {
+	p   Plan
+	d   ddl
+	err error
+}
 
-	// Partitioning cannot be altered. A table is created partitioned or it is
-	// not, so the only honest plan is to say so and stop: an ALTER that
-	// silently did nothing would leave a schema that looks migrated and
-	// routes every row to the wrong place.
+func (b *planner) add(c Change) {
+	if b.err != nil {
+		return
+	}
+	b.p.add(c)
+}
+
+// sql records a rendering failure and passes the statement through, so a call
+// site reads as one expression.
+func (b *planner) sql(s string, err error) string {
+	if err != nil && b.err == nil {
+		b.err = err
+	}
+	return s
+}
+
+func diffTable(b *planner, old, cur *schema.Table) {
+	d := b.d
 	if partitionDesc(old) != partitionDesc(cur) {
-		p.add(Change{
-			SQL: "-- cannot change the partitioning of " + cur.Name +
-				": PostgreSQL has no ALTER TABLE ... PARTITION BY",
+		b.add(Change{
+			SQL: "-- cannot change partitioning of " + cur.Name + " in place: " +
+				partitionDesc(old) + " -> " + partitionDesc(cur),
 			Destructive: true,
-			Why: "table " + cur.Name + " is " + partitionDesc(old) + " in the database and " +
-				partitionDesc(cur) + " in the model; this needs a new table and a data move",
+			Why: "changing a table's partitioning means creating a new table, copying the rows " +
+				"and swapping the names, which storm will not do for you",
 		})
 		return
 	}
@@ -243,69 +285,58 @@ func diffTable(p *Plan, old, cur *schema.Table) {
 	for _, c := range cur.Columns {
 		oc := old.Column(c.Name)
 		if oc == nil {
-			ch := Change{SQL: "ALTER TABLE " + q + " ADD COLUMN " + pgddl.ColumnDef(c) + ";"}
+			ch := Change{SQL: b.sql(d.AddColumn(cur, c))}
 			if c.NotNull && c.Default == "" && c.Generated == "" && !c.Identity {
 				ch.Destructive = true
 				ch.Why = "adding NOT NULL column " + c.Name + " with no default fails if the table has rows"
 			}
-			p.add(ch)
+			b.add(ch)
 			continue
 		}
-		diffColumn(p, q, oc, c)
+		diffColumn(b, cur, oc, c)
 	}
 	// Columns removed.
 	for _, oc := range old.Columns {
 		if cur.Column(oc.Name) == nil {
-			p.add(Change{
-				SQL:         "ALTER TABLE " + q + " DROP COLUMN " + pgddl.Ident(oc.Name) + ";",
+			b.add(Change{
+				SQL:         d.DropColumn(cur, oc),
 				Destructive: true,
 				Why:         "column " + cur.Name + "." + oc.Name + " is no longer in the model",
 			})
 		}
 	}
 
-	diffNamed(p, cur, old.Uniques, cur.Uniques,
+	diffNamed(b, cur, old.Uniques, cur.Uniques,
 		func(u *schema.Unique) string { return u.Name },
-		func(u *schema.Unique) Change {
-			return Change{SQL: "ALTER TABLE " + q + " ADD CONSTRAINT " + pgddl.Ident(u.Name) +
-				" UNIQUE (" + identList(u.Columns) + ");"}
-		},
-		func(u *schema.Unique) Change {
-			return Change{SQL: "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(u.Name) + ";"}
-		},
+		func(u *schema.Unique) Change { return Change{SQL: d.AddUnique(cur, u)} },
+		func(u *schema.Unique) Change { return Change{SQL: d.DropConstraint(cur, u.Name)} },
 		func(a, b *schema.Unique) bool { return eq(a.Columns, b.Columns) },
 		"unique constraint")
 
-	diffNamed(p, cur, old.Checks, cur.Checks,
+	diffNamed(b, cur, old.Checks, cur.Checks,
 		func(c *schema.Check) string { return c.Name },
-		func(c *schema.Check) Change {
-			return Change{SQL: "ALTER TABLE " + q + " ADD CONSTRAINT " + pgddl.Ident(c.Name) + " CHECK (" + c.Expr + ");"}
-		},
-		func(c *schema.Check) Change {
-			return Change{SQL: "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(c.Name) + ";"}
-		},
+		func(c *schema.Check) Change { return Change{SQL: d.AddCheck(cur, c)} },
+		func(c *schema.Check) Change { return Change{SQL: d.DropConstraint(cur, c.Name)} },
 		func(a, b *schema.Check) bool { return canonical(a.Expr) == canonical(b.Expr) },
 		"check constraint")
 
-	diffNamed(p, cur, old.ForeignKeys, cur.ForeignKeys,
+	diffNamed(b, cur, old.ForeignKeys, cur.ForeignKeys,
 		func(f *schema.ForeignKey) string { return f.Name },
-		func(f *schema.ForeignKey) Change { return Change{SQL: pgddl.AddForeignKey(cur, f)} },
-		func(f *schema.ForeignKey) Change {
-			return Change{SQL: "ALTER TABLE " + q + " DROP CONSTRAINT " + pgddl.Ident(f.Name) + ";"}
-		},
+		func(f *schema.ForeignKey) Change { return Change{SQL: d.AddForeignKey(cur, f)} },
+		func(f *schema.ForeignKey) Change { return Change{SQL: d.DropConstraint(cur, f.Name)} },
 		func(a, b *schema.ForeignKey) bool {
 			return eq(a.Columns, b.Columns) && a.RefTable == b.RefTable &&
 				eq(a.RefColumns, b.RefColumns) && a.OnDelete == b.OnDelete && a.OnUpdate == b.OnUpdate
 		},
 		"foreign key")
 
-	diffNamed(p, cur, old.Indexes, cur.Indexes,
+	diffNamed(b, cur, old.Indexes, cur.Indexes,
 		func(i *schema.Index) string { return i.Name },
 		func(i *schema.Index) Change {
-			return Change{SQL: pgddl.CreateIndex(cur, i), table: cur, index: i}
+			return Change{SQL: d.CreateIndex(cur, i), table: cur, index: i}
 		},
 		func(i *schema.Index) Change {
-			return Change{SQL: "DROP INDEX " + pgddl.Ident(i.Name) + ";", dropIndex: i.Name}
+			return Change{SQL: d.DropIndex(cur, i), dropIndex: i.Name}
 		},
 		func(a, b *schema.Index) bool {
 			return a.Unique == b.Unique && a.Method == b.Method &&
@@ -316,40 +347,49 @@ func diffTable(p *Plan, old, cur *schema.Table) {
 		"index")
 }
 
-func diffColumn(p *Plan, q string, old, cur *schema.Column) {
-	col := pgddl.Ident(cur.Name)
+func diffColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
+	d := b.d
 	if !old.Type.Equal(cur.Type) {
-		ch := Change{SQL: "ALTER TABLE " + q + " ALTER COLUMN " + col +
-			" TYPE " + cur.Type.SQL() + ";"}
+		ch := Change{SQL: b.sql(d.AlterColumnType(t, cur))}
 		if narrowing(old.Type, cur.Type) {
 			ch.Destructive = true
 			ch.Why = "narrowing " + cur.Name + " from " + old.Type.SQL() + " to " + cur.Type.SQL() + " can truncate"
 		}
-		p.add(ch)
+		b.add(ch)
 	}
 	if old.NotNull != cur.NotNull {
+		// On a back end whose ALTER COLUMN restates the type, this is the same
+		// statement the type change above already emitted. Both are rendered
+		// anyway: they are marked differently — only the tightening is
+		// destructive — and a migration that applies the same ALTER twice is
+		// correct, where one that skipped the second would not be if only the
+		// nullability moved.
 		if cur.NotNull {
-			p.add(Change{
-				SQL:         "ALTER TABLE " + q + " ALTER COLUMN " + col + " SET NOT NULL;",
+			b.add(Change{
+				SQL:         b.sql(d.SetNotNull(t, cur)),
 				Destructive: true,
-				Why:         "SET NOT NULL on " + cur.Name + " fails if any existing row is NULL",
+				Why:         "making " + cur.Name + " NOT NULL fails if any existing row is NULL",
 			})
 		} else {
-			p.add(Change{SQL: "ALTER TABLE " + q + " ALTER COLUMN " + col + " DROP NOT NULL;"})
+			b.add(Change{SQL: b.sql(d.DropNotNull(t, cur))})
 		}
 	}
 	if old.Default != cur.Default {
 		if cur.Default == "" {
-			p.add(Change{SQL: "ALTER TABLE " + q + " ALTER COLUMN " + col + " DROP DEFAULT;"})
+			b.add(Change{SQL: d.DropDefault(t, cur)})
 		} else {
-			p.add(Change{SQL: "ALTER TABLE " + q + " ALTER COLUMN " + col +
-				" SET DEFAULT " + cur.Default + ";"})
+			// One change, not a drop and an add, even on a back end where the
+			// default is a CONSTRAINT and replacing one means both: see
+			// ddl_mssql.go's SetDefault. Which statements that takes is the
+			// renderer's business, and putting it here would make the shared
+			// loop emit a step PostgreSQL does not need.
+			b.add(Change{SQL: d.SetDefault(t, cur)})
 		}
 	}
 }
 
 // diffNamed is the add/drop/replace loop shared by every named constraint kind.
-func diffNamed[T any](p *Plan, t *schema.Table, old, cur []T,
+func diffNamed[T any](b *planner, t *schema.Table, old, cur []T,
 	name func(T) string, add func(T) Change, drop func(T) Change,
 	same func(a, b T) bool, kind string) {
 
@@ -362,21 +402,22 @@ func diffNamed[T any](p *Plan, t *schema.Table, old, cur []T,
 		seen[name(c)] = true
 		o, ok := byName[name(c)]
 		if !ok {
-			p.add(add(c))
+			b.add(add(c))
 			continue
 		}
 		if !same(o, c) {
-			// Postgres cannot alter these in place; drop and recreate.
-			p.add(drop(o))
-			p.add(add(c))
+			// No back end storm targets can alter these in place; drop and
+			// recreate.
+			b.add(drop(o))
+			b.add(add(c))
 		}
 	}
 	for _, o := range old {
 		if !seen[name(o)] {
-			d := drop(o)
-			d.Destructive = true
-			d.Why = kind + " " + name(o) + " on " + t.Name + " is no longer in the model"
-			p.add(d)
+			x := drop(o)
+			x.Destructive = true
+			x.Why = kind + " " + name(o) + " on " + t.Name + " is no longer in the model"
+			b.add(x)
 		}
 	}
 }
@@ -488,10 +529,10 @@ func contains(ss []string, s string) bool {
 	return false
 }
 
-func identList(names []string) string {
+func identList(q func(string) string, names []string) string {
 	out := make([]string, len(names))
 	for i, n := range names {
-		out[i] = pgddl.Ident(n)
+		out[i] = q(n)
 	}
 	return strings.Join(out, ", ")
 }

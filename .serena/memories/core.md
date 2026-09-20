@@ -247,6 +247,9 @@ TDS client as well as a lowering. See [[m10_sqlserver]].
   recoverable rows
 - [[automigrate]] — `migrate.Auto`, why ADR-0001 was amended rather than upheld,
   and the two concurrency defects its own tests found
+- [[migrate_ddl_seam]] — the DDL seam inside `migrate/`: `storm diff`/`verify`
+  for SQL Server, why the enum step is a whole step, and the new table whose
+  indexes were being dropped on the floor
 - [[m0_results]] — the spike result and the three findings that amended the plan
 - [[decisions]] — the four load-bearing ADRs and what was rejected
 - [[boundaries]] — the scope line

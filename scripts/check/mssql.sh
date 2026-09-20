@@ -80,6 +80,32 @@ if ! (cd internal/mssqlspike && go test -run 'TestDeclaredReads/refusals' ./... 
   note "a construct with no SQL Server lowering did not say so by name"
 fi
 
+# The migration path, APPLIED. migrate/ renders five statements whose SQL Server
+# spelling differs, and four of the five fail in a way no text assertion sees:
+# ADD COLUMN parses as a column named COLUMN, an ALTER COLUMN that omits
+# NULL/NOT NULL takes a session setting's answer, a second DEFAULT constraint is
+# error 1781, and DROP INDEX without ON does not parse.
+#
+# The property is the SECOND plan being empty. That is the only evidence that
+# normalisation and introspection agree about widths, parenthesised defaults and
+# the CHECK an enum became — and a migration that reapplies itself forever is
+# what disagreement looks like in production.
+echo "== a SQL Server migration plan applies, and the next plan is empty =="
+out=$(mktemp)
+if ! go test -count=1 -v -run 'TestMSSQLMigrationRoundTrip|TestMSSQLAltersApply' ./migrate/ >"$out" 2>&1; then
+  note "the server refused a statement migrate emitted, or the re-diff was not empty:"
+  grep -E -- "--- FAIL|refused by the server|is not empty|tested nothing" "$out" | head -20 | sed 's/^/    /'
+fi
+# COUNT the alters, do not trust the word ok: these skip without a server, and a
+# gate that passes by not running is the defect this whole file is named after.
+ran=$(grep -c -- "--- PASS: TestMSSQLAltersApply/" "$out")
+echo "== $ran alter(s) reached the server =="
+if [ "$ran" -lt 9 ]; then
+  note "only $ran of 9 alters ran; the rest skipped rather than passed"
+  grep -E "^(=== RUN|--- SKIP)" "$out" | head -10 | sed 's/^/    /'
+fi
+rm -f "$out"
+
 # The two runtime packages whose live half only runs where there is a server.
 # Their floors live here rather than in scripts/check/coverage.sh for that
 # reason: measured without one, they would be measuring a suite that skipped.

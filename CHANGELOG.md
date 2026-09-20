@@ -12,6 +12,50 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### A DDL seam inside `migrate/`, and `storm diff` / `storm verify` for SQL Server
+
+Three of the four shipped dialects could generate and run but could not diff,
+check drift, or automigrate: every statement `migrate/` wrote was spelled in
+PostgreSQL, at 39 call sites.
+
+- **`migrate.DiffFor(from, to, dialect)`** is `Diff` for one named target. The
+  renderers behind it are a struct of function values chosen once per dialect —
+  `codegen.lowering`'s shape, for `codegen.lowering`'s reason — so a back end
+  with no such statement says so by leaving the field nil rather than by failing
+  at the bottom of a call stack. `Diff` is unchanged and still returns no error:
+  every PostgreSQL renderer returns a literal `nil`, and a test holds that in
+  place so the next renderer that *can* fail has to say so.
+
+- **`migrate.NormalizeMSSQL` and `migrate.ForMSSQL`**, the SQL Server halves of
+  `Normalize` and `For`. Normalisation runs through a scratch **database**
+  rather than a scratch schema, because there is no `search_path` here and a
+  scratch schema would need an `ALTER USER` that outlives the run. That costs a
+  second connection: a SQL Server session is bound to its database at login, so
+  these take a dialer rather than a connection.
+
+- **`storm diff` and `storm verify` accept `-dialect mssql`.** `verify -pending`
+  and `-stale` still do not: they replay migration files through a scratch
+  PostgreSQL schema, and they say so by name instead of failing somewhere deep.
+
+Five statements are spelled differently and four of the five fail in a way no
+text assertion can see — `ADD COLUMN` parses as a column named `COLUMN`, an
+`ALTER COLUMN` that omits `NULL`/`NOT NULL` takes a session setting's answer,
+a second `DEFAULT` constraint is error 1781, and `DROP INDEX` without `ON` does
+not parse. So `scripts/check/mssql.sh` now **applies** a plan and demands the
+next plan be empty, nine alters deep, and counts the subtests rather than
+trusting the word `ok`. See docs/DIALECTS.md for the table.
+
+Found while building it, in code that was already shipping: a new table's
+**indexes were dropped on the floor** by any back end whose `CreateTable` does
+not append them itself. PostgreSQL's does, SQL Server's does not, and a diff
+builds one table at a time — so the property is now pinned for both.
+
+Not in this release: `migrate.Auto` for SQL Server. The plan engine speaks this
+catalogue; the applier does not, and it needs `sp_getapplock` and an answer for
+what `NoTransaction` means where there is no concurrent index build.
+
 ## v1.1.0 — 2026-09-20
 
 A fourth target: **SQL Server**, through a TDS client storm wrote, because the
