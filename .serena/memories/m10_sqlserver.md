@@ -145,10 +145,48 @@ renaming a function. `decoders.text` is the hook. Without it every string in the
 database reads back as its own interleaved-null bytes: no error, no failure,
 mojibake.
 
-### What remains
+### The last two pieces
 
-`MERGE` for upsert, and the TDS bulk-load packet type to replace the emulated
-CopyFrom. Everything else in M10 is landed and gated:
+**CopyFrom is the real bulk path** — `INSERT BULK`, a packet of type 7 carrying
+COLMETADATA and one ROW token per row, one reply. The column types are READ FROM
+THE SERVER (`SELECT TOP 0`, cached per connection and column list), because a
+bulk row carries no parameter declaration and therefore no conversion step: a
+value written in the wrong width is read as the next column's bytes. Four
+defects, every one reported by the server against the WRONG column:
+
+- The COLMETADATA TOKEN BYTE was missing — the count was read as a token id.
+- A fixed BIT written with a length byte → "the next unicode column has an odd
+  byte size".
+- A decimal written at the widest form rather than the COLUMN's declared width.
+- A MAX value using the KNOWN-length PLP header, after which the terminator was
+  read as the next row's token. The unknown-length header is the one to use in a
+  bulk stream.
+
+**The upsert is a MERGE**, with two non-optional parts: `WITH (HOLDLOCK)`
+(without it two concurrent merges of one key both insert and one fails — works
+in every test, breaks under load) and the terminating semicolon (whose absence
+is reported against the NEXT statement). Every parameter is numbered once in the
+source row and referred to by name after, which is what lets both branches read
+the same row.
+
+The UNTARGETED `DoNothing()` is refused by name (`ErrUpsertNeedsTarget`): a bare
+`ON CONFLICT DO NOTHING` fires on any unique index, a MERGE's match condition
+names columns, and watching the primary key instead would be a lie at the call
+site.
+
+### CI: SQL Server has a job of its own
+
+Four databases on the shared runner made `runtime/mydrv`'s soak test flaky —
+cancellation there is a real `KILL QUERY`, which needs a SECOND connection,
+whose login can exceed its deadline on a starved runner. Not a bug; a scheduling
+fact. See P8 in `docs/PRODUCTION-READINESS.md`. The floors for `runtime/msdrv`
+and `runtime/msdec` live in `scripts/check/mssql.sh` for the same reason: in the
+other job they would measure a suite that skipped.
+
+### M10 is done
+
+Lowering, DDL, TDS client, decoder family, codegen, upsert and bulk load — all
+executing against a real server. Gated by:
 `scripts/check/mssql.sh` (39 statements), `codegen/mssqllive_test.go` (a
 generated package, five tests, refusing to pass if any SKIPPED), coverage floors
 for both runtime packages, and CI against the real
