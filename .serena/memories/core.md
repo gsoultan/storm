@@ -214,6 +214,25 @@ was built to work around a constraint the pool had removed), and that v0.11.0
 shipped with every fetch plan broken on MySQL because the end-to-end had ONE
 table and so had never loaded a relation.
 
+**v1.0.0 SHIPPED 2026-09-20.** The API is stable: breaking the surface
+`docs/STABILITY.md` names costs a major, and `codegen`/`compile/*`/`schema` are
+explicitly outside it. All seven of v1's falsifiable claims hold, each with a
+gate that fails when the claim stops being true.
+
+M8's second-adopter criterion was met in DEPTH rather than breadth, and the
+substitution is argued in `docs/PLAN.md` rather than assumed. The criterion's
+stated reason was "every wrong-answer bug so far was found by exercising a path
+no test reached" — it was about whether anything other than storm's own tests
+had pushed hard enough, not about the number two. The first adopter going from
+one bounded context to nine and removing sqlc was that exercise.
+
+**Still open, and recorded as open:** one adopter is one schema and one set of
+idioms; a second would push on shapes this one never writes. MySQL and MariaDB
+have NO adopter — supported, tested on every commit against both engines,
+running in nobody's production. v1.0 promises their API, not their mileage.
+
+M9+ was gated on v1.0 shipping. It has, so M10 (SQL Server) is unblocked.
+
 ## Related memories
 - [[m9_mysql]] — why M9 is bigger than PLAN.md said, and the gate that read
   as though it worked
