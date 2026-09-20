@@ -93,6 +93,43 @@ before=$(cat examples/blog/store/*.gen.go examples/blog/store/*/*.gen.go 2>/dev/
 go run ./examples/blog/gen >/dev/null 2>&1
 stale "$before" "$(cat examples/blog/store/*.gen.go examples/blog/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./examples/blog/gen"
 
+# Minimal version selection resolves an adopter's build to the HIGHEST
+# requirement in the graph, so a module here that asks for an OLDER version of
+# something the root also requires is a module whose tests run a dependency the
+# adopter's build does not. storm shipped exactly that: go.mod said pgx 5.10
+# while the adopter's build resolved to 5.11, and pgxdrv is the one package
+# where a driver change is invisible at compile time and wrong at run time.
+#
+# Fixing the root left examples/orders behind, where the SAME drift broke
+# scripts/check/explain.sh — silently in CI, which had a warm enough module
+# cache to resolve it anyway. Hence a check rather than a habit.
+echo "== every module agrees with the root on shared dependencies =="
+root_reqs="$(mktemp)"
+go mod edit -json | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for r in d.get("Require") or []:
+    if not r.get("Indirect"):
+        print(r["Path"], r["Version"])
+' > "$root_reqs"
+while IFS= read -r mod; do
+  [ "$mod" = "./go.mod" ] && continue
+  case "$mod" in */testdata/*) continue ;; esac
+  (cd "$(dirname "$mod")" && go mod edit -json) | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+for r in d.get("Require") or []:
+    if not r.get("Indirect"):
+        print(r["Path"], r["Version"])
+' | while read -r path ver; do
+    want="$(awk -v p="$path" '$1==p{print $2}' "$root_reqs")"
+    if [ -n "$want" ] && [ "$want" != "$ver" ]; then
+      note "$mod requires $path $ver; the root requires $want — minimal version selection gives an adopter $want, so this module tests something nobody builds"
+    fi
+  done
+done < <(find . -name go.mod -not -path "*/testdata/*")
+rm -f "$root_reqs"
+
 echo "== gofmt =="
 if [ -n "$(gofmt -l . 2>/dev/null)" ]; then
   note "not gofmt'd:"; gofmt -l . | sed 's/^/    /'

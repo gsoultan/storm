@@ -10,7 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        # 16, the FLOOR: `storm explain` reads the planner's JSON and needs it.
+        # The postgres-next job below tests what adopters actually run; both
+        # ends, because a catalog change between majors is invisible until
+        # introspection meets it. docs/STABILITY.md states the range.
+        image: postgres:16
         env:
           POSTGRES_USER: storm
           POSTGRES_PASSWORD: storm
@@ -27,7 +31,10 @@ jobs:
       # syntax error on MySQL 8 — so a single server would leave half the
       # generator untested.
       mysql:
-        image: mysql:8
+        # PINNED, not `mysql:8`. A floating tag means the gate's meaning drifts
+        # under it: every MySQL measurement in these docs was taken against
+        # 8.4, and a gate that might be testing 8.0 instead cannot be quoted.
+        image: mysql:8.4
         env:
           MYSQL_ROOT_PASSWORD: storm
           MYSQL_DATABASE: storm
@@ -180,3 +187,55 @@ jobs:
       # whether the tests are good.
       - name: coverage floors
         run: ./scripts/check/coverage.sh
+
+  # The SECOND PostgreSQL version.
+  #
+  # The job above tests 16, the floor `storm explain` needs. This one tests
+  # what adopters actually run. storm shipped a pgx its own suite had never
+  # exercised — go.mod said 5.10 while the adopter's build resolved to 5.11 —
+  # and a server major is the same skew one layer down, except that
+  # introspection reads pg_catalog directly and the catalog is the part of
+  # PostgreSQL that changes between majors.
+  #
+  # No MySQL addresses here on purpose: those live tests skip, the PostgreSQL
+  # ones all run, and the job stays a few minutes rather than duplicating the
+  # other one.
+  postgres-next:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: storm
+          POSTGRES_PASSWORD: storm
+          POSTGRES_DB: storm
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      STORM_DSN: postgres://storm:storm@localhost:5432/storm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: test
+        run: go test -count=1 ./...
+
+      # Introspection is the version-sensitive part, and the migration path is
+      # where a catalog difference turns into a wrong ALTER rather than an
+      # error. The outsider gate walks diff, apply and verify from a module
+      # that is not storm.
+      - name: outsider
+        run: ./scripts/check/outsider.sh
+
+      - name: every statement plans
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          ./scripts/check/explain.sh
