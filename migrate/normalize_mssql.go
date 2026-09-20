@@ -21,7 +21,7 @@ import (
 // run. So the scratch namespace is a whole DATABASE — the unit that can be
 // created and dropped without leaving anything different behind. The raw-query
 // checker reached the same conclusion for the same reason; see
-// tool/rawmssql.go.
+// tool/mstool/raw.go.
 //
 // The price is a second connection. A SQL Server session is bound to its
 // database at LOGIN, so nothing already connected can be moved to the new one,

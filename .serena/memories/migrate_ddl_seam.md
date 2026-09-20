@@ -50,7 +50,7 @@ shared loop stays as it was, so PostgreSQL gained no step.
 Server session is bound to its database at LOGIN, so the scratch **database**
 cannot be reached from the connection that found the target. A scratch database
 rather than a scratch schema because there is no `search_path` — the same
-conclusion `tool/rawmssql.go` reached independently.
+conclusion `tool/mstool/raw.go` reached independently.
 
 ## What the gate is
 
