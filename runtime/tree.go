@@ -311,6 +311,27 @@ type Lowering struct {
 	// comparison.
 	TupleOpen, TupleSep, TupleClose string
 
+	// RowCmpExpand says this back end has no row constructor, so a keyset
+	// comparison has to be written as the OR-chain it means.
+	//
+	// SQL Server is the one. `(a, b) > (@p1, @p2)` does not parse there, and
+	// keyset pagination is not optional — it is how storm pages without OFFSET
+	// walking the rows it already showed. The expansion references each
+	// parameter TWICE, which is legal precisely because this back end's
+	// placeholders are named: with MySQL's bare `?` the same expansion would
+	// need the value bound twice and the arity would stop matching the binder.
+	RowCmpExpand bool
+
+	// OrderFallback is an ORDER BY for a back end that requires one before it
+	// will accept a row cap, used when the caller asked for no ordering.
+	//
+	// SQL Server's OFFSET/FETCH is defined as part of ORDER BY and is a syntax
+	// error without it, where LIMIT is free-standing on both other targets. The
+	// splicer writes this only when there are no ordering tokens AND the suffix
+	// is non-empty — a count and an existence probe carry no suffix, so neither
+	// gains an ORDER BY it would have to sort for.
+	OrderFallback string
+
 	// Placeholder is how this back end spells a bound parameter. The zero
 	// value is PostgreSQL's `$` plus an ordinal, so a generated PostgreSQL
 	// package need not mention it (ADR-0010).
@@ -386,7 +407,7 @@ func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string,
 				continue
 			}
 			s := f.A
-			if takesArg(f) {
+			if takesArg(f, lw.Placeholder) {
 				ord++
 				// The fragment ends in the SIGIL the back end chose; what
 				// follows it (an ordinal, or nothing) is the back end's too.
@@ -440,6 +461,12 @@ func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string,
 				n = len(stack)
 			}
 			cols := stack[len(stack)-n:]
+			if lw.RowCmpExpand {
+				stack = append(stack[:len(stack)-n],
+					expandRowCmp(cols, lw.RowCmp(t.Op()), lw.Placeholder, ord))
+				ord += n
+				continue
+			}
 			var b strings.Builder
 			b.WriteString(lw.TupleOpen)
 			b.WriteString(join(cols, lw.TupleSep))
@@ -499,6 +526,12 @@ func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string,
 		}
 		sql += ord2(t.Op(), t.Col())
 	}
+	if len(orderToks) == 0 && suffix != "" {
+		// A back end whose row cap is part of ORDER BY needs one even when the
+		// caller wanted no ordering. Empty for every other target, so nothing
+		// else gains a clause.
+		sql += lw.OrderFallback
+	}
 	// Number every placeholder the suffix carries, in order.
 	//
 	// The previous version took a trailingArgs count, appended that many
@@ -536,42 +569,37 @@ func spliceTree(prefix, declared string, toks []Tok, lw Lowering, suffix string,
 		// simply contain a dollar — `'$5.00'` is a price, not a placeholder.
 		// Numbering either produced `$31` out of `$1` and a statement the
 		// server could not type.
-		if i+1 < len(suffix) && suffix[i+1] >= '0' && suffix[i+1] <= '9' {
+		if lw.Placeholder.numbered(suffix, i) {
 			continue
 		}
 		ord++
+		b.WriteString(lw.Placeholder.Prefix)
 		b.WriteString(itoa(ord))
 	}
 	return &Stmt{SQL: b.String(), NArg: ord, Err: streamErr}
 }
 
-// takesArg reports whether a fragment ends in a placeholder needing an ordinal.
-// IS NULL and IS NOT NULL do not.
+// takesArg reports whether a fragment ends in the back end's placeholder, and
+// so needs an ordinal. IS NULL and IS NOT NULL do not.
 //
-// placeholderSigil marks where an ordinal goes. See the seam note below.
-const placeholderSigil = '$'
-
-// KNOWN SEAM GAP, deliberate. This assumes the back end's placeholder is `$`
-// followed by an ordinal, which is Postgres and MSSQL but not MySQL's bare `?`
-// or Oracle's `:name`. P1b moved the read path's SQL text into compile/pgsql
-// and stopped there: the right carrier for placeholder policy is not knowable
-// from one back end, and inventing one now would be guessing. Until it lands
-// this is the one Postgres assumption left inside runtime/, and it is written
-// down rather than hidden.
+// It asks the CARRIER rather than testing a set of known sigils. The set was
+// `$` or `?` — the two back ends that existed — and it is wrong in both
+// directions once there is a third. It misses `@`, so every SQL Server
+// predicate came out as a bare `@` binding nothing; and it accepts a sigil this
+// back end does not use, which is how a PostgreSQL jsonb key test written `?|`
+// would have been numbered as a parameter if one of them had ever ended in the
+// operator rather than in `$`.
 //
-// The carrier is now DECIDED: a Placeholder field on Lowering, whose zero
-// value is Postgres, carrying a sigil and whether an ordinal follows it. See
-// docs/adr/0010. It is deliberately not implemented yet — the suffix scanner
-// below numbers bare sigils and guards against `'$5.00'`, and MySQL's
-// equivalent hazard is a `?` inside a string literal, which cannot be settled
-// without a server to run the result against. A second implementation nothing
-// executes is what R9 already cost this project once.
-func takesArg(f Frag) bool {
+// This is the last of the seam gap ADR-0010 named. The note that stood here
+// said the carrier was decided and deliberately unbuilt, because "a second
+// implementation nothing executes is what R9 already cost this project once".
+// M9 built it against a server; M10 is what proved the rest of runtime/ still
+// had the old assumption compiled in.
+func takesArg(f Frag, p Placeholder) bool {
 	if len(f.A) == 0 {
 		return false
 	}
-	c := f.A[len(f.A)-1]
-	return c == '$' || c == '?'
+	return f.A[len(f.A)-1] == p.sigil()
 }
 
 // unwrapOuter drops the parentheses around a single top-level group; `WHERE (a
