@@ -134,8 +134,8 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 		}
 	}
 
-	g := &gen{s: s, t: t, o: o, cols: cols}
-	g.setDialect(o.Dialect, o.Import)
+	g := &gen{t: t, o: o, cols: cols}
+	g.setDialect(o.Dialect, o.Import, s)
 	g.header()
 	g.rowType()
 	g.opConstants()
@@ -932,25 +932,36 @@ func (g *gen) hasFallibleDecode() bool {
 	return false
 }
 
-// setDialect resolves BOTH sides of the seam a generator needs — the decoder
-// family and the query lowering — and is the only place either is chosen.
+// setDialect resolves everything a generator needs that is not per-table: the
+// decoder family, the query lowering, and the SCHEMA. It is the only place any
+// of the three is chosen.
 //
-// They were set separately, and contextFile set only the decoders. Its unions
-// then rendered through a ZERO lowering, whose function fields are nil. A
-// generator with half a dialect is not a state worth being able to express, so
-// the two are resolved together and the caller cannot take one without the
-// other.
-func (g *gen) setDialect(d Dialect, imp string) {
+// They were set separately, and the same hand-built generator has now been
+// caught missing two of them. First the lowering: contextFile set only the
+// decoders, so its unions rendered through a ZERO lowering whose function
+// fields are nil. Then the schema: liveIn was asked for each union branch's
+// soft-delete predicate against a nil schema and returned "" for all of them,
+// so a declared union returned the rows it had deleted — on every dialect,
+// PostgreSQL included.
+//
+// Both had the same cause. A hand-built constructor does not gain a field when
+// the type does, and every per-table generator got the field for free from the
+// composite literal that builds it. So the three travel together and a caller
+// cannot take one without the others.
+func (g *gen) setDialect(d Dialect, imp string, s *schema.Schema) {
 	g.dec = decodersFor(d, imp)
 	g.lw = loweringFor(d)
+	g.s = s
 }
 
-// inheritDialect copies BOTH halves from another generator.
+// inheritDialect copies all three from another generator.
 //
 // Several emitters build a scratch gen to render a fragment and then ask what
 // the fragment needed — the enum types, the imports. Those inherit the parent's
-// dialect, and inheriting half of it is the same bug as resolving half of it.
+// dialect, and inheriting part of it is the same bug as resolving part of it:
+// see setDialect for the two that shipped.
 func (g *gen) inheritDialect(from *gen) {
 	g.dec = from.dec
 	g.lw = from.lw
+	g.s = from.s
 }
