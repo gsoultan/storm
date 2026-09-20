@@ -166,6 +166,11 @@ func defaultName(table, col string) string { return "DF_" + table + "_" + col }
 // being pointed at for the first time could be called anything at all. The
 // catalogue is the only place the name exists, so the statement reads it.
 //
+// The variable holds the WHOLE statement rather than the name, because EXEC's
+// argument may only be variables and string literals concatenated — a function
+// call inside it is a syntax error, and QUOTENAME is a function call. So the
+// quoting happens in the SELECT and EXEC gets one variable.
+//
 // The variable is named after the table and column rather than something
 // short, because DECLARE is scoped to the BATCH, not to a block: a migration
 // that drops two defaults is two of these concatenated, and a second
@@ -176,11 +181,12 @@ func dropDefaultSQL(t *schema.Table, c *schema.Column) string {
 	// `a_b_c`, and two DECLAREs of one name in a batch is an error mid-migration.
 	v := fmt.Sprintf("@storm_df_%d_%s_%s", len(t.Name), sanitizeVar(t.Name), sanitizeVar(c.Name))
 	tbl := msddl.Ident(t.Name)
-	return "DECLARE " + v + " sysname;\n" +
-		"SELECT " + v + " = dc.name FROM sys.default_constraints dc\n" +
+	return "DECLARE " + v + " nvarchar(max);\n" +
+		"SELECT " + v + " = N'ALTER TABLE " + tbl + " DROP CONSTRAINT ' + QUOTENAME(dc.name)\n" +
+		"  FROM sys.default_constraints dc\n" +
 		"  JOIN sys.columns c ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id\n" +
 		" WHERE dc.parent_object_id = OBJECT_ID(N" + quote(tbl) + ") AND c.name = N" + quote(c.Name) + ";\n" +
-		"IF " + v + " IS NOT NULL EXEC(N'ALTER TABLE " + tbl + " DROP CONSTRAINT ' + QUOTENAME(" + v + "));"
+		"IF " + v + " IS NOT NULL EXEC(" + v + ");"
 }
 
 // sanitizeVar makes an identifier fragment safe to paste into a variable name.

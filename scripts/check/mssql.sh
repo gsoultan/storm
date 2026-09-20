@@ -94,7 +94,13 @@ echo "== a SQL Server migration plan applies, and the next plan is empty =="
 out=$(mktemp)
 if ! go test -count=1 -v -run 'TestMSSQLMigrationRoundTrip|TestMSSQLAltersApply' ./migrate/ >"$out" 2>&1; then
   note "the server refused a statement migrate emitted, or the re-diff was not empty:"
-  grep -E -- "--- FAIL|refused by the server|is not empty|tested nothing" "$out" | head -20 | sed 's/^/    /'
+  grep -E -- "^ *--- FAIL" "$out" | head -10 | sed 's/^/    /'
+  # WITH the lines below it. The statement and the server's own words are what
+  # make this actionable, and they are printed UNDER the header a bare grep
+  # keeps — which is how the first run of this gate reported five failures and
+  # not one word about why.
+  grep -E -A14 -- "refused by the server|is not empty|tested nothing" "$out" |
+    head -70 | sed 's/^/    /'
 fi
 # COUNT the alters, do not trust the word ok: these skip without a server, and a
 # gate that passes by not running is the defect this whole file is named after.
