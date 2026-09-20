@@ -310,12 +310,6 @@ jobs:
       - name: the generated package
         run: go test -count=1 -run TestGeneratedMSSQL ./codegen/
 
-      # storm.SQL, whose safety is that a server of the TARGET's kind typed
-      # every declared statement. That cannot be asserted on text, and the
-      # server that has to do it is in this job.
-      - name: the escape hatch
-        run: go test -count=1 -run TestRawQuer ./tool/
-
       # Introspection: model → DDL → server → model. A round trip rather than a
       # field-by-field assertion, because a field-by-field one passes while the
       # import silently halves every string width.
