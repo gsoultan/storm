@@ -69,6 +69,24 @@ if ! (cd internal/mssqlspike && go test -run 'TestDeclaredReads/refusals' ./... 
   note "a construct with no SQL Server lowering did not say so by name"
 fi
 
+# The two runtime packages whose live half only runs where there is a server.
+# Their floors live here rather than in scripts/check/coverage.sh for that
+# reason: measured without one, they would be measuring a suite that skipped.
+echo "== the TDS client and its decoders are above their floors =="
+cov() { # <package> <floor>
+  pct=$(go test -count=1 -cover "$1" 2>/dev/null |
+    sed -n 's/.*coverage: \([0-9.]*\)%.*/\1/p')
+  if [ -z "$pct" ]; then
+    note "$1 reported no coverage at all, so its tests did not run"
+    return
+  fi
+  ok=$(awk -v a="$pct" -v b="$2" 'BEGIN{print (a+0 >= b+0) ? "ok" : "low"}')
+  printf '  %-36s %6s%%  floor %s%%  %s\n' "${1#github.com/gsoultan/}" "$pct" "$2" "$ok"
+  [ "$ok" = "ok" ] || note "$1 is below its floor"
+}
+cov ./runtime/msdrv 55
+cov ./runtime/msdec 85
+
 if [ "$fail" -eq 0 ]; then
   echo "OK: storm's SQL Server DDL applies, and every statement it lowers runs"
 else
