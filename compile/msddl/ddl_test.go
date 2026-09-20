@@ -183,7 +183,7 @@ func TestUUIDv7IsRefusedRatherThanApproximated(t *testing.T) {
 	// gen_random_uuid() DOES cross, which is the difference from MySQL that
 	// lets the key stay the database's job here.
 	c.Default = "gen_random_uuid()"
-	def, err := msddl.ColumnDef("t", c)
+	def, err := msddl.ColumnDef("t", c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestArcCheckIsRespelled(t *testing.T) {
 		Checks: []*schema.Check{{Name: "ck_events_subject",
 			Arc: []string{"order_id", "invoice_id"}}}}
 
-	got, err := msddl.CreateTable(tb)
+	got, err := msddl.CreateTable(tb, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func TestCreateOrdersTablesBeforeTheirReferences(t *testing.T) {
 func TestComputedColumnIsPersisted(t *testing.T) {
 	c := col("upper_name", schema.Type{Name: schema.TypeVarchar, Size: 200}, true)
 	c.Generated = "UPPER([name])"
-	got, err := msddl.ColumnDef("t", c)
+	got, err := msddl.ColumnDef("t", c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestComputedColumnIsPersisted(t *testing.T) {
 func TestIdentityColumn(t *testing.T) {
 	c := col("n", schema.Type{Name: schema.TypeInt8}, true)
 	c.Identity = true
-	got, err := msddl.ColumnDef("t", c)
+	got, err := msddl.ColumnDef("t", c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestIdentityColumn(t *testing.T) {
 func TestNowDefaultIsOffsetAware(t *testing.T) {
 	c := col("created_at", schema.Type{Name: schema.TypeTimestamptz}, true)
 	c.Default = "now()"
-	got, err := msddl.ColumnDef("t", c)
+	got, err := msddl.ColumnDef("t", c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,51 @@ func TestNowDefaultIsOffsetAware(t *testing.T) {
 	// A default storm did not generate is passed through: it is the model's own
 	// SQL, and rewriting somebody's expression is guesswork.
 	c.Default = "42"
-	if got, _ := msddl.ColumnDef("t", c); !strings.Contains(got, "DEFAULT 42") {
+	if got, _ := msddl.ColumnDef("t", c, nil); !strings.Contains(got, "DEFAULT 42") {
 		t.Errorf("a literal default was dropped: %s", got)
+	}
+}
+
+// An enum column renders, and the CHECK that makes it an enum comes with it.
+//
+// This is the gap the two halves of the package disagreed about: Check accepted
+// a model with an enum and Create then refused it, because TypeSQL has no
+// labels and nothing supplied them. A check that says a model ports and a
+// generator that says it does not is the one disagreement this package exists
+// to prevent.
+func TestEnumColumnRendersRatherThanRefusing(t *testing.T) {
+	e := &schema.Enum{Name: "order_status", Labels: []string{"new", "paid", "cancelled"}}
+	c := col("status", schema.Type{Name: "order_status", Enum: true}, true)
+	tb := &schema.Table{Name: "orders", Columns: []*schema.Column{
+		col("id", schema.Type{Name: schema.TypeUUID}, true), c,
+	}, PrimaryKey: []string{"id"}}
+	s := &schema.Schema{Tables: []*schema.Table{tb}, Enums: []*schema.Enum{e}}
+
+	if err := msddl.Check(s); err != nil {
+		t.Fatalf("Check refused a model with a declared enum: %v", err)
+	}
+	got, err := msddl.Create(s)
+	if err != nil {
+		t.Fatalf("Check accepted this model and Create refused it: %v", err)
+	}
+	// The width is the widest label: there is no enum TYPE here, so the column
+	// is a string and the declaration is what bounds it.
+	if !strings.Contains(got, "[status] NVARCHAR(9) NOT NULL") {
+		t.Errorf("the column is not the enum's width:\n%s", got)
+	}
+	// And the CHECK is what makes it an enum rather than any string at all.
+	for _, l := range e.Labels {
+		if !strings.Contains(got, "'"+l+"'") {
+			t.Errorf("the constraint does not accept %q:\n%s", l, got)
+		}
+	}
+	if !strings.Contains(got, "CONSTRAINT [ck_orders_status] CHECK") {
+		t.Errorf("no constraint, so the column takes any string:\n%s", got)
+	}
+
+	// Without the labels the refusal is still there, and it names the schema
+	// rather than telling the caller to call a function they cannot reach.
+	if _, err := msddl.CreateTable(tb, nil); err == nil {
+		t.Error("a table with an enum rendered without the labels")
 	}
 }

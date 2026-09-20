@@ -648,12 +648,51 @@ GOEOF
   fi
 fi
 
+# ---- SQL Server ------------------------------------------------------------
+#
+# GENERATE and BUILD, not RUN. Running needs a server, and SQL Server's lives in
+# its own CI job — four databases on one runner is what made the MySQL soak test
+# flaky (P8). The RUN half is codegen/mssqllive_test.go, which has one.
+#
+# What this covers is the half that had NO cover at all: until the CLI learned
+# the dialect, every piece of M10 existed and `storm ddl -dialect mssql` said
+# "unknown dialect". A capability nothing an outsider can reach is the same
+# defect the committed example had at v1.0.0, one flag over.
+echo "== a stranger can generate for SQL Server, and the result COMPILES =="
+cd "$TMP"
+if ! go run ./cmd/mystorm ddl -dialect mssql > ms.sql 2>ms.err; then
+  note "ddl -dialect mssql failed:"; sed 's/^/    /' ms.err >&2
+elif ! grep -q 'CREATE TABLE \[shops\]' ms.sql; then
+  note "the SQL Server ddl is not bracketed — this is another dialect's output with a flag on it"
+  head -3 ms.sql | sed 's/^/    /' >&2
+fi
+
+if ! go run ./cmd/mystorm portable mssql > msport.out 2>&1; then
+  note "portable mssql refused a model that ports:"; sed 's/^/    /' msport.out >&2
+fi
+
+if ! go run ./cmd/mystorm generate -dialect mssql msstore >msgen.err 2>&1; then
+  note "generate -dialect mssql failed:"; sed 's/^/    /' msgen.err >&2
+else
+  if ! GOFLAGS=-mod=mod go mod tidy >tidy3.err 2>&1; then
+    note "go mod tidy failed after generating for SQL Server:"
+    sed 's/^/    /' tidy3.err | head -5 >&2
+  fi
+  # vet, not just build: this is the only module in the tree that holds a
+  # generated shape assertion, and the gap let storm emit code failing vet from
+  # v0.3.0 to v0.6.2.
+  if ! go vet ./msstore/... >msvet.err 2>&1; then
+    note "the SQL Server code storm generated does not pass go vet:"
+    sed 's/^/    /' msvet.err | head -10 >&2
+  fi
+fi
+
 cd "$REPO"
 rm -rf "$TMP2"
 
 if [ "$fail" -eq 0 ]; then
   if [ -n "${STORM_MYSQL_ADDR:-}" ]; then
-    echo "OK: a module outside this repository can model, generate, build and RUN — on PostgreSQL and MySQL"
+    echo "OK: a module outside this repository can model, generate, build and RUN — on PostgreSQL and MySQL, and can generate and build for SQL Server"
   elif [ -n "${STORM_DSN:-}" ]; then
     echo "OK: a module outside this repository can model, generate, build, migrate and verify"
   else

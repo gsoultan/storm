@@ -52,8 +52,8 @@ func setup(t *testing.T, db *sql.DB) {
 			t.Fatalf("seed failed\n  %s\n%v", q, err)
 		}
 	}
-	exec(`INSERT INTO [ms_orgs] ([id],[name],[seats],[ratio],[balance],[active],[opened],[note],[doc]) `+
-		`VALUES (@p1, 'Acme', 10, 1.5, 12.3400, 1, '2026-01-01', 'n', '{}')`, orgID)
+	exec(`INSERT INTO [ms_orgs] ([id],[name],[seats],[ratio],[balance],[active],[opened],[note],[doc],[status]) `+
+		`VALUES (@p1, 'Acme', 10, 1.5, 12.3400, 1, '2026-01-01', 'n', '{}', 'new')`, orgID)
 	exec(`INSERT INTO [ms_members] ([id],[email],[rank],[org_id]) VALUES (@p1, 'a@b.c', 1, @p2)`,
 		memberID, orgID)
 }

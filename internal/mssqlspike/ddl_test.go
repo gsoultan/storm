@@ -14,6 +14,18 @@ import (
 	_ "github.com/microsoft/go-mssqldb"
 )
 
+// msStatus is an enum: a Go string type with a declared label set.
+//
+// SQL Server has no enum TYPE, so it becomes a sized NVARCHAR and a CHECK — and
+// for a long time it became nothing at all, because Check accepted a model with
+// one and Create then refused it. This is in the gate so that the two halves
+// cannot disagree again without a server saying so.
+type msStatus string
+
+func (msStatus) EnumValues() []string {
+	return []string{"new", "paid", "cancelled"}
+}
+
 // The models the gate runs against: a parent with a self-reference, a child
 // that soft-deletes, and one column of every type that is supposed to cross.
 type msOrg struct {
@@ -28,6 +40,7 @@ type msOrg struct {
 	Note    storm.Null[string]
 	Blob    []byte
 	Doc     storm.JSON
+	Status  msStatus
 
 	Parent  *msOrg
 	Members []msMember

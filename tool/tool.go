@@ -44,6 +44,7 @@ import (
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/compile/msddl"
 	"github.com/gsoultan/storm/compile/myddl"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/migrate"
@@ -116,12 +117,12 @@ usage:
                                   migrations (functions, views the model omits)
   storm watch <dir>               regenerate on save; leave it running while you edit
   storm models                    what discovery found, and which rule matched
-  storm portable <dialect>        fail if the model does not port (mysql, mariadb)
+  storm portable <dialect>        fail if the model does not port (mysql, mariadb, mssql)
   storm lint                      cost every named plan in round trips; fail over the budget
   storm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
 flags:
-  -dialect    the engine to generate for: postgres (default), mysql, mariadb.
+  -dialect    the engine to generate for: postgres (default), mysql, mariadb, mssql.
               ddl and generate honour it; diff, verify, explain and import
               read a live PostgreSQL catalogue and have no other form
   -dsn        PostgreSQL connection string (or $STORM_DSN)
@@ -997,8 +998,15 @@ func parseDialect(name string) (target, error) {
 			check:   myddl.Check,
 			ddl:     func(s *schema.Schema) (string, error) { return myddl.CreateFor(s, myddl.MariaDB) },
 		}, nil
+	case "mssql", "sqlserver":
+		return target{
+			dialect: codegen.DialectMSSQL,
+			check:   msddl.Check,
+			ddl:     msddl.Create,
+		}, nil
 	}
-	return target{}, fmt.Errorf("unknown dialect %q — storm knows postgres, mysql and mariadb", name)
+	return target{}, fmt.Errorf(
+		"unknown dialect %q — storm knows postgres, mysql, mariadb and mssql", name)
 }
 
 // portable reports whether the model can be generated for another dialect.
@@ -1023,6 +1031,18 @@ func portable(dialect string, model *schema.Schema) error {
 		}
 		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
 		return nil
+	case "mssql", "sqlserver":
+		// A DIFFERENT list from MySQL's, and shorter in both directions: this
+		// engine has a native uuid and filtered indexes, so a soft-delete
+		// table's live-scoped unique ports here and not there — and it has no
+		// FILTER clause on an aggregate, which MySQL also lacks and PostgreSQL
+		// has. docs/DIALECTS.md carries the whole table.
+		if err := msddl.Check(model); err != nil {
+			return err
+		}
+		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
+		return nil
 	}
-	return fmt.Errorf("unknown dialect %q — storm knows postgres, mysql and mariadb", dialect)
+	return fmt.Errorf(
+		"unknown dialect %q — storm knows postgres, mysql, mariadb and mssql", dialect)
 }

@@ -193,12 +193,27 @@ func (x *conn) prelogin(want byte) (byte, error) {
 // afterwards — at which point the tls.Conn talks to the raw socket and the
 // framing above it resumes over the encrypted stream.
 type handshakeConn struct {
-	x *conn
+	// raw is the socket. Held directly rather than reached through conn.c,
+	// because conn.c BECOMES the tls.Conn that wraps this — and reaching
+	// through it would then be a loop.
+	raw net.Conn
+	x   *conn
 	// rem is what is left of the current inbound packet's payload.
 	rem []byte
+	// done is set once the handshake finishes, after which this is a plain
+	// passthrough to the socket.
+	//
+	// The switch is not optional. Leaving it wrapping means every TLS record
+	// after the handshake carries a TDS header the server is no longer
+	// expecting — which neither side reports as an error. The login is written,
+	// nothing answers, and the connection hangs.
+	done bool
 }
 
 func (h *handshakeConn) Write(p []byte) (int, error) {
+	if h.done {
+		return h.raw.Write(p)
+	}
 	h.x.begin(pktPrelogin)
 	if err := h.x.write(p); err != nil {
 		return 0, err
@@ -210,6 +225,16 @@ func (h *handshakeConn) Write(p []byte) (int, error) {
 }
 
 func (h *handshakeConn) Read(p []byte) (int, error) {
+	if h.done {
+		if len(h.rem) > 0 {
+			// Whatever the handshake read ahead of itself belongs to the
+			// encrypted stream and has to be handed over before the socket is.
+			n := copy(p, h.rem)
+			h.rem = h.rem[n:]
+			return n, nil
+		}
+		return h.raw.Read(p)
+	}
 	for len(h.rem) == 0 {
 		if err := h.x.next(); err != nil {
 			return 0, err
@@ -223,15 +248,17 @@ func (h *handshakeConn) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func (h *handshakeConn) Close() error                  { return h.x.c.Close() }
-func (h *handshakeConn) LocalAddr() net.Addr           { return h.x.c.LocalAddr() }
-func (h *handshakeConn) RemoteAddr() net.Addr          { return h.x.c.RemoteAddr() }
-func (h *handshakeConn) SetDeadline(t time.Time) error { return h.x.c.SetDeadline(t) }
+func (h *handshakeConn) Close() error                  { return h.raw.Close() }
+func (h *handshakeConn) LocalAddr() net.Addr           { return h.raw.LocalAddr() }
+func (h *handshakeConn) RemoteAddr() net.Addr          { return h.raw.RemoteAddr() }
+func (h *handshakeConn) SetDeadline(t time.Time) error { return h.raw.SetDeadline(t) }
+
 func (h *handshakeConn) SetReadDeadline(t time.Time) error {
-	return h.x.c.SetReadDeadline(t)
+	return h.raw.SetReadDeadline(t)
 }
+
 func (h *handshakeConn) SetWriteDeadline(t time.Time) error {
-	return h.x.c.SetWriteDeadline(t)
+	return h.raw.SetWriteDeadline(t)
 }
 
 // ErrNoEncryption is returned when the caller asked for TLS and the server has
@@ -256,11 +283,14 @@ func (x *conn) upgrade(cfg Config, host string) (*tls.Conn, error) {
 		// is no reason to offer less.
 		tc.MinVersion = tls.VersionTLS12
 	}
-	h := &handshakeConn{x: x}
+	h := &handshakeConn{raw: x.c, x: x}
 	c := tls.Client(h, tc)
 	if err := c.Handshake(); err != nil {
 		return nil, handshakeError(err)
 	}
+	// From here the TLS stream IS the transport: records go to the socket
+	// unwrapped, and the TDS framing sits above them.
+	h.done = true
 	return c, nil
 }
 

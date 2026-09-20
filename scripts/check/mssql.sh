@@ -32,6 +32,17 @@ if [ -z "${STORM_MSSQL_DSN:-}" ]; then
   exit 0
 fi
 
+# The Go tests below need the address and the password as their own variables —
+# the DSN is the borrowed client's form, and runtime/msdrv takes neither a DSN
+# nor a URL. Missing them is an ERROR rather than a skip: the coverage floors at
+# the end would otherwise measure a suite that skipped, which is the exact thing
+# the statement count above refuses to do one level up.
+if [ -z "${STORM_MSSQL_ADDR:-}" ] || [ -z "${STORM_MSSQL_PASSWORD:-}" ]; then
+  echo "STORM_MSSQL_DSN is set but STORM_MSSQL_ADDR and STORM_MSSQL_PASSWORD are not:" >&2
+  echo "  the TDS client's own tests take host:port and a password, not a DSN" >&2
+  exit 1
+fi
+
 fail=0
 note() { printf '  %s\n' "$1"; fail=1; }
 
