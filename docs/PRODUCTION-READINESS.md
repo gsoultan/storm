@@ -674,6 +674,49 @@ than staying where they would measure a suite that SKIPPED — a floor met by a
 package whose tests did not run is a floor that means nothing, which is the
 same rule the statement count in that gate already enforces one level up.
 
+## P9 — What M10 built and nothing could reach — **CLOSED 2026-09-20**
+
+An audit before starting M11 found four things, and the first is the one that
+mattered.
+
+**The CLI did not know the dialect.** `storm ddl -dialect mssql` answered
+"unknown dialect — storm knows postgres, mysql and mariadb". The lowering, the
+DDL, the TDS client, the decoder family and the codegen wiring all existed, and
+nothing an adopter touches could reach any of them. That is P7's shape exactly —
+a capability nothing from outside can get to — one flag over, and it is the
+second time in this project that the thing nobody could reach was the thing
+everybody would use first. `scripts/check/outsider.sh` now covers it.
+
+**Enum columns rendered no DDL on ANY non-PostgreSQL target.** `Check` accepted
+a model with one and `Create` then refused it, on SQL Server and on MySQL alike:
+`TypeSQL` has no schema, so it has no labels, and nothing supplied them. A check
+that says a model ports and a generator that says it does not is precisely the
+disagreement those packages exist to prevent. The labels are a PARAMETER now, in
+both, so the dependency is a signature rather than a comment.
+
+**Login-only encryption hung, and it is the protocol's DEFAULT.** The wrapper
+that puts TLS records inside PRELOGIN packets never stopped wrapping, so every
+record after the handshake carried a TDS header the server was no longer
+expecting — which neither side reports as an error. It went unnoticed because
+the only TLS path with any cover was the one that does no TLS: the development
+server's self-signed certificate has a negative serial number Go refuses to
+PARSE, which `InsecureSkipVerify` does not reach. A `//go:debug
+x509negativeserial=1` line in the test file is what made the default mode
+testable at all.
+
+**And a PostgreSQL bug the SQL Server path found.** `goTypeName` normalised
+`[]uint8` to `[]byte` — a fix made when a bytea column was refused with a
+message asking for the declaration it had just been given — and did not
+normalise `[16]uint8`. Every raw query returning a UUID was refused, on
+PostgreSQL as much as on SQL Server, which is only where it happened to be
+caught. Third time a second back end has found a defect in the first.
+
+**The rule these keep proving:** a capability is not shipped until the thing an
+outsider touches can reach it, and the path nothing exercises is the path that
+is broken. Both of those were already written down here. What is new is how
+cheap the audit was that found them: running the tool the way a reader of the
+README would.
+
 ## What is already load-bearing (do not re-litigate)
 
 Injection is structural and fuzzed (~80M executions, one real fail-open found
