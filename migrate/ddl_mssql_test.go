@@ -70,8 +70,8 @@ func TestMSSQL_SetDefaultReplacesTheConstraint(t *testing.T) {
 	old.Default = "0"
 	cur := mcol("state", "int4", true)
 	cur.Default = "1"
-	a := msch(mtbl("users", mcol("id", "uuid", true), old))
-	b := msch(mtbl("users", mcol("id", "uuid", true), cur))
+	a := msch(mtbl("mig_users", mcol("id", "uuid", true), old))
+	b := msch(mtbl("mig_users", mcol("id", "uuid", true), cur))
 
 	p := mssqlPlan(t, a, b)
 	if len(p.Changes) != 1 {
@@ -79,9 +79,10 @@ func TestMSSQL_SetDefaultReplacesTheConstraint(t *testing.T) {
 	}
 	got := p.SQL()
 	for _, want := range []string{
-		"sys.default_constraints",        // it finds the old name rather than assuming it
-		"DROP CONSTRAINT ' + QUOTENAME(", // and quotes whatever it found
-		"ADD CONSTRAINT [DF_users_state] DEFAULT (1) FOR [state];",
+		"sys.default_constraints",            // it finds the old name rather than assuming it
+		"DROP CONSTRAINT ' + QUOTENAME(",     // and quotes whatever it found
+		"EXEC(@storm_df_9_mig_users_state);", // EXEC takes a variable, never a function call
+		"ADD CONSTRAINT [DF_mig_users_state] DEFAULT (1) FOR [state];",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)

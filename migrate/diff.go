@@ -270,13 +270,18 @@ func (b *planner) sql(s string, err error) string {
 
 func diffTable(b *planner, old, cur *schema.Table) {
 	d := b.d
+
+	// Partitioning cannot be altered. A table is created partitioned or it is
+	// not, so the only honest plan is to say so and stop: an ALTER that
+	// silently did nothing would leave a schema that looks migrated and
+	// routes every row to the wrong place.
 	if partitionDesc(old) != partitionDesc(cur) {
 		b.add(Change{
-			SQL: "-- cannot change partitioning of " + cur.Name + " in place: " +
-				partitionDesc(old) + " -> " + partitionDesc(cur),
+			SQL: "-- cannot change the partitioning of " + cur.Name +
+				": PostgreSQL has no ALTER TABLE ... PARTITION BY",
 			Destructive: true,
-			Why: "changing a table's partitioning means creating a new table, copying the rows " +
-				"and swapping the names, which storm will not do for you",
+			Why: "table " + cur.Name + " is " + partitionDesc(old) + " in the database and " +
+				partitionDesc(cur) + " in the model; this needs a new table and a data move",
 		})
 		return
 	}
