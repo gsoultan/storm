@@ -538,6 +538,14 @@ func (g *gen) emitClientKey(recv, mask string) {
 }
 
 func (g *gen) upsertTargets(ins []colInfo) {
+	if g.lw.Merge != nil {
+		// A back end whose upsert is a STATEMENT. Checked before the nil-Upsert
+		// skip below, because Upsert is nil here too — it names the inference
+		// form, which this is not — and skipping first would emit the "no
+		// upsert" comment for a target that has one.
+		g.mergeTargets(ins)
+		return
+	}
 	if g.lw.Upsert == nil {
 		// MySQL's ON DUPLICATE KEY UPDATE names no conflict target: it fires on
 		// ANY unique key. Every method below is named after the index it
@@ -738,6 +746,143 @@ type conflictTarget struct {
 // t.Index(...).Unique(). Reading constraints alone left case-insensitive
 // email — the canonical upsert target — with no OnConflict method at all,
 // and no message saying why.
+// mergeTargets emits the upsert for a back end whose conflict handling is a
+// MERGE.
+//
+// The same conflict encoding as the clause form, so Ins.conflict means the same
+// thing in every dialect — 2+2*i is target i with an update, 3+2*i is target i
+// leaving the row alone — and one value is UNREACHABLE here: conflictAny.
+// PostgreSQL's bare DO NOTHING fires on ANY unique index and MERGE's ON clause
+// names columns, so there is no form for it. It is refused BY NAME at the point
+// of use rather than approximated with the primary key, which would be a lie at
+// the call site about which index was watched.
+func (g *gen) mergeTargets(ins []colInfo) {
+	targets := conflictTargets(g.t)
+	g.p("const conflictAny = 1")
+	g.p("")
+	if len(targets) == 0 {
+		g.p("// No OnConflict methods: %s declares no unique constraint and no", g.t.Name)
+		g.p("// unique index, so there is nothing a MERGE could match ON.")
+		g.p("//")
+		g.p("// Declare one to get them: t.Unique(&m.Field), t.Index(...).Unique(),")
+		g.p("// or a primary key.")
+		g.p("")
+		return
+	}
+	if len(targets) > 126 {
+		g.err = fmt.Errorf(
+			"codegen: table %s has %d unique constraints and indexes; the conflict target is one byte",
+			g.t.Name, len(targets))
+		return
+	}
+
+	p := g.lw.Merge(g.t.Name)
+	g.p("// mergeParts is the punctuation of the upsert, from the back end at")
+	g.p("// build time. The runtime splices; it chooses none of it.")
+	g.p("var mergeParts = runtime.MergeParts{")
+	g.p("\tInto: %q, Sep: %q, AsSrc: %q,", p.Into, p.Sep, p.AsSrc)
+	g.p("\tOnLead: %q, OnSep: %q, Eq: %q,", p.OnLead, p.OnSep, p.Eq)
+	g.p("\tTgt: %q, Src: %q,", p.Tgt, p.Src)
+	g.p("\tMatched: %q, NotMatched: %q,", p.Matched, p.NotMatched)
+	g.p("\tValues: %q, Close: %q, End: %q,", p.Values, p.Close, p.End)
+	g.p("}")
+	g.p("")
+	g.p("// mergeOutput is how the upsert hands its row back. INSERTED for both")
+	g.p("// branches: the row that was written, or the row AFTER the update.")
+	g.p("const mergeOutput = %q", g.lw.MergeOutput(allReadable(g.t)))
+	g.p("")
+
+	g.p("// conflictKeys is the columns each target matches ON.")
+	g.p("var conflictKeys = [][]string{")
+	for _, ct := range targets {
+		g.p("\t{")
+		for _, k := range ct.Keys {
+			g.p("\t\t%q,", g.lw.Ident(k.Name))
+		}
+		g.p("\t},")
+	}
+	g.p("}")
+	g.p("")
+
+	upd := updatable(g.t)
+	g.p("// assignable is the columns target i may overwrite, given the mask.")
+	g.p("//")
+	g.p("// The mask is what makes an upsert correct: it overwrites only the")
+	g.p("// columns the caller ASSIGNED. Assigning every column would revert each")
+	g.p("// one the caller left out to its default, on the row that already")
+	g.p("// exists — a silent data loss that reads as an upsert working.")
+	g.p("func assignable(i uint8, mask uint64) []string {")
+	g.p("\tset := make([]string, 0, %d)", len(upd))
+	g.p("\tswitch i {")
+	for i, ct := range targets {
+		g.p("\tcase %d:", i)
+		cols := assignableFor(ct, upd, ins)
+		if len(cols) == 0 {
+			g.p("\t\t// Every updatable column is part of this key.")
+		}
+		for _, c := range cols {
+			g.p("\t\tif mask&(1<<%d) != 0 {", insertIndex(ins, c.Name()))
+			g.p("\t\t\tset = append(set, %q)", g.lw.Ident(c.Name()))
+			g.p("\t\t}")
+		}
+	}
+	g.p("\t}")
+	g.p("\treturn set")
+	g.p("}")
+	g.p("")
+
+	for i, ct := range targets {
+		where := ""
+		if ct.Where != "" {
+			where = ", where " + ct.Where
+		}
+		g.p("// OnConflict%s upserts on the unique index over (%s%s).",
+			ct.Suffix, keyList(ct.Keys), where)
+		g.p("//")
+		g.p("// The row that already exists keeps every column this insert did")
+		g.p("// not assign. Follow with DoNothing() to leave it untouched")
+		g.p("// entirely.")
+		g.p("func (n *Ins) OnConflict%s() *Ins {", ct.Suffix)
+		g.p("\tn.conflict = %d", 2+2*i)
+		g.p("\treturn n")
+		g.p("}")
+		g.p("")
+	}
+
+	g.p("// ErrUpsertNeedsTarget is DoNothing() called without naming an index.")
+	g.p("//")
+	g.p("// On PostgreSQL a bare DO NOTHING fires on ANY unique violation. This")
+	g.p("// target's upsert is a MERGE, whose match condition names COLUMNS, so")
+	g.p("// there is no form that means \"whichever index it was\". Matching the")
+	g.p("// primary key instead would be a lie at the call site about which index")
+	g.p("// was watched, so it is refused by name.")
+	g.p("var ErrUpsertNeedsTarget = errors.New(")
+	g.p("\t%q)", "storm: DoNothing() needs an index on this target — write "+
+		"OnConflict"+targets[0].Suffix+"().DoNothing(); a bare DO NOTHING fires on any "+
+		"unique violation, and a MERGE's match condition names columns")
+	g.p("")
+	g.p("// DoNothing makes the insert a no-op when the row is already there —")
+	g.p("// the idempotent insert, and the commonest upsert there is.")
+	g.p("//")
+	g.p("// It MUST follow OnConflict%s() or one of its siblings; see", targets[0].Suffix)
+	g.p("// ErrUpsertNeedsTarget for why this target cannot take the bare form.")
+	g.p("//")
+	g.p("//\tn.OnConflict%s().DoNothing()", targets[0].Suffix)
+	g.p("//")
+	g.p("// Insert then returns runtime.ErrNoRows when nothing was written,")
+	g.p("// because the MERGE takes no MATCHED branch: there is no row to return,")
+	g.p("// and reporting a zero-valued one as inserted would be a lie.")
+	g.p("func (n *Ins) DoNothing() *Ins {")
+	g.p("\tif n.conflict < 2 {")
+	g.p("\t\tn.conflict = conflictAny")
+	g.p("\t\treturn n")
+	g.p("\t}")
+	g.p("\tn.conflict |= 1")
+	g.p("\treturn n")
+	g.p("}")
+	g.p("")
+}
+
 func conflictTargets(t *schema.Table) []conflictTarget {
 	var out []conflictTarget
 	if len(t.PrimaryKey) > 0 {
@@ -917,7 +1062,26 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\t\t\tcols = append(cols, insCols[i])")
 	g.p("\t\t}")
 	g.p("\t}")
-	if g.lw.Upsert != nil {
+	if g.lw.Merge != nil && len(conflictTargets(g.t)) > 0 {
+		g.p("\tif conflict == conflictAny {")
+		g.p("\t\t// No MERGE form; see ErrUpsertNeedsTarget. Carried on the")
+		g.p("\t\t// statement so the caller learns at the write rather than")
+		g.p("\t\t// getting a statement that means something else.")
+		g.p("\t\treturn &runtime.Stmt{Err: ErrUpsertNeedsTarget}")
+		g.p("\t}")
+		g.p("\tif conflict >= 2 {")
+		g.p("\t\ti := (conflict - 2) / 2")
+		g.p("\t\t// An odd code is DO NOTHING: no MATCHED branch, so the row")
+		g.p("\t\t// that is already there is left exactly as it is.")
+		g.p("\t\tvar set []string")
+		g.p("\t\tif conflict%%2 == 0 {")
+		g.p("\t\t\tset = assignable(i, mask)")
+		g.p("\t\t}")
+		g.p("\t\treturn insCache.Put(runtime.MaskKey{Dirty: key},")
+		g.p("\t\t\truntime.SpliceMerge(mergeParts, cols, conflictKeys[i], set, insPlaceholder, mergeOutput))")
+		g.p("\t}")
+		g.p("\tsuffix := insReturning")
+	} else if g.lw.Upsert != nil {
 		g.p("\tsuffix := insReturning")
 		g.p("\tif conflict > 0 {")
 		g.p("\t\tsuffix = upsertTail(conflict, mask) + insReturning")

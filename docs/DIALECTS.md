@@ -78,7 +78,7 @@ three of the entries below are capabilities MySQL had to refuse.
 | `FILTER (WHERE …)` | native | **refused** | No such clause. The rewrite changes what the aggregate counts rather than how it is spelled |
 | JSON containment | `@>`, `<@` | **refused** | Through the 2019 level the JSON support is `JSON_VALUE`, `JSON_QUERY`, `ISJSON` and `OPENJSON` — there is no containment predicate at all. `HasAnyKey` IS expressible, through `OPENJSON` over both sides |
 | numeric `RANGE` frame | `RANGE BETWEEN 3 PRECEDING` | **refused** | `RANGE` takes only `UNBOUNDED` and `CURRENT ROW`. `ROWS` accepts the offset, but the two differ over ties |
-| upsert | `ON CONFLICT <target>` | **not generated yet** | `MERGE` names a target and would serve, but it is a different STATEMENT rather than a clause on the insert — so it is a lowering of its own rather than a spelling |
+| upsert | `ON CONFLICT <target>` | `MERGE` | A different STATEMENT, not a clause, so the whole shape comes from the back end. `WITH (HOLDLOCK)` is not optional: without it two concurrent merges of one key both insert and one fails, which works in every test and breaks under load. The UNTARGETED `DoNothing()` is refused by name — a bare `DO NOTHING` fires on any unique index, and a match condition names columns |
 | `ON DELETE RESTRICT` | `RESTRICT` | `NO ACTION` | No such keyword; `NO ACTION` is what it means, and the difference PostgreSQL draws is not observable through a constraint storm generates, which is never `DEFERRABLE` |
 
 ## Why this strengthens the thesis rather than diluting it
@@ -141,7 +141,7 @@ feature, the target, and the source line. It never fails on a customer's install
 | `LATERAL` | ✓ | ✓ 8.0.14+ | ✗ | ✓ `APPLY` | ✓ 12c+ | `~` `$lookup` pipeline |
 | Array bind | ✓ `= ANY($1)` | `~` expand | `~` expand | `~` TVP/expand | `~` expand | ✓ `$in` |
 | Upsert | ✓ `ON CONFLICT` | ✓ `ON DUP KEY` | ✓ | ✓ `MERGE` | ✓ `MERGE` | ✓ `upsert:true` |
-| Bulk load | ✓ `COPY` | ✓ `LOAD DATA` | ✓ | ✓ TVP/bcp | ✓ array DML | ✓ `bulkWrite` |
+| Bulk load | ✓ `COPY` | `~` emulated | `~` emulated | ✓ **bcp**, implemented | ✓ array DML | ✓ `bulkWrite` |
 | Non-equi join | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
 | Foreign keys | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
 | Multi-stmt tx | ✓ | ✓ | ✓ | ✓ | ✓ | `~` replica set |

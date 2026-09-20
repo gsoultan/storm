@@ -170,6 +170,19 @@ type lowering struct {
 	// should say which.
 	upsertSkipped string
 
+	// Merge is the upsert for a back end whose conflict handling is a
+	// STATEMENT rather than a clause on the insert, and nil for the others.
+	//
+	// SQL Server's MERGE is the one. Nothing about it can be appended to an
+	// insert — it has a target, a source, a match condition and a branch per
+	// outcome — so the whole shape comes from the back end and the generated
+	// code splices it instead of the insert.
+	Merge func(table string) mergeParts
+
+	// MergeOutput is the clause a MERGE hands its row back through, which sits
+	// in a third position again: after the branches and before the terminator.
+	MergeOutput func([]string) string
+
 	// Upsert is nil for a back end whose conflict handling is not the
 	// inference form. MySQL's ON DUPLICATE KEY UPDATE names no target at all —
 	// it fires on ANY unique key — so a generated OnConflictEmail() would be a
@@ -187,6 +200,14 @@ type lowering struct {
 
 // canReturn reports whether an insert can learn what the server computed.
 func (l lowering) canReturn() bool { return !l.noReturning }
+
+// mergeParts is the punctuation a MERGE is spliced from. It mirrors
+// runtime.MergeParts field for field, because it IS that — carried through
+// codegen without codegen importing runtime or naming a keyword.
+type mergeParts struct {
+	Into, Sep, AsSrc, OnLead, OnSep, Eq, Tgt, Src string
+	Matched, NotMatched, Values, Close, End       string
+}
 
 // upsertLowering is the conflict-target form, which only PostgreSQL has today.
 type upsertLowering struct {
@@ -638,11 +659,18 @@ func mssqlLowering() lowering {
 		Placeholder:         mssql.Placeholder,
 		PlaceholderExpr:     "runtime.MSSQLPlaceholder",
 
-		// MERGE names a conflict target and would serve, but it is a different
-		// STATEMENT rather than a clause on the insert — a lowering of its own
-		// rather than a spelling, and not one this milestone writes.
-		Upsert:        nil,
-		upsertSkipped: "its MERGE is a statement of its own rather than a clause on the insert, so an upsert here is a lowering M10 has not written",
+		// Not the inference form: MERGE is a statement of its own. See Merge.
+		Upsert: nil,
+		Merge: func(table string) mergeParts {
+			p := mssql.Merge(table)
+			return mergeParts{
+				Into: p.Into, Sep: p.Sep, AsSrc: p.AsSrc, OnLead: p.OnLead,
+				OnSep: p.OnSep, Eq: p.Eq, Tgt: p.Tgt, Src: p.Src,
+				Matched: p.Matched, NotMatched: p.NotMatched,
+				Values: p.Values, Close: p.Close, End: p.End,
+			}
+		},
+		MergeOutput: mssql.MergeOutput,
 	}
 }
 
