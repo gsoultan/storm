@@ -277,15 +277,20 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if tgt.dialect != codegen.DialectPostgres && len(RawQueries) > 0 {
-			// storm.SQL is validated by PREPAREing each statement against a
-			// real PostgreSQL — that is what makes the escape hatch safe, and
-			// it is what the generated allow-list is built from. There is no
-			// MySQL equivalent yet, and validating MySQL SQL against PostgreSQL
-			// would accept text that fails on the target.
+		if len(RawQueries) > 0 && !rawCheckable(tgt.dialect) {
+			// storm.SQL's safety has one source: a REAL SERVER of the target's
+			// own kind types every declared statement before it reaches the
+			// allow-list. PostgreSQL does that through PREPARE and SQL Server
+			// through sp_describe_first_result_set; MySQL's protocol reports
+			// parameter and column types a client cannot resolve to storm
+			// kinds, so there is nothing to check against there yet.
+			//
+			// Validating one dialect's SQL against another would accept text
+			// that fails on the target, which is worse than refusing.
 			return fmt.Errorf("%d raw storm.SQL declaration(s) are registered, and they are "+
-				"validated by PREPAREing against PostgreSQL; generating for %s would ship them "+
-				"unchecked", len(RawQueries), *dialectName)
+				"validated by a server of the TARGET's kind; storm has no such check for %s "+
+				"yet, and generating would ship them unchecked",
+				len(RawQueries), *dialectName)
 		}
 		return generate(dir, model, *dsn, against, tgt.dialect)
 
@@ -463,6 +468,24 @@ const (
 	RawAgainstLive RawSchema = "live"
 )
 
+// prepareRawFor validates every declared storm.SQL against the target it will
+// run on.
+//
+// AGAINST THE TARGET, which is the whole point: the safety of the escape hatch
+// is that a real server typed the statement, and a server of the wrong kind
+// accepts text the real one refuses. That is why this is a switch and not a
+// parameter to one function.
+func prepareRawFor(d codegen.Dialect, dsn string, model *schema.Schema,
+	against RawSchema) ([]codegen.RawScanner, []string, error) {
+	if len(RawQueries) == 0 {
+		return nil, nil, nil
+	}
+	if d == codegen.DialectMSSQL {
+		return prepareRawQueriesMSSQL(dsn, model, against)
+	}
+	return prepareRawQueries(dsn, model, against)
+}
+
 func prepareRawQueries(dsn string, model *schema.Schema, against RawSchema) ([]codegen.RawScanner, []string, error) {
 	if len(RawQueries) == 0 {
 		return nil, nil, nil
@@ -626,7 +649,7 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema, d
 	if err != nil {
 		return err
 	}
-	scanners, statements, err := prepareRawQueries(dsn, model, against)
+	scanners, statements, err := prepareRawFor(d, dsn, model, against)
 	if err != nil {
 		return err
 	}
@@ -774,7 +797,7 @@ func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema, d cod
 	// The dsn the caller gave, not the environment. -dsn already defaults to
 	// $STORM_DSN, so reading the variable here instead ignored the flag: the
 	// refusal named -dsn as the fix for someone who had just passed it.
-	scanners, statements, err := prepareRawQueries(dsn, model, against)
+	scanners, statements, err := prepareRawFor(d, dsn, model, against)
 	if err != nil {
 		return err
 	}
@@ -1007,6 +1030,12 @@ func parseDialect(name string) (target, error) {
 	}
 	return target{}, fmt.Errorf(
 		"unknown dialect %q — storm knows postgres, mysql, mariadb and mssql", name)
+}
+
+// rawCheckable reports whether storm.SQL declarations can be validated against
+// this target. See the refusal above for what the answer rests on.
+func rawCheckable(d codegen.Dialect) bool {
+	return d == codegen.DialectPostgres || d == codegen.DialectMSSQL
 }
 
 // portable reports whether the model can be generated for another dialect.

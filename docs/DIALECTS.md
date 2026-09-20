@@ -80,6 +80,9 @@ three of the entries below are capabilities MySQL had to refuse.
 | numeric `RANGE` frame | `RANGE BETWEEN 3 PRECEDING` | **refused** | `RANGE` takes only `UNBOUNDED` and `CURRENT ROW`. `ROWS` accepts the offset, but the two differ over ties |
 | upsert | `ON CONFLICT <target>` | `MERGE` | A different STATEMENT, not a clause, so the whole shape comes from the back end. `WITH (HOLDLOCK)` is not optional: without it two concurrent merges of one key both insert and one fails, which works in every test and breaks under load. The UNTARGETED `DoNothing()` is refused by name — a bare `DO NOTHING` fires on any unique index, and a match condition names columns |
 | `ON DELETE RESTRICT` | `RESTRICT` | `NO ACTION` | No such keyword; `NO ACTION` is what it means, and the difference PostgreSQL draws is not observable through a constraint storm generates, which is never `DEFERRABLE` |
+| `storm.SQL` escape hatch | validated by PREPARE | validated by `sp_describe_first_result_set` | The escape hatch's safety is that a server of the TARGET's own kind types every declared statement. SQL Server has no descriptor on a prepared handle and two system procedures that answer the same questions without running the statement — and the order is not obvious: the result-set one refuses a statement whose parameters are undeclared, so the parameter one runs first and its answer is fed in |
+| `-raw-schema model` | a scratch SCHEMA and a `search_path` | a scratch DATABASE | There is no `search_path` here, so unqualified names always resolve in the user's default schema; a scratch schema would need an `ALTER USER` that outlives the run |
+| enum | a native `CREATE TYPE … AS ENUM` | `NVARCHAR(n)` + a `CHECK` | No enum type. The width is the widest label and the constraint is what makes it an enum rather than any string |
 
 ## Why this strengthens the thesis rather than diluting it
 

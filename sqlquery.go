@@ -300,15 +300,28 @@ func firstLine(sql string) string {
 func maxPlaceholder(sql string) int {
 	max := 0
 	for i := 0; i+1 < len(sql); i++ {
-		if sql[i] != '$' {
+		// `$n` is PostgreSQL's and MySQL's spelling of a numbered parameter;
+		// `@pn` is SQL Server's, because a parameter there is a NAME and a name
+		// may not begin with a digit.
+		//
+		// Both are counted, and the larger wins. A statement uses one
+		// convention or the other — it is one back end's text — so counting
+		// both is unambiguous, and it is what lets ONE declaration be checked
+		// for arity without knowing which back end it will be generated for.
+		j := i + 1
+		switch {
+		case sql[i] == '$':
+		case sql[i] == '@' && sql[j] == 'p':
+			j++
+		default:
 			continue
 		}
-		n, j := 0, i+1
+		n, start := 0, j
 		for j < len(sql) && sql[j] >= '0' && sql[j] <= '9' {
 			n = n*10 + int(sql[j]-'0')
 			j++
 		}
-		if j > i+1 && n > max {
+		if j > start && n > max {
 			max = n
 		}
 	}

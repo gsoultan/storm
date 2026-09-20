@@ -23,7 +23,16 @@ import (
 // to what matching needs so no driver type crosses into codegen.
 type RawField struct {
 	Name string
-	OID  uint32
+	// OID is PostgreSQL's type id, which is what its descriptor reports.
+	OID uint32
+	// SQLType is the type NAME a back end that has no OIDs reports instead —
+	// SQL Server's `system_type_name`, which is "int", "nvarchar(50)",
+	// "uniqueidentifier". Empty for PostgreSQL.
+	//
+	// Two fields rather than one abstraction, because the two carry different
+	// information and neither converts to the other: an OID is exact and
+	// unparameterised, a type name carries a width and has to be read.
+	SQLType string
 }
 
 // RawScanner is a resolved scanner ready to emit.
@@ -91,6 +100,17 @@ func dedupeRawScanners(in []RawScanner) ([]RawScanner, error) {
 // must be fed by a column — surplus on either side is an error, since an
 // unfed field reads as zero and an unlanded column reads as intended.
 func ResolveRawScanner(rt reflect.Type, typeImport string, fields []RawField) (RawScanner, error) {
+	return ResolveRawScannerFor(rt, typeImport, fields, DialectPostgres)
+}
+
+// ResolveRawScannerFor is ResolveRawScanner for a named back end.
+//
+// The dialect decides how a result column's TYPE is read — an OID on
+// PostgreSQL, a type NAME on SQL Server — and nothing else: once the column is
+// a kind, the decoder family already routes by dialect and the emitted scanner
+// is the same shape.
+func ResolveRawScannerFor(rt reflect.Type, typeImport string, fields []RawField,
+	d Dialect) (RawScanner, error) {
 	if rt.Kind() != reflect.Struct {
 		return RawScanner{}, fmt.Errorf("storm.SQL's type parameter must be a struct, not %s", rt)
 	}
@@ -108,23 +128,23 @@ func ResolveRawScanner(rt reflect.Type, typeImport string, fields []RawField) (R
 		fieldName := exportName(f.Name)
 		sf, ok := rt.FieldByName(fieldName)
 		if !ok {
-			k, tn := oidKind(f.OID)
+			k, tn := fieldKind(d, f)
 			_ = k
 			return RawScanner{}, fmt.Errorf(
 				"result column %d %q (%s) has no field in %s\n  → add `%s %s` or alias the column away",
-				i+1, f.Name, tn, rt.Name(), fieldName, oidGoType(f.OID))
+				i+1, f.Name, tn, rt.Name(), fieldName, goTypeOf(d, f))
 		}
-		k, tn := oidKind(f.OID)
+		k, tn := fieldKind(d, f)
 		if k == kindUnsupported {
 			return RawScanner{}, fmt.Errorf(
 				"result column %d %q has type %s, which storm cannot decode yet — cast it in the query",
 				i+1, f.Name, tn)
 		}
 		want, nullable := fieldShape(sf.Type)
-		if want != oidGoType(f.OID) {
+		if want != goTypeOf(d, f) {
 			return RawScanner{}, fmt.Errorf(
 				"result column %d %q is %s but %s.%s is %s\n  → change the field to `%s %s`, or cast the column",
-				i+1, f.Name, tn, rt.Name(), fieldName, goTypeName(sf.Type), fieldName, oidGoType(f.OID))
+				i+1, f.Name, tn, rt.Name(), fieldName, goTypeName(sf.Type), fieldName, goTypeOf(d, f))
 		}
 		fed[fieldName] = true
 		rs.cols = append(rs.cols, rawCol{field: fieldName, kind: k, nullable: nullable})
@@ -165,15 +185,98 @@ func fieldShape(t reflect.Type) (string, bool) {
 // Normalising here rather than at the comparison keeps the error message
 // right too: it is the same function that renders the "is" half.
 func goTypeName(t reflect.Type) string {
-	if s := t.String(); s == "[]uint8" {
+	s := t.String()
+	if s == "[]uint8" {
 		return "[]byte"
 	}
-	return t.String()
+	// And the ARRAY of them, which is what a uuid is: reflect says
+	// "[16]uint8" where baseGoType says "[16]byte". The slice case above was
+	// found and fixed when a bytea column was refused; the array case was the
+	// same defect one type over, and it was reachable by every raw query
+	// returning a UUID — on PostgreSQL as much as on SQL Server, which is only
+	// where it happened to be caught.
+	if rest, ok := strings.CutSuffix(s, "]uint8"); ok && strings.HasPrefix(rest, "[") {
+		return rest + "]byte"
+	}
+	return s
 }
 
 // oidKind maps a wire type OID to the decoder kind and the SQL type name for
 // error messages. Only what a SELECT can return; write-side types never appear
 // in a descriptor.
+// fieldKind reads a result column's type, whichever way its back end reports
+// one.
+func fieldKind(d Dialect, f RawField) (kind, string) {
+	if d == DialectMSSQL {
+		return tdsKind(f.SQLType)
+	}
+	return oidKind(f.OID)
+}
+
+func goTypeOf(d Dialect, f RawField) string {
+	if d == DialectMSSQL {
+		return tdsGoType(f.SQLType)
+	}
+	return oidGoType(f.OID)
+}
+
+// tdsKind maps a SQL Server type NAME onto a storm kind.
+//
+// The name rather than a type id, because that is what
+// sp_describe_first_result_set reports and what a reader of an error can match
+// against their own DDL. It arrives parameterised — "nvarchar(50)",
+// "decimal(19,4)" — so the width is stripped: storm's kinds are about DECODING,
+// and every nvarchar decodes the same way whatever its declared length.
+func tdsKind(name string) (kind, string) {
+	base := strings.ToLower(name)
+	if i := strings.IndexByte(base, '('); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimSpace(base)
+	switch base {
+	case "bit":
+		return kindBool, name
+	case "tinyint", "smallint":
+		return kindInt2, name
+	case "int":
+		return kindInt4, name
+	case "bigint":
+		return kindInt8, name
+	case "real":
+		return kindFloat4, name
+	case "float":
+		return kindFloat8, name
+	case "decimal", "numeric", "money", "smallmoney":
+		return kindNumeric, name
+	case "char", "varchar", "nchar", "nvarchar", "text", "ntext", "xml", "sysname":
+		return kindText, name
+	case "binary", "varbinary", "image", "timestamp", "rowversion":
+		return kindBytes, name
+	case "uniqueidentifier":
+		return kindUUID, name
+	case "datetimeoffset":
+		return kindTimestamptz, name
+	case "datetime", "datetime2", "smalldatetime":
+		// No offset, so it is an instant read as UTC. storm's timestamp and
+		// timestamptz decode through the same function here — msdrv normalises
+		// both to one layout — and the DIFFERENCE is what the column means,
+		// which is the model's business rather than the scanner's.
+		return kindTimestamptz, name
+	case "date":
+		return kindDate, name
+	case "time":
+		return kindTimeOfDay, name
+	}
+	return kindUnsupported, name
+}
+
+// tdsGoType is the field a caller should declare for a result column, named in
+// the error that says the field is missing or the wrong type.
+func tdsGoType(name string) string {
+	k, _ := tdsKind(name)
+	return goTypeForKind(k)
+}
+
 func oidKind(oid uint32) (kind, string) {
 	switch oid {
 	case 16:
@@ -226,6 +329,17 @@ func oidKind(oid uint32) (kind, string) {
 // suggested fixes.
 func oidGoType(oid uint32) string {
 	k, _ := oidKind(oid)
+	return goTypeForKind(k)
+}
+
+// goTypeForKind is the Go type a result column of this kind lands in.
+//
+// It goes through baseGoType — the same function the MODEL path uses — so the
+// name a raw query's error tells you to declare is the name the generator would
+// have produced for a column of that type. A second table of hand-written names
+// would drift, and the drift would be an error message telling a caller to
+// write a field that does not match.
+func goTypeForKind(k kind) string {
 	c := &schema.Column{NotNull: true, Type: schema.Type{}}
 	switch k {
 	case kindBool:
