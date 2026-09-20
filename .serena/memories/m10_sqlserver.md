@@ -183,6 +183,47 @@ fact. See P8 in `docs/PRODUCTION-READINESS.md`. The floors for `runtime/msdrv`
 and `runtime/msdec` live in `scripts/check/mssql.sh` for the same reason: in the
 other job they would measure a suite that skipped.
 
+### The pre-M11 audit (P9) — what M10 built and nothing could reach
+
+Four findings, from running the tool the way a reader of the README would:
+
+- **The CLI did not know the dialect.** `storm ddl -dialect mssql` answered
+  "unknown dialect". Everything M10 built existed and nothing an adopter touches
+  could reach it — P7's shape, one flag over. `parseDialect`, `portable` and the
+  help text learned it; `outsider.sh` proves a stranger can generate and build
+  for it.
+- **Enum columns rendered no DDL on ANY non-PostgreSQL target**, SQL Server and
+  MySQL alike: `Check` accepted, `Create` refused. `TypeSQL` has no schema and
+  so no labels, and nothing supplied them. Both packages take the enum map as a
+  PARAMETER now.
+- **Login-only encryption HUNG — the protocol's default.** The handshake wrapper
+  never stopped wrapping, so every TLS record after the handshake carried a TDS
+  header. Only `TLSDisabled` had cover, because the dev cert's negative serial
+  is one Go refuses to PARSE. `//go:debug x509negativeserial=1` in the test file
+  is what made the default testable.
+- **A PostgreSQL bug found by the SQL Server path**: `goTypeName` normalised
+  `[]uint8` but not `[16]uint8`, so every raw query returning a UUID was refused
+  on every dialect.
+
+### storm.SQL on SQL Server
+
+`sp_describe_undeclared_parameters` then `sp_describe_first_result_set`, in that
+ORDER — the second refuses a statement whose parameters are undeclared, so the
+first's answer is fed in as `@params`. `-raw-schema model` gets a scratch
+DATABASE, not a schema: there is no `search_path`, so a scratch schema would
+need an `ALTER USER` that outlives the run.
+
+`msdrv.ParseDSN` exists for this and for adopters; `maxPlaceholder` counts
+`@pn` as well as `$n`, so one declaration is arity-checked without knowing its
+target.
+
+### Coverage floors follow the environment
+
+No job can measure `tool` whole: PostgreSQL-only sees 69%, SQL Server-only 54%,
+both 83%. It is floored once, where the view is widest. `msdrv` and `msdec` are
+floored in `scripts/check/mssql.sh` for the same reason. A number no environment
+can reach is instrument noise rather than a gate.
+
 ### M10 is done
 
 Lowering, DDL, TDS client, decoder family, codegen, upsert and bulk load — all
