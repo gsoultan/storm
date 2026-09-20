@@ -24,6 +24,16 @@ type Placeholder struct {
 	// rather than re-spelled — which is why this is a field on the lowering and
 	// not a string substitution.
 	Bare bool
+
+	// Prefix goes between the sigil and the ordinal.
+	//
+	// SQL Server needs one. Its parameters are NAMED — `@p1` — and a name is a
+	// T-SQL identifier, which may not begin with a digit, so `@1` is not a
+	// parameter spelled tersely; it is a syntax error. The prefix is what makes
+	// an ordinal part of a legal name.
+	//
+	// Empty for PostgreSQL and MySQL, so neither changes.
+	Prefix string
 }
 
 func (p Placeholder) sigil() byte {
@@ -37,6 +47,7 @@ func (p Placeholder) sigil() byte {
 func (p Placeholder) write(b *strings.Builder, ord int) {
 	b.WriteByte(p.sigil())
 	if !p.Bare {
+		b.WriteString(p.Prefix)
 		b.WriteString(itoa(ord))
 	}
 }
@@ -47,7 +58,22 @@ func (p Placeholder) text(ord int) string {
 	if p.Bare {
 		return string(p.sigil())
 	}
-	return string(p.sigil()) + itoa(ord)
+	return string(p.sigil()) + p.Prefix + itoa(ord)
+}
+
+// numbered reports whether what follows position i in s is already an ordinal
+// this placeholder wrote — `$1` for PostgreSQL, `@p1` for SQL Server — so the
+// suffix scanner leaves it alone. s[i] is the sigil.
+//
+// A prefix is why this is a function rather than a digit test. Scanning `@p1`
+// for a digit at i+1 finds `p`, numbers the sigil anyway and emits `@1p1`: a
+// statement naming two parameters where the generator wrote one.
+func (p Placeholder) numbered(s string, i int) bool {
+	j := i + 1 + len(p.Prefix)
+	if j >= len(s) || !strings.HasPrefix(s[i+1:], p.Prefix) {
+		return false
+	}
+	return s[j] >= '0' && s[j] <= '9'
 }
 
 // MySQLPlaceholder is the bare `?`.
@@ -56,3 +82,12 @@ func (p Placeholder) text(ord int) string {
 // and so the choice is visible in the emitted code rather than implied by a
 // zero value somewhere.
 var MySQLPlaceholder = Placeholder{Sigil: '?', Bare: true}
+
+// MSSQLPlaceholder is `@p` followed by an ordinal.
+//
+// Named, and the name is what the TDS parameter declaration binds against, so
+// the ordinal is load-bearing in a way MySQL's position is not: the client
+// sends `@p1 int, @p2 nvarchar(64)` alongside the text and the server matches
+// by NAME. Reusing an ordinal is therefore legal here and binds once, which is
+// what lets a row comparison expand into the OR-form SQL Server needs.
+var MSSQLPlaceholder = Placeholder{Sigil: '@', Prefix: "p"}

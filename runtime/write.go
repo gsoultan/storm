@@ -38,10 +38,41 @@ func SpliceSections(prefix string, secs []Section, suffix string) *Stmt {
 // PostgreSQL's. A generated MySQL package passes runtime.MySQLPlaceholder; the
 // zero value is the PostgreSQL spelling, so the plain form above stays exact.
 func SpliceSectionsWith(prefix string, secs []Section, suffix string, ph Placeholder) *Stmt {
+	return spliceSections(prefix, secs, "", suffix, ph)
+}
+
+// SpliceSectionsOutput is SpliceSectionsWith for a back end whose returning
+// clause is positioned before the predicate rather than after everything.
+//
+// SQL Server's is. `UPDATE t SET a = @p1 OUTPUT INSERTED.* WHERE id = @p2` is
+// the only spelling it has — the clause sits between the assignments and the
+// predicate, and at the end it is a syntax error. PostgreSQL's RETURNING and
+// MariaDB's both go last, which is why the suffix was enough for two dialects
+// and is not enough for three.
+//
+// out is written immediately before the LAST section. That is a statement of
+// the rule rather than a coincidence of the call sites: storm builds every
+// write as assignments followed by a predicate, the predicate is the last
+// section in all of them, and "after the assignments, before the predicate" is
+// where the clause goes. A DELETE has no assignments, so its last section is
+// its only one and the clause lands right after `DELETE FROM t`; an empty last
+// section leaves it at the end, which is also correct, because a statement with
+// no predicate has nothing for it to precede.
+func SpliceSectionsOutput(prefix string, secs []Section, out, suffix string, ph Placeholder) *Stmt {
+	return spliceSections(prefix, secs, out, suffix, ph)
+}
+
+func spliceSections(prefix string, secs []Section, out, suffix string, ph Placeholder) *Stmt {
 	var b strings.Builder
 	b.WriteString(prefix)
+	if len(secs) == 0 {
+		b.WriteString(out)
+	}
 	ord := 0
-	for _, s := range secs {
+	for si, s := range secs {
+		if si == len(secs)-1 {
+			b.WriteString(out)
+		}
 		if len(s.Frags) == 0 {
 			continue
 		}
@@ -50,7 +81,7 @@ func SpliceSectionsWith(prefix string, secs []Section, suffix string, ph Placeho
 			if i > 0 {
 				b.WriteString(s.Sep)
 			}
-			if takesArg(f) {
+			if takesArg(f, ph) {
 				ord++
 				// The fragment ends in the sigil; the back end decides what
 				// follows it.
