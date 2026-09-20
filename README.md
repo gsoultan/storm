@@ -21,17 +21,25 @@ opt-in automigrate for databases whose cost of being wrong is low.
 
 ## Status
 
-**v0.6.6 is tagged.** The read path, migrations, relations, writes, the typed
-escape hatch and the tooling gate are built, benchmarked and hardened; the first
+**v1.0.0 is tagged — the API is stable.** Breaking the surface
+[docs/STABILITY.md](docs/STABILITY.md) names now costs a major version; the
+compiler's internals (`codegen`, `compile/*`, `schema`) are explicitly outside
+it. The read path, migrations, relations, writes, the typed escape hatch and
+the tooling gate are built, benchmarked and hardened; the first
 adopter migrated a whole bounded context (M6) and runs on the published module
 — and as of v0.15.0 that adopter runs **entirely** on storm: nine bounded
-contexts, sqlc removed, 300-odd queries. What that migration cost storm is
-worth stating plainly, because it is the argument for having a second adopter:
+contexts, sqlc removed, 300-odd queries. That migration is what v1.0 waited
+on, and what it cost storm is worth stating plainly, because one adopter going
+deep is not the same as two going wide:
 it found composite foreign keys, partitioned tables, functions/views/triggers,
 a pinned-connection adapter, five things `storm import` was losing in silence,
 and one silent wrong answer — a null check consumed the arena slot the next
 predicate read, so `a = ? AND b IS NOT NULL AND c = ?` returned the wrong rows
 while every pair of those three returned the right ones.
+A second adopter would push on shapes this one never writes, and MySQL and
+MariaDB have no adopter at all — supported and tested on every commit, running
+in nobody's production. The API promise covers them; the evidence behind them
+is storm's own tests.
 v0.3.0 added model discovery, declared aggregations and joins, full-text
 search, range types and typed constraint errors — and a MySQL DDL back end that
 is **not** a runtime target

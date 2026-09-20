@@ -12,6 +12,65 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## v1.0.0 — 2026-09-20
+
+**The API is stable now.** Nothing in this release changes what storm does:
+v1.0.0 is v0.16.0's surface, promised. What changes is that breaking it costs a
+major version, and `docs/STABILITY.md` says exactly which surface that is —
+the declaration API, the generated call surface, the `Executor` port, emitted
+SQL *semantics*, and the CLI's verbs and exit codes. `codegen`, `compile/*` and
+`schema` are explicitly outside it: they are the compiler's internals, exported
+for the generated context. Pin storm; do not build on them.
+
+### Why now
+
+v1's definition was seven falsifiable sentences, and all seven hold — each with
+a gate that fails when the claim stops being true:
+
+| | Claim | Gate |
+|---|---|---|
+| 1 | A warm dynamic query allocates nothing to build its SQL | `bench/gen_test.go` |
+| 2 | Reading an unloaded relation does not compile | `internal/planspike/compilefail_test.go` |
+| 3 | Any relation load is a bounded, asserted number of round trips | `CountingExecutor` |
+| 4 | Any SQL PostgreSQL can run is expressible, typed, with a generated scanner | `docs/COMPLEX-QUERIES.md` + `SQL[T]` |
+| 5 | CI fails on a query that regressed its plan | `scripts/check/explain.sh` |
+| 6 | storm emits migrations and never applies one | ADR-0001; `migrate.Auto` is opt-in |
+| 7 | An unsupported construct fails generation, naming the target and the source line | `scripts/check/outsider.sh` |
+
+### The criterion this waited on, and what was accepted instead
+
+M8 said v1.0 waited on a SECOND adopter, for a stated reason: every
+wrong-answer bug so far was found by exercising a path no test reached. The
+criterion was about whether anything other than storm's own tests had pushed
+hard enough — not about the number two.
+
+The first adopter went from one bounded context to **nine**, removed sqlc, and
+moved some 300 queries onto storm. That found composite foreign keys,
+partitioned tables, functions/views/triggers, a pinned-connection adapter, five
+things `storm import` was losing in silence, a cache that could answer a warm
+hit with another mask's UPDATE, three assignments that had to be written as
+SQL, and one silent wrong answer where a null check consumed the arena slot the
+next predicate read. Depth was accepted for breadth, and the argument is in
+`docs/PLAN.md` rather than implied here.
+
+**What that does not cover.** One adopter is one schema and one set of idioms;
+a second would push on shapes this one never writes. That stays an open risk.
+And **MySQL and MariaDB have no adopter at all** — supported, tested against
+both engines on every commit, exercised end to end from a module outside this
+repository, and running in nobody's production. The API promise covers them
+exactly as it covers PostgreSQL; the evidence behind them does not.
+
+### Since v0.16.0
+
+Nothing user-facing. Four classes of defect that had already shipped became
+gates: cross-module dependency drift (minimal version selection gives an
+adopter the root's version, so a module asking for less tests something nobody
+builds), the pair `-race` cannot see (two atomics are two things a reader can
+observe out of step, and every access being synchronised is what makes the
+detector blind), an exclusion list nobody read (a switch has no opinion about
+what is missing from it), and a hand-built constructor that had forgotten a
+field twice. CI now runs PostgreSQL 16 and 18 rather than 17 alone.
+
 ## v0.16.0 — 2026-09-19
 
 Three things an adopter had to write as SQL, and a cache that could answer with
