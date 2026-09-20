@@ -188,6 +188,14 @@ func checkExpr(ck *schema.Check) string {
 	return b.String()
 }
 
+// ColumnType is the type SQL Server will store a column AS, with the enum
+// labels to hand. It is what migrate needs: an ALTER COLUMN restates the type
+// on every change, including a change that is only about nullability, so the
+// diff has to be able to ask for a column's type without rendering the column.
+func ColumnType(table string, c *schema.Column, enums map[string]*schema.Enum) (string, error) {
+	return typeOf(table, c, enums)
+}
+
 // typeOf is TypeSQL with the enum labels to hand.
 //
 // TypeSQL refuses an enum by design — it has no labels — and for a long time

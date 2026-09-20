@@ -229,11 +229,30 @@ func run(args []string) error {
 		return importSchemaMSSQL(*dsn, *ns)
 	}
 	if tgt.dialect != codegen.DialectPostgres {
-		switch cmd {
-		case "diff", "verify", "explain", "import", "watch":
+		refuse := func() error {
 			return fmt.Errorf("storm %s reads a live PostgreSQL catalogue and has no %s form; "+
 				"apply the DDL from `storm ddl -dialect %s` with your own migration tool",
 				cmd, *dialectName, *dialectName)
+		}
+		switch cmd {
+		case "explain", "import", "watch":
+			return refuse()
+		case "diff", "verify":
+			// These two do have a SQL Server form — migrate's DDL seam and
+			// schema/mssql's introspector — and nothing else does.
+			if tgt.dialect != codegen.DialectMSSQL {
+				return refuse()
+			}
+			// ...except the two verify modes that REPLAY migration files
+			// through a scratch namespace. That path sets a search_path and
+			// applies the files storm itself wrote, and neither has been
+			// built for a scratch database yet.
+			if cmd == "verify" && (*pending || *stale) {
+				return fmt.Errorf("storm verify -pending and -stale replay migration files "+
+					"through a scratch PostgreSQL schema and have no %s form yet; "+
+					"plain `storm verify` compares the model against the live database",
+					*dialectName)
+			}
 		}
 	}
 
@@ -269,7 +288,7 @@ func run(args []string) error {
 		if nargs < 1 {
 			return errors.New("diff needs a name: storm diff add_user_status")
 		}
-		return diff(*dsn, *ns, *out, arg(0), model, *allowDestructive, *concurrently)
+		return diff(tgt.dialect, *dsn, *ns, *out, arg(0), model, *allowDestructive, *concurrently)
 
 	case "explain":
 		return explain(*dsn, *ns, model, *maxSeqRows)
@@ -324,7 +343,7 @@ func run(args []string) error {
 			}
 			return verifyStale(*dsn, dir, model, against, tgt.dialect)
 		}
-		return verify(*dsn, *ns, model)
+		return verify(tgt.dialect, *dsn, *ns, model)
 
 	case "import":
 		return importSchema(*dsn, *ns)
@@ -699,14 +718,10 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema, d
 	return nil
 }
 
-func diff(dsn, ns, out, name string, model *schema.Schema, allowDestructive, concurrently bool) error {
-	c, ctx, done, err := connect(dsn)
-	if err != nil {
-		return err
-	}
-	defer done()
+func diff(dialect codegen.Dialect, dsn, ns, out, name string, model *schema.Schema,
+	allowDestructive, concurrently bool) error {
 
-	plan, err := migrate.ForWith(ctx, c, ns, model, migrate.Options{Concurrently: concurrently})
+	plan, err := livePlan(dialect, dsn, ns, model, migrate.Options{Concurrently: concurrently})
 	if err != nil {
 		return err
 	}
@@ -933,14 +948,8 @@ func verifyPending(dsn, out string, model *schema.Schema) error {
 	return fmt.Errorf("model changed without a migration — run 'storm diff <name>' and commit the result")
 }
 
-func verify(dsn, ns string, model *schema.Schema) error {
-	c, ctx, done, err := connect(dsn)
-	if err != nil {
-		return err
-	}
-	defer done()
-
-	plan, err := migrate.For(ctx, c, ns, model)
+func verify(dialect codegen.Dialect, dsn, ns string, model *schema.Schema) error {
+	plan, err := livePlan(dialect, dsn, ns, model, migrate.Options{})
 	if err != nil {
 		return err
 	}
@@ -1124,4 +1133,68 @@ func portable(dialect string, model *schema.Schema) error {
 	}
 	return fmt.Errorf(
 		"unknown dialect %q — storm knows postgres, mysql, mariadb and mssql", dialect)
+}
+
+// livePlan is the one place a migration plan is produced from a live database.
+//
+// It is where the two halves of a dialect meet: the introspector that reads
+// the catalogue and the normaliser that puts the model into the same form.
+// Everything after it — the destructive gate, the split into files, the
+// sequence number — is the same for every target, because by then a plan is
+// just an ordered list of statements.
+func livePlan(dialect codegen.Dialect, dsn, ns string, model *schema.Schema,
+	o migrate.Options) (migrate.Plan, error) {
+
+	if dialect == codegen.DialectMSSQL {
+		dial, err := mssqlDialer(dsn)
+		if err != nil {
+			return migrate.Plan{}, err
+		}
+		if ns == "public" {
+			ns = "dbo" // see importSchemaMSSQL: -schema's default is PostgreSQL's
+		}
+		// -concurrently is refused rather than ignored. SQL Server's nearest
+		// thing to CREATE INDEX CONCURRENTLY is WITH (ONLINE = ON), which is
+		// an Enterprise edition feature; a flag that quietly did nothing would
+		// leave somebody believing their index build does not block writers.
+		if o.Concurrently {
+			return migrate.Plan{}, errors.New("-concurrently has no SQL Server form: " +
+				"the non-blocking index build there is WITH (ONLINE = ON), an Enterprise " +
+				"edition feature, so storm does not emit it")
+		}
+		return migrate.ForMSSQL(context.Background(), dial, ns, model)
+	}
+
+	c, ctx, done, err := connect(dsn)
+	if err != nil {
+		return migrate.Plan{}, err
+	}
+	defer done()
+	return migrate.ForWith(ctx, c, ns, model, o)
+}
+
+// mssqlDialer turns one DSN into the two-connection dialer normalisation
+// needs. A SQL Server session is bound to its database at login, so the
+// scratch database cannot be reached from the connection that found the
+// target — see migrate/normalize_mssql.go.
+func mssqlDialer(dsn string) (migrate.MSSQLDialer, error) {
+	if dsn == "" {
+		return nil, errors.New("this reads a live database: pass " +
+			"-dsn sqlserver://user:pass@host:1433?database=... (or set $STORM_DSN)")
+	}
+	base, err := msdrv.ParseDSN(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, database string) (migrate.MSSQLConn, func(), error) {
+		cfg := base
+		if database != "" {
+			cfg.Database = database
+		}
+		c, err := msdrv.Open(ctx, cfg)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return c, func() { c.Close() }, nil
+	}, nil
 }

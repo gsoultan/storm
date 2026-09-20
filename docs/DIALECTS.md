@@ -83,6 +83,19 @@ three of the entries below are capabilities MySQL had to refuse.
 | `storm.SQL` escape hatch | validated by PREPARE | validated by `sp_describe_first_result_set` | The escape hatch's safety is that a server of the TARGET's own kind types every declared statement. SQL Server has no descriptor on a prepared handle and two system procedures that answer the same questions without running the statement — and the order is not obvious: the result-set one refuses a statement whose parameters are undeclared, so the parameter one runs first and its answer is fed in |
 | `-raw-schema model` | a scratch SCHEMA and a `search_path` | a scratch DATABASE | There is no `search_path` here, so unqualified names always resolve in the user's default schema; a scratch schema would need an `ALTER USER` that outlives the run |
 | enum | a native `CREATE TYPE … AS ENUM` | `NVARCHAR(n)` + a `CHECK` | No enum type. The width is the widest label and the constraint is what makes it an enum rather than any string |
+| `storm diff` / `storm verify` | a scratch SCHEMA and a `search_path` | a scratch DATABASE | Same reason as `-raw-schema model` above, and the same price: a SQL Server session is bound to its database at LOGIN, so normalisation needs a second connection rather than a `SET` |
+| `ADD COLUMN` | `ALTER TABLE t ADD COLUMN c …` | `ALTER TABLE t ADD c …` | The word `COLUMN` is not optional here, it is a syntax error — the parser reads it as a column literally named `COLUMN` |
+| `SET NOT NULL` / `ALTER … TYPE` | two separate statements | one `ALTER COLUMN` carrying both | The type is restated on every change, including one that is only about nullability. Nullability is always spelled out: an `ALTER COLUMN` that omits `NULL`/`NOT NULL` takes `ANSI_NULL_DFLT_ON`'s answer, which is a session setting |
+| `SET DEFAULT` | a property of the column | a named `CONSTRAINT` | `ADD CONSTRAINT … DEFAULT` on a column that already has one is error 1781, not a replacement, so changing a default is a drop and an add. Dropping one means NAMING it, and a default storm did not write is called `DF__users__status__7A672E12` — so the drop reads `sys.default_constraints` rather than guessing |
+| `DROP INDEX` | `DROP INDEX ix` | `DROP INDEX ix ON t` | The table is not optional |
+| `CREATE INDEX CONCURRENTLY` | yes | **none** | `WITH (ONLINE = ON)` is an Enterprise edition feature. Emitting it would produce a migration that works on the machine it was written on and fails with "not supported in this edition" on the one it was written for, during the deployment rather than during review. `Plan.Concurrently` returns the plan unchanged |
+| `migrate.Auto` | yes | **not yet** | The plan engine speaks this catalogue now; the applier does not. Automigrate also needs an advisory lock (`sp_getapplock`, not `pg_advisory_lock`) and a decision about what `NoTransaction` means where there is no concurrent index build |
+
+One restriction with no PostgreSQL counterpart: SQL Server refuses `ALTER COLUMN`
+on a column used in an **index** unless the type is unchanged and the new size is
+larger — widening an `NVARCHAR(200)` under a `UNIQUE` to `NVARCHAR(300)` is
+allowed, narrowing it or changing it to something else is not. storm marks the
+narrowing destructive either way; the server refuses it regardless of the flag.
 
 ## Why this strengthens the thesis rather than diluting it
 
