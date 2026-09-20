@@ -24,6 +24,14 @@ feature request; most requests are already in the rejected list in
 - No dialect conditional outside `compile/`.
 - ≤ 10 Go files per folder; ≤ 15 methods per interface (`Executor` is 5 and stays 5).
 - Generated output byte-deterministic across runs and machines.
+- **A committed generated artifact is gated as it stands, not as regenerated.**
+  `make example` and CI both regenerate `examples/orders/store` before building
+  it, so for two releases nobody compiled the 1,178 lines actually in git —
+  which had stopped compiling (`runtime.MaskKey` became a named type; join
+  loaders moved a field behind `.Row`). Found at v1.0.0, in the example the
+  README points newcomers at. Two gates now: `boundaries.sh` builds the
+  committed snapshot with no server, and CI runs `git diff --exit-code -- store`
+  after generating. See P7 in `docs/PRODUCTION-READINESS.md`.
 
 ## First adopter
 `anubis/authz` (M6) — chosen because it carries the `authorize p95 < 2 ms`

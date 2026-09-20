@@ -330,7 +330,7 @@ func (p OrderLineWithOrderQuery) All(ctx context.Context, ex runtime.Executor) (
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].OrderID
+		key := out[i].Row.OrderID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
@@ -447,7 +447,7 @@ func (p OrderLineWithProductQuery) All(ctx context.Context, ex runtime.Executor)
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].ProductID
+		key := out[i].Row.ProductID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
@@ -562,7 +562,7 @@ func (p OrderWithCustomerQuery) All(ctx context.Context, ex runtime.Executor) ([
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].CustomerID
+		key := out[i].Row.CustomerID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
@@ -862,7 +862,7 @@ func (p StockItemWithProductQuery) All(ctx context.Context, ex runtime.Executor)
 		by[targets[i].ID] = i
 	}
 	for i := range out {
-		key := out[i].ProductID
+		key := out[i].Row.ProductID
 		j, ok := by[key]
 		if !ok {
 			// A foreign key pointing at a row that is not there. The database
