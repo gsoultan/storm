@@ -647,6 +647,33 @@ testing the copy in the repository. Either delete it or gate it as it stands.
 
 ---
 
+## P8 — A fourth database on the runner made a third one flaky — **CLOSED 2026-09-20**
+
+Adding SQL Server's service to CI's `test` job turned `runtime/mydrv`'s soak
+test intermittent: `write tcp …:3306: i/o timeout`, once, on a job that passed
+on re-run.
+
+The mechanism is worth writing down because nothing in it is a bug. That test
+cancels statements under sustained load. Cancellation in `mydrv` is a real
+`KILL QUERY` — it has to be, or a cancelled query keeps its locks and keeps
+burning the server's CPU — and `KILL QUERY` needs a SECOND connection. On a
+starved two-core runner that connection's login can exceed its deadline, at
+which point the driver falls back to breaking the socket, which is the
+documented fallback and not what the test asserts.
+
+So the flake is a scheduling fact rather than a defect, and the fix is
+scheduling: SQL Server runs in a job of its own. Four databases on two cores is
+a decision, and it is better made in the workflow than by loosening a timeout
+until the flake stops reproducing — which would have removed the only signal
+that the fallback path is reachable at all.
+
+One consequence worth naming: the two runtime packages whose live half needs
+that server can no longer be measured by `scripts/check/coverage.sh`, which
+runs in the other job. Their floors moved to `scripts/check/mssql.sh` rather
+than staying where they would measure a suite that SKIPPED — a floor met by a
+package whose tests did not run is a floor that means nothing, which is the
+same rule the statement count in that gate already enforces one level up.
+
 ## What is already load-bearing (do not re-litigate)
 
 Injection is structural and fuzzed (~80M executions, one real fail-open found

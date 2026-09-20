@@ -46,22 +46,6 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-      # SQL Server, for M10. The REAL image, not Azure SQL Edge: Edge is the
-      # only engine with an arm64 build and so is what a developer on Apple
-      # silicon runs locally, but it is a subset at the 2019 level. CI is where
-      # the authoritative answer comes from, which is the half of M9's loop
-      # that has to move here because there is no local full server.
-      mssql:
-        image: mcr.microsoft.com/mssql/server:2022-latest
-        env:
-          ACCEPT_EULA: "Y"
-          MSSQL_SA_PASSWORD: Storm!Passw0rd
-        ports: ["1433:1433"]
-        options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Storm!Passw0rd' -Q 'SELECT 1'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 20
       mariadb:
         image: mariadb:11.4
         env:
@@ -82,12 +66,6 @@ jobs:
       # The SQL Server gate reads this. Without it internal/mssqlspike skips
       # entirely and "the tests pass" would mean the two dialects that already
       # had a server.
-      STORM_MSSQL_DSN: sqlserver://sa:Storm%21Passw0rd@127.0.0.1:1433?encrypt=disable
-      # runtime/msdrv and the generated-package live test read these. Without
-      # them the whole TDS client skips, and "the tests pass" would mean the
-      # half of M10 that needs no server.
-      STORM_MSSQL_ADDR: 127.0.0.1:1433
-      STORM_MSSQL_PASSWORD: Storm!Passw0rd
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -146,16 +124,6 @@ jobs:
           # it. That gap let storm emit code failing vet from v0.3.0 to v0.6.2.
           go vet ./...
           go test -race ./orders/
-
-      # M10: does the SQL storm emits for SQL Server run on SQL Server?
-      #
-      # Before runtime/msdrv exists, deliberately. The lowering is the half that
-      # can be proven with a borrowed client, and P6.7's rule is that a test
-      # which does not EXECUTE proves the generator is consistent with itself
-      # and nothing more — so it is proven first rather than after a driver is
-      # written against untested SQL.
-      - name: sql server dialect
-        run: ./scripts/check/mssql.sh
 
       # Every statement the generated code can issue, planned by the server.
       # This is the only gate for "storm emitted SQL PostgreSQL rejects" — a
@@ -284,3 +252,60 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
           ./scripts/check/explain.sh
+
+  # SQL Server, in a job of its own.
+  #
+  # It was a fourth service on the shared runner, and adding it made the MySQL
+  # soak test flaky: that test cancels statements under load, cancellation
+  # opens a SECOND connection to issue KILL QUERY, and on a starved runner that
+  # connection's login times out — so the driver falls back to breaking the
+  # socket, which is the documented fallback and not what the test asserts.
+  # It passed on a re-run, which is the definition of the problem rather than
+  # the end of it.
+  #
+  # Four databases on two cores is a scheduling decision, not a correctness
+  # one, so it is made here rather than by loosening a timeout until the flake
+  # stops reproducing.
+  sqlserver:
+    runs-on: ubuntu-latest
+    services:
+      mssql:
+        # The REAL image, not Azure SQL Edge: Edge is the only engine with an
+        # arm64 build and so is what a developer on Apple silicon runs locally,
+        # but it is a subset at the 2019 level. This is where the authoritative
+        # answer comes from.
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Storm!Passw0rd
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Storm!Passw0rd' -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      STORM_MSSQL_DSN: sqlserver://sa:Storm%21Passw0rd@127.0.0.1:1433?encrypt=disable
+      STORM_MSSQL_ADDR: 127.0.0.1:1433
+      STORM_MSSQL_PASSWORD: Storm!Passw0rd
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      # The lowering: every statement compile/mssql can produce, PREPAREd and
+      # EXECUTEd, plus the coverage floors for the two packages whose live half
+      # only runs here.
+      - name: sql server dialect
+        run: ./scripts/check/mssql.sh
+
+      # The client and the decoder family, under -race.
+      - name: the tds client
+        run: go test -race -count=1 ./runtime/msdrv/ ./runtime/msdec/
+
+      # And the generated package, which is the only thing that exercises the
+      # lowering, the client and the decoders together.
+      - name: the generated package
+        run: go test -count=1 -run TestGeneratedMSSQL ./codegen/
