@@ -450,15 +450,18 @@ fi
 # people's code. And it does more than build here: it CONNECTS, applies its own
 # DDL and runs the generated API, because a generated package that compiles is
 # not a generated package that works — twelve defects in three days said so.
-if [ -n "${STORM_MYSQL_ADDR:-}" ]; then
-  echo "== a stranger can generate for MySQL, and the result RUNS =="
-  # Back in the ORIGINAL stranger module: the bootstrap section above works in
-  # a second scratch module, and its module path is not this one's.
+# portable_module writes the model and the tool BOTH dialect halves use.
+#
+# A function rather than a copy, because the two halves run under different
+# conditions — one needs a MySQL and one needs nothing — and a copy would drift
+# into two models that are portable in different ways.
+portable_module() {
   cd "$TMP"
   mkdir -p mymodel cmd/mystorm cmd/myrun
 
-  # A PORTABLE model. The one above carries a text array, which MySQL has not,
-  # so it is refused — correctly, and that is a different test.
+  # A PORTABLE model. The one above carries a text array, which neither MySQL
+  # nor SQL Server has, so it is refused — correctly, and that is a different
+  # test.
   cat > mymodel/model.go <<'GOEOF'
 package mymodel
 
@@ -512,8 +515,13 @@ import (
 func main() { tool.Main(mymodel.All(), nil) }
 GOEOF
   if ! GOFLAGS=-mod=mod go mod tidy >tidy1.err 2>&1; then
-    note "go mod tidy failed for the MySQL model:"; sed 's/^/    /' tidy1.err | head -5 >&2
+    note "go mod tidy failed for the portable model:"; sed 's/^/    /' tidy1.err | head -5 >&2
   fi
+}
+
+if [ -n "${STORM_MYSQL_ADDR:-}" ]; then
+  echo "== a stranger can generate for MySQL, and the result RUNS =="
+  portable_module
 
   if ! go run ./cmd/mystorm ddl -dialect mysql > my.sql 2>my.err; then
     note "ddl -dialect mysql failed:"; sed 's/^/    /' my.err >&2
@@ -660,6 +668,13 @@ fi
 # defect the committed example had at v1.0.0, one flag over.
 echo "== a stranger can generate for SQL Server, and the result COMPILES =="
 cd "$TMP"
+# The portable model and its tool are built by the MySQL section above, which
+# only runs when there IS a MySQL. This half needs no server at all, so it has
+# to stand up its own — otherwise it fails on the job that has PostgreSQL and
+# nothing else, reporting a missing directory as a dialect problem.
+if [ ! -d cmd/mystorm ]; then
+  portable_module
+fi
 if ! go run ./cmd/mystorm ddl -dialect mssql > ms.sql 2>ms.err; then
   note "ddl -dialect mssql failed:"; sed 's/^/    /' ms.err >&2
 elif ! grep -q 'CREATE TABLE \[shops\]' ms.sql; then
