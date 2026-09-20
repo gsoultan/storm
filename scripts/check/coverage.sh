@@ -43,7 +43,12 @@ declare -a FLOORS=(
   "github.com/gsoultan/storm/migrate 75"
   "github.com/gsoultan/storm/schema/pg 80"
   "github.com/gsoultan/storm 65"
-  "github.com/gsoultan/storm/tool 70"
+  # 68, not 70, and the two points are a statement about this ENVIRONMENT
+  # rather than about the tests. tool gained the SQL Server half of the
+  # storm.SQL escape hatch, whose tests need a server this job has not got, so
+  # what is measured here is the package MINUS that file. The whole package is
+  # floored at 75 in scripts/check/mssql.sh, which has one.
+  "github.com/gsoultan/storm/tool 68"
 )
 
 prof=$(mktemp)

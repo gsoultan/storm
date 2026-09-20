@@ -97,6 +97,10 @@ cov() { # <package> <floor>
 }
 cov ./runtime/msdrv 55
 cov ./runtime/msdec 85
+# tool, whole. The other job measures it without a SQL Server and therefore
+# without the escape hatch's SQL Server half, so its floor there is two points
+# lower and says why.
+cov ./tool 75
 
 if [ "$fail" -eq 0 ]; then
   echo "OK: storm's SQL Server DDL applies, and every statement it lowers runs"
