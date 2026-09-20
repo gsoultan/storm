@@ -1,4 +1,12 @@
-package tool
+// Package mstool is the SQL Server half of the storm CLI.
+//
+// It is a package of its own for a reason scripts/check/coverage.sh wrote down
+// before it was true: every SQL Server addition to tool/ lowered what the
+// PostgreSQL CI job could measure while being perfectly well tested in the
+// sqlserver job, and the floor had been nudged down twice to follow it. The
+// code that needs a SQL Server to exercise it now has its floor beside the
+// other three that live in scripts/check/mssql.sh.
+package mstool
 
 import (
 	"context"
@@ -34,9 +42,21 @@ import (
 // fed in as @params. A client that calls them the other way round gets "Must
 // declare the scalar variable @p1" about a variable the caller did declare.
 
-// prepareRawQueriesMSSQL is prepareRawQueries for SQL Server.
-func prepareRawQueriesMSSQL(dsn string, model *schema.Schema,
-	against RawSchema) ([]codegen.RawScanner, []string, error) {
+// PrepareRaw is prepareRawQueries for SQL Server.
+//
+// decls is every declaration to check, passed in rather than read from a
+// package global so this can be called with a subset — which is what a test
+// does. againstModel selects the scratch database; false checks against the
+// connected database as it is.
+func PrepareRaw(dsn string, model *schema.Schema, decls []storm.RawDecl,
+	againstModel bool) ([]codegen.RawScanner, []string, error) {
+
+	// What a refusal calls the thing it checked against, which is the first
+	// question anyone reading one asks.
+	scope := "live"
+	if againstModel {
+		scope = "model"
+	}
 	if dsn == "" {
 		return nil, nil, fmt.Errorf(
 			"raw storm.SQL declarations are registered and validating them needs a server: " +
@@ -48,7 +68,7 @@ func prepareRawQueriesMSSQL(dsn string, model *schema.Schema,
 	}
 	ctx := context.Background()
 
-	if against == RawAgainstModel {
+	if againstModel {
 		// A scratch DATABASE, not a scratch schema.
 		//
 		// PostgreSQL gets a schema and a search_path; SQL Server has no
@@ -87,7 +107,7 @@ func prepareRawQueriesMSSQL(dsn string, model *schema.Schema,
 	}
 	defer c.Close()
 
-	if against == RawAgainstModel {
+	if againstModel {
 		ddl, err := msddl.Create(model)
 		if err != nil {
 			return nil, nil, err
@@ -106,7 +126,7 @@ func prepareRawQueriesMSSQL(dsn string, model *schema.Schema,
 	// no row type and still must be pinned, or the exec half of the escape
 	// hatch is the hole the query half no longer has.
 	var stmts []string
-	for _, d := range RawQueries {
+	for _, d := range decls {
 		rt, sql := storm.DeclOf(d)
 		name := "storm.SQLExec"
 		if rt != nil {
@@ -116,7 +136,7 @@ func prepareRawQueriesMSSQL(dsn string, model *schema.Schema,
 		params, err := describeParams(ctx, c, sql)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s does not describe against the %s schema:\n  %w",
-				name, against, err)
+				name, scope, err)
 		}
 		// The count a caller must satisfy is scanned off the statement text;
 		// the server just reported the real one. An `@p1` inside a string
@@ -133,7 +153,7 @@ func prepareRawQueriesMSSQL(dsn string, model *schema.Schema,
 		fields, err := describeResult(ctx, c, sql, params)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s does not describe against the %s schema:\n  %w",
-				name, against, err)
+				name, scope, err)
 		}
 		stmts = append(stmts, sql)
 		if rt == nil {
@@ -219,4 +239,19 @@ func indexOf(ss []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// firstLineOf is how a refusal names the statement it is about: enough to
+// find the declaration, not the whole body. A copy of tool's rather than an
+// export of it — it is four lines, and an exported helper crossing a package
+// boundary for four lines is a worse trade than the copy.
+func firstLineOf(sql string) string {
+	s := strings.TrimSpace(sql)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i]) + " ..."
+	}
+	if len(s) > 120 {
+		s = s[:117] + "..."
+	}
+	return s
 }

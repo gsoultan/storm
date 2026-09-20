@@ -48,10 +48,9 @@ import (
 	"github.com/gsoultan/storm/compile/myddl"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime/msdrv"
 	"github.com/gsoultan/storm/schema"
-	msintro "github.com/gsoultan/storm/schema/mssql"
 	pgintro "github.com/gsoultan/storm/schema/pg"
+	"github.com/gsoultan/storm/tool/mstool"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -226,7 +225,12 @@ func run(args []string) error {
 		// friends, which is what `import` needs and what the others need MORE
 		// than — a diff also needs a migration runner, and automigrate needs
 		// transactional DDL AND a plan engine that speaks this catalogue.
-		return importSchemaMSSQL(*dsn, *ns)
+		src, err := mstool.ImportModel(*dsn, *ns, modulePath)
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(src)
+		return err
 	}
 	if tgt.dialect != codegen.DialectPostgres {
 		refuse := func() error {
@@ -509,7 +513,7 @@ func prepareRawFor(d codegen.Dialect, dsn string, model *schema.Schema,
 		return nil, nil, nil
 	}
 	if d == codegen.DialectMSSQL {
-		return prepareRawQueriesMSSQL(dsn, model, against)
+		return mstool.PrepareRaw(dsn, model, RawQueries, against == RawAgainstModel)
 	}
 	return prepareRawQueries(dsn, model, against)
 }
@@ -962,47 +966,6 @@ func verify(dialect codegen.Dialect, dsn, ns string, model *schema.Schema) error
 	return errors.New("drift detected")
 }
 
-// importSchemaMSSQL is `storm import` against SQL Server.
-//
-// The same shape as the PostgreSQL one and deliberately so: read the
-// catalogue, emit a GO MODEL. Not the DDL — storm is model-first, so adopting
-// an existing database means having a model to start from, and the DDL is
-// already in the database.
-func importSchemaMSSQL(dsn, ns string) error {
-	if dsn == "" {
-		return errors.New(
-			"import reads a live database: pass -dsn sqlserver://user:pass@host:1433?database=... " +
-				"(or set $STORM_DSN)")
-	}
-	cfg, err := msdrv.ParseDSN(dsn)
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	c, err := msdrv.Open(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	if ns == "public" {
-		// -schema defaults to PostgreSQL's namespace, which is not a SQL Server
-		// convention at all — there is no "public" schema here, so the default
-		// would import nothing and say nothing. A caller who names one gets the
-		// one they named.
-		ns = "dbo"
-	}
-	s, err := msintro.Introspect(ctx, c, ns)
-	if err != nil {
-		return err
-	}
-	src, err := codegen.Model(s, codegen.ModelOptions{Package: "model", Import: modulePath})
-	if err != nil {
-		return err
-	}
-	os.Stdout.Write(src)
-	return nil
-}
-
 func importSchema(dsn, ns string) error {
 	c, ctx, done, err := connect(dsn)
 	if err != nil {
@@ -1146,7 +1109,7 @@ func livePlan(dialect codegen.Dialect, dsn, ns string, model *schema.Schema,
 	o migrate.Options) (migrate.Plan, error) {
 
 	if dialect == codegen.DialectMSSQL {
-		dial, err := mssqlDialer(dsn)
+		dial, err := mstool.Dialer(dsn)
 		if err != nil {
 			return migrate.Plan{}, err
 		}
@@ -1171,30 +1134,4 @@ func livePlan(dialect codegen.Dialect, dsn, ns string, model *schema.Schema,
 	}
 	defer done()
 	return migrate.ForWith(ctx, c, ns, model, o)
-}
-
-// mssqlDialer turns one DSN into the two-connection dialer normalisation
-// needs. A SQL Server session is bound to its database at login, so the
-// scratch database cannot be reached from the connection that found the
-// target — see migrate/normalize_mssql.go.
-func mssqlDialer(dsn string) (migrate.MSSQLDialer, error) {
-	if dsn == "" {
-		return nil, errors.New("this reads a live database: pass " +
-			"-dsn sqlserver://user:pass@host:1433?database=... (or set $STORM_DSN)")
-	}
-	base, err := msdrv.ParseDSN(dsn)
-	if err != nil {
-		return nil, err
-	}
-	return func(ctx context.Context, database string) (migrate.MSSQLConn, func(), error) {
-		cfg := base
-		if database != "" {
-			cfg.Database = database
-		}
-		c, err := msdrv.Open(ctx, cfg)
-		if err != nil {
-			return nil, func() {}, err
-		}
-		return c, func() { c.Close() }, nil
-	}, nil
 }

@@ -45,19 +45,14 @@ declare -a FLOORS=(
   "github.com/gsoultan/storm 65"
   # 65, and the number is DRIFTING for a reason the floor does not watch for.
   #
-  # tool has two halves now: the PostgreSQL CLI, which this job exercises, and
-  # the SQL Server code — the escape hatch's validator and the import command —
-  # whose tests need a server this job has not got. Every SQL Server addition
-  # lowers what is measurable here while being perfectly well tested in the
-  # sqlserver job, and the floor has been nudged down twice to follow it.
+  # The CLI, and only the PostgreSQL half of it. The SQL Server half MOVED, on
+  # the third drift, as the note that used to live here said it should: it is
+  # tool/mstool now, and its floor is in scripts/check/mssql.sh beside the
+  # other packages that need a server to mean anything.
   #
-  # NEXT TIME IT DRIFTS, MOVE THE CODE, do not lower the number again. The
-  # SQL Server half belongs in a package of its own, floored in
-  # scripts/check/mssql.sh beside the other three that live there. It was left
-  # in place this time because it is two files and the CLI's guts are not worth
-  # reshaping at the end of a long change; it is written down so the next
-  # person has the option rather than the habit.
-  "github.com/gsoultan/storm/tool 65"
+  # If this number starts sliding again, the question to ask is which half of
+  # tool the sliding code belongs to — not what the number should be.
+  "github.com/gsoultan/storm/tool 70"
 )
 
 prof=$(mktemp)

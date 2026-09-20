@@ -1,4 +1,4 @@
-package tool
+package mstool
 
 // storm.SQL validated against a real SQL Server.
 //
@@ -86,9 +86,7 @@ func TestRawQueriesValidateAgainstSQLServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	saved := RawQueries
-	t.Cleanup(func() { RawQueries = saved })
-	RawQueries = []storm.RawDecl{
+	decls := []storm.RawDecl{
 		storm.SQL[rawRow](
 			"SELECT [id] AS [ID], [email] AS [Email], [rank] AS [Rank], " +
 				"[score] AS [Score], [ok] AS [Ok], [created_at] AS [Seen] " +
@@ -96,7 +94,7 @@ func TestRawQueriesValidateAgainstSQLServer(t *testing.T) {
 		storm.SQLExec("UPDATE [raw_users] SET [rank] = [rank] + 1 WHERE [id] = @p1"),
 	}
 
-	scanners, stmts, err := prepareRawQueriesMSSQL(dsn, model, RawAgainstModel)
+	scanners, stmts, err := PrepareRaw(dsn, model, decls, true)
 	if err != nil {
 		t.Fatalf("validating against the model: %v", err)
 	}
@@ -118,14 +116,12 @@ func TestRawQueryArityIsCheckedAgainstTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved := RawQueries
-	t.Cleanup(func() { RawQueries = saved })
 	// Two parameters in the text, one of them inside a string literal — so the
 	// server sees one and the scanner counts two.
-	RawQueries = []storm.RawDecl{
+	decls := []storm.RawDecl{
 		storm.SQLExec("UPDATE [raw_users] SET [email] = '@p2' WHERE [rank] > @p1"),
 	}
-	_, _, err = prepareRawQueriesMSSQL(dsn, model, RawAgainstModel)
+	_, _, err = PrepareRaw(dsn, model, decls, true)
 	if err == nil {
 		t.Fatal("a statement whose arity disagrees with the server was accepted")
 	}
@@ -141,12 +137,10 @@ func TestRawQueryNamesAMissingField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved := RawQueries
-	t.Cleanup(func() { RawQueries = saved })
-	RawQueries = []storm.RawDecl{
+	decls := []storm.RawDecl{
 		storm.SQL[rawRow]("SELECT [id] AS [ID], [email] AS [Nope] FROM [raw_users]"),
 	}
-	_, _, err = prepareRawQueriesMSSQL(dsn, model, RawAgainstModel)
+	_, _, err = PrepareRaw(dsn, model, decls, true)
 	if err == nil {
 		t.Fatal("a column with no field was accepted")
 	}
