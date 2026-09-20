@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-19
+updated: 2026-09-20
 ---
 
 # Changelog
@@ -11,6 +11,89 @@ may change with a minor bump; what is promised, and for how long, is
 
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
+
+## v1.1.0 — 2026-09-20
+
+A fourth target: **SQL Server**, through a TDS client storm wrote, because the
+library that already exists costs 11.3 allocations per row and this costs 0.09.
+
+- **`compile/mssql` and `compile/msddl`.** Every construct lowered, and
+  `scripts/check/mssql.sh` applies the DDL and then PREPAREs *and* EXECUTEs all
+  39 statements the lowering can produce — base reads in every shape, all seven
+  lock modes, the IN list, the expanded keyset comparison, both semi-joins,
+  both top-N forms, both recursion directions, the write path, and the declared
+  reads. Written before the driver, deliberately: the SQL is the half a
+  borrowed client can prove, and proving it afterwards is the expensive order.
+
+  Three things this engine has that MySQL does not, each undoing a refusal M9
+  had to make: **filtered indexes**, so a soft-delete table's live-scoped unique
+  ports; **covering indexes**; and **`GROUPING SETS`, `CUBE` and `GROUPING()`**.
+  One inversion is translated rather than refused: `UNIQUE` treats NULLs as
+  EQUAL here and accepts exactly one, where PostgreSQL accepts many — that
+  changes ANSWERS, so a nullable unique becomes a filtered index constraining
+  exactly the rows PostgreSQL's would.
+
+- **`runtime/msdrv`: a TDS client, stdlib only.** PRELOGIN with the TLS
+  handshake *inside* it, the protocol's default of encrypting the login packet
+  only, LOGIN7, `sp_executesql` for named parameters, ATTENTION for
+  cancellation, and the whole token stream. It reads 200 rows of 8 columns in
+  **18 allocations for the result** — 0.09 per row, against
+  `microsoft/go-mssqldb`'s 11.3 and `runtime/mydrv`'s 1.07.
+
+  `Batch` is ONE round trip: an RPC request may carry several calls, which the
+  MySQL wire cannot do. `CopyFrom` is TDS's own bulk path — `INSERT BULK` and a
+  packet of type 7 — so a thousand rows go to the storage engine rather than
+  through the statement path.
+
+- **`runtime/msdec`, the third decoder family.** Four families of value cannot
+  be handed over as the wire carries them, because what a decoder needs lives
+  in the column metadata it never sees: a uniqueidentifier is mixed-endian,
+  and decimal, time, datetime2 and datetimeoffset carry their SCALE in the
+  metadata. msdrv normalises those; msdec decodes one canonical form.
+
+- **`MERGE` for upsert**, with the two parts of it that are not optional:
+  `WITH (HOLDLOCK)`, without which two concurrent merges of one key both insert
+  and one fails — it works in every test and breaks under load — and the
+  terminating semicolon, whose absence is reported against the NEXT statement.
+  The UNTARGETED `DoNothing()` is refused by name: a bare `ON CONFLICT DO
+  NOTHING` fires on any unique index and a match condition names columns.
+
+- **The CLI, the escape hatch and the on-ramp.** `storm ddl`, `generate` and
+  `portable` take `-dialect mssql`; `storm.SQL` is validated by
+  `sp_describe_first_result_set` against a scratch DATABASE built from the
+  model; and `storm import -dialect mssql` turns a live database into a Go
+  model, filtered indexes and cascades included.
+
+### Three defects this found in dialects that were already shipping
+
+- **Enum columns rendered no DDL on MySQL or MariaDB either.** `Check` accepted
+  a model with one and `Create` refused it, because `TypeSQL` has no schema and
+  so no labels. Both packages take the enum map as a parameter now.
+- **Every raw query returning a UUID was refused, on PostgreSQL.**
+  `goTypeName` normalised `[]uint8` to `[]byte` and did not normalise
+  `[16]uint8`.
+- **The splicer decided a fragment took an argument by testing its last byte
+  against the set `{$, ?}`** — the two back ends that existed. Wrong in both
+  directions once there is a third.
+
+### Two notes for anyone upgrading
+
+- `compile/myddl.CreateTable` and `ColumnDef` gained a parameter. `compile/*`
+  is outside the promised surface (`docs/STABILITY.md`) — it is the compiler's
+  internals, exported for the generated context — but it is a source change if
+  you were calling them.
+- `storm.SQL`'s arity scan now counts `@pN` as well as `$n`, so one declaration
+  can be checked without knowing which back end it will be generated for. A
+  PostgreSQL statement containing a literal `@p1` inside a string now reports
+  one parameter where it reported none.
+
+### What is NOT in this release
+
+`storm diff`, `storm verify` and `migrate.Auto` are still PostgreSQL-only, on
+every other target. `migrate/` builds its SQL inline — 39 calls into `pgddl`
+across four files — and wants the same kind of seam `codegen` has. That is the
+next piece of work, and it is named rather than implied because three of four
+shipped dialects can generate and run but cannot yet diff or check drift.
 
 ## v1.0.0 — 2026-09-20
 

@@ -215,13 +215,19 @@ of your configured targets, so "what will not port" is a command, not a wiki pag
 Ordered by **distance from Postgres**, because each step stresses a different
 part of the seam. Nothing here starts before v1 ships on Postgres.
 
-| Ver | Target | What it proves |
-|---|---|---|
-| v1.0 | Postgres | the thesis |
-| v1.1 | MySQL 8 + MariaDB | placeholder style, no `RETURNING`, arity bucketing, `ON DUPLICATE KEY`. Close enough to be tractable, different enough to prove the seam is real |
-| v1.2 | SQL Server | `OUTPUT`, `MERGE`, `[ ]` quoting, `@p1`, `ORDER BY`-required paging, TVP bulk |
-| v1.3 | Oracle | the hardest SQL target — empty-string-is-NULL is *semantic*, plus `NUMBER` mapping, identifier limits, upper-case folding |
-| v2.0 | MongoDB | the back-end seam, not the dialect seam |
+This ladder was written before any of it shipped, and reality compressed the
+first two rungs: MySQL and MariaDB landed INSIDE v1.0.0 rather than after it,
+so SQL Server is v1.1 and not v1.2. The rungs are left in the order they were
+planned, with what actually happened beside them, because the interesting thing
+about a plan is where it was wrong.
+
+| Ver | Target | Shipped | What it proves |
+|---|---|---|---|
+| v1.0 | Postgres | **v1.0.0** | the thesis |
+| v1.1 | MySQL 8 + MariaDB | **v1.0.0** | placeholder style, no `RETURNING`, arity bucketing, `ON DUPLICATE KEY`. Close enough to be tractable, different enough to prove the seam is real |
+| v1.2 | SQL Server | **v1.1.0** | `OUTPUT`, `MERGE`, `[ ]` quoting, `@p1`, `ORDER BY`-required paging, TVP bulk |
+| v1.3 | Oracle | — | the hardest SQL target — empty-string-is-NULL is *semantic*, plus `NUMBER` mapping, identifier limits, upper-case folding |
+| v2.0 | MongoDB | — | the back-end seam, not the dialect seam |
 
 **Gate before v1.1:** the Postgres back end must have zero dialect conditionals
 outside `compile/`, proven by `scripts/check/import-boundary.sh`. If the seam
