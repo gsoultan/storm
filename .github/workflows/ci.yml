@@ -315,3 +315,9 @@ jobs:
       # server that has to do it is in this job.
       - name: the escape hatch
         run: go test -count=1 -run TestRawQuer ./tool/
+
+      # Introspection: model → DDL → server → model. A round trip rather than a
+      # field-by-field assertion, because a field-by-field one passes while the
+      # import silently halves every string width.
+      - name: the on-ramp
+        run: go test -race -count=1 ./schema/mssql/
