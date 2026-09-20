@@ -81,6 +81,20 @@ func (e *Error) Error() string {
 // built from it is a log line with a row's data in it.
 func (e *Error) ServerMessage() string { return e.msg }
 
+// ServerState is State, reachable through an interface.
+//
+// It duplicates an exported field on purpose, and that is the whole of its
+// reason for existing: a package that wants to tell one RAISERROR from another
+// without importing this one can assert on
+// `interface{ ServerState() uint8 }` and never link a TDS client. State is the
+// only thing there is to assert on — every ad-hoc RAISERROR is error 50000, and
+// Error() deliberately drops the message text that would otherwise distinguish
+// them.
+//
+// migrate uses it for the migration lock: see lockMSSQL. Nothing about a state
+// is a value, so unlike ServerMessage this is safe to log.
+func (e *Error) ServerState() uint8 { return e.State }
+
 // Server error numbers storm classifies.
 const (
 	errUniqueViolation     = 2627 // PRIMARY KEY or UNIQUE constraint

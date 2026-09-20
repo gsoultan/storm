@@ -79,7 +79,16 @@ into a scratch DATABASE, one `Exec` per file, and its live test writes the
 migration the tool would write, replays it, and demands the model have nothing
 left to ask for.
 
-Two things found on the way. `NormalizeMSSQL` now holds a process-wide mutex
+The lock and the schema guard both had to change how they report, and the
+reason is a decision `runtime/msdrv` made on purpose: a SQL Server error message
+embeds row DATA — "The duplicate key value is (alice@example.com)" — so `Error()`
+drops the text and keeps the number, the class and the state. Every ad-hoc
+`RAISERROR` is error 50000, so a message sentinel says nothing. The schema guard
+reads `SELECT SCHEMA_NAME()` and writes its own refusal, naming both schemas;
+the lock raises a distinctive RAISERROR **state** and asserts on
+`interface{ ServerState() uint8 }`, so `migrate` still links no driver.
+
+Three things found on the way. `NormalizeMSSQL` now holds a process-wide mutex
 around its scratch database: the name is per-pid so a crashed run cleans itself
 up, which left two goroutines in one process sharing it. And the CI step for the
 `storm.SQL` validator had been pointing at `./tool/` since the package split —

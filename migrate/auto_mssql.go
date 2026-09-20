@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gsoultan/storm/compile/msddl"
+	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/msdec"
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -214,14 +215,48 @@ func boundMSSQL(ctx context.Context, c MSSQLConn, o AutoOptions) error {
 // and refusing beats the alternative — writing every table into one schema
 // while diffing another, which produces a plan that never empties and a
 // migration that runs again on every start.
+//
+// The comparison is in Go rather than in a T-SQL IF, because the message is
+// storm's to write: an error raised by the server arrives here as "server error
+// 50000", with its text deliberately stripped by msdrv — see the note at the
+// top of runtime/msdrv/errors.go.
 func requireDefaultSchema(ctx context.Context, c MSSQLConn, ns string) error {
-	_, err := c.Exec(ctx, "DECLARE @storm_ns sysname = SCHEMA_NAME();\n"+
-		"IF @storm_ns <> N"+quote(ns)+" RAISERROR("+
-		"'storm: unqualified DDL lands in schema %s, not "+ns+": the DDL storm renders for "+
-		"SQL Server names no schema, so it follows the login''s default. "+
-		"Use a login whose default schema is "+ns+", or migrate %s instead.', 16, 1, "+
-		"@storm_ns, @storm_ns);", nil)
-	return err
+	raw, err := scalar(ctx, c, "SELECT SCHEMA_NAME()")
+	if err != nil {
+		return fmt.Errorf("read the login's default schema: %w", err)
+	}
+	var sl runtime.Slab
+	got := msdec.Str(raw, &sl)
+	if got == ns {
+		return nil
+	}
+	return fmt.Errorf("migrate: unqualified DDL lands in schema %s, not %s: the DDL storm "+
+		"renders for SQL Server names no schema, so it follows the login's default. "+
+		"Use a login whose default schema is %s, or migrate %s instead", got, ns, ns, got)
+}
+
+// scalar runs a statement returning one row of one column and copies the value
+// out.
+//
+// The copy is not optional: a raw value is a slice into the driver's packet
+// buffer and does not survive the next row, let alone the next statement.
+func scalar(ctx context.Context, c MSSQLConn, sql string) ([]byte, error) {
+	rows, err := c.Query(ctx, sql, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%s returned no rows", sql)
+	}
+	v := rows.RawValues()
+	if len(v) == 0 || v[0] == nil {
+		return nil, fmt.Errorf("%s returned no value", sql)
+	}
+	return append([]byte(nil), v[0]...), rows.Err()
 }
 
 // lockMSSQL serialises migrating processes on a session-owned application lock,
@@ -233,14 +268,20 @@ func requireDefaultSchema(ctx context.Context, c MSSQLConn, ns string) error {
 // loop. @LockOwner = 'Session' is what makes the lock outlive the statement
 // without needing a transaction open around it.
 //
-// RAISERROR rather than reading the procedure's return value, because that
-// return arrives as a scalar this package would have to decode from the wire —
-// and an error is what the caller does with it either way.
+// RAISERROR rather than SELECTing the procedure's return value, because a batch
+// shaped `EXEC proc; SELECT @r` puts the procedure's own DONEPROC token ahead of
+// the SELECT's metadata and msdrv stops a result set at one. So the outcome
+// comes back as an error — and is told apart from a real failure by its STATE,
+// which is the only thing an ad-hoc RAISERROR carries that survives: every one
+// of them is error 50000, and msdrv drops the message text on purpose.
+//
+// The assertion is on an INTERFACE, so this file never imports a driver.
 func lockMSSQL(ctx context.Context, c MSSQLConn, ns string, o AutoOptions) (time.Duration, error) {
 	stmt := "DECLARE @storm_lock int;\n" +
 		"EXEC @storm_lock = sp_getapplock @Resource = N" + quote(applockName(ns)) +
 		", @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0;\n" +
-		"IF @storm_lock < 0 RAISERROR('" + applockBusy + " (%d)', 16, 1, @storm_lock);"
+		"IF @storm_lock < 0 RAISERROR('storm: migration lock busy', 16, " +
+		strconv.Itoa(applockBusyState) + ");"
 
 	start := time.Now()
 	deadline := start.Add(o.lockWait())
@@ -252,7 +293,7 @@ func lockMSSQL(ctx context.Context, c MSSQLConn, ns string, o AutoOptions) (time
 			}
 			return time.Since(start), nil
 		}
-		if !strings.Contains(err.Error(), applockBusy) {
+		if !isApplockBusy(err) {
 			// Not "somebody else has it" — no permission, no connection, a
 			// server that has never heard of sp_getapplock. Say so rather than
 			// spend LockWait pretending to queue.
@@ -273,9 +314,15 @@ func lockMSSQL(ctx context.Context, c MSSQLConn, ns string, o AutoOptions) (time
 	}
 }
 
-// applockBusy is the sentinel lockMSSQL raises and then looks for, to tell
-// "another process holds it" from "this did not work".
-const applockBusy = "storm: migration lock busy"
+// applockBusyState is the RAISERROR state lockMSSQL raises and then looks for.
+// Any number from 1 to 255 would do; this one is not 1, because 1 is what every
+// other RAISERROR in the world uses.
+const applockBusyState = 77
+
+func isApplockBusy(err error) bool {
+	var e interface{ ServerState() uint8 }
+	return errors.As(err, &e) && e.ServerState() == applockBusyState
+}
 
 // applockName is the resource every storm process migrating this namespace
 // agrees on. A STRING rather than Auto's hashed int64, because sp_getapplock
