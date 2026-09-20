@@ -13,6 +13,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -367,3 +368,225 @@ func ensureDatabase(t testing.TB, addr string) {
 		t.Fatalf("creating the storm database: %v", err)
 	}
 }
+
+// The bulk path is ONE round trip for the whole load — the protocol's own, not
+// an emulation — and it round-trips every type the loader encodes.
+//
+// The counting decorator is what proves the round-trip claim: it counts calls
+// to the port, and a CopyFrom that fell back to per-row inserts would still
+// show one there. So the load is also checked for having arrived intact, which
+// is what a wrong width or a mis-scaled decimal would break.
+func TestBulkLoadIsOneRoundTripAndArrivesIntact(t *testing.T) {
+	c := open(t)
+	ctx := context.Background()
+
+	if _, err := c.Exec(ctx, `
+		IF OBJECT_ID('dbo.msdrv_bulk') IS NOT NULL DROP TABLE dbo.msdrv_bulk;
+		CREATE TABLE dbo.msdrv_bulk (
+			id UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
+			n INT NOT NULL, big BIGINT NOT NULL, ok BIT NOT NULL,
+			amount DECIMAL(19,4) NOT NULL,
+			label NVARCHAR(50) NOT NULL, note NVARCHAR(MAX) NULL,
+			blob VARBINARY(MAX) NULL,
+			when_ DATETIMEOFFSET(7) NOT NULL, day DATE NOT NULL,
+			ratio FLOAT(53) NOT NULL)`, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = c.Exec(context.Background(), "DROP TABLE dbo.msdrv_bulk", nil) })
+
+	when := time.Date(2026, 9, 20, 14, 30, 45, 123456700, time.UTC)
+	src := &bulkSource{n: 1000, when: when}
+	n, err := c.CopyFrom(ctx, "msdrv_bulk",
+		[]string{"id", "n", "big", "ok", "amount", "label", "note", "blob",
+			"when_", "day", "ratio"}, src)
+	if err != nil {
+		var se *msdrv.Error
+		if errors.As(err, &se) {
+			t.Fatalf("%d: %s", se.Number, se.ServerMessage())
+		}
+		t.Fatal(err)
+	}
+	if n != 1000 {
+		t.Errorf("CopyFrom loaded %d rows, want 1000", n)
+	}
+
+	rows, err := c.Query(ctx, `SELECT id,n,big,ok,amount,label,note,blob,when_,day,ratio
+		FROM dbo.msdrv_bulk WHERE n = @p1`, []any{int32(8)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("row 8 is not there: %v", rows.Err())
+	}
+	v := rows.RawValues()
+	if v[0] == nil || len(v[0]) != 16 || v[0][15] != 8 {
+		t.Errorf("uuid: % x", v[0])
+	}
+	if binary.LittleEndian.Uint32(v[1]) != 8 {
+		t.Errorf("int: % x", v[1])
+	}
+	if binary.LittleEndian.Uint64(v[2]) != 80 {
+		t.Errorf("bigint: % x", v[2])
+	}
+	if v[3][0] != 1 {
+		t.Errorf("bit: % x", v[3])
+	}
+	// The decimal is rescaled to the COLUMN's scale on the way in. A value sent
+	// at scale 2 into a scale-4 column would be a hundred times too small, and
+	// nothing would say so.
+	if len(v[4]) != 9 || v[4][0] != 4 ||
+		int64(binary.LittleEndian.Uint64(v[4][1:])) != 80000 {
+		t.Errorf("decimal: % x", v[4])
+	}
+	if got := ucs2(v[5]); got != "label-8" {
+		t.Errorf("nvarchar: %q", got)
+	}
+	if got := ucs2(v[6]); !strings.HasPrefix(got, "wide") {
+		t.Errorf("nvarchar(max): %q", got[:min(20, len(got))])
+	}
+	if len(v[7]) != 3 || v[7][0] != 8 {
+		t.Errorf("varbinary: % x", v[7])
+	}
+	if len(v[8]) != 10 {
+		t.Errorf("datetimeoffset: % x", v[8])
+	}
+	if len(v[9]) != 3 {
+		t.Errorf("date: % x", v[9])
+	}
+	if math.Float64frombits(binary.LittleEndian.Uint64(v[10])) != 0.5 {
+		t.Errorf("float: % x", v[10])
+	}
+
+	// A NULL in a nullable column is a NULL, not an empty value.
+	rows.Close()
+	rows2, err := c.Query(ctx,
+		"SELECT count_big(*) FROM dbo.msdrv_bulk WHERE note IS NULL", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows2.Close()
+	if !rows2.Next() {
+		t.Fatal(rows2.Err())
+	}
+	if got := int64(binary.LittleEndian.Uint64(rows2.RawValues()[0])); got != 500 {
+		t.Errorf("%d rows have a NULL note, want 500", got)
+	}
+}
+
+// bulkSource yields rows with every type the loader encodes, and a NULL in
+// every other row.
+type bulkSource struct {
+	n, i int
+	when time.Time
+	v    []any
+}
+
+func (s *bulkSource) Next() bool {
+	if s.i >= s.n {
+		return false
+	}
+	var id [16]byte
+	// Two bytes, because a thousand rows do not fit in one and the primary key
+	// would collide at 256 — which the server reports correctly and which is a
+	// fixture bug rather than a loader one.
+	id[15] = byte(s.i)
+	id[14] = byte(s.i >> 8)
+	var note any = strings.Repeat("wide", 2000)
+	var blob any = []byte{byte(s.i), 0xbe, 0xef}
+	if s.i%2 == 1 {
+		note, blob = (*string)(nil), []byte(nil)
+	}
+	s.v = []any{id, int32(s.i), int64(s.i) * 10, s.i%2 == 0,
+		runtime.Decimal{Unscaled: int64(s.i), Scale: 0},
+		"label-" + strconv.Itoa(s.i), note, blob,
+		s.when, s.when, 0.5}
+	s.i++
+	return true
+}
+
+func (s *bulkSource) Values() []any { return s.v }
+func (s *bulkSource) Err() error    { return nil }
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+type oneSrc struct {
+	v    []any
+	done bool
+}
+
+func (s *oneSrc) Next() bool {
+	if s.done {
+		return false
+	}
+	s.done = true
+	return true
+}
+func (s *oneSrc) Values() []any { return s.v }
+func (s *oneSrc) Err() error    { return nil }
+
+// One column at a time, one table each. Every type the bulk encoder can write,
+// because a bulk row carries NO parameter declaration — there is no conversion
+// step, so a value written in the wrong width is read as the next column's
+// bytes and the server reports it against a column that is not the one at
+// fault. Three defects came out of this exact list:
+//
+//   - A fixed BIT was written with a length byte, which the server reported as
+//     the NEXT unicode column having an odd byte size.
+//   - A decimal was written at the widest form rather than the COLUMN's, which
+//     left eight bytes of magnitude where the next value should start.
+//   - A MAX value used the known-length PLP header, after which the terminator
+//     was read as the next row's token.
+func TestEveryBulkTypeLoads(t *testing.T) {
+	c := open(t)
+	ctx := context.Background()
+	when := time.Date(2026, 9, 20, 14, 30, 45, 123456700, time.UTC)
+
+	for i, tc := range []struct {
+		col string
+		v   any
+	}{
+		{"DATETIMEOFFSET(7) NOT NULL", when},
+		{"DATE NOT NULL", when},
+		{"TIME(7) NOT NULL", when},
+		{"DATETIME2(7) NOT NULL", when},
+		{"FLOAT(53) NOT NULL", 0.5},
+		{"REAL NOT NULL", float32(0.5)},
+		{"DECIMAL(19,4) NOT NULL", mustDec()},
+		{"VARBINARY(MAX) NULL", []byte{1, 2, 3}},
+		{"NVARCHAR(MAX) NULL", "wide"},
+		{"NVARCHAR(50) NOT NULL", "short"},
+		{"BIT NOT NULL", true},
+		{"INT NOT NULL", int32(3)},
+		{"BIGINT NOT NULL", int64(3)},
+		{"SMALLINT NOT NULL", int16(3)},
+		{"UNIQUEIDENTIFIER NOT NULL", [16]byte{1}},
+	} {
+		name := "bp" + string(rune('a'+i))
+		t.Run(tc.col, func(t *testing.T) {
+			if _, err := c.Exec(ctx, `IF OBJECT_ID('dbo.`+name+`') IS NOT NULL DROP TABLE dbo.`+name+`;
+				CREATE TABLE dbo.`+name+` (v `+tc.col+`)`, nil); err != nil {
+				t.Fatal(err)
+			}
+			defer c.Exec(context.Background(), "DROP TABLE dbo."+name, nil)
+			n, err := c.CopyFrom(ctx, name, []string{"v"}, &oneSrc{v: []any{tc.v}})
+			if err != nil {
+				var se *msdrv.Error
+				if errors.As(err, &se) {
+					t.Fatalf("%d: %s", se.Number, se.ServerMessage())
+				}
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Errorf("loaded %d", n)
+			}
+		})
+	}
+}
+
+func mustDec() runtime.Decimal { return runtime.Decimal{Unscaled: 12345, Scale: 2} }

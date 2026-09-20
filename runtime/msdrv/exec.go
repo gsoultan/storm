@@ -23,6 +23,11 @@ type Conn struct {
 	// bad marks a connection whose stream is no longer trustworthy, so the
 	// pool discards it rather than handing it on.
 	bad bool
+
+	// bulk caches the column shape a bulk load declares, per table and column
+	// list. The shape is read from the server, and reading it per load would
+	// make a thousand-row COPY two round trips instead of one.
+	bulk map[bulkKey][]column
 }
 
 // ErrRowsOpen is returned when a second statement is issued while a result set
