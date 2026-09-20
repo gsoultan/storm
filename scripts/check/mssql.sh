@@ -91,31 +91,63 @@ fi
 # the CHECK an enum became — and a migration that reapplies itself forever is
 # what disagreement looks like in production.
 echo "== a SQL Server migration plan applies, and the next plan is empty =="
-out=$(mktemp)
-if ! go test -count=1 -v -run 'TestMSSQLMigrationRoundTrip|TestMSSQLAltersApply|TestAutoMSSQL' ./migrate/ >"$out" 2>&1; then
-  note "the server refused a statement migrate emitted, or the re-diff was not empty:"
-  grep -E -- "^ *--- FAIL" "$out" | head -10 | sed 's/^/    /'
-  # WITH the lines below it. The statement and the server's own words are what
-  # make this actionable, and they are printed UNDER the header a bare grep
-  # keeps — which is how the first run of this gate reported five failures and
-  # not one word about why.
-  grep -E -A14 -- "refused by the server|is not empty|tested nothing" "$out" |
-    head -70 | sed 's/^/    /'
+mig=$(mktemp)
+if ! go test -count=1 -v -run 'TestMSSQLMigrationRoundTrip|TestMSSQLAltersApply|TestAutoMSSQL' ./migrate/ >"$mig" 2>&1; then
+  note "the server refused a statement migrate emitted, or a property did not hold:"
+  grep -E -- "^ *--- FAIL" "$mig" | head -10 | sed 's/^/    /'
+  # Anchored on --- FAIL and nothing else. An earlier version of this grep
+  # listed the PHRASES a failure might use, which worked until the next test
+  # used a different one — and then reported two failures and not one word about
+  # why, for the second time in this file's life. What a test says when it fails
+  # is the test's business.
+  grep -E -B2 -A16 -- "^ *--- FAIL" "$mig" | head -90 | sed 's/^/    /'
 fi
 # COUNT the alters, do not trust the word ok: these skip without a server, and a
 # gate that passes by not running is the defect this whole file is named after.
-ran=$(grep -c -- "--- PASS: TestMSSQLAltersApply/" "$out")
+ran=$(grep -c -- "--- PASS: TestMSSQLAltersApply/" "$mig")
 echo "== $ran alter(s) reached the server =="
 if [ "$ran" -lt 9 ]; then
   note "only $ran of 9 alters ran; the rest skipped rather than passed"
-  grep -E "^(=== RUN|--- SKIP)" "$out" | head -10 | sed 's/^/    /'
+  grep -E "^(=== RUN|--- SKIP)" "$mig" | head -10 | sed 's/^/    /'
+fi
+
+# Automigrate, which is the one path in storm that writes DDL nobody reviewed.
+# Its four claims — it converges, it refuses to lose data, a failure leaves the
+# schema where it began, and concurrent callers apply once — are all about what
+# the SERVER holds afterwards, so its tests are counted too.
+ran=$(grep -c -- "--- PASS: TestAutoMSSQL" "$mig")
+echo "== $ran automigrate propert(ies) reached the server =="
+if [ "$ran" -lt 5 ]; then
+  note "only $ran of 5 automigrate tests ran; the rest skipped rather than passed"
+fi
+rm -f "$mig"
+
+# The SQL Server half of the CLI, RUN. Three of these are storm.SQL's whole
+# safety story — a server of the TARGET's own kind types every declared
+# statement — and the fourth is `storm verify -pending`: write the migration the
+# tool would write, replay it, and demand the model have nothing left to ask
+# for.
+#
+# This used to be a CI step of its own pointing at ./tool/, and it kept passing
+# after the code moved to ./tool/mstool/ because `go test -run` with no matches
+# is a success. It is counted here now, for exactly that reason.
+echo "== the escape hatch and the migration replay run against a server =="
+out=$(mktemp)
+if ! go test -count=1 -v ./tool/mstool/ >"$out" 2>&1; then
+  note "the SQL Server half of the CLI failed:"
+  grep -E -B2 -A16 -- "^ *--- FAIL" "$out" | head -90 | sed 's/^/    /'
+fi
+ran=$(grep -c -E -- "--- PASS: (TestRawQuer|TestVerifyPending)" "$out")
+echo "== $ran of them reached the server =="
+if [ "$ran" -lt 4 ]; then
+  note "only $ran of 4 server-backed CLI tests ran; the rest skipped rather than passed"
 fi
 rm -f "$out"
 
-# The two runtime packages whose live half only runs where there is a server.
-# Their floors live here rather than in scripts/check/coverage.sh for that
-# reason: measured without one, they would be measuring a suite that skipped.
-echo "== the TDS client and its decoders are above their floors =="
+# The packages whose live half only runs where there is a server. Their floors
+# live here rather than in scripts/check/coverage.sh for that reason: measured
+# without one, they would be measuring a suite that skipped.
+echo "== the SQL Server packages are above their floors =="
 cov() { # <package> <floor>
   pct=$(go test -count=1 -cover "$1" 2>/dev/null |
     sed -n 's/.*coverage: \([0-9.]*\)%.*/\1/p')
@@ -132,41 +164,15 @@ cov ./runtime/msdec 85
 # The introspector, whose every query reads a catalogue — which is not
 # something a fake can be honest about, so it has no unit half at all.
 cov ./schema/mssql 75
-# The SQL Server half of the CLI, RUN. Three of these are storm.SQL's whole
-# safety story — a server of the TARGET's own kind types every declared
-# statement — and the fourth is `storm verify -pending`: write the migration the
-# tool would write, replay it, and demand the model have nothing left to ask
-# for.
+# The SQL Server half of the CLI. 68 because the first honest measurement of it
+# was 71.6, taken here. The gap is slack for a live test that varies, not
+# headroom to spend.
 #
-# This used to be a CI step of its own pointing at ./tool/, and it kept passing
-# after the code moved to ./tool/mstool/ because `go test -run` with no matches
-# is a success. It is counted here now, for exactly that reason.
-echo "== the escape hatch and the migration replay run against a server =="
-out=$(mktemp)
-if ! go test -count=1 -v ./tool/mstool/ >"$out" 2>&1; then
-  note "the SQL Server half of the CLI failed:"
-  grep -E -- "^ *--- FAIL" "$out" | head -10 | sed 's/^/    /'
-  grep -E -A14 -- "--- FAIL" "$out" | head -60 | sed 's/^/    /'
-fi
-ran=$(grep -c -E -- "--- PASS: (TestRawQuer|TestVerifyPending)" "$out")
-echo "== $ran of them reached the server =="
-if [ "$ran" -lt 4 ]; then
-  note "only $ran of 4 server-backed CLI tests ran; the rest skipped rather than passed"
-fi
-rm -f "$out"
-
-# The SQL Server half of the CLI: the escape hatch's validator, `storm import`,
-# and the dialer `storm diff` normalises through.
-#
-# It is floored HERE, and it is a package because of this line. tool used to be
-# one package split across two jobs — PostgreSQL and no SQL Server in one, SQL
-# Server and no PostgreSQL in the other — so no floor either job could measure
-# meant anything, and the one in coverage.sh was nudged down twice chasing it.
-# Splitting the code split the measurement, and each half is now floored where
-# it actually runs.
-#
-# 68 because the first honest measurement of it was 71.6, taken here. The gap
-# is slack for a live test that varies, not headroom to spend.
+# It is a package because of this line. tool used to be one package split across
+# two jobs — PostgreSQL and no SQL Server in one, SQL Server and no PostgreSQL in
+# the other — so no floor either job could measure meant anything, and the one in
+# coverage.sh was nudged down twice chasing it. Splitting the code split the
+# measurement.
 cov ./tool/mstool 68
 
 if [ "$fail" -eq 0 ]; then
