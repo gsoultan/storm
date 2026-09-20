@@ -1,6 +1,9 @@
 package migrate
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -261,5 +264,54 @@ func TestANewTableArrivesWithItsIndexes(t *testing.T) {
 				t.Errorf("a new table lost its index:\n%s", p.SQL())
 			}
 		})
+	}
+}
+
+// The migration lock tells "somebody else has it" from "this did not work" by
+// RAISERROR STATE, because every ad-hoc RAISERROR is error 50000 and msdrv
+// drops the message text on purpose. The assertion is on an interface so this
+// package links no driver — which is exactly the thing a refactor would undo
+// without noticing, so it is pinned here.
+type fakeServerErr struct{ state uint8 }
+
+func (fakeServerErr) Error() string        { return "server error 50000" }
+func (e fakeServerErr) ServerState() uint8 { return e.state }
+
+func TestApplockBusyIsToldApartByState(t *testing.T) {
+	if !isApplockBusy(fakeServerErr{state: applockBusyState}) {
+		t.Error("the state lockMSSQL raises was not recognised as contention")
+	}
+	if isApplockBusy(fakeServerErr{state: 1}) {
+		t.Error("state 1 — what every other RAISERROR uses — was read as contention")
+	}
+	if isApplockBusy(errors.New("connection refused")) {
+		t.Error("an error with no state at all was read as contention")
+	}
+	// Wrapped, because that is how it arrives: msdrv's error comes back inside
+	// whatever Exec wrapped it in.
+	if !isApplockBusy(fmt.Errorf("exec: %w", fakeServerErr{state: applockBusyState})) {
+		t.Error("a wrapped server error was not unwrapped")
+	}
+}
+
+func TestMSSQLSchemaNamesAreValidatedForSQLServerAndNotPostgres(t *testing.T) {
+	// Uppercase is legal here and is not in validIdent, which is PostgreSQL's.
+	if err := validMSSQLIdent("Sales"); err != nil {
+		t.Errorf("a mixed-case schema name is legal on SQL Server: %v", err)
+	}
+	for _, bad := range []string{"", "1sales", "sales;drop", "sa les", strings.Repeat("s", 129)} {
+		if err := validMSSQLIdent(bad); err == nil {
+			t.Errorf("%q was accepted as a schema name", bad)
+		}
+	}
+}
+
+func TestAutoMSSQLRefusesConcurrentlyByName(t *testing.T) {
+	_, err := AutoMSSQL(context.Background(), nil, msch(), AutoOptions{Concurrently: true})
+	if err == nil {
+		t.Fatal("Concurrently was accepted for a target with no concurrent index build")
+	}
+	if !strings.Contains(err.Error(), "ONLINE = ON") {
+		t.Errorf("the refusal must name what SQL Server has instead: %v", err)
 	}
 }

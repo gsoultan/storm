@@ -1,6 +1,7 @@
 package msdrv
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -238,3 +239,18 @@ func TestPasswordObfuscation(t *testing.T) {
 type discard struct{ net.Conn }
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
+
+// ServerState duplicates an exported field so a package that must tell one
+// RAISERROR from another can assert on an interface instead of importing this
+// one. migrate does exactly that for the migration lock, which is why removing
+// the "redundant" accessor would break a build nothing here compiles.
+func TestServerStateIsReachableThroughAnInterface(t *testing.T) {
+	var err error = &Error{Number: 50000, Class: 16, State: 77}
+	var s interface{ ServerState() uint8 }
+	if !errors.As(err, &s) {
+		t.Fatal("*Error does not satisfy interface{ ServerState() uint8 }")
+	}
+	if got := s.ServerState(); got != 77 {
+		t.Errorf("ServerState() = %d, want 77", got)
+	}
+}
