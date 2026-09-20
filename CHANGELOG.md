@@ -52,6 +52,15 @@ Found while building it, in code that was already shipping: a new table's
 not append them itself. PostgreSQL's does, SQL Server's does not, and a diff
 builds one table at a time — so the property is now pinned for both.
 
+**`tool/mstool`** is new, and is a package because of a coverage floor. `tool`
+was one package split across two CI jobs — PostgreSQL and no SQL Server in one,
+SQL Server and no PostgreSQL in the other — so no floor either job could measure
+meant anything, and the one in `scripts/check/coverage.sh` had been nudged down
+twice chasing it, with a note saying to move the code next time instead. It
+drifted again; the code moved. `storm import`, the `storm.SQL` validator and the
+dialer live there now, floored in `scripts/check/mssql.sh` where they run, and
+`tool`'s own floor went back up.
+
 Not in this release: `migrate.Auto` for SQL Server. The plan engine speaks this
 catalogue; the applier does not, and it needs `sp_getapplock` and an answer for
 what `NoTransaction` means where there is no concurrent index build.
