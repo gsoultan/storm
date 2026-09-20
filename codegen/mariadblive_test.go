@@ -144,6 +144,8 @@ func dialectFor(name string) codegen.Dialect {
 		return codegen.DialectMySQL
 	case "mariadb":
 		return codegen.DialectMariaDB
+	case "mssql":
+		return codegen.DialectMSSQL
 	}
 	return codegen.DialectPostgres
 }

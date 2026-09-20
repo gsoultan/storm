@@ -145,6 +145,33 @@ func LockHint(m int) string {
 	return ""
 }
 
+// LockNotes is what a generated package's doc comment says about locking here.
+//
+// It lives in this package rather than in codegen for the reason R9 exists: the
+// text names KEYWORDS, and a keyword in codegen is a keyword one dialect owns
+// leaking into every other one's output.
+func LockNotes() []string {
+	return []string{
+		"A lock is held to the end of the TRANSACTION, so one taken outside a",
+		"transaction is released before the next statement runs and protects",
+		"nothing — pass an msdrv.Tx, not a pool.",
+		"",
+		"On this target the lock is a TABLE HINT written after the table name,",
+		"not a trailing clause: T-SQL has no FOR UPDATE. Two of the modes are",
+		"not quite what their names suggest. Skip-locked is READPAST, which is",
+		"honoured only for row-level locks — which is why ROWLOCK is always",
+		"spelled out. A shared lock is REPEATABLEREAD rather than HOLDLOCK:",
+		"HOLDLOCK is SERIALIZABLE and would take range locks, refusing inserts",
+		"into the gaps this query read, which is a stronger promise than the",
+		"caller asked for.",
+		"",
+		"Locking is refused on Count and Exists, and on the declared",
+		"aggregations and joins, for the reason it is refused everywhere else:",
+		"a lock combined with an aggregate or a set operation locks something",
+		"other than the rows the caller is looking at.",
+	}
+}
+
 // Soft delete. The predicate and the two marks, in the only package allowed to
 // write SQL text for this back end — codegen may not spell them itself (R9).
 

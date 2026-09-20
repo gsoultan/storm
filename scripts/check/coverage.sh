@@ -32,6 +32,12 @@ declare -a FLOORS=(
   # these floors matter: they are what holds when the server is not there.
   "github.com/gsoultan/storm/compile/mssql 85"
   "github.com/gsoultan/storm/compile/msddl 85"
+  # The TDS client and its decoder family. msdrv's floor is lower than mydrv's
+  # because a third of it is the TLS and error paths a live test does not reach
+  # — and lower is honest, where a floor set at the number the unit tests happen
+  # to produce is a floor that means nothing.
+  "github.com/gsoultan/storm/runtime/msdrv 55"
+  "github.com/gsoultan/storm/runtime/msdec 85"
   "github.com/gsoultan/storm/compile/pgsql 80"
   "github.com/gsoultan/storm/compile/pgddl 90"
   "github.com/gsoultan/storm/codegen 85"

@@ -1,6 +1,10 @@
 package codegen
 
-import "github.com/gsoultan/storm/schema"
+import (
+	"fmt"
+
+	"github.com/gsoultan/storm/schema"
+)
 
 // Dialect selects which back end a generated package targets.
 //
@@ -23,6 +27,14 @@ const (
 	// and ordered WITH ROLLUP, and spells the shared lock differently. See
 	// compile/mariadb.
 	DialectMariaDB
+	// DialectMSSQL targets SQL Server 2016 and later.
+	//
+	// The first target whose differences are POSITIONAL rather than absences:
+	// OUTPUT sits mid-statement, the row cap is a clause of ORDER BY, and the
+	// row lock is a table hint. It also has three things MySQL made storm
+	// refuse — filtered indexes, covering indexes and GROUPING SETS — so the
+	// seam gained capability in both directions. See compile/mssql.
+	DialectMSSQL
 )
 
 func (d Dialect) String() string {
@@ -31,6 +43,8 @@ func (d Dialect) String() string {
 		return "mysql"
 	case DialectMariaDB:
 		return "mariadb"
+	case DialectMSSQL:
+		return "mssql"
 	}
 	return "postgres"
 }
@@ -54,9 +68,46 @@ type decoders struct {
 	fn map[string]string
 	// fallible marks the kinds whose decode returns an error in this family.
 	fallible map[kind]bool
+	// text renders the assignment for a NOT NULL text column, or nil for the
+	// families whose strings are already UTF-8 and go through the slab
+	// directly. It is a hook rather than a rename because the call SHAPE
+	// differs: `sl.Str(rv[i])` takes no decoder at all.
+	text func(field string, i int) string
 }
 
 func decodersFor(d Dialect, runtimeImport string) decoders {
+	if d == DialectMSSQL {
+		// The THIRD family. It shares no bytes with either of the others:
+		// little-endian like MySQL's, but temporals are hundred-nanosecond
+		// ticks beside a day number rather than packed components, and strings
+		// are UTF-16.
+		return decoders{
+			pkg: "msdec",
+			imp: runtimeImport + "/runtime/msdec",
+			fn: map[string]string{
+				// storm's timestamptz is a datetimeoffset here, which is a
+				// different decoder from datetime2 — it carries the offset.
+				"Timestamptz":     "DateTimeOffset",
+				"NullTimestamptz": "NullDateTimeOffset",
+				"NumericErr":      "Decimal",
+				"TimeOfDayErr":    "TimeOfDay",
+			},
+			// Every temporal and the decimal are fallible here, for the reason
+			// MySQL's are: they read a normalised form that a short value would
+			// misread, and reporting it beats returning a plausible zero.
+			fallible: map[kind]bool{
+				kindTimestamptz: true, kindDate: true,
+				kindTimeOfDay: true, kindNumeric: true,
+			},
+			// Text is UTF-16 on this wire, so the slab cannot simply copy it.
+			// Without this a generated scanner reads every string as the
+			// interleaved-null bytes of its own UTF-16 form — which compiles,
+			// runs, and produces mojibake for every row.
+			text: func(field string, i int) string {
+				return fmt.Sprintf("r.%s = msdec.Str(rv[%d], sl)", field, i)
+			},
+		}
+	}
 	if d == DialectMySQL || d == DialectMariaDB {
 		// One decoder family for both: they share the wire, and the decoders
 		// are about bytes on it rather than the SQL above it.
@@ -105,11 +156,13 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 
 // supports reports whether this dialect has a decoder for the column at all.
 //
-// PostgreSQL's arrays, ranges, network types and tsvector have no MySQL
-// equivalent — `compile/myddl` already refuses them in DDL, and this is the
-// same refusal on the read path so the two cannot disagree.
+// PostgreSQL's arrays, ranges, network types and tsvector have no equivalent on
+// either other target — compile/myddl and compile/msddl already refuse them in
+// DDL, and this is the same refusal on the read path so the two cannot
+// disagree. The list is identical for MySQL and SQL Server, which is a fact
+// about PostgreSQL's type system rather than a coincidence.
 func (d Dialect) supports(c *schema.Column) bool {
-	if d != DialectMySQL && d != DialectMariaDB {
+	if d == DialectPostgres {
 		return true
 	}
 	if c.Type.Array {

@@ -15,7 +15,10 @@ func TestPrefixesAndFragments(t *testing.T) {
 	for _, c := range []struct{ got, want string }{
 		{mssql.SelectPrefix("users", []string{"id", "email"}),
 			"SELECT [id], [email] FROM [users]"},
-		{mssql.CountPrefix("users"), "SELECT count(*) FROM [users]"},
+		// count_big: count() returns an INT here, which is four bytes where a
+		// Count() of type int64 decodes eight — so the count came back as zero
+		// with no error at all until a live test ran one.
+		{mssql.CountPrefix("users"), "SELECT count_big(*) FROM [users]"},
 		{mssql.ExistsPrefix("users"), "SELECT TOP 1 1 FROM [users]"},
 		{mssql.UpdatePrefix("users"), "UPDATE [users] SET "},
 		{mssql.DeletePrefix("users"), "DELETE FROM [users]"},
