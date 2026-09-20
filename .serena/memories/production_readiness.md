@@ -225,3 +225,63 @@ generated output IS API; MIGRATING-FROM-SQLC.md).
 PLAN.md; examples/blog is the dress rehearsal) → two-week soak → M8 tag. The
 full doc-reconciliation of API/REFERENCE/EXAMPLE prose remains optional
 pre-tag polish; the as-built banner + executable example cover the drift.
+---
+
+# Three gates for classes that had already bitten — 2026-09-20
+
+Each of these turns a defect that SHIPPED into something a gate catches. All
+three came from reading what the adopter migration found, rather than from
+anything new going wrong.
+
+## 1. Version skew — `scripts/check/boundaries.sh`, and a second CI job
+
+storm's `go.mod` said pgx 5.10 while the adopter's build resolved to 5.11.
+**Minimal version selection gives the adopter the HIGHEST requirement in the
+graph**, so a module asking for less is a module testing something nobody
+builds. Fixing the root left `examples/orders` behind at 5.10, which broke
+`explain.sh` outright — and CI did not notice, because its module cache was
+warm enough to resolve the old version anyway. A gate that passes in CI and
+fails by hand is worse than one that fails.
+
+Now: every module must agree with the root on every direct dependency they
+share. And CI runs **PostgreSQL 16 and 18** — the floor `storm explain` needs,
+and what adopters run — because introspection reads `pg_catalog` and the
+catalog is the part of PostgreSQL that changes between majors. `mysql:8` is
+pinned to `mysql:8.4`; a floating tag makes the gate's meaning drift.
+
+`docs/STABILITY.md` states the tested versions, because a version storm has
+never run against is a version storm does not support.
+
+## 2. The pair `-race` cannot see — `runtime/atomicpair_test.go`
+
+`MaskCache` published a mask and its statement as **two atomics written in
+sequence**. Interleaved warming left one's mask beside the other's statement,
+and the next hit returned an UPDATE for a different column set.
+
+**Every access was atomic, so it was never a data race.** `-race` is blind to
+this by construction: it sees unsynchronised ACCESS, and what was
+unsynchronised was the PAIRING. No dynamic detector models that.
+
+The invariant is structural: one atomic field per struct. Two are two things a
+reader can observe out of step. The exception table is empty.
+
+## 3. The exclusion list nobody read — `codegen/reachable_test.go`
+
+`bytea` sat in `opApplies`' Eq exclusion beside jsonb and arrays. Their
+equality genuinely surprises — whole-document, order-sensitive. bytea's does
+not: byte for byte is what a hash lookup means, and excluding it made every
+digest-keyed table unreachable from a builder.
+
+**A switch has no opinion about what is missing from it.** The default is
+inverted now: every kind is expected to be comparable, and one that is not is
+argued for in a table, with the surprising comparison written down. A kind
+added to the enum and not to the table fails too.
+
+No equivalent for assignments: `updatable()` excludes on generated, immutable,
+version and primary-key — reasons unrelated to kind — so there is no list there
+that can silently grow.
+
+## The shape all three share
+
+A rule that lives in a switch, a habit, or a version string is a rule nobody
+is checking. Each fix moves it somewhere a reviewer has to look.
