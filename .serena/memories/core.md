@@ -231,13 +231,17 @@ idioms; a second would push on shapes this one never writes. MySQL and MariaDB
 have NO adopter — supported, tested on every commit against both engines,
 running in nobody's production. v1.0 promises their API, not their mileage.
 
-M9+ was gated on v1.0 shipping. It has, so M10 (SQL Server) is unblocked.
+M9+ was gated on v1.0 shipping. It has, so M10 (SQL Server) is unblocked — and
+estimated before starting, at 5 weeks rather than 3, because SQL Server needs a
+TDS client as well as a lowering. See [[m10_sqlserver]].
 
 ## Related memories
 - [[m9_mysql]] — why M9 is bigger than PLAN.md said, and the gate that read
   as though it worked
 - [[m9_driver]] — the driver question MEASURED: the wrapper cannot satisfy the
   port, so M9 needs the protocol subset
+- [[m10_sqlserver]] — M10's estimate, measured before it starts: every construct
+  exists, the library costs 11.3 allocs/row, so it is a lowering AND a client
 - [[softdelete]] — opt-in soft delete, why a REJECTED entry turned out to be a
   design and not a ban, and the queued-delete defect that would have destroyed
   recoverable rows

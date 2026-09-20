@@ -426,13 +426,46 @@ and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 `TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a PostgreSQL identifier,
 placeholder or output clause reaches MySQL SQL, verified both ways.
 
-| M10 | SQL Server | 3 | `OUTPUT`, `MERGE`, TVP bulk, paging gate | — |
+| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | + a TDS client, measured — see below |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |
 
+**M10 was re-estimated before it started, measured 2026-09-20**
+(`internal/mssqlspike`). The same question M9 answered, asked again: the plan's
+rule is that the driver decision is "the estimate to make before starting, not
+after." Both halves were run against a live server.
+
+*The engine has everything the gate names.* Fifteen constructs probed on Azure
+SQL Edge — `OUTPUT` on all three write verbs, `MERGE`, `CREATE TYPE … AS TABLE`
+(the TVP bulk path), `OFFSET … FETCH`, recursive CTEs (`OPTION (MAXRECURSION n)`
+rather than a keyword), window functions, `CROSS APPLY` for lateral, `OPENJSON`
+for a bound list, `WITH (UPDLOCK, ROWLOCK)` for row locks — and, unlike MySQL,
+**filtered indexes**, so the partial UNIQUE that soft delete wants does port
+here. The lowering has no holes to work around.
+
+*The library does not reach the row shape, by a wider margin than MySQL's did.*
+`microsoft/go-mssqldb` through `driver.Stmt.Query` — the most favourable path it
+offers, bypassing `database/sql` — costs **11.3 allocs/row** against
+go-sql-driver's 8.07 and `runtime/mydrv`'s 1.07; every column is boxed into a
+`driver.Value` before storm sees a byte, and there is no `RawValues` to ask for.
+So **M10 is a lowering and a TDS client**, exactly the shape M9 turned out to
+be, and TDS — a token stream with a login sequence, collation negotiation and
+optional encryption — is the harder protocol. Hence three weeks → five.
+
+Two things make it cheaper than M9 was: the seam is **proven** rather than
+discovered mid-flight (`codegen` takes the dialect as a build-time parameter and
+`compile/mysql` is a worked second family, so `compile/mssql` is additive), and
+TDS row tokens carry fixed-width binary for integers and temporals, so the
+raw-bytes-per-column contract is a property of the protocol. One thing makes it
+dearer: **no full SQL Server on arm64** (`platform linux/arm64` is refused).
+Edge covers every construct but is a subset engine at the 2019 level, so the
+authoritative gate runs in CI against `mcr.microsoft.com/mssql/server` — and
+M9's twelve defects were all caught by executing against a real server on every
+change. That loop is slower here.
+
 **M0–M8 (v1.0, Postgres): ≈ 23 weeks solo (~5.5 months), ≈ 15 with two** — M1 and
 the bench harness parallelise cleanly, M2–M5 mostly do not.
-**M9–M12 (all targets): + ≈ 17 weeks**, and these *do* parallelise across people
+**M9–M12 (all targets): + ≈ 19 weeks**, and these *do* parallelise across people
 once the seam is proven by M9. Nothing in M9+ starts before v1.0 ships.
 
 ---
