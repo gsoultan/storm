@@ -97,6 +97,9 @@ cov() { # <package> <floor>
 }
 cov ./runtime/msdrv 55
 cov ./runtime/msdec 85
+# The introspector, whose every query reads a catalogue — which is not
+# something a fake can be honest about, so it has no unit half at all.
+cov ./schema/mssql 75
 # tool is NOT floored here, and that is a deliberate answer to a question this
 # gate asked and got wrong once. No single job can measure it whole: the other
 # one has PostgreSQL and no SQL Server (69%), this one has SQL Server and no
