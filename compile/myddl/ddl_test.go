@@ -280,18 +280,18 @@ func TestTheBareFormsMeanMySQL(t *testing.T) {
 		t.Errorf("Create is not CreateFor(MySQL):\n%s\n%s", bare, forMySQL)
 	}
 
-	tbl, err := myddl.CreateTable(s.Tables[0])
+	tbl, err := myddl.CreateTable(s.Tables[0], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tblFor, _ := myddl.CreateTableFor(s.Tables[0], myddl.MySQL); tbl != tblFor {
+	if tblFor, _ := myddl.CreateTableFor(s.Tables[0], myddl.MySQL, nil); tbl != tblFor {
 		t.Error("CreateTable is not CreateTableFor(MySQL)")
 	}
-	cd, err := myddl.ColumnDef("users", s.Tables[0].Columns[1])
+	cd, err := myddl.ColumnDef("users", s.Tables[0].Columns[1], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cdFor, _ := myddl.ColumnDefFor("users", s.Tables[0].Columns[1], myddl.MySQL); cd != cdFor {
+	if cdFor, _ := myddl.ColumnDefFor("users", s.Tables[0].Columns[1], myddl.MySQL, nil); cd != cdFor {
 		t.Error("ColumnDef is not ColumnDefFor(MySQL)")
 	}
 	if !strings.Contains(cd, "`email` VARCHAR(320) NOT NULL") {
@@ -405,7 +405,7 @@ func TestAnArcCheckIsRespelledAndADeclaredOneIsNot(t *testing.T) {
 			{Name: "ck_attachments_named", Expr: `char_length("id") > 0`},
 		},
 	}
-	got, err := myddl.CreateTable(tbl)
+	got, err := myddl.CreateTable(tbl, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestAnArcCheckIsRespelledAndADeclaredOneIsNot(t *testing.T) {
 
 	// At-most-one rather than exactly-one.
 	tbl.Checks[0].ArcOptional = true
-	got, err = myddl.CreateTable(tbl)
+	got, err = myddl.CreateTable(tbl, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,5 +502,30 @@ func TestARefusalWithoutAPositionIsUnchanged(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "::") {
 		t.Errorf("an empty position left a stray separator:\n%v", err)
+	}
+}
+
+// An enum column becomes a NATIVE MySQL ENUM, which names its values in the
+// column definition — so the labels are needed at render time, and for a long
+// time nothing supplied them: Check accepted a model with an enum and Create
+// then refused it.
+func TestEnumColumnRendersRatherThanRefusing(t *testing.T) {
+	e := &schema.Enum{Name: "order_status", Labels: []string{"new", "paid"}}
+	c := &schema.Column{Name: "status",
+		Type: schema.Type{Name: "order_status", Enum: true}, NotNull: true}
+	tb := &schema.Table{Name: "orders", Columns: []*schema.Column{
+		{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true}, c,
+	}, PrimaryKey: []string{"id"}}
+	s := &schema.Schema{Tables: []*schema.Table{tb}, Enums: []*schema.Enum{e}}
+
+	if err := myddl.Check(s); err != nil {
+		t.Fatalf("Check refused a model with a declared enum: %v", err)
+	}
+	got, err := myddl.Create(s)
+	if err != nil {
+		t.Fatalf("Check accepted this model and Create refused it: %v", err)
+	}
+	if !strings.Contains(got, "`status` ENUM('new', 'paid') NOT NULL") {
+		t.Errorf("the column is not a native ENUM:\n%s", got)
 	}
 }

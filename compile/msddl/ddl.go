@@ -38,9 +38,10 @@ func Create(s *schema.Schema) (string, error) {
 	if err := Check(s); err != nil {
 		return "", err
 	}
+	enums := enumsOf(s)
 	var b strings.Builder
 	for _, t := range s.Tables {
-		def, err := CreateTable(t)
+		def, err := CreateTable(t, enums)
 		if err != nil {
 			return "", err
 		}
@@ -62,17 +63,46 @@ func Create(s *schema.Schema) (string, error) {
 	return b.String(), nil
 }
 
+// enumsOf indexes a schema's enums by name, which is what a column carrying one
+// needs and a table on its own has no way to reach.
+func enumsOf(s *schema.Schema) map[string]*schema.Enum {
+	m := make(map[string]*schema.Enum, len(s.Enums))
+	for _, e := range s.Enums {
+		m[e.Name] = e
+	}
+	return m
+}
+
 // CreateTable renders one table.
-func CreateTable(t *schema.Table) (string, error) {
+//
+// enums is the schema's declared labels, and it is a PARAMETER rather than
+// something looked up later because an enum column cannot be rendered without
+// them: this server has no enum type, so the column is a width and a CHECK, and
+// both come from the label list. Passing nil renders a table with no enum
+// columns and refuses one that has them — which is the honest answer for a
+// caller that did not supply the labels.
+func CreateTable(t *schema.Table, enums map[string]*schema.Enum) (string, error) {
 	var b strings.Builder
 	b.WriteString("CREATE TABLE " + Ident(t.Name) + " (\n")
 	parts := make([]string, 0, len(t.Columns)+2)
 	for _, c := range t.Columns {
-		def, err := ColumnDef(t.Name, c)
+		def, err := ColumnDef(t.Name, c, enums)
 		if err != nil {
 			return "", err
 		}
 		parts = append(parts, "    "+def)
+	}
+	// An enum's CHECK is a TABLE-level constraint, so it is collected here
+	// rather than appended to the column: SQL Server has no enum type, and the
+	// set of accepted values is the whole of what the declaration means.
+	for _, c := range t.Columns {
+		if !c.Type.Enum {
+			continue
+		}
+		if e := enums[c.Type.Name]; e != nil {
+			parts = append(parts, "    CONSTRAINT "+Ident(enumCheckName(t.Name, c.Name))+
+				" CHECK ("+EnumCheck(c.Name, e)+")")
+		}
 	}
 	if len(t.PrimaryKey) > 0 {
 		parts = append(parts, "    PRIMARY KEY ("+identList(t.PrimaryKey)+")")
@@ -88,8 +118,13 @@ func CreateTable(t *schema.Table) (string, error) {
 	return b.String(), nil
 }
 
+// enumCheckName is what an enum column's constraint is called. Derived rather
+// than declared, because the model never names it — and a migration that has to
+// drop it needs the name to be the same every time.
+func enumCheckName(table, col string) string { return "ck_" + table + "_" + col }
+
 // ColumnDef renders one column.
-func ColumnDef(table string, c *schema.Column) (string, error) {
+func ColumnDef(table string, c *schema.Column, enums map[string]*schema.Enum) (string, error) {
 	if c.Generated != "" {
 		// A computed column names no type: SQL Server derives it from the
 		// expression. PERSISTED is what makes it storable and indexable, which
@@ -104,7 +139,7 @@ func ColumnDef(table string, c *schema.Column) (string, error) {
 		}
 		return def, nil
 	}
-	ty, err := TypeSQL(table, c)
+	ty, err := typeOf(table, c, enums)
 	if err != nil {
 		return "", err
 	}
@@ -151,6 +186,24 @@ func checkExpr(ck *schema.Check) string {
 		b.WriteString(" = 1")
 	}
 	return b.String()
+}
+
+// typeOf is TypeSQL with the enum labels to hand.
+//
+// TypeSQL refuses an enum by design — it has no labels — and for a long time
+// nothing supplied them, so Check accepted a model with an enum column and
+// Create then refused it. A check that says a model ports and a generator that
+// says it does not is the one disagreement this package exists to prevent.
+func typeOf(table string, c *schema.Column, enums map[string]*schema.Enum) (string, error) {
+	if c.Type.Enum {
+		e := enums[c.Type.Name]
+		if e == nil {
+			return "", fmt.Errorf("msddl: %s.%s is an enum and %s is not declared in the schema",
+				table, c.Name, c.Type.Name)
+		}
+		return TypeEnum(e), nil
+	}
+	return TypeSQL(table, c)
 }
 
 // TypeSQL maps a storm type to SQL Server, or says why it cannot.

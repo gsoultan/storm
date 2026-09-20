@@ -50,9 +50,10 @@ func CreateFor(s *schema.Schema, tgt Target) (string, error) {
 	if err := Check(s); err != nil {
 		return "", err
 	}
+	enums := enumsOf(s)
 	var b strings.Builder
 	for _, t := range s.Tables {
-		def, err := CreateTableFor(t, tgt)
+		def, err := CreateTableFor(t, tgt, enums)
 		if err != nil {
 			return "", err
 		}
@@ -74,16 +75,34 @@ func CreateFor(s *schema.Schema, tgt Target) (string, error) {
 	return b.String(), nil
 }
 
+// enumsOf indexes a schema's enums by name, which is what a column carrying one
+// needs and a table on its own has no way to reach.
+func enumsOf(s *schema.Schema) map[string]*schema.Enum {
+	m := make(map[string]*schema.Enum, len(s.Enums))
+	for _, e := range s.Enums {
+		m[e.Name] = e
+	}
+	return m
+}
+
 // CreateTable renders one table for MySQL.
-func CreateTable(t *schema.Table) (string, error) { return CreateTableFor(t, MySQL) }
+func CreateTable(t *schema.Table, enums map[string]*schema.Enum) (string, error) {
+	return CreateTableFor(t, MySQL, enums)
+}
 
 // CreateTableFor renders one table for one target.
-func CreateTableFor(t *schema.Table, tgt Target) (string, error) {
+//
+// enums is the schema's declared labels, and it is a PARAMETER because an enum
+// column cannot be rendered without them: MySQL's ENUM names its values in the
+// COLUMN definition. Nothing supplied them for a long time, so Check accepted a
+// model with an enum and Create then refused it — a check that says a model
+// ports and a generator that says it does not.
+func CreateTableFor(t *schema.Table, tgt Target, enums map[string]*schema.Enum) (string, error) {
 	var b strings.Builder
 	b.WriteString("CREATE TABLE " + Ident(t.Name) + " (\n")
 	parts := make([]string, 0, len(t.Columns)+2)
 	for _, c := range t.Columns {
-		def, err := ColumnDefFor(t.Name, c, tgt)
+		def, err := ColumnDefFor(t.Name, c, tgt, enums)
 		if err != nil {
 			return "", err
 		}
@@ -107,13 +126,14 @@ func CreateTableFor(t *schema.Table, tgt Target) (string, error) {
 }
 
 // ColumnDef renders one column for MySQL.
-func ColumnDef(table string, c *schema.Column) (string, error) {
-	return ColumnDefFor(table, c, MySQL)
+func ColumnDef(table string, c *schema.Column, enums map[string]*schema.Enum) (string, error) {
+	return ColumnDefFor(table, c, MySQL, enums)
 }
 
 // ColumnDefFor renders one column for one target.
-func ColumnDefFor(table string, c *schema.Column, tgt Target) (string, error) {
-	ty, err := TypeSQL(table, c)
+func ColumnDefFor(table string, c *schema.Column, tgt Target,
+	enums map[string]*schema.Enum) (string, error) {
+	ty, err := typeOf(table, c, enums)
 	if err != nil {
 		return "", err
 	}
@@ -171,6 +191,23 @@ func checkExpr(ck *schema.Check) string {
 		b.WriteString(" = 1")
 	}
 	return b.String()
+}
+
+// typeOf is TypeSQL with the enum labels to hand.
+//
+// A storm enum becomes a NATIVE MySQL ENUM, which names its values in the
+// column definition — so the labels are needed here and TypeSQL, which has no
+// schema, refuses by design.
+func typeOf(table string, c *schema.Column, enums map[string]*schema.Enum) (string, error) {
+	if c.Type.Enum {
+		e := enums[c.Type.Name]
+		if e == nil {
+			return "", fmt.Errorf("myddl: %s.%s is an enum and %s is not declared in the schema",
+				table, c.Name, c.Type.Name)
+		}
+		return TypeEnum(e), nil
+	}
+	return TypeSQL(table, c)
 }
 
 // TypeSQL maps a storm type to MySQL, or says why it cannot.
