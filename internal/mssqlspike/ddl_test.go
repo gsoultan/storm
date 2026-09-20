@@ -202,5 +202,12 @@ func open(t *testing.T) *sql.DB {
 	if err := db.PingContext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// The server starts empty in CI. Everything here runs in whatever database
+	// the DSN names — master by default — so this only has to exist for the
+	// driver tests next door, which name it explicitly.
+	if _, err := db.ExecContext(context.Background(),
+		"IF DB_ID('storm') IS NULL CREATE DATABASE storm"); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }
