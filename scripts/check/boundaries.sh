@@ -55,7 +55,12 @@ echo "== core packages are stdlib-only =="
 # rather than a host, and the gate reported the standard library as a
 # third-party dependency.
 outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/storm' | grep -E '^[^/]+\.[^/]+/'; }
-for p in ./schema ./compile/pgddl ./compile/pgsql ./codegen; do
+# The list is every package the rule names, not every package that had one when
+# the rule was written: compile/mysql and the two M10 packages are core by the
+# same argument, and leaving a new back end off is how the rule quietly stops
+# applying to the half of compile/ that grew after it.
+for p in ./schema ./compile/pgddl ./compile/pgsql ./compile/mysql ./compile/mariadb \
+         ./compile/myddl ./compile/mssql ./compile/msddl ./codegen; do
   if outsiders "$p" | grep -q .; then
     note "$p has a third-party dependency:"
     outsiders "$p" | sed 's/^/    /'

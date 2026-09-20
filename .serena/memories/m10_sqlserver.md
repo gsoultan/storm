@@ -55,6 +55,54 @@ image. M9's twelve defects were every one of them found by executing against a
 real server on each change ([[production_readiness]] §P6.7); that loop is slower
 here, and the estimate has to carry it.
 
+## The lowering landed 2026-09-20, and it EXECUTES
+
+`compile/mssql` and `compile/msddl`, gated by `scripts/check/mssql.sh` — the DDL
+applies and every statement the lowering can produce PREPAREs and EXECUTEs. Run
+BEFORE the driver exists, on purpose: the SQL is the half a borrowed client can
+prove, and proving it after writing a driver against untested SQL is the order
+M9 showed is expensive ([[production_readiness]] §P6.7).
+
+### Four things the seam could not say, and a fifth it got wrong
+
+- `runtime.Placeholder.Prefix` — `@1` is a syntax error because a T-SQL
+  parameter name is an identifier. `@p1` is the name.
+- `runtime.Lowering.RowCmpExpand` — no row constructor, so a keyset comparison
+  expands to the OR-chain. Legal only because names are reusable.
+- `runtime.Lowering.OrderFallback` — `OFFSET/FETCH` is a clause OF `ORDER BY`,
+  so a capped read with no ordering is a syntax error.
+- `runtime.SpliceSectionsOutput` — `OUTPUT` is POSITIONAL, between the
+  assignments and the predicate. `out` goes before the LAST section, which is
+  correct for UPDATE, DELETE and the empty-predicate cases alike.
+- **`takesArg` tested the last byte against the set `{$, ?}`** instead of asking
+  the carrier. Every SQL Server predicate came out as a bare `@` binding
+  nothing. The third dialect is what found the PostgreSQL assumption two
+  dialects had shared.
+
+### What the live gate caught that a golden test could not
+
+The fixed-text statements — top-N, recursion, a union's cap — never reach the
+splicer, so nothing numbers them. compile/pgsql writes `$1` and `$2` there for
+exactly this reason and the first draft left the bare sigil. Every one came back
+`Must declare the scalar variable "@"`. `mssql.Param(n)` is the fix.
+
+### Capabilities that UNDO M9 refusals
+
+Filtered indexes (so soft delete's live-scoped unique ports), covering indexes,
+`GROUPING SETS`/`CUBE`/`GROUPING()`, a server-side uuid default (`NEWID()`, so
+keys are NOT client-side here), and a declared parameter reused across union
+branches. The full table is in `docs/DIALECTS.md`.
+
+One translation rather than a refusal: `UNIQUE` treats NULLs as EQUAL here, so a
+nullable unique becomes a FILTERED index — `WHERE col IS NOT NULL` indexes
+exactly the rows PostgreSQL's constrained. `NULLS NOT DISTINCT` is therefore
+this server's plain form, and the one MySQL refuses.
+
+### What remains
+
+`runtime/msdrv` (TDS), `runtime/msdec` (the third decoder family — ADR-0007),
+the codegen wiring that needs both, and `MERGE` for upsert.
+
 ## Re-running it
 
     container run -d --name storm-mssql -e ACCEPT_EULA=1 \
