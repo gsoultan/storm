@@ -426,7 +426,7 @@ and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 `TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a PostgreSQL identifier,
 placeholder or output clause reaches MySQL SQL, verified both ways.
 
-| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **DONE** — lowering, TDS client, codegen, `MERGE` upsert and the bulk path, all executing |
+| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **DONE** — lowering, DDL, TDS client, codegen, upsert, bulk load, the CLI, the escape hatch and `storm import`. `migrate.Auto` needs a DDL seam inside `migrate/` and is a decision of its own |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |
 
