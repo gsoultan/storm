@@ -426,7 +426,7 @@ and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 `TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a PostgreSQL identifier,
 placeholder or output clause reaches MySQL SQL, verified both ways.
 
-| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **lowering, TDS client and codegen all landed and executing**; `MERGE` and bcp remain |
+| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **DONE** — lowering, TDS client, codegen, `MERGE` upsert and the bulk path, all executing |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |
 
@@ -488,9 +488,23 @@ could have seen — `count(*)` returns an INT here, four bytes where a Count() o
 type int64 decodes eight, so every count came back as **zero with no error** until
 `count_big` replaced it.
 
-What remains of M10 is `MERGE` for upsert and the bulk-load packet type: CopyFrom
-is emulated with batched multi-row INSERTs today and says so, which keeps the
-round-trip guarantee and not the wire format.
+**The last two pieces landed with it.** `CopyFrom` is now TDS's own bulk path —
+`INSERT BULK`, a packet of type 7 carrying COLMETADATA and one ROW token per
+row, one reply — so a thousand rows is one round trip AND goes to the storage
+engine rather than through the statement path. The column types are read from
+the server rather than inferred, because a bulk row carries no parameter
+declaration and so has no conversion step: a value written in the wrong width is
+read as the next column's bytes. Four defects came out of that, every one
+reported by the server against the wrong column.
+
+And the upsert is a `MERGE`, with the two things about it that are not optional:
+`WITH (HOLDLOCK)`, without which two concurrent merges of one key both find no
+row, both insert, and one gets a primary key violation — it works in every test
+and fails under load; and the terminating semicolon, whose absence is reported
+against the NEXT statement. The untargeted `DoNothing()` is refused by name:
+PostgreSQL's bare form fires on any unique index, a MERGE's match condition
+names columns, and watching the primary key instead would be a lie at the call
+site about which index was being watched.
 
 Two things make it cheaper than M9 was: the seam is **proven** rather than
 discovered mid-flight (`codegen` takes the dialect as a build-time parameter and

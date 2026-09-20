@@ -371,3 +371,45 @@ func TestColumnTypeDelegatesToTheDDL(t *testing.T) {
 		t.Error("ColumnType is not total")
 	}
 }
+
+// The upsert is a MERGE, and two things about it are not optional.
+func TestMergePunctuation(t *testing.T) {
+	p := mssql.Merge("users")
+
+	// HOLDLOCK on the target. Without it MERGE is not atomic against a
+	// concurrent MERGE of the same key: both read, both find nothing, both
+	// insert, and one gets a primary key violation. It works in every test and
+	// fails under load, which is the worst shape of defect available.
+	if !strings.Contains(p.Into, "WITH (HOLDLOCK)") {
+		t.Errorf("no lock hint on the target: %q", p.Into)
+	}
+	if !strings.Contains(p.Into, "[users]") {
+		t.Errorf("the target is not the table: %q", p.Into)
+	}
+	// The semicolon. MERGE is the one statement T-SQL requires to be
+	// terminated, and the error for omitting it names the next statement.
+	if p.End != ";" {
+		t.Errorf("End = %q, want a terminator", p.End)
+	}
+	// The source and the target are DIFFERENT aliases, or the match condition
+	// compares a column with itself and matches every row.
+	if p.Tgt == p.Src {
+		t.Errorf("the target and the source share an alias: %q", p.Tgt)
+	}
+	for _, f := range []string{p.Sep, p.AsSrc, p.OnLead, p.OnSep, p.Eq,
+		p.Matched, p.NotMatched, p.Values, p.Close} {
+		if f == "" {
+			t.Error("a piece of the punctuation is empty")
+		}
+	}
+
+	// The output clause is INSERTED for both branches: the row written, or the
+	// row AFTER the update, which is what an upsert's caller wants either way.
+	out := mssql.MergeOutput([]string{"id", "email"})
+	if !strings.Contains(out, "INSERTED.[id]") || !strings.Contains(out, "INSERTED.[email]") {
+		t.Errorf("MergeOutput = %q", out)
+	}
+	if mssql.MergeOutput(nil) != "" {
+		t.Error("an empty returning list produced a clause")
+	}
+}

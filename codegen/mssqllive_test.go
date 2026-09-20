@@ -96,6 +96,7 @@ func TestGeneratedMSSQLPackageRunsAgainstAServer(t *testing.T) {
 	for _, name := range []string{
 		"TestInsertSelectUpdateDelete", "TestInsertReturnsTheRow",
 		"TestSoftDeleteScopedUnique", "TestPagingAndKeyset", "TestLocking",
+		"TestUpsertIsAMerge",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)

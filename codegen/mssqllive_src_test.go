@@ -268,6 +268,82 @@ func TestPagingAndKeyset(t *testing.T) {
 	}
 }
 
+// The upsert, which is a MERGE here rather than a clause on the insert.
+//
+// The three things this proves, because each is a way MERGE goes wrong:
+// the second insert UPDATES rather than failing; it overwrites only the columns
+// the caller ASSIGNED; and DO NOTHING on a named index leaves the row exactly
+// as it was.
+func TestUpsertIsAMerge(t *testing.T) {
+	ctx := context.Background()
+
+	first := sd.Create()
+	first.SetID(id(50))
+	first.SetEmail("merge@example.com")
+	first.SetName("First")
+	first.SetRank(1)
+	if _, err := first.OnConflictEmail().Insert(ctx, ex); err != nil {
+		t.Fatalf("the first upsert: %v", err)
+	}
+
+	// Same email, new name, and RANK LEFT UNSET. An upsert that assigned every
+	// column would revert the rank to its zero value on the row that already
+	// exists — a silent data loss that reads as the upsert working.
+	second := sd.Create()
+	second.SetID(id(51))
+	second.SetEmail("merge@example.com")
+	second.SetName("Second")
+	if _, err := second.OnConflictEmail().Insert(ctx, ex); err != nil {
+		t.Fatalf("the second upsert: %v", err)
+	}
+
+	rows, err := sd.New().Where(sd.Email.Eq("merge@example.com")).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("the upsert inserted a second row: %d rows", len(rows))
+	}
+	if rows[0].Name != "Second" {
+		t.Errorf("the update branch did not run: name is %q", rows[0].Name)
+	}
+	if rows[0].Rank != 1 {
+		t.Errorf("an unassigned column was reverted: rank is %d, want 1", rows[0].Rank)
+	}
+
+	// DO NOTHING on the named index leaves the row alone.
+	third := sd.Create()
+	third.SetID(id(52))
+	third.SetEmail("merge@example.com")
+	third.SetName("Third")
+	// ErrConflict is the SUCCESS case of an idempotent insert: DO NOTHING
+	// suppresses the returned row, and a caller that treats "no row" as a
+	// failure retries forever.
+	if _, err := third.OnConflictEmail().DoNothing().Insert(ctx, ex); err != nil &&
+		!errors.Is(err, runtime.ErrConflict) {
+		t.Fatalf("the do-nothing upsert: %v", err)
+	}
+	rows, err = sd.New().Where(sd.Email.Eq("merge@example.com")).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Name != "Second" {
+		t.Errorf("DO NOTHING changed the row: %+v", rows)
+	}
+
+	// The bare form has no MERGE spelling and says so by name rather than
+	// quietly watching the primary key instead.
+	bare := sd.Create()
+	bare.SetID(id(53))
+	bare.SetEmail("merge@example.com")
+	bare.SetName("Bare")
+	if _, err := bare.DoNothing().Insert(ctx, ex); !errors.Is(err, sd.ErrUpsertNeedsTarget) {
+		t.Errorf("an untargeted DO NOTHING returned %v, want ErrUpsertNeedsTarget", err)
+	}
+
+	_ = sd.Delete(ctx, ex, id(50))
+}
+
 // Row locks, which are a TABLE HINT here rather than a trailing clause — so
 // they change the statement's PREFIX, which is the one place the seam had no
 // room for them before M10.
