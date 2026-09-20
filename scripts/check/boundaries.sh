@@ -93,6 +93,20 @@ before=$(cat examples/blog/store/*.gen.go examples/blog/store/*/*.gen.go 2>/dev/
 go run ./examples/blog/gen >/dev/null 2>&1
 stale "$before" "$(cat examples/blog/store/*.gen.go examples/blog/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./examples/blog/gen"
 
+# examples/orders is NOT in the list above, because regenerating it needs a
+# server and this script needs none. What it does not need a server for is the
+# question that matters: does the code checked in still COMPILE against the
+# runtime it is checked in beside? CI regenerates before it builds, so CI has
+# never once compiled the committed snapshot — and at v1.0.0 the snapshot had
+# been dead for two releases (`runtime.MaskKey` became a named type; the join
+# loaders moved a field behind `.Row`). Anyone cloning the repository and
+# building the worked example — the on-ramp the README points at — got six
+# type errors. The same shape as the vet gap above, one directory over.
+echo "== the committed example compiles, without regenerating it =="
+if ! (cd examples/orders && go build ./... 2>&1 | sed 's/^/    /'); then
+  note "examples/orders does not build as committed — regenerate it (make example) and commit the result"
+fi
+
 # Minimal version selection resolves an adopter's build to the HIGHEST
 # requirement in the graph, so a module here that asks for an OLDER version of
 # something the root also requires is a module whose tests run a dependency the

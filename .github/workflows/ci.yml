@@ -106,6 +106,16 @@ jobs:
         run: |
           go mod tidy
           go run ../../cmd/storm generate store
+          # Regenerating BEFORE building is why the committed snapshot was
+          # allowed to die: CI never compiled what is actually in the tree, and
+          # scripts/check/boundaries.sh (which does, now) needs no server while
+          # this step does. Both halves are needed — that check catches a
+          # snapshot that no longer compiles, this one catches a snapshot that
+          # compiles and is still not what the generator emits today.
+          git diff --exit-code -- store || {
+            echo "::error::examples/orders/store is stale — run 'make example' and commit"
+            exit 1
+          }
           # vet, because this is the only module in the repository that holds a
           # generated shape assertion and the root `go vet ./...` cannot reach
           # it. That gap let storm emit code failing vet from v0.3.0 to v0.6.2.

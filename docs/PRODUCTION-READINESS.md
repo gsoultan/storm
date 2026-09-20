@@ -618,6 +618,35 @@ end-to-end's model is part of its coverage rather than scaffolding.
 
 ---
 
+## P7 — The artifact CI rebuilds is not the artifact an adopter gets — **CLOSED 2026-09-20**
+
+Found while running the gates for the M10 estimate, at v1.0.0, in the worked
+example the README points newcomers at. `examples/orders/store` — 1,178 lines of
+committed generated code — **did not compile**. `runtime.MaskKey` had become a
+named type and the join loaders had moved a field behind `.Row`; the snapshot in
+git still spelled both the old way. It had been dead for two releases.
+
+Nothing was wrong with the generator. `make example` and the CI step both
+**regenerate before they build**, so the thing they compiled was always freshly
+emitted and always correct. Neither had ever compiled what is in the tree. The
+one reader who does — someone who clones storm and builds the example — is the
+only one the snapshot exists for.
+
+This is P4's shape (only an outsider could see it) and the vet gap's shape (the
+one module `go vet ./...` cannot reach) at the same address. Closed with the two
+halves, because either alone leaves the door open:
+
+| Gate | Catches | Needs a server |
+|---|---|---|
+| `scripts/check/boundaries.sh` — "the committed example compiles, without regenerating it" | a snapshot that no longer builds against the runtime beside it | no |
+| CI's `git diff --exit-code -- store` after `storm generate` | a snapshot that still builds but is not what the generator emits today | yes |
+
+**The rule:** if a build step regenerates an artifact before using it, no one is
+testing the copy in the repository. Either delete it or gate it as it stands.
+
+
+---
+
 ## What is already load-bearing (do not re-litigate)
 
 Injection is structural and fuzzed (~80M executions, one real fail-open found
