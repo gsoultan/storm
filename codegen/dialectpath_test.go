@@ -19,9 +19,17 @@ import (
 // work keeps re-teaching: when a type gains a field that must be initialised,
 // the constructors that already existed do not gain it with it.
 //
-// So: setDialect resolves one and inheritDialect copies one, and this fails if
-// anywhere else touches either half — which is how the fifth site was found,
-// a scratch generator that copied the decoders and left the lowering zero.
+// It happened AGAIN, with a third field. The same hand-built generator was
+// missing the SCHEMA, so liveIn was asked for each union branch's soft-delete
+// predicate against nil and returned "" for all of them: a declared union
+// returned the rows it had deleted, on every dialect. Same cause, one field
+// along — which is the argument for checking all three rather than the two
+// that had already bitten.
+//
+// So: setDialect resolves them and inheritDialect copies them, and this fails
+// if anywhere else touches any of the three — which is how the fifth site was
+// found, a scratch generator that copied the decoders and left the lowering
+// zero.
 func TestOnlySetDialectResolvesADialect(t *testing.T) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -44,7 +52,7 @@ func TestOnlySetDialectResolvesADialect(t *testing.T) {
 			}
 			for _, lhs := range as.Lhs {
 				sel, ok := lhs.(*ast.SelectorExpr)
-				if !ok || (sel.Sel.Name != "dec" && sel.Sel.Name != "lw") {
+				if !ok || (sel.Sel.Name != "dec" && sel.Sel.Name != "lw" && sel.Sel.Name != "s") {
 					continue
 				}
 				pos := fset.Position(as.Pos())
