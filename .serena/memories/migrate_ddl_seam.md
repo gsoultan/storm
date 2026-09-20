@@ -64,6 +64,30 @@ named `COLUMN`; an `ALTER COLUMN` omitting `NULL`/`NOT NULL` takes
 `ANSI_NULL_DFLT_ON`'s answer; a second `DEFAULT` constraint is 1781; `DROP INDEX`
 without `ON` does not parse). P6.7 again — see [[production_readiness]].
 
+## What the first live run found
+
+The gate paid for itself on its first CI run, which is the argument for
+writing it before the code is believed rather than after.
+
+**`EXEC()` will not take a function call.** Its argument may only be variables
+and string literals concatenated, and `QUOTENAME` is a function — so the
+dropped-default statement did not parse. The variable holds the WHOLE statement
+now and the quoting happens in the `SELECT`. Four of nine alters had already
+applied; the other five were the same statement re-emitted, because a failed
+apply leaves the change outstanding.
+
+**The gate reported five failures and not one word about why.** `grep` kept the
+`--- FAIL` header and dropped the statement and the server's error printed under
+it. It uses `-A` now. Same lesson as P7, one level down: a gate that cannot say
+what broke costs a CI cycle every time it fires.
+
+The live run also caught a **wording regression in PostgreSQL** — the
+partitioning refusal lost its text when the seam refactor rebuilt `diffTable`.
+An audit comparing every string literal before and after the rewrite found it
+and confirmed nothing else had moved.
+
+Second run: 9 of 9 alters applied, both round trips empty.
+
 ## Found while building it
 
 **A new table's indexes were dropped on the floor** by any back end whose
@@ -72,6 +96,21 @@ emits them in a second pass over the whole schema that a diff building one table
 at a time never reaches. Now pinned for both dialects by one test. This is the
 fourth defect in already-shipping code found by adding a dialect rather than by
 testing the one it was in.
+
+## The package split it forced
+
+`tool/mstool` exists because of a coverage floor. `tool` was one package split
+across two CI jobs — PostgreSQL and no SQL Server in one, SQL Server and no
+PostgreSQL in the other — so no floor either job could measure meant anything,
+and `scripts/check/coverage.sh` had nudged it down twice with a note saying to
+MOVE THE CODE next time. This change drifted it again (64.4 against 65), so the
+code moved: `storm import`, the `storm.SQL` validator and the dialer, floored in
+`scripts/check/mssql.sh` where they run. `tool` went back to 70 and measures
+77.7; `mstool` measures 71.6.
+
+The general rule, worth reusing: when a floor keeps drifting, the question is
+which half of the package the drifting code belongs to, not what the number
+should be.
 
 ## Still open
 

@@ -142,10 +142,9 @@ cov ./schema/mssql 75
 # Splitting the code split the measurement, and each half is now floored where
 # it actually runs.
 #
-# Deliberately loose to start with. The number this prints is the first honest
-# measurement of it; tighten to just under that once it has been seen, rather
-# than guessing high and discovering the guess in somebody else's build.
-cov ./tool/mstool 55
+# 68 because the first honest measurement of it was 71.6, taken here. The gap
+# is slack for a live test that varies, not headroom to spend.
+cov ./tool/mstool 68
 
 if [ "$fail" -eq 0 ]; then
   echo "OK: storm's SQL Server DDL applies, and every statement it lowers runs"
