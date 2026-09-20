@@ -62,13 +62,25 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	ctx := context.Background()
+	// The server starts empty in CI, so the database has to exist before
+	// anything can open it. Two statements, and it removes an out-of-band step
+	// whose absence reads as a client defect.
+	master, err := msdrv.Open(ctx, msdrv.Config{
+		Addr: addr, User: "sa", Password: os.Getenv("STORM_MSSQL_PASSWORD"),
+		Database: "master", TLS: msdrv.TLSDisabled,
+	})
+	must(err)
+	_, err = master.Exec(ctx, "IF DB_ID('storm') IS NULL CREATE DATABASE storm", nil)
+	must(err)
+	master.Close()
+
 	// Through the POOL, because a pool is what an adopter passes and it is the
 	// Executor whose concurrency and cancellation the generated code inherits.
-	c, err := msdrv.NewPool(ctx, msdrv.Config{
+	c, err2 := msdrv.NewPool(ctx, msdrv.Config{
 		Addr: addr, User: "sa", Password: os.Getenv("STORM_MSSQL_PASSWORD"),
 		Database: "storm", TLS: msdrv.TLSDisabled,
 	})
-	must(err)
+	must(err2)
 	defer c.Close()
 	ex = c
 

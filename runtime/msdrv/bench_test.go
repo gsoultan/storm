@@ -72,6 +72,7 @@ func benchCfg(b *testing.B) msdrv.Config {
 	if a == "" {
 		b.Skip("STORM_MSSQL_ADDR unset")
 	}
+	ensureDatabase(b, a)
 	return msdrv.Config{
 		Addr: a, User: "sa", Password: os.Getenv("STORM_MSSQL_PASSWORD"),
 		Database: "storm", TLS: msdrv.TLSDisabled,

@@ -28,6 +28,7 @@ func cfg(t *testing.T) msdrv.Config {
 	if a == "" {
 		t.Skip("STORM_MSSQL_ADDR unset")
 	}
+	ensureDatabase(t, a)
 	return msdrv.Config{
 		Addr: a, User: "sa", Password: os.Getenv("STORM_MSSQL_PASSWORD"),
 		Database: "storm", AppName: "storm-test",
@@ -342,4 +343,27 @@ func count(t *testing.T, p *msdrv.Pool, q string) int64 {
 	}
 	v := rows.RawValues()[0]
 	return int64(int32(binary.LittleEndian.Uint32(v)))
+}
+
+// ensureDatabase creates the test database if the server has not got one.
+//
+// In CI the SQL Server service starts empty, so every test here would fail with
+// "Cannot open database" — a green-looking configuration problem that reads as
+// a client defect. Creating it is two statements and removes the out-of-band
+// step entirely.
+func ensureDatabase(t testing.TB, addr string) {
+	t.Helper()
+	c, err := msdrv.Open(context.Background(), msdrv.Config{
+		Addr: addr, User: "sa", Password: os.Getenv("STORM_MSSQL_PASSWORD"),
+		Database: "master", TLS: msdrv.TLSDisabled,
+	})
+	if err != nil {
+		t.Fatalf("connecting to master: %v", err)
+	}
+	defer c.Close()
+	// Its own batch: CREATE DATABASE cannot share one with anything else.
+	if _, err := c.Exec(context.Background(),
+		"IF DB_ID('storm') IS NULL CREATE DATABASE storm", nil); err != nil {
+		t.Fatalf("creating the storm database: %v", err)
+	}
 }
