@@ -70,12 +70,19 @@ the most favourable path the library offers. 200 rows × 8 columns:
 | `go-sql-driver/mysql` via `driver.Rows` | 8.07 | 99 |
 | `vitess.io/vitess/go/mysql` | 9.07 | 420 |
 | **`microsoft/go-mssqldb` via `driver.Stmt`** | **11.3** | **350** |
-| storm's own `runtime/mydrv` | **1.07** | **6** |
+| storm's own `runtime/mydrv` | 1.07 | 6 |
+| **storm's own `runtime/msdrv`** | **0.09** | **6.5** |
 
 Eleven allocations per row against storm's one. ADR-0007's argument applies
 with more force here than it did to MySQL, not less: the library boxes every
 column into a `driver.Value` before storm can see a byte, and there is no
 `RawValues` to ask for.
+
+**The last row is the answer, measured after the client was written.** 18
+allocations for a 200-row result — the Rows struct, its column list and its
+buffers, once — and nothing per row but a memmove. 125 times fewer than the
+library, and an order of magnitude better than the MySQL adapter, because TDS
+sends a result set as one framed stream where MySQL sends a packet per row.
 
 ## What that means for M10's estimate
 

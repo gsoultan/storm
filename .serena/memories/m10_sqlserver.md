@@ -98,10 +98,61 @@ nullable unique becomes a FILTERED index — `WHERE col IS NOT NULL` indexes
 exactly the rows PostgreSQL's constrained. `NULLS NOT DISTINCT` is therefore
 this server's plain form, and the one MySQL refuses.
 
+### The client landed too, and it beat the library by 125x
+
+`runtime/msdrv` — a TDS client, stdlib only — reads 200 rows of 8 columns in
+**18 allocations for the whole result**. 0.09 per row, against
+microsoft/go-mssqldb's 11.3 and `runtime/mydrv`'s 1.07.
+
+What it speaks: PRELOGIN with the TLS handshake INSIDE TDS packets; the
+protocol's default of encrypting the LOGIN PACKET ONLY (a client without that
+cannot log in to a stock SQL Server at all); LOGIN7; sp_executesql for named
+parameters and plain SQL batches for statements with none; ATTENTION for
+cancellation; the whole token stream. Batch is ONE round trip — an RPC request
+may carry several calls separated by a batch flag, which the MySQL wire cannot
+do. CopyFrom is emulated with batched multi-row INSERTs and says so.
+
+Four wire defects, each worth a debugging session:
+
+- `fill()` read the "last packet" flag without checking whether a MESSAGE was in
+  progress. The flag is left set by the previous reply, so the first read of
+  every new one reported the end of a message that had already finished — the
+  login "succeeded" without reading the server's answer.
+- LOGIN7's option flags are bit MASKS, and the low bits of the first byte
+  declare byte order and character set. Setting them by ordinal announces a
+  big-endian EBCDIC client and the server hangs up with no message.
+- Every request after a BEGIN must echo the transaction DESCRIPTOR from an
+  ENVCHANGE. Zero works until the first transaction and then fails everything
+  inside it.
+- A sub-slice of the packet buffer is valid only until the next PACKET, not the
+  next row. A row with a wide column came back as fragments of its own tail.
+  Values are copied out and the slices rebuilt AFTER the row completes.
+
+And the batch needed a TRAILING batch flag after the last call, not just
+between calls — without it the read blocks on a reply that is never sent.
+
+### The codegen defect only a live run could find
+
+`count(*)` returns an INT on this server — four bytes, where a Count() of type
+int64 decodes eight — so **every count came back as zero with no error**.
+`count_big` is the fix. Fourth time P6.7's rule has been literally true.
+
+### The text hook
+
+The one assignment in a generated scanner that is not a decoder CALL is
+`sl.Str(rv[i])`, so a family whose strings are UTF-16 cannot be served by
+renaming a function. `decoders.text` is the hook. Without it every string in the
+database reads back as its own interleaved-null bytes: no error, no failure,
+mojibake.
+
 ### What remains
 
-`runtime/msdrv` (TDS), `runtime/msdec` (the third decoder family — ADR-0007),
-the codegen wiring that needs both, and `MERGE` for upsert.
+`MERGE` for upsert, and the TDS bulk-load packet type to replace the emulated
+CopyFrom. Everything else in M10 is landed and gated:
+`scripts/check/mssql.sh` (39 statements), `codegen/mssqllive_test.go` (a
+generated package, five tests, refusing to pass if any SKIPPED), coverage floors
+for both runtime packages, and CI against the real
+`mcr.microsoft.com/mssql/server`.
 
 ## Re-running it
 
