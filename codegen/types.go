@@ -309,6 +309,14 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 	}
 	if k == kindText {
 		if c.NotNull {
+			// The one assignment that is not a decoder CALL, so a family whose
+			// strings are not UTF-8 cannot be served by a rename. SQL Server's
+			// nvarchar is UTF-16, and without the hook the slab copies the
+			// interleaved-null bytes verbatim — which compiles, runs, and
+			// produces mojibake for every row in the database.
+			if d.text != nil {
+				return d.text(f, i)
+			}
 			return fmt.Sprintf("r.%s = sl.Str(rv[%d])", f, i)
 		}
 		return fmt.Sprintf("r.%s = "+d.q("NullText")+"(rv[%d], sl)", f, i)

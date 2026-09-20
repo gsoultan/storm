@@ -274,7 +274,11 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	}
 	g.p("}")
 	g.p("")
-	open_, sep, mid, close_ := g.lw.InsertParts()
+	// The RETURNING list goes to InsertParts, because a back end whose
+	// returning clause is POSITIONAL carries it in Mid — the punctuation
+	// between the column list and VALUES, which is where SQL Server's OUTPUT
+	// belongs. The other two ignore the argument and keep a suffix.
+	open_, sep, mid, close_ := g.lw.InsertParts(allReadable(g.t))
 	g.p("// insParts and insPlaceholder come from the back end at build time; the")
 	g.p("// runtime splicer chooses none of them.")
 	g.p("var insParts = runtime.InsertParts{Open: %q, Sep: %q, Mid: %q, Close: %q}", open_, sep, mid, close_)
@@ -287,7 +291,13 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 		g.p("var insPlaceholder = %s", g.lw.PlaceholderExpr)
 	}
 	g.p("const insPrefix = %q", g.lw.InsertPrefix(g.t.Name))
-	g.p("const insReturning = %q", g.lw.ReturningClause(allReadable(g.t)))
+	// Empty for a positional back end: the clause is already in insParts.Mid,
+	// and appending it again would spell the statement twice.
+	insRet := g.lw.ReturningClause(allReadable(g.t))
+	if g.lw.ReturningPositional {
+		insRet = ""
+	}
+	g.p("const insReturning = %q", insRet)
 	g.p("")
 	g.p("var insCache = runtime.NewMaskCache()")
 	g.p("")
@@ -539,8 +549,7 @@ func (g *gen) upsertTargets(ins []colInfo) {
 		// simply has no upsert. A caller who wanted one gets an
 		// undefined-method compile error naming exactly what is missing, which
 		// is where a capability the target lacks belongs.
-		g.p("// No upsert for the %s target: its conflict handling names no index,", g.lw.name)
-		g.p("// so a method named after one would watch something else.")
+		g.p("// No upsert for the %s target: %s.", g.lw.name, g.lw.upsertSkipped)
 		g.p("")
 		return
 	}
@@ -1142,10 +1151,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 		g.p("\tif ret && k.Expr != 0 {")
 		g.p("\t\tsuffix = updReturning")
 		g.p("\t}")
-		tail = "suffix"
-		if g.lw.PlaceholderExpr != "" {
-			tail += ", " + g.lw.PlaceholderExpr
-		}
+		tail = g.spliceTailWith("suffix")
 	}
 	g.p("\treturn cache.Put(k, %s(updatePrefix, []runtime.Section{", g.spliceFn())
 	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)

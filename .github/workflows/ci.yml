@@ -83,6 +83,11 @@ jobs:
       # entirely and "the tests pass" would mean the two dialects that already
       # had a server.
       STORM_MSSQL_DSN: sqlserver://sa:Storm%21Passw0rd@127.0.0.1:1433?encrypt=disable
+      # runtime/msdrv and the generated-package live test read these. Without
+      # them the whole TDS client skips, and "the tests pass" would mean the
+      # half of M10 that needs no server.
+      STORM_MSSQL_ADDR: 127.0.0.1:1433
+      STORM_MSSQL_PASSWORD: Storm!Passw0rd
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

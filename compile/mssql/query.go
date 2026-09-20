@@ -56,7 +56,13 @@ func SelectPrefix(table string, cols []string) string {
 }
 
 // CountPrefix is everything before the WHERE clause of a count.
-func CountPrefix(table string) string { return "SELECT count(*) FROM " + Ident(table) }
+//
+// count_big, not count. SQL Server's count() returns an INT — four bytes — and
+// two things follow from that: a table past two billion rows makes it RAISE
+// rather than return, and the four bytes are not the eight a Count() of type
+// int64 decodes, so the count comes back as zero with no error at all. The
+// other two targets return a bigint from count() and needed no such care.
+func CountPrefix(table string) string { return "SELECT count_big(*) FROM " + Ident(table) }
 
 // ExistsPrefix projects nothing and caps at one row.
 //

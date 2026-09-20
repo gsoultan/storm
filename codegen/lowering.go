@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"github.com/gsoultan/storm/compile/mariadb"
+	"github.com/gsoultan/storm/compile/mssql"
 	"github.com/gsoultan/storm/compile/mysql"
 	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
@@ -114,9 +115,13 @@ type lowering struct {
 	RestoreSet      func(table, col string) string
 	LiveFor         func(alias, col string) string
 
-	InsertStmt      func(table string, cols, returning []string) (string, error)
-	InsertPrefix    func(string) string
-	InsertParts     func() (open, sep, mid, close string)
+	InsertStmt   func(table string, cols, returning []string) (string, error)
+	InsertPrefix func(string) string
+	// InsertParts takes the RETURNING list, because a back end whose returning
+	// clause is POSITIONAL carries it in this punctuation rather than in a
+	// suffix. SQL Server's OUTPUT goes between the column list and VALUES, and
+	// at the end it is a syntax error.
+	InsertParts     func(returning []string) (open, sep, mid, close string)
 	ReturningClause func([]string) string
 	UpdatePrefix    func(string) string
 	DeletePrefix    func(string) string
@@ -133,6 +138,37 @@ type lowering struct {
 	// PostgreSQL — so a PostgreSQL package does not mention it and stays
 	// byte-identical.
 	PlaceholderExpr string
+
+	// LockHint is the row lock written after the TABLE NAME rather than at the
+	// end of the statement, or nil where the lock is a suffix.
+	//
+	// SQL Server has no FOR UPDATE: the equivalent is `WITH (UPDLOCK, ROWLOCK)`
+	// attached to the table reference in FROM. Emitted only for a back end that
+	// has one, so PostgreSQL's and MySQL's generated packages are unchanged.
+	LockHint func(int) string
+
+	// PagingOffsetFirst says the paging arguments bind offset before limit,
+	// because the suffix names them in that order. `OFFSET m ROWS FETCH NEXT n
+	// ROWS ONLY` is the reverse of `LIMIT n OFFSET m`, and the binder has to be
+	// told rather than guess from the text.
+	PagingOffsetFirst bool
+
+	// ReturningPositional says the returning clause is not a trailing suffix,
+	// so the write splicer has to be handed it separately.
+	ReturningPositional bool
+
+	// RowCmpExpand and OrderFallback are carried through to the generated
+	// runtime.Lowering. Both are empty or false for the back ends that need
+	// neither, so their output does not mention them.
+	RowCmpExpand  bool
+	OrderFallback string
+
+	// upsertSkipped is why this back end generates no upsert, in the generated
+	// package's own words. MySQL's conflict handling names no index; SQL
+	// Server's MERGE names one but is a different STATEMENT rather than a
+	// clause, so the two are skipped for different reasons and the comment
+	// should say which.
+	upsertSkipped string
 
 	// Upsert is nil for a back end whose conflict handling is not the
 	// inference form. MySQL's ON DUPLICATE KEY UPDATE names no target at all —
@@ -165,6 +201,8 @@ func loweringFor(d Dialect) lowering {
 		return mysqlLowering()
 	case DialectMariaDB:
 		return mariadbLowering()
+	case DialectMSSQL:
+		return mssqlLowering()
 	}
 	return postgresLowering()
 }
@@ -287,7 +325,7 @@ func postgresLowering() lowering {
 			return pgsql.InsertStmt(t, c, r), nil
 		},
 		InsertPrefix:    pgsql.InsertPrefix,
-		InsertParts:     pgsql.InsertParts,
+		InsertParts:     func([]string) (string, string, string, string) { return pgsql.InsertParts() },
 		ReturningClause: pgsql.ReturningClause,
 		UpdatePrefix:    pgsql.UpdatePrefix,
 		DeletePrefix:    pgsql.DeletePrefix,
@@ -400,7 +438,7 @@ func mysqlLowering() lowering {
 		LiveFor:         mysql.LiveFor,
 		InsertStmt:      mysql.InsertStmt,
 		InsertPrefix:    mysql.InsertPrefix,
-		InsertParts:     mysql.InsertParts,
+		InsertParts:     func([]string) (string, string, string, string) { return mysql.InsertParts() },
 		// MySQL 8 cannot return the row it wrote. An empty clause here is not a
 		// lowering — InsertStmt refuses a non-empty returning list outright, so
 		// this is only ever asked for the empty case.
@@ -417,6 +455,7 @@ func mysqlLowering() lowering {
 		Placeholder:     mysql.Placeholder,
 		PlaceholderExpr: "runtime.MySQLPlaceholder",
 		Upsert:          nil, // ON DUPLICATE KEY UPDATE names no target; see the field's note
+		upsertSkipped:   "its conflict handling names no index, so a method named after one would watch something else",
 		noReturning:     true,
 		// Standard SQL in shape, but every one of them renders identifiers and
 		// placeholders through compile/pgsql today. Refused rather than
@@ -433,6 +472,11 @@ func mysqlLowering() lowering {
 // support should see no diff at all. Only a back end that needs a different
 // placeholder names the four-argument form.
 func (g *gen) spliceFn() string {
+	if g.lw.ReturningPositional {
+		// The clause is not a suffix on this target: it sits between the
+		// assignments and the predicate, and at the end it is a syntax error.
+		return "runtime.SpliceSectionsOutput"
+	}
 	if g.lw.PlaceholderExpr == "" {
 		return "runtime.SpliceSections"
 	}
@@ -440,8 +484,171 @@ func (g *gen) spliceFn() string {
 }
 
 func (g *gen) spliceTail() string {
+	if g.lw.ReturningPositional {
+		// out, suffix, placeholder. A statement with nothing to hand back
+		// passes an empty clause rather than a different function, so the two
+		// shapes cannot drift.
+		return `"", "", ` + g.lw.PlaceholderExpr
+	}
 	if g.lw.PlaceholderExpr == "" {
 		return `""`
 	}
 	return `"", ` + g.lw.PlaceholderExpr
 }
+
+// spliceTailWith is spliceTail for a statement that DOES hand something back,
+// naming the expression that holds the clause.
+func (g *gen) spliceTailWith(clause string) string {
+	if g.lw.ReturningPositional {
+		return clause + `, "", ` + g.lw.PlaceholderExpr
+	}
+	if g.lw.PlaceholderExpr == "" {
+		return clause
+	}
+	return clause + ", " + g.lw.PlaceholderExpr
+}
+
+// mssqlLowering assigns the compile/mssql functions across.
+//
+// A THIRD implementation, and the first that is not a variation on either of
+// the others. What it needed from the seam that M9 did not is the four fields
+// above — a lock that is a table hint, paging operands in the other order, a
+// returning clause that is positional, and a row comparison with no
+// constructor to write. Each is a construct SQL Server has no other spelling
+// for, so each is the difference between a generated package that runs and one
+// that is a syntax error.
+func mssqlLowering() lowering {
+	return lowering{
+		name:  "mssql",
+		Ident: mssql.Ident,
+		Frag: func(op, ident string, c *schema.Column) (string, string, bool) {
+			switch op {
+			case "In", "NotIn":
+				// The OPENJSON column must be declared with the SAME type as
+				// the column it is matched against, or the comparison puts an
+				// implicit conversion on the indexed side and the seek becomes
+				// a scan. This is why Frag takes a column here and not a name.
+				if c == nil {
+					return "", "", false
+				}
+				a, b := mssql.InFrag(ident, mssql.ColumnType(c), op == "NotIn")
+				return a, b, true
+			}
+			return mssql.Frag(op, ident)
+		},
+		SelectPrefix:      mssql.SelectPrefix,
+		CountPrefix:       mssql.CountPrefix,
+		ExistsPrefix:      mssql.ExistsPrefix,
+		ExistsSuffix:      mssql.ExistsSuffix,
+		LimitOffsetSuffix: mssql.LimitOffsetSuffix,
+		DefaultOrderBy:    mssql.DefaultOrderBy,
+		OrderTerm:         mssql.OrderTerm,
+		OrderLead:         mssql.OrderLead,
+		OrderSep:          mssql.OrderSep,
+		NDirections:       mssql.NDirections,
+		TupleOpen:         mssql.TupleOpen,
+		TupleSep:          mssql.TupleSep,
+		TupleClose:        mssql.TupleClose,
+		RowCmpOp:          mssql.RowCmpOp,
+		RowCmpExpand:      mssql.RowCmpExpand,
+		OrderFallback:     mssql.OrderFallback,
+		PagingOffsetFirst: mssql.PagingOffsetFirst,
+
+		NumLockModes: mssql.NumLockModes,
+		LockSuffix:   mssql.LockSuffix,
+		LockHint:     mssql.LockHint,
+		LockName:     pgsqlLockName,
+		LockDoc:      pgsqlLockDoc,
+		LockNotes:    mssql.LockNotes,
+
+		LockRefusedCounted: pgsql.LockRefusedCounted,
+		LockRefusedProbed:  pgsql.LockRefusedProbed,
+		LockRefusedGrouped: pgsql.LockRefusedGrouped,
+		LockRefusedJoined:  pgsql.LockRefusedJoined,
+
+		JoinSelect: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+			live func(table, alias string) string) (string, error) {
+			return mssql.JoinSelect(t, j, aggFor,
+				func(tb, al string) mssql.Live { return mssql.Live(live(tb, al)) })
+		},
+		JoinSuffix: mssql.JoinSuffix,
+		JoinDeclaredWhere: func(j *schema.Join, driving string) (string, error) {
+			return mssql.JoinDeclaredWhere(j, mssql.Live(driving))
+		},
+		UnionSelect: func(u *schema.Union, live func(string) string) (string, error) {
+			return mssql.UnionSelect(u, func(t string) mssql.Live { return mssql.Live(live(t)) })
+		},
+		UnionSuffix: func(u *schema.Union) (string, error) {
+			if err := mssql.UnionOrderRefused(u); err != nil {
+				return "", err
+			}
+			return mssql.UnionSuffix(u), nil
+		},
+		AggregateSelect: mssql.AggregateSelect,
+		AggregateSuffix: mssql.AggregateSuffix,
+
+		KeyType:           mssql.ColumnType,
+		RecursiveMaxDepth: mssql.MaxRecursionDepth,
+		// NEWID() is a server-side version 4 uuid, so unlike MySQL the key
+		// stays the database's job here: with a DEFAULT and an OUTPUT clause,
+		// an insert that names no key comes back carrying one.
+		KeysAreClientSide: false,
+
+		Recursive: func(t string, cols []string, key, parent, keyType string, dir int, live string) string {
+			return mssql.Recursive(t, cols, key, parent, keyType, dir, mssql.Live(live))
+		},
+		TopNWindow: func(t string, cols []string, key, keyType, live string) string {
+			return mssql.TopNWindow(t, cols, key, keyType, mssql.Live(live))
+		},
+		TopNLateral: func(t string, cols []string, key, keyType, live string) string {
+			return mssql.TopNLateral(t, cols, key, keyType, mssql.Live(live))
+		},
+		ExistsFrag: func(ct, fk, pt, pk, live string) string {
+			return mssql.ExistsFrag(ct, fk, pt, pk, mssql.Live(live))
+		},
+		NotExistsFrag: func(ct, fk, pt, pk, live string) string {
+			return mssql.NotExistsFrag(ct, fk, pt, pk, mssql.Live(live))
+		},
+		ExistsOpen: func(ct, fk, pt, pk, live string) string {
+			return mssql.ExistsOpen(ct, fk, pt, pk, mssql.Live(live))
+		},
+		NotExistsOpen: func(ct, fk, pt, pk, live string) string {
+			return mssql.NotExistsOpen(ct, fk, pt, pk, mssql.Live(live))
+		},
+
+		SoftDeleteWhere: mssql.SoftDeleteWhere,
+		SoftDeleteSet:   mssql.SoftDeleteSet,
+		RestoreSet:      mssql.RestoreSet,
+		LiveFor:         mssql.LiveFor,
+
+		InsertStmt:          mssql.InsertStmt,
+		InsertPrefix:        mssql.InsertPrefix,
+		InsertParts:         mssql.InsertParts,
+		ReturningClause:     mssql.ReturningClause,
+		ReturningPositional: mssql.ReturningPositional,
+		UpdatePrefix:        mssql.UpdatePrefix,
+		DeletePrefix:        mssql.DeletePrefix,
+		SetFrag:             mssql.SetFrag,
+		BumpFrag:            mssql.BumpFrag,
+		NowFrag:             mssql.NowFrag,
+		SetLead:             mssql.SetLead,
+		SetSep:              mssql.SetSep,
+		WhereLead:           mssql.WhereLead,
+		WhereSep:            mssql.WhereSep,
+		Placeholder:         mssql.Placeholder,
+		PlaceholderExpr:     "runtime.MSSQLPlaceholder",
+
+		// MERGE names a conflict target and would serve, but it is a different
+		// STATEMENT rather than a clause on the insert — a lowering of its own
+		// rather than a spelling, and not one this milestone writes.
+		Upsert:        nil,
+		upsertSkipped: "its MERGE is a statement of its own rather than a clause on the insert, so an upsert here is a lowering M10 has not written",
+	}
+}
+
+// The lock names and documentation are pgsql's, because the MODE numbering is
+// the generated Query's and not a back end's to choose — a mode is an index
+// into a statement-cache array, and renaming it per dialect would make the
+// same method mean different things.
+func pgsqlLockName(m int) string { return pgsql.LockName(pgsql.LockMode(m)) }
+func pgsqlLockDoc(m int) string  { return pgsql.LockDoc(pgsql.LockMode(m)) }

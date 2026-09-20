@@ -426,7 +426,7 @@ and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 `TestMySQLGeneratedPackageCarriesMySQLSQL` fails if a PostgreSQL identifier,
 placeholder or output clause reaches MySQL SQL, verified both ways.
 
-| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **lowering done and executing**; TDS client next |
+| M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **lowering, TDS client and codegen all landed and executing**; `MERGE` and bcp remain |
 | M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |
 
@@ -472,8 +472,25 @@ positional). A fifth was a latent PostgreSQL assumption the third dialect found:
 asking the carrier, so every SQL Server predicate came out as a bare sigil
 binding nothing.
 
-What remains of M10 is the TDS client, `runtime/msdec`, the codegen wiring that
-needs both, and `MERGE` for upsert.
+**The client landed the same day, and it is faster than the library.**
+`runtime/msdrv` is a TDS client — PRELOGIN with the TLS handshake inside it,
+login-only encryption, LOGIN7, sp_executesql for named parameters, ATTENTION for
+cancellation, and the whole token stream — and `runtime/msdec` is the third
+decoder family. It reads 200 rows of 8 columns in **18 allocations for the whole
+result**: 0.09 per row, against microsoft/go-mssqldb's 11.3 and `runtime/mydrv`'s
+1.07.
+
+`codegen` emits for it, and a generated package RUNS: insert, select, update and
+soft delete; the `OUTPUT` clause reading back what the server computed; paging
+and its reversed operands; a row lock as a table hint; and the live-scoped
+unique that MySQL refuses. One defect came out of running it that no golden test
+could have seen — `count(*)` returns an INT here, four bytes where a Count() of
+type int64 decodes eight, so every count came back as **zero with no error** until
+`count_big` replaced it.
+
+What remains of M10 is `MERGE` for upsert and the bulk-load packet type: CopyFrom
+is emulated with batched multi-row INSERTs today and says so, which keeps the
+round-trip guarantee and not the wire format.
 
 Two things make it cheaper than M9 was: the seam is **proven** rather than
 discovered mid-flight (`codegen` takes the dialect as a build-time parameter and

@@ -428,6 +428,18 @@ func (g *gen) compile() {
 	}
 	g.p("}")
 	g.p("")
+	if g.lw.LockHint != nil {
+		g.p("// lockHint is the row-lock TABLE HINT per mode, written after the")
+		g.p("// table name rather than at the end of the statement. T-SQL has no")
+		g.p("// FOR UPDATE, so the lock is part of the FROM clause and the suffix")
+		g.p("// above is empty for every mode.")
+		g.p("var lockHint = [%d]string{", g.lw.NumLockModes)
+		for m := 0; m < g.lw.NumLockModes; m++ {
+			g.p("\t%s,", lit(g.lw.LockHint(m)))
+		}
+		g.p("}")
+		g.p("")
+	}
 	g.p("// lockCaches holds one compiled-statement cache per (lock, offset)")
 	g.p("// pair. The lock is part of the STATEMENT, so it has to be part of the")
 	g.p("// key; a program that never locks never touches the locked entries and")
@@ -485,6 +497,17 @@ func (g *gen) compile() {
 		// were PostgreSQL's, turning every `?` into `$1` — a statement the
 		// server rejects with "Unknown column '$1'".
 		g.p("\tPlaceholder: %s,", g.lw.PlaceholderExpr)
+	}
+	if g.lw.RowCmpExpand {
+		// No row constructor on this target, so a keyset comparison is written
+		// as the OR-chain it means. Only emitted where it is true, so the other
+		// two dialects' output is unchanged.
+		g.p("\tRowCmpExpand: true,")
+	}
+	if g.lw.OrderFallback != "" {
+		// The row cap is a clause OF the ordering here, so a capped read with
+		// no ordering is a syntax error rather than an arbitrary order.
+		g.p("\tOrderFallback: %q,", g.lw.OrderFallback)
 	}
 	g.p("}")
 	g.p("")
@@ -578,7 +601,12 @@ func (g *gen) compile() {
 	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\treturn c.Put(toks, %s)", g.splice("selectPrefix", "toks, lowering, suffix"))
+	prefix := "selectPrefix"
+	if g.lw.LockHint != nil {
+		g.p("\tprefix := selectPrefix + lockHint[lock]")
+		prefix = "prefix"
+	}
+	g.p("\treturn c.Put(toks, %s)", g.splice(prefix, "toks, lowering, suffix"))
 	g.p("}")
 	g.p("")
 	g.p("// existsStmtFor compiles the existence probe: SELECT 1, no ORDER BY,")
@@ -642,13 +670,27 @@ func (g *gen) compile() {
 	g.p("")
 	g.p("// BindPaging appends the LIMIT (and OFFSET when set) arguments.")
 	g.p("func (q Query) BindPaging(b *Binder, v []any) []any {")
-	g.p("\tb.limit = q.limit")
-	g.p("\tv = append(v, &b.limit)")
-	g.p("\tif q.offset > 0 {")
-	g.p("\t\tb.offset = q.offset")
-	g.p("\t\tv = append(v, &b.offset)")
-	g.p("\t}")
-	g.p("\treturn v")
+	if g.lw.PagingOffsetFirst {
+		// OFFSET m ROWS FETCH NEXT n ROWS ONLY names them in the other order to
+		// LIMIT n OFFSET m, and the binder follows the TEXT. Reversed here
+		// rather than in the suffix, because the suffix is what the server
+		// parses and the order in it is not negotiable.
+		g.p("\tif q.offset > 0 {")
+		g.p("\t\tb.offset = q.offset")
+		g.p("\t\tv = append(v, &b.offset)")
+		g.p("\t}")
+		g.p("\tb.limit = q.limit")
+		g.p("\tv = append(v, &b.limit)")
+		g.p("\treturn v")
+	} else {
+		g.p("\tb.limit = q.limit")
+		g.p("\tv = append(v, &b.limit)")
+		g.p("\tif q.offset > 0 {")
+		g.p("\t\tb.offset = q.offset")
+		g.p("\t\tv = append(v, &b.offset)")
+		g.p("\t}")
+		g.p("\treturn v")
+	}
 	g.p("}")
 	g.p("")
 	g.p("// Shape is a fingerprint of this query's structure — equal shapes share a")
