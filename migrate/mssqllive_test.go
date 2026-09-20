@@ -380,6 +380,7 @@ func TestAutoMSSQLConcurrentCallersApplyOnce(t *testing.T) {
 			defer wg.Done()
 			results[i], errs[i] = migrate.AutoMSSQL(ctx, dial, want, migrate.AutoOptions{
 				LockWait: 60 * time.Second,
+				Logf:     func(f string, a ...any) { t.Logf("caller %d: "+f, append([]any{i}, a...)...) },
 			})
 		}(i)
 	}
@@ -388,11 +389,15 @@ func TestAutoMSSQLConcurrentCallersApplyOnce(t *testing.T) {
 	applied := 0
 	for i := range results {
 		if errs[i] != nil {
-			t.Fatalf("caller %d: %v", i, errs[i])
+			t.Errorf("caller %d: %v", i, errs[i])
+			continue
 		}
 		if !results[i].Empty() {
 			applied++
 		}
+	}
+	if t.Failed() {
+		return
 	}
 	if applied != 1 {
 		t.Errorf("%d of %d callers applied a plan; exactly one should have", applied, n)
@@ -407,8 +412,10 @@ func TestAutoMSSQLRefusesASchemaTheLoginDoesNotDefaultTo(t *testing.T) {
 	if err == nil {
 		t.Fatal("migrating a schema the unqualified DDL will not land in was allowed")
 	}
+	t.Logf("refusal: %v", err)
 	if !strings.Contains(err.Error(), "sales") || !strings.Contains(err.Error(), "dbo") {
-		t.Errorf("the refusal must name both schemas: %v", err)
+		t.Errorf("the refusal must name both schemas — the one asked for and the one the "+
+			"login defaults to: %v", err)
 	}
 }
 
