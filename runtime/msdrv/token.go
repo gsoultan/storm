@@ -271,3 +271,7 @@ func (x *conn) attention() error {
 	x.begin(pktAttention)
 	return x.end()
 }
+
+// errIsEndOfMessage reports the sentinel the byte reader returns when a message
+// is spent, without every caller importing errors for one comparison.
+func errIsEndOfMessage(err error) bool { return errors.Is(err, errEndOfMessage) }

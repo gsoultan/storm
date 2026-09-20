@@ -90,7 +90,13 @@ const (
 type column struct {
 	name string
 	id   byte
-	// size is the fixed width for a fixed-length type, else 0.
+	// size is the width the METADATA declares: the fixed width for a
+	// fixed-length type, and the maximum for a variable one.
+	//
+	// Kept for the variable types too, which a reader does not need — the row
+	// carries its own length — and a WRITER does: a bulk load echoes this
+	// metadata back, and declaring an INT column eight bytes wide makes the
+	// server refuse the whole stream with a message about sort order.
 	size int
 	// lenBytes is how wide the row's length prefix is: 0, 1, 2 or 4.
 	lenBytes int
@@ -99,6 +105,18 @@ type column struct {
 	// scale and prec come from the metadata for the types that carry them.
 	scale byte
 	prec  byte
+	// flags is the metadata's own flag word, kept so a bulk load can echo it
+	// back verbatim. Its low bit is fNullable, and a stream that declares a
+	// column nullable while sending a NON-nullable type for it is a
+	// contradiction the server reports as a premature end of message — it read
+	// the length byte a nullable value would have carried and found data.
+	flags uint16
+	// collation is the five bytes a character column carries.
+	//
+	// Skipped by the reader, which does not need it, and REQUIRED by the writer:
+	// a bulk load echoes the metadata back, and a character column declared with
+	// a zero collation is a stream the server refuses.
+	collation [5]byte
 	// nullByFF marks the legacy types where 0xFF is NULL and 0 is an empty
 	// value, rather than 0 being NULL. Reading those the other way turns every
 	// empty string into a NULL.
@@ -125,13 +143,15 @@ func (x *conn) readColMetadata(cols []column) ([]column, error) {
 		if _, err := x.readU32(); err != nil { // user type
 			return nil, err
 		}
-		if _, err := x.readU16(); err != nil { // flags
+		flags, err := x.readU16()
+		if err != nil {
 			return nil, err
 		}
 		c, err := x.readTypeInfo()
 		if err != nil {
 			return nil, err
 		}
+		c.flags = flags
 		name, err := x.readBVarchar()
 		if err != nil {
 			return nil, err
@@ -167,15 +187,19 @@ func (x *conn) readTypeInfo() (column, error) {
 
 	// One length byte in the metadata, one in the row.
 	case typeGUID, typeIntN, typeBitN, typeFloatN, typeMoneyN, typeDateTimeN:
-		if _, err := x.readByte(); err != nil {
+		n, err := x.readByte()
+		if err != nil {
 			return c, err
 		}
+		c.size = int(n)
 		c.lenBytes = 1
 
 	case typeDecimal, typeNumeric, typeDecimalN, typeNumericN:
-		if _, err := x.readByte(); err != nil { // declared max length
+		n, err := x.readByte()
+		if err != nil {
 			return c, err
 		}
+		c.size = int(n)
 		if c.prec, err = x.readByte(); err != nil {
 			return c, err
 		}
@@ -196,9 +220,11 @@ func (x *conn) readTypeInfo() (column, error) {
 
 	// The legacy byte-length strings and binaries, where 0xFF is NULL.
 	case typeChar, typeVarChar, typeBinary, typeVarBinary:
-		if _, err := x.readByte(); err != nil {
+		n, err := x.readByte()
+		if err != nil {
 			return c, err
 		}
+		c.size = int(n)
 		c.lenBytes = 1
 		c.nullByFF = true
 
@@ -210,6 +236,7 @@ func (x *conn) readTypeInfo() (column, error) {
 		if err != nil {
 			return c, err
 		}
+		c.size = int(n)
 		c.lenBytes, c.plp = 2, n == 0xFFFF
 
 	case typeBigVarChar, typeBigChar, typeNVarChar, typeNChar:
@@ -217,7 +244,8 @@ func (x *conn) readTypeInfo() (column, error) {
 		if err != nil {
 			return c, err
 		}
-		if err := x.skip(5); err != nil { // collation
+		c.size = int(n)
+		if err := x.readFull(c.collation[:]); err != nil {
 			return c, err
 		}
 		c.lenBytes, c.plp = 2, n == 0xFFFF

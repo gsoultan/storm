@@ -3,7 +3,6 @@ package msdrv
 import (
 	"context"
 	"errors"
-	"strconv"
 	"sync"
 	"time"
 
@@ -282,115 +281,6 @@ func (t *Tx) end(ctx context.Context, verb string) error {
 	_, err := t.c.Exec(ctx, verb, nil)
 	t.p.release(t.c)
 	return err
-}
-
-// rowsPerInsert is how many rows one emulated COPY statement carries.
-//
-// SQL Server caps a VALUES clause at 1000 rows and a statement at 2100
-// parameters, so the real bound is whichever comes first: 2100 divided by the
-// column count. Both are the server's, not a tuning choice.
-const rowsPerInsert = 1000
-
-// maxParams is the server's parameter limit per statement. sp_executesql's own
-// two parameters count against it.
-const maxParams = 2100 - 2
-
-// CopyFrom bulk-loads rows.
-//
-// EMULATED, and this package says so rather than letting a performance claim
-// depend on which adapter was passed — the same disclosure runtime/mydrv makes.
-// It is a multi-row INSERT of up to a thousand rows per statement, so a
-// thousand rows is ONE round trip rather than a thousand, which is the property
-// storm's guarantee is about. It is not the same thing as bcp: TDS has a
-// genuine bulk-load packet type, and using it means writing a second wire
-// format and a column-metadata negotiation. That is the next piece of M10, not
-// a missing one.
-func (c *Conn) CopyFrom(ctx context.Context, table string, cols []string, src runtime.CopySource) (int64, error) {
-	if len(cols) == 0 {
-		return 0, protoErr("CopyFrom needs at least one column")
-	}
-	perStmt := maxParams / len(cols)
-	if perStmt > rowsPerInsert {
-		perStmt = rowsPerInsert
-	}
-	if perStmt < 1 {
-		return 0, protoErr("a row of %d columns exceeds SQL Server's %d-parameter limit for "+
-			"one statement", len(cols), maxParams)
-	}
-
-	var (
-		total int64
-		args  []any
-		rows  int
-		stmt  []byte
-	)
-	flush := func() error {
-		if rows == 0 {
-			return nil
-		}
-		n, err := c.Exec(ctx, string(stmt), args)
-		if err != nil {
-			return err
-		}
-		total += n
-		args = args[:0]
-		rows = 0
-		return nil
-	}
-	build := func(n int) {
-		stmt = stmt[:0]
-		stmt = append(stmt, "INSERT INTO "...)
-		stmt = append(stmt, identBracket(table)...)
-		stmt = append(stmt, " ("...)
-		for i, col := range cols {
-			if i > 0 {
-				stmt = append(stmt, ", "...)
-			}
-			stmt = append(stmt, identBracket(col)...)
-		}
-		stmt = append(stmt, ") VALUES "...)
-		p := 1
-		for r := 0; r < n; r++ {
-			if r > 0 {
-				stmt = append(stmt, ", "...)
-			}
-			stmt = append(stmt, '(')
-			for i := range cols {
-				if i > 0 {
-					stmt = append(stmt, ", "...)
-				}
-				stmt = append(stmt, '@', 'p')
-				stmt = strconv.AppendInt(stmt, int64(p), 10)
-				p++
-			}
-			stmt = append(stmt, ')')
-		}
-	}
-
-	for src.Next() {
-		v := src.Values()
-		if len(v) != len(cols) {
-			return total, protoErr("a row has %d values for %d columns", len(v), len(cols))
-		}
-		args = append(args, v...)
-		rows++
-		if rows == perStmt {
-			build(rows)
-			if err := flush(); err != nil {
-				return total, err
-			}
-		}
-	}
-	if err := src.Err(); err != nil {
-		return total, err
-	}
-	if rows > 0 {
-		build(rows)
-		if err := flush(); err != nil {
-			return total, err
-		}
-	}
-	return total, nil
 }
 
 // identBracket quotes an identifier. compile/mssql owns the spelling for
