@@ -75,6 +75,25 @@ impossible; mixed-version generated trees are not a supported state.
 - The composition seams (`FragOf`, `PredToks`, …): generated-context plumbing,
   documented as such at every declaration.
 
+## Which server versions
+
+A version storm has never run against is a version storm does not support, so
+this list is what CI actually starts:
+
+| | Tested | Why these |
+|---|---|---|
+| PostgreSQL | **16 and 18** | 16 is the floor `storm explain` needs — it reads the planner's JSON — and 18 is what adopters run. Both ends, because a catalog change between majors is invisible until introspection meets it |
+| MySQL | **8.4** | The LTS, and the version every measurement in these docs was taken against. Pinned rather than `mysql:8`, which floats and would quietly change what the gate means |
+| MariaDB | **11.4** | The LTS |
+| pgx | the version in `go.mod` | Minimal version selection resolves an adopter's build to the HIGHEST requirement in the graph, so a storm that requires an older pgx is a storm whose driver adapter runs a pgx its own suite never exercised. That already happened once: storm said 5.10 while its adopter built 5.11 |
+
+Between the two PostgreSQL versions, the second one is not a formality.
+Introspection reads `pg_catalog` directly, and the catalog is the part of
+PostgreSQL that changes between majors.
+
+Individual features need more than the floor and say so where they are
+declared: `NullsNotDistinct` is 15+, `storm.UUIDv7()` is 18+.
+
 ## Deprecation
 
 Nothing is removed in minors. A deprecated surface keeps working for one full
