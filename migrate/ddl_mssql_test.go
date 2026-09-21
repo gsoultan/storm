@@ -306,7 +306,7 @@ func TestMSSQLSchemaNamesAreValidatedForSQLServerAndNotPostgres(t *testing.T) {
 	}
 }
 
-func TestAutoMSSQLRefusesConcurrentlyByName(t *testing.T) {
+func TestConcurrentlyIsRefusedForSQLServer(t *testing.T) {
 	_, err := AutoMSSQL(context.Background(), nil, msch(), AutoOptions{Concurrently: true})
 	if err == nil {
 		t.Fatal("Concurrently was accepted for a target with no concurrent index build")
