@@ -129,9 +129,11 @@ size anything:
   is still one round trip, but it pays statement parsing that a real copy skips.
 - **`Batch` is N round trips.** MySQL's protocol has no equivalent of
   PostgreSQL's extended-query pipeline.
-- **`migrate.Auto` is PostgreSQL-only.** MySQL's DDL is not transactional, so
-  the one-transaction guarantee automigrate is built on does not exist there.
-  Use `storm ddl -dialect ...` with your own migration tool.
+- **No `migrate.Auto`.** MySQL's DDL is not transactional, so the
+  one-transaction guarantee automigrate is built on does not exist there. Use
+  `storm ddl -dialect ...` with your own migration tool. (PostgreSQL has
+  `migrate.Auto`; SQL Server has `migrate.AutoMSSQL`, whose DDL *is*
+  transactional.)
 - **No partial indexes**, so a soft-delete table's uniqueness spans deleted rows
   or nothing. `myddl.Check` refuses the live-scoped form rather than quietly
   widening it.

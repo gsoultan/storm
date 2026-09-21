@@ -547,10 +547,11 @@ verifying default cannot connect to either and would push callers to
 
 ### P6.6 What is NOT closed
 
-- **`migrate.Auto` is PostgreSQL-only.** MySQL's DDL is not transactional, so
-  the one-transaction guarantee automigrate is built on does not exist there. A
+- **No `migrate.Auto` for MySQL.** Its DDL is not transactional, so the
+  one-transaction guarantee automigrate is built on does not exist there. A
   half-applied plan is possible and storm will not pretend otherwise: use
-  `storm ddl -dialect ...` with a migration tool that expects this.
+  `storm ddl -dialect ...` with a migration tool that expects this. PostgreSQL
+  and SQL Server both have transactional DDL and both have automigrate.
 - **No partial UNIQUE indexes**, so a soft-delete table's uniqueness spans
   deleted rows or nothing. `myddl.Check` refuses the live-scoped form rather
   than quietly widening it, because widening THAT one changes answers: rows the

@@ -164,8 +164,9 @@ cov ./runtime/msdec 85
 # The introspector, whose every query reads a catalogue — which is not
 # something a fake can be honest about, so it has no unit half at all.
 cov ./schema/mssql 75
-# The SQL Server half of the CLI. 68 because the first honest measurement of it
-# was 71.6, taken here. The gap is slack for a live test that varies, not
+# The SQL Server half of the CLI. 75 because it measures 78.2 here, up from the
+# 71.6 that set the first floor when `storm verify -pending` was still a
+# PostgreSQL-only command. The gap is slack for a live test that varies, not
 # headroom to spend.
 #
 # It is a package because of this line. tool used to be one package split across
@@ -173,7 +174,7 @@ cov ./schema/mssql 75
 # the other — so no floor either job could measure meant anything, and the one in
 # coverage.sh was nudged down twice chasing it. Splitting the code split the
 # measurement.
-cov ./tool/mstool 68
+cov ./tool/mstool 75
 
 if [ "$fail" -eq 0 ]; then
   echo "OK: storm's SQL Server DDL applies, and every statement it lowers runs"

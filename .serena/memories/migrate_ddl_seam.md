@@ -112,13 +112,45 @@ The general rule, worth reusing: when a floor keeps drifting, the question is
 which half of the package the drifting code belongs to, not what the number
 should be.
 
+## Automigrate, and the last two commands
+
+`AutoMSSQL` landed the same day. Same promises as `Auto`, three kept differently
+— `sp_getapplock` not `pg_advisory_lock`, `SET LOCK_TIMEOUT` not `lock_timeout`,
+and NOTHING where PostgreSQL points a `search_path` — and one kept more easily:
+it is ONE transaction, always, because neither of PostgreSQL's two plan splits
+exists here and SQL Server's DDL is transactional. `SET XACT_ABORT ON` is what
+makes that true rather than nearly true.
+
+**The namespace guard is the interesting one.** There is no `search_path`, so
+unqualified DDL lands in the LOGIN's default schema and nothing in a session can
+change that. `AutoMSSQL` and `ForMSSQL` therefore REFUSE when the schema they
+were asked to migrate is not the one the DDL will land in. The alternative is a
+plan that never empties.
+
+**msdrv's Error() drops the server's message text on purpose** — a SQL Server
+message embeds row DATA ("The duplicate key value is (alice@example.com)") — so
+neither the lock nor the guard can smuggle a sentence through `RAISERROR`. Every
+ad-hoc RAISERROR is error 50000. The guard reads `SELECT SCHEMA_NAME()` and
+writes its own refusal; the lock raises a distinctive RAISERROR **state** and
+asserts on `interface{ ServerState() uint8 }`, so `migrate` links no driver.
+It does NOT read the procedure's return value: a batch shaped
+`EXEC proc; SELECT @r` puts the proc's DONEPROC ahead of the SELECT's metadata
+and msdrv stops a result set at one.
+
+`storm verify -pending` and `-stale` work too. `-stale` needed only the gate
+lifted; it was already dialect-generic. `-pending` replays into a scratch
+DATABASE, one `Exec` per FILE — which is what a runner does and what a file
+holding a `DECLARE` requires.
+
+Two more found on the way: `NormalizeMSSQL` needed a process-wide mutex (the
+per-pid scratch name is self-cleaning, which left goroutines in one process
+sharing it), and the CI step for the `storm.SQL` validator had pointed at
+`./tool/` since the package split — `go test -run` with no matches is a success,
+so it had quietly stopped gating for two commits.
+
 ## Still open
 
-`migrate.Auto` is PostgreSQL-only. The plan engine speaks this catalogue; the
-applier does not. It needs `sp_getapplock` rather than `pg_advisory_lock`, and
-an answer for what `NoTransaction` means where there is no concurrent index
-build — `WITH (ONLINE = ON)` is Enterprise-only, so `Plan.Concurrently` is the
-identity on SQL Server and says so.
-
-`verify -pending` and `-stale` replay migration files through a scratch
-PostgreSQL schema and refuse other targets by name.
+Nothing on this thread. The next target is the Oracle spike (M11): measure
+`go-ora`'s allocations, find an arm64 container, and test whether the capability
+model carries empty-string-is-NULL, which is the documented kill criterion for
+M12.
