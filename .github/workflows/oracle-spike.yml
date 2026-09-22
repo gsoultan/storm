@@ -1,9 +1,11 @@
-# M11's estimate, run against a real Oracle.
+# M11: the estimate, and the gate it grew into.
 #
-# A workflow of its own rather than a job in ci.yml, and triggered on the spike
-# rather than on every push, because it is a MEASUREMENT and not a gate. There
-# is no Oracle back end to protect yet; when there is one, this moves into
-# ci.yml beside the sqlserver job and grows the statement counts that job has.
+# It started as a MEASUREMENT — three questions asked before M11 began. It is
+# now also where compile/oraddl's output is carried to a real server, the same
+# way internal/mssqlspike became scripts/check/mssql.sh. A workflow of its own,
+# triggered on the packages it covers rather than on every push, because Oracle
+# Free is a big image; when the back end is complete this moves into ci.yml
+# beside the sqlserver job.
 #
 # Oracle Free is a big image and takes a minute or two to open. That cost is
 # worth paying when the spike changes and is worth paying never otherwise.
@@ -14,6 +16,7 @@ on:
   push:
     paths:
       - 'internal/oraclespike/**'
+      - 'compile/oraddl/**'
       - '.github/workflows/oracle-spike.yml'
 
 jobs:
@@ -47,7 +50,9 @@ jobs:
       # Result 1 and 3: what the engine has, and what empty-string-is-NULL
       # actually breaks. -v because the answers are in the log lines, not in
       # the pass/fail: a spike reports, a gate refuses.
-      - name: what Oracle has, and what it means
+      # Result 1 and 3, and — since M11 started — the DDL compile/oraddl emits,
+      # APPLIED. P6.7: a generator that agrees with itself proves nothing.
+      - name: what Oracle has, what it means, and whether the DDL applies
         run: cd internal/oraclespike && go test -count=1 -v ./...
 
       # Result 2: what a database/sql Oracle driver costs per row. The same
