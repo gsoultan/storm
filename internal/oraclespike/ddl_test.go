@@ -111,17 +111,22 @@ func TestTheDDLStormEmitsApplies(t *testing.T) {
 
 	// The enum's CHECK exists and does its job, which is the whole of what an
 	// enum means where there is no enum type.
-	if _, err := db.Exec(
-		`INSERT INTO "ddl_orgs" ("name","seats","balance","active","opened","status") ` +
-			`VALUES ('acme',1,0,TRUE,DATE '2026-01-01','nope')`); err == nil {
+	// Every NOT NULL column named, so the only thing that can refuse this is
+	// the CHECK. An insert short of a column would be refused by ORA-01400 and
+	// would look like a pass.
+	const insOrg = `INSERT INTO "ddl_orgs" ` +
+		`("name","seats","balance","active","opened","status","doc") ` +
+		`VALUES (:1,1,0,TRUE,DATE '2026-01-01',:2,JSON('{}'))`
+	if _, err := db.Exec(insOrg, "bad", "nope"); err == nil {
 		t.Error("a value outside the enum's labels was accepted; the CHECK is not doing its job")
+	} else if !strings.Contains(err.Error(), "ORA-02290") {
+		t.Errorf("the enum column was refused by something other than its CHECK: %v", err)
 	}
 
 	// The soft-delete unique. Two live rows with one email must collide; a
 	// deleted one must not — which is the property a partial index gives and
 	// the reason MySQL cannot take this model.
-	mustExec(t, db, `INSERT INTO "ddl_orgs" ("name","seats","balance","active","opened","status") `+
-		`VALUES ('acme',1,0,TRUE,DATE '2026-01-01','new')`)
+	mustExec(t, db, insOrg, "acme", "new")
 	var orgID []byte
 	if err := db.QueryRow(`SELECT "id" FROM "ddl_orgs" WHERE "name" = 'acme'`).Scan(&orgID); err != nil {
 		t.Fatal(err)
