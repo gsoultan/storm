@@ -1,4 +1,4 @@
-# M11: the Oracle estimate, measured 2026-09-22
+# M11: the Oracle estimate, and the back end built on it
 
 `internal/oraclespike`, a separate module. Three questions asked before M11
 starts, per the rule PLAN.md set at M9. The third is M12's kill criterion.
@@ -79,6 +79,49 @@ lowering with a real behaviour difference.
 and `"fold_probe"` are two tables. Generation is unaffected (storm quotes
 everything); `storm import` reads a catalogue that shouts, so `schema/oracle`
 needs a folding rule `schema/pg` and `schema/mssql` did not.
+
+## What running the back end added (2026-09-22, after the estimate)
+
+`compile/oraddl` and `compile/oracle`'s core landed the same day, gated from
+`internal/oraclespike`. Six findings the documentation did not give — and the
+two that generalise are METHOD findings, not Oracle ones:
+
+- **A gate that EXECUTES catches what a gate that renders cannot.** Two
+  statements Oracle refuses outright PREPARED without error, because go-ora's
+  `Prepare` never reaches the server. A PREPARE that does not round-trip is the
+  same shape of defect as a gate that passes by skipping.
+- **A probe that counts ROWS catches what one checking "does it parse" cannot.**
+  The row-constructor probe passed on parse and would have passed on a
+  constructor that silently compared only the leading column. Counting rows,
+  with a tie on that column, is what made the answer trustworthy.
+
+The Oracle findings:
+
+| finding | consequence |
+|---|---|
+| unquoted identifiers may not START with `_` — ORA-00911 | every internal alias goes through `Ident`; no other target cares |
+| a JSON path must be a LITERAL — ORA-00907 — and nothing enumerates keys | `HasAnyKey`/`HasAllKeys` both REFUSED. Reverses the first draft: SQL Server does one through OPENJSON, Oracle neither |
+| the row constructor WORKS for inequality | `RowCmpExpand = false`. Closer to PostgreSQL than to SQL Server; removes a whole expansion |
+| native JSON needs an ASSM tablespace — ORA-43853 in SYSTEM | the gate runs as an application user in USERS |
+| a trailing `;` is ORA-00911 through the protocol | `oraddl.Statements` is the primitive, `Create` (the FILE) built from it |
+| no shared ROW lock, and no capped+locked read | three of seven lock modes refused; the work-queue shape refused by name |
+
+**`compile/oraddl`'s empty-string rule is the capability decision made real**: a
+nullable text column is refused, and that single refusal is what makes `Eq("")`
+— which can never be a declare-time error — correctly match nothing.
+
+Two places Oracle is EASIER than SQL Server: a bare `numeric` ports (Oracle's
+`NUMBER` keeps the fraction where an unspecified `DECIMAL` truncates it), and a
+partial UNIQUE ports as a function-based index on a `CASE`.
+
+Gate state: the DDL applies, 29 lowered statements execute, both refusals are
+asserted against the server.
+
+## What is NOT built yet
+
+joins, unions, aggregates, recursive, top-N, the write path and MERGE;
+`runtime/oradrv` and its decoders; codegen wiring; `schema/oracle`; migrate's
+Oracle half; the CLI.
 
 ## Operational notes
 

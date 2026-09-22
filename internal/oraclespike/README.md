@@ -21,21 +21,28 @@ same one. (M10 had to run Azure SQL Edge locally, a 2019-level subset, and
 reserve the authoritative answer for CI.)
 
     container run -d --name storm-oracle -p 1521:1521 \
-      -e ORACLE_PASSWORD=Storm1Passw0rd gvenzl/oracle-free:slim
+      -e ORACLE_PASSWORD=Storm1Passw0rd \
+      -e APP_USER=storm -e APP_USER_PASSWORD=Storm1Passw0rd gvenzl/oracle-free:slim
 
-    STORM_ORACLE_DSN='oracle://system:Storm1Passw0rd@localhost:1521/FREEPDB1' \
-      go test -v ./...                                      # results 1 and 3
+    STORM_ORACLE_DSN='oracle://storm:Storm1Passw0rd@localhost:1521/FREEPDB1' \
+      go test -v ./...                                      # results 1 and 3, and the gate
     STORM_ORACLE_DSN=... go test -run XXX -bench . -benchtime 30x   # result 2
 
-Or push a change under `internal/oraclespike/`, which is what
-`.github/workflows/oracle-spike.yml` triggers on. It is a workflow of its own
-rather than a job in `ci.yml`, and it runs on the spike rather than on every
-push, because this is a MEASUREMENT and not a gate — there is no Oracle back end
-to protect yet.
+`APP_USER`, not `system`: a normal user lands in the `USERS` tablespace, and the
+native JSON type is ORA-43853 in `SYSTEM`, which has manual segment space
+management. Connecting as `system` made a type storm generates unusable for a
+reason no real deployment would hit.
 
-**The tests report; they do not refuse.** A construct that turns out to be
-missing is this file's output. Three facts DO fail the build, and they are the
-three the kill criterion rests on — see result 3.
+Or push a change under `internal/oraclespike/`, `compile/oraddl/` or
+`compile/oracle/`, which is what `.github/workflows/oracle-spike.yml` triggers
+on. A workflow of its own rather than a job in `ci.yml`, because Oracle Free is
+a big image; when the back end is complete this moves into `ci.yml` beside the
+sqlserver job.
+
+**The measurement REPORTS; the gate REFUSES.** A construct that turns out to be
+missing is this file's output, not its error. What fails the build is the DDL
+not applying, a statement the lowering produces being rejected, and the three
+facts the kill criterion rests on — see result 3.
 
 All numbers below: Oracle Database Free 23.x, `gvenzl/oracle-free:slim`,
 ubuntu-latest, 2026-09-22.
