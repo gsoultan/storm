@@ -39,7 +39,7 @@ type genUser struct {
 func (u *genUser) Schema(t *storm.Table) {
 	t.Col(&u.Email).Size(255)
 	t.Col(&u.Name).Size(120)
-	t.Col(&u.Balance).Numeric(19, 4)
+	t.Col(&u.Balance).Numeric(18, 4)
 	t.SoftDelete(&u.DeletedAt)
 	t.Index(&u.Email).Unique().Where(`"deleted_at" IS NULL`)
 }
