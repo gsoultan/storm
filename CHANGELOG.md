@@ -14,6 +14,33 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Oracle: the SQL, complete and proven
+
+`compile/oraddl` and `compile/oracle` are done and gated against Oracle Free
+from `internal/oraclespike`: the DDL applies, and every statement the lowering
+produces is EXECUTED — 29 in the base set plus recursion in both directions and
+both greatest-n-per-group forms. `storm ddl -dialect oracle` and
+`storm portable oracle` work today.
+
+`storm generate -dialect oracle` REFUSES, and says why: a generated package
+reads `runtime.Rows.RawValues()`, and a `database/sql` driver decodes before
+storm can see the bytes. go-ora costs 26.3 allocations per row where storm's own
+SQL Server client costs 0.09, and the gap is the driver's rather than
+`database/sql`'s — so this needs either a native client or a second row shape in
+the port, which is an ADR rather than an afternoon.
+
+**The empty-string rule is the capability decision made real.** A nullable text
+column is refused, and that single refusal is what makes a comparison against
+`""` — which can never be a declare-time error, because the generated query DSL
+binds a runtime value — correctly match nothing, since nothing can be `''`.
+
+Things running it taught that reading could not: an unquoted identifier may not
+start with an underscore (ORA-00911, and every internal alias storm invents
+does); a JSON path must be a literal, so the key-presence operators are refused
+where SQL Server can manage one of them; the row constructor **works** for
+inequality, so keyset pagination needs no expansion here; and Oracle's `CYCLE`
+clause means recursion needs no path column at all.
+
 ### The Oracle estimate, measured
 
 `internal/oraclespike` asks M11's three questions before M11 starts, the rule

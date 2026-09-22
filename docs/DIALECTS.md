@@ -236,6 +236,40 @@ Oracle Free ships, it does — so this lowering may never be needed.
 `.OrderBy()` is a generation error on that target, not a silently different
 result set.
 
+## Oracle: what works today
+
+M11 is **SQL-complete and runtime-incomplete**, and the boundary is drawn in the
+CLI rather than discovered in a package that will not link.
+
+| command | Oracle |
+|---|---|
+| `storm ddl -dialect oracle` | **works** — `compile/oraddl`, applied against a live server |
+| `storm portable oracle` | **works** — every refusal above, reported in one pass |
+| `storm generate -dialect oracle` | refuses, naming the missing runtime |
+| `storm diff` / `verify` / `explain` / `import` / `watch` | refuse, same reason |
+
+`compile/oracle` is complete too — every operator, both greatest-n-per-group
+forms, recursion, unions, aggregates and the write path — and every statement it
+produces is EXECUTED against Oracle Free by `internal/oraclespike`. What is
+missing is a **client**. A generated package reads `runtime.Rows.RawValues()`,
+and a `database/sql` driver decodes before storm can see the bytes; go-ora costs
+**26.3 allocations per row** where storm's own SQL Server client costs 0.09, and
+the gap is the driver's rather than `database/sql`'s. So Oracle needs either a
+native client or a second row shape in the port — an ADR, not an afternoon.
+
+Two things about this target that no other has:
+
+**Keys are client-side**, as they are on MySQL, and for a different reason.
+Oracle has `RETURNING … INTO`, and the `INTO` binds OUTPUT parameters —
+`runtime.Executor` has nowhere to put one. `SYS_GUID()` exists and is not a uuid
+at all (host-and-sequence derived), so borrowing it would put a guessable,
+unsorted value where the model asked for random or time-ordered.
+
+**Recursion needs no path column.** Oracle's `CYCLE key SET flag TO 'Y'` detects
+a repeated key server-side, so where PostgreSQL carries an array, MySQL a
+`CHAR(4000)` that can truncate and SQL Server an `NVARCHAR(MAX)` the anchor must
+CAST, this back end carries nothing.
+
 ## MongoDB is a back end, not a dialect
 
 This is the honest part.

@@ -46,6 +46,7 @@ import (
 	"github.com/gsoultan/storm/codegen"
 	"github.com/gsoultan/storm/compile/msddl"
 	"github.com/gsoultan/storm/compile/myddl"
+	"github.com/gsoultan/storm/compile/oraddl"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/schema"
@@ -231,6 +232,25 @@ func run(args []string) error {
 		}
 		_, err = os.Stdout.Write(src)
 		return err
+	}
+	// Oracle is SQL-ONLY so far, and the boundary is drawn here rather than
+	// discovered in a generated package that will not link. `storm ddl` and
+	// `storm portable` work — compile/oraddl and compile/oracle are complete
+	// and gated against a live server — and everything that needs a RUNTIME
+	// does not.
+	if tgt.dialect == codegen.DialectOracle {
+		switch cmd {
+		case "generate", "diff", "verify", "explain", "import", "watch":
+			return fmt.Errorf(
+				"storm %s needs an Oracle RUNTIME and storm has none yet.\n"+
+					"       The SQL is done and proven: `storm ddl -dialect oracle` emits DDL a\n"+
+					"       server applies, and `storm portable oracle` reports what does not port.\n"+
+					"       What is missing is a client. internal/oraclespike measured go-ora at\n"+
+					"       26.3 allocations per row where storm's own SQL Server client costs\n"+
+					"       0.09, and the gap is the driver's rather than database/sql's — so this\n"+
+					"       needs either a native client or a second row shape in runtime.Executor,\n"+
+					"       and that is an ADR rather than an afternoon", cmd)
+		}
 	}
 	if tgt.dialect != codegen.DialectPostgres {
 		refuse := func() error {
@@ -1063,9 +1083,15 @@ func parseDialect(name string) (target, error) {
 			check:   msddl.Check,
 			ddl:     msddl.Create,
 		}, nil
+	case "oracle", "ora":
+		return target{
+			dialect: codegen.DialectOracle,
+			check:   oraddl.Check,
+			ddl:     oraddl.Create,
+		}, nil
 	}
 	return target{}, fmt.Errorf(
-		"unknown dialect %q — storm knows postgres, mysql, mariadb and mssql", name)
+		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql and oracle", name)
 }
 
 // rawCheckable reports whether storm.SQL declarations can be validated against
@@ -1107,9 +1133,21 @@ func portable(dialect string, model *schema.Schema) error {
 		}
 		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
 		return nil
+	case "oracle", "ora":
+		// The one list with a SEMANTIC entry on it. Every other target's
+		// refusals are about what can be expressed; Oracle's headline is that
+		// an empty string is NULL, so a NULLABLE TEXT column cannot round-trip
+		// — "" and nil become one stored value. Refusing that column is what
+		// makes everything else consistent, including a comparison against ""
+		// correctly matching nothing. See compile/oraddl's checkEmptyString.
+		if err := oraddl.Check(model); err != nil {
+			return err
+		}
+		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
+		return nil
 	}
 	return fmt.Errorf(
-		"unknown dialect %q — storm knows postgres, mysql, mariadb and mssql", dialect)
+		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql and oracle", dialect)
 }
 
 // livePlan is the one place a migration plan is produced from a live database.
