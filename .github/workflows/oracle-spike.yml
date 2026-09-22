@@ -18,6 +18,8 @@ on:
       - 'internal/oraclespike/**'
       - 'compile/oraddl/**'
       - 'compile/oracle/**'
+      - 'runtime/valdec/**'
+      - 'runtime/sqldrv/**'
       - '.github/workflows/oracle-spike.yml'
 
 jobs:
@@ -62,6 +64,16 @@ jobs:
       # APPLIED. P6.7: a generator that agrees with itself proves nothing.
       - name: what Oracle has, what it means, and whether storm's SQL runs
         run: cd internal/oraclespike && go test -count=1 -v ./...
+
+      # The whole stack: model → generator → generated package → runtime/sqldrv
+      # → go-ora → Oracle. P6.7 one level up from the lowering gate — that one
+      # proves storm's SQL runs, this proves the CODE storm writes runs, which
+      # is a different claim and the one an adopter cares about.
+      #
+      # It generates into the spike module rather than storm's, because running
+      # needs go-ora and storm's go.mod does not have it.
+      - name: the generated package RUNS
+        run: cd internal/oraclespike && go test -count=1 -v -timeout 300s -run TestTheGeneratedOraclePackageRuns ./...
 
       # Result 2: what a database/sql Oracle driver costs per row. The same
       # measurement M9 and M10 took, which is what decides whether M11 is a
