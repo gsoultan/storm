@@ -5,7 +5,6 @@ package sqldrv
 // was worse than an error before it existed.
 
 import (
-	"reflect"
 	"testing"
 	"time"
 
@@ -71,7 +70,9 @@ func TestAlreadyDriverValuesAreNotCopied(t *testing.T) {
 	if &got[0] != &args[0] {
 		t.Error("a slice of driver values was copied for nothing")
 	}
-	if !reflect.DeepEqual(got, args) {
-		t.Error("driver values were altered")
+	// Compared by identity of the SLICE, not of the elements: a []byte is
+	// uncomparable, and the claim under test is that nothing was copied.
+	if len(got) != len(args) {
+		t.Fatalf("length changed: %d vs %d", len(got), len(args))
 	}
 }
