@@ -705,6 +705,41 @@ fi
 cd "$REPO"
 rm -rf "$TMP2"
 
+# ---- Oracle ----------------------------------------------------------------
+#
+# DDL and portability only, because that is ALL Oracle has — and gating exactly
+# that is the point. docs/PRODUCTION-READINESS.md P7: a capability nothing an
+# outsider can reach is not shipped, and a BOUNDARY nothing an outsider can
+# reach is not a boundary either. The refusal has to be as reachable as the
+# feature, or "storm generate refuses and says why" is a claim in a comment.
+echo "== a stranger can emit Oracle DDL, and is told where Oracle stops =="
+cd "$TMP"
+if [ ! -d cmd/mystorm ]; then
+  portable_module
+fi
+if ! go run ./cmd/mystorm ddl -dialect oracle > ora.sql 2>ora.err; then
+  note "ddl -dialect oracle failed:"; sed 's/^/    /' ora.err >&2
+elif ! grep -q 'CREATE TABLE "shops"' ora.sql; then
+  note "the Oracle ddl is not double-quoted — this is another dialect's output with a flag on it"
+  head -3 ora.sql | sed 's/^/    /' >&2
+elif grep -q ';' ora.sql; then
+  : # a migration FILE carries terminators; the protocol form does not. Both are correct.
+fi
+
+if ! go run ./cmd/mystorm portable oracle > oraport.out 2>&1; then
+  note "portable oracle refused a model that ports:"; sed 's/^/    /' oraport.out >&2
+fi
+
+# And the boundary. generate MUST refuse, and the refusal must name the reason
+# rather than failing somewhere deep — an adopter who reaches for it deserves
+# to learn what is missing in one line.
+if go run ./cmd/mystorm generate -dialect oracle orastore >oragen.err 2>&1; then
+  note "generate -dialect oracle SUCCEEDED, and storm has no Oracle runtime"
+elif ! grep -q 'runtime' oragen.err; then
+  note "generate -dialect oracle refused without naming the missing runtime:"
+  sed 's/^/    /' oragen.err | head -5 >&2
+fi
+
 if [ "$fail" -eq 0 ]; then
   if [ -n "${STORM_MYSQL_ADDR:-}" ]; then
     echo "OK: a module outside this repository can model, generate, build and RUN — on PostgreSQL and MySQL, and can generate and build for SQL Server"
