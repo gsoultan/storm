@@ -33,12 +33,13 @@ func id(n byte) [16]byte {
 }
 
 // The model, restated so the generated package's own test builds the same
-// schema the generator was given.
+// schema the generator was given — and named the SAME, because the table name
+// comes from the struct and a mismatch is ORA-00942 at the first insert.
 //
 // NO NULLABLE TEXT, which is the Oracle rule: an empty string is stored as
 // NULL there, so "" and nil would be one value. compile/oraddl refuses the
 // column and this model is what passing that refusal looks like.
-type oraUser struct {
+type genUser struct {
 	storm.Model
 	Email     string
 	Name      string
@@ -48,7 +49,7 @@ type oraUser struct {
 	DeletedAt *time.Time
 }
 
-func (u *oraUser) Schema(t *storm.Table) {
+func (u *genUser) Schema(t *storm.Table) {
 	t.Col(&u.Email).Size(255)
 	t.Col(&u.Name).Size(120)
 	t.Col(&u.Balance).Numeric(18, 4)
@@ -69,7 +70,7 @@ func TestMain(m *testing.M) {
 	}
 	defer db.Close()
 
-	s, err := storm.Build(&oraUser{})
+	s, err := storm.Build(&genUser{})
 	if err != nil {
 		os.Stderr.WriteString(err.Error() + "\n")
 		os.Exit(1)
@@ -79,7 +80,7 @@ func TestMain(m *testing.M) {
 		os.Stderr.WriteString(err.Error() + "\n")
 		os.Exit(1)
 	}
-	_, _ = db.Exec(` + "`" + `DROP TABLE "ora_users" CASCADE CONSTRAINTS PURGE` + "`" + `)
+	_, _ = db.Exec(` + "`" + `DROP TABLE "gen_users" CASCADE CONSTRAINTS PURGE` + "`" + `)
 	for _, st := range stmts {
 		if _, err := db.Exec(st); err != nil {
 			os.Stderr.WriteString("applying: " + st + "\n" + err.Error() + "\n")
@@ -90,7 +91,7 @@ func TestMain(m *testing.M) {
 	// driver, reading the port's VALUE shape.
 	ex = sqldrv.New(db)
 	code := m.Run()
-	_, _ = db.Exec(` + "`" + `DROP TABLE "ora_users" CASCADE CONSTRAINTS PURGE` + "`" + `)
+	_, _ = db.Exec(` + "`" + `DROP TABLE "gen_users" CASCADE CONSTRAINTS PURGE` + "`" + `)
 	os.Exit(code)
 }
 
