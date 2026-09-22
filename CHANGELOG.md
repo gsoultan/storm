@@ -14,6 +14,33 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### The Oracle estimate, measured
+
+`internal/oraclespike` asks M11's three questions before M11 starts, the rule
+`docs/PLAN.md` has applied at every target since M9. Not shipped code — a
+separate module and a workflow triggered on itself.
+
+The headline is a **reprieve for M12**. PLAN.md made the capability model's
+ability to carry Oracle the kill criterion for MongoDB, and measured, it carries
+it — though half the mechanism `docs/DIALECTS.md` described turns out to be
+impossible. storm has two DSLs that carry a value: the expression DSL folds a Go
+literal into the schema at build time, and the generated query DSL binds a
+runtime one. So `Eq("")` in a query can never be a declare-time error. It does
+not need to be: an empty string reaching a `NOT NULL` column is ORA-01400, so
+the difference is silent in exactly one place — a nullable text column — and
+refusing that makes `Eq("")` correctly match nothing, because nothing can be
+`''`.
+
+The driver answer is the same as M9's and M10's by a wider margin: **26.3
+allocations per row** through `driver.Rows`, against go-mssqldb's 11.3 and
+`runtime/msdrv`'s 0.09. Through `database/sql` it is 26.5, so the cost is the
+driver's.
+
+Two things the engine does that nothing else storm targets does: `FETCH FIRST …
+FOR UPDATE SKIP LOCKED` — the work-queue shape — is ORA-02014, and unquoted
+identifiers fold UP. Both are in `docs/DIALECTS.md` now.
+
+
 ### A DDL seam inside `migrate/`, and `storm diff` / `storm verify` for SQL Server
 
 Three of the four shipped dialects could generate and run but could not diff,

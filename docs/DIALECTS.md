@@ -188,11 +188,31 @@ only the number of statements underneath.
 
 **Oracle's empty string is NULL.** A *semantic* difference, not a syntactic one:
 `WHERE name = ''` can return different rows than on Postgres. Not emulatable.
-Declaring `oracle` in `portability.assert` makes any `Eq("")` or non-null-
-constrained text column a **declare-time error** with a pointer to the model line.
+
+Measured 2026-09-22 (`internal/oraclespike`), which moved this entry. It used to
+say that declaring `oracle` made "any `Eq("")` or non-null-constrained text
+column a declare-time error". **The `Eq("")` half is impossible**: the generated
+query DSL's `Eq(v string)` binds a runtime value, so no build-time artefact
+holds it. The column half is enough on its own — an empty string reaching a
+`NOT NULL` column is ORA-01400, so the difference is silent in exactly one
+place, the **nullable text column**, and refusing that makes `Eq("")` correctly
+match nothing because nothing can be `''`. The expression DSL is the other way
+round: `storm.Exprs{}.Eq(&m.Tag, "")` folds the literal into the schema at build
+time, where it IS refusable.
+
+**Oracle's work queue is a different statement.** `FETCH FIRST n ROWS ONLY … FOR
+UPDATE SKIP LOCKED` is one statement everywhere else and is ORA-02014 here,
+because `FETCH FIRST` is an inline view. `ROWNUM` replaces it — but `ROWNUM` is
+applied before `ORDER BY`, so a bounded *ordered* locked fetch needs the order
+in a subquery.
+
+**Unquoted identifiers fold UP**, where PostgreSQL folds them down. storm quotes
+what it writes, so generation is unaffected; `storm import` reads a catalogue
+that shouts.
 
 **Oracle has no native `BOOLEAN`** before 23c → `NUMBER(1)` plus a `CHECK`
-constraint, generated from one `s.Bool(...)` declaration.
+constraint, generated from one `s.Bool(...)` declaration. On 23c, which is what
+Oracle Free ships, it does — so this lowering may never be needed.
 
 **SQL Server `OFFSET/FETCH` requires `ORDER BY`** → a `.Limit()` without
 `.OrderBy()` is a generation error on that target, not a silently different
