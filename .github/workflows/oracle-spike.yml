@@ -1,0 +1,57 @@
+# M11's estimate, run against a real Oracle.
+#
+# A workflow of its own rather than a job in ci.yml, and triggered on the spike
+# rather than on every push, because it is a MEASUREMENT and not a gate. There
+# is no Oracle back end to protect yet; when there is one, this moves into
+# ci.yml beside the sqlserver job and grows the statement counts that job has.
+#
+# Oracle Free is a big image and takes a minute or two to open. That cost is
+# worth paying when the spike changes and is worth paying never otherwise.
+name: oracle-spike
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'internal/oraclespike/**'
+      - '.github/workflows/oracle-spike.yml'
+
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    services:
+      oracle:
+        # gvenzl/oracle-free is multi-arch from 23.5, so this is the SAME
+        # engine a developer runs on Apple silicon — unlike SQL Server, where
+        # CI runs the real image and a laptop runs Azure SQL Edge at the 2019
+        # level. There is nothing to caveat here.
+        image: gvenzl/oracle-free:slim
+        env:
+          ORACLE_PASSWORD: Storm1Passw0rd
+        ports: ["1521:1521"]
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 20s
+          --health-timeout 10s
+          --health-retries 30
+    env:
+      STORM_ORACLE_DSN: oracle://system:Storm1Passw0rd@127.0.0.1:1521/FREEPDB1
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      # Result 1 and 3: what the engine has, and what empty-string-is-NULL
+      # actually breaks. -v because the answers are in the log lines, not in
+      # the pass/fail: a spike reports, a gate refuses.
+      - name: what Oracle has, and what it means
+        run: cd internal/oraclespike && go test -count=1 -v ./...
+
+      # Result 2: what a database/sql Oracle driver costs per row. The same
+      # measurement M9 and M10 took, which is what decides whether M11 is a
+      # lowering or a lowering plus a client.
+      - name: what the driver costs per row
+        run: cd internal/oraclespike && go test -count=1 -run XXX -bench . -benchtime 30x ./...
