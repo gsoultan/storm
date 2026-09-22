@@ -52,7 +52,7 @@ var _ runtime.Executor = Exec{}
 func New(db DB) Exec { return Exec{DB: db} }
 
 func (e Exec) Query(ctx context.Context, query string, args []any) (runtime.Rows, error) {
-	r, err := e.DB.QueryContext(ctx, query, args...)
+	r, err := e.DB.QueryContext(ctx, query, normalize(args)...)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (e Exec) Query(ctx context.Context, query string, args []any) (runtime.Rows
 }
 
 func (e Exec) Exec(ctx context.Context, query string, args []any) (int64, error) {
-	res, err := e.DB.ExecContext(ctx, query, args...)
+	res, err := e.DB.ExecContext(ctx, query, normalize(args)...)
 	if err != nil {
 		return 0, err
 	}
@@ -94,7 +94,7 @@ func (e Exec) CopyFrom(ctx context.Context, table string, cols []string,
 	stmt := insertStmt(table, cols)
 	var n int64
 	for src.Next() {
-		if _, err := e.DB.ExecContext(ctx, stmt, src.Values()...); err != nil {
+		if _, err := e.DB.ExecContext(ctx, stmt, normalize(src.Values())...); err != nil {
 			return n, err
 		}
 		n++
