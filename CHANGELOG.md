@@ -14,32 +14,49 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
-### Oracle: the SQL, complete and proven
+### Oracle runs, and any `database/sql` driver now fits the port
 
-`compile/oraddl` and `compile/oracle` are done and gated against Oracle Free
-from `internal/oraclespike`: the DDL applies, and every statement the lowering
-produces is EXECUTED — 29 in the base set plus recursion in both directions and
-both greatest-n-per-group forms. `storm ddl -dialect oracle` and
-`storm portable oracle` work today.
+`storm generate -dialect oracle` works. The whole stack is gated against Oracle
+Free from `internal/oraclespike` — model → generator → generated package →
+`runtime/sqldrv` → go-ora → Oracle — and the generated package inserts, selects,
+pages and enforces its soft-delete unique against a real server.
 
-`storm generate -dialect oracle` REFUSES, and says why: a generated package
-reads `runtime.Rows.RawValues()`, and a `database/sql` driver decodes before
-storm can see the bytes. go-ora costs 26.3 allocations per row where storm's own
-SQL Server client costs 0.09, and the gap is the driver's rather than
-`database/sql`'s — so this needs either a native client or a second row shape in
-the port, which is an ADR rather than an afternoon.
+**The port grew a second row shape.** `runtime.Rows` gains `Values() []any`
+beside `RawValues() [][]byte`, and a generated package calls exactly one —
+chosen at generate time by the dialect, so nothing branches at run time. A
+`database/sql` driver decodes before storm can see the wire, so an adapter over
+one cannot supply raw bytes without re-encoding what it just decoded. Oracle
+forced the question; the answer is wider than Oracle.
+
+`runtime/valdec` is the fourth decoder family and the first that reads no bytes.
+`runtime/sqldrv` adapts any `database/sql` handle and states what it does not
+do: `CopyFrom` is emulated one INSERT per row, `Batch` is N round trips.
+
+It is the slow path and says so — 26.3 allocations per row against 0.09 for
+storm's own SQL Server client. What makes it lossless is a measurement: every
+Oracle NUMBER arrives as an exact decimal string, so a money column survives
+where a float64 would have rounded it.
 
 **The empty-string rule is the capability decision made real.** A nullable text
 column is refused, and that single refusal is what makes a comparison against
-`""` — which can never be a declare-time error, because the generated query DSL
-binds a runtime value — correctly match nothing, since nothing can be `''`.
+`""` — which can never be a declare-time error — correctly match nothing.
 
-Things running it taught that reading could not: an unquoted identifier may not
-start with an underscore (ORA-00911, and every internal alias storm invents
-does); a JSON path must be a literal, so the key-presence operators are refused
-where SQL Server can manage one of them; the row constructor **works** for
-inequality, so keyset pagination needs no expansion here; and Oracle's `CYCLE`
-clause means recursion needs no path column at all.
+Six things running it taught that reading could not, and two reversed a
+decision: an unquoted identifier may not start with an underscore; a JSON path
+must be a literal, so the key-presence operators are refused where SQL Server
+manages one; the row constructor **works** for inequality, so keyset pagination
+needs no expansion; `CYCLE` means recursion needs no path column; a `[16]byte`
+argument reads as a bulk-insert request to go-ora; and a fixed-text insert must
+number its own placeholders, which is ORA-01745 and the same defect M10 hit with
+a bare `@`.
+
+Still refused: `storm diff`, `verify`, `explain`, `import` and `watch`, because
+`schema/oracle` does not exist yet.
+
+Found on the way, in code that was already shipping: the root package file
+emitted a HAVING counter's decoder call without importing the decoder family, so
+a generated **SQL Server** package with a HAVING count had been uncompilable
+too.
 
 ### The Oracle estimate, measured
 
