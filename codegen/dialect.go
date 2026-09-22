@@ -35,6 +35,23 @@ const (
 	// refuse — filtered indexes, covering indexes and GROUPING SETS — so the
 	// seam gained capability in both directions. See compile/mssql.
 	DialectMSSQL
+	// DialectOracle targets Oracle 23 and later.
+	//
+	// SQL-ONLY so far, and the boundary is stated rather than discovered:
+	// `storm ddl -dialect oracle` and `storm portable oracle` work, and
+	// `storm generate` refuses. compile/oraddl and compile/oracle are complete
+	// and both are proven against a live server from internal/oraclespike —
+	// the DDL applies and every statement the lowering produces executes.
+	//
+	// What is missing is a RUNTIME. internal/oraclespike measured go-ora at
+	// 26.3 allocations per row through driver.Rows, against 0.09 for storm's
+	// own SQL Server client, and the gap is the driver's rather than
+	// database/sql's. A generated package needs runtime.Rows.RawValues, and a
+	// database/sql driver decodes before storm can see the bytes — so Oracle
+	// needs either a native client or a second row shape in the port, and
+	// neither is a decision to take at the end of a long change. See
+	// internal/oraclespike/README.md.
+	DialectOracle
 )
 
 func (d Dialect) String() string {
@@ -45,6 +62,8 @@ func (d Dialect) String() string {
 		return "mariadb"
 	case DialectMSSQL:
 		return "mssql"
+	case DialectOracle:
+		return "oracle"
 	}
 	return "postgres"
 }

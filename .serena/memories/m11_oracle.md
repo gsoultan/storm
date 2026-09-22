@@ -117,11 +117,39 @@ partial UNIQUE ports as a function-based index on a `CASE`.
 Gate state: the DDL applies, 29 lowered statements execute, both refusals are
 asserted against the server.
 
-## What is NOT built yet
+## Where M11 stopped, and why there
 
-joins, unions, aggregates, recursive, top-N, the write path and MERGE;
-`runtime/oradrv` and its decoders; codegen wiring; `schema/oracle`; migrate's
-Oracle half; the CLI.
+**SQL-complete, runtime-incomplete**, and the line is drawn in the CLI rather
+than discovered in a package that will not link.
+
+Done and gated live: `compile/oraddl` (DDL + Check), `compile/oracle` (every
+operator, joins, unions, aggregates, recursion, both top-N forms, the write
+path), `storm ddl -dialect oracle`, `storm portable oracle`,
+`codegen.DialectOracle`.
+
+`storm generate` REFUSES, naming the reason. **The blocker is the port, not the
+protocol.** A generated package reads `runtime.Rows.RawValues() [][]byte`, and a
+`database/sql` driver decodes into `driver.Value` before storm sees the bytes —
+so a go-ora adapter cannot satisfy the port without re-encoding what it just
+decoded. go-ora is 26.3 allocs/row against msdrv's 0.09, and the gap is the
+DRIVER's (database/sql adds 0.2), so "use database/sql better" is not available.
+
+Two ways forward, and picking one is an ADR:
+
+1. **A native TTC client.** What M9 and M10 did — but TDS and the MySQL
+   protocol have PUBLIC SPECIFICATIONS and TTC does not. go-ora is years of
+   reverse engineering. This is not a 6-week job and the estimate should not
+   pretend otherwise.
+2. **A second row shape in the port** — a `ValueRows` alongside `RawValues`, so
+   a `database/sql` driver can satisfy `runtime.Executor` at its own cost. This
+   is ADR-0005 territory (the port's width is a decision) and it would open
+   EVERY database/sql driver to storm, which is a bigger capability than Oracle.
+
+Option 2 is probably right and is deliberately not taken at the end of a long
+change.
+
+Also not built: `schema/oracle` introspection (needs the case-folding rule),
+migrate's Oracle half, MERGE/upsert.
 
 ## Operational notes
 
@@ -138,5 +166,7 @@ Oracle half; the CLI.
   `storm.Build`. DIALECTS.md's "pointer to the model line" exists through
   `storm portable`, not through a library call. Same for `msddl.Check`.
 
-Estimate raised **4 → 6 weeks**: the work-queue lowering, the identifier folding
-and the client are all new.
+Estimate raised **4 → 6 weeks** for the SQL, and the CLIENT is now known to be
+the wrong shape of estimate entirely: TDS and MySQL's protocol have public
+specifications and TTC does not. That is the single biggest correction this
+milestone made to its own plan.
