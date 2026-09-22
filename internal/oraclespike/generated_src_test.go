@@ -180,7 +180,7 @@ func TestPaging(t *testing.T) {
 			t.Fatalf("insert %d: %v", i, err)
 		}
 	}
-	rows, err := sd.New().OrderByRankAsc().Limit(2).All(ctx, ex, nil)
+	rows, err := sd.New().Order(sd.Rank.Asc()).Limit(2).All(ctx, ex, nil)
 	if err != nil {
 		t.Fatalf("paged read: %v", err)
 	}
