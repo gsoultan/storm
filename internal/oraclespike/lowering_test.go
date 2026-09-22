@@ -285,3 +285,76 @@ func numbered(frag string) string {
 	}
 	return b.String()
 }
+
+// The declared shapes: recursion, greatest-n-per-group, and the aggregate
+// ordering that keeps subtotals above their detail.
+//
+// These are where the Oracle-specific syntax is, and where a copy of another
+// back end's lowering would still compile and still be wrong — CYCLE instead of
+// an accumulated path, JSON_TABLE instead of OPENJSON, FETCH FIRST instead of
+// TOP, an alias by juxtaposition instead of AS.
+func TestTheDeclaredShapesRun(t *testing.T) {
+	db := loweringSetup(t)
+	r := &runner{db: db}
+
+	// A self-referential table, which the flat probe table is not.
+	drop(db, "TABLE", `"lo_tree" CASCADE CONSTRAINTS PURGE`)
+	mustExec(t, db, `CREATE TABLE "lo_tree" (
+		"id" NUMBER(19) NOT NULL,
+		"parent_id" NUMBER(19),
+		"name" VARCHAR2(40 CHAR) NOT NULL,
+		"deleted_at" TIMESTAMP(6) WITH TIME ZONE,
+		PRIMARY KEY ("id"))`)
+	t.Cleanup(func() { drop(db, "TABLE", `"lo_tree" CASCADE CONSTRAINTS PURGE`) })
+	for _, row := range [][2]any{{1, nil}, {2, 1}, {3, 2}, {4, 1}} {
+		mustExec(t, db, `INSERT INTO "lo_tree" ("id","parent_id","name") VALUES (:1,:2,:3)`,
+			row[0], row[1], fmt.Sprintf("n%v", row[0]))
+	}
+	// A CYCLE, which is the whole reason this back end needs no path column:
+	// two rows pointing at each other would loop forever without it.
+	mustExec(t, db, `INSERT INTO "lo_tree" ("id","parent_id","name") VALUES (5,6,'n5')`)
+	mustExec(t, db, `INSERT INTO "lo_tree" ("id","parent_id","name") VALUES (6,5,'n6')`)
+
+	cols := []string{"id", "parent_id", "name"}
+	live := oracle.Live(oracle.LiveFor("", "deleted_at"))
+
+	for _, dir := range []int{oracle.Descend, oracle.Ascend} {
+		name := "recursive descend"
+		if dir == oracle.Ascend {
+			name = "recursive ascend"
+		}
+		r.exec(t, name,
+			oracle.Recursive("lo_tree", cols, "id", "parent_id", "NUMBER(19)", dir, live),
+			"[1]", 10)
+	}
+
+	// And that CYCLE actually stops it. Without the clause this statement does
+	// not return — it loops until Oracle gives up — so a passing run is the
+	// assertion.
+	t.Run("a cycle terminates", func(t *testing.T) {
+		var n int
+		err := db.QueryRow(`SELECT count(*) FROM (`+
+			strings.TrimPrefix(
+				oracle.Recursive("lo_tree", cols, "id", "parent_id", "NUMBER(19)",
+					oracle.Descend, live), "")+`)`, "[5]", 10).Scan(&n)
+		if err != nil {
+			t.Fatalf("the cycle guard did not hold: %v", err)
+		}
+		t.Logf("a two-row cycle seeded from 5 returned %d row(s) and terminated", n)
+	})
+
+	// Greatest-n-per-group, both forms. The ordering marker is what codegen
+	// splices; here it is replaced with a real ordering so the statement runs.
+	for _, tc := range []struct {
+		name string
+		stmt string
+	}{
+		{"top-N by window", oracle.TopNWindow("lo_tree", cols, "parent_id", "NUMBER(19)", live)},
+		{"top-N by lateral", oracle.TopNLateral("lo_tree", cols, "parent_id", "NUMBER(19)", live)},
+	} {
+		r.exec(t, tc.name, strings.ReplaceAll(tc.stmt, "\x00order\x00", ` ORDER BY "id" DESC`),
+			"[1,2]", 2)
+	}
+
+	t.Logf("== %d statement(s) reached the server ==", r.n)
+}

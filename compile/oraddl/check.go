@@ -136,20 +136,13 @@ func isEmptyLiteral(def string) bool {
 	return d == "''" || strings.EqualFold(d, "N''")
 }
 
-func checkDefault(c *schema.Column) string {
-	switch strings.ToLower(strings.TrimSpace(c.Default)) {
-	case "uuidv7()":
-		// The same refusal msddl makes, for the same reason and with a worse
-		// alternative. Oracle's SYS_GUID() is not random at all — it is
-		// documented as host-and-sequence derived — so it is neither a v4 nor
-		// a v7, and substituting it would put a guessable, non-time-ordered
-		// value where the model asked for a time-ordered one.
-		return "asks for uuidv7(), which Oracle has no function for; SYS_GUID() is " +
-			"host-and-sequence derived rather than random or time-ordered\n" +
-			"      generate the key client-side, or use gen_random_uuid() and accept SYS_GUID()"
-	}
-	return ""
-}
+// checkDefault has nothing to refuse today, and the empty body is the finding.
+//
+// msddl refuses uuidv7() here because SQL Server generates keys server-side and
+// has only a version 4 to offer. Oracle generates them CLIENT-side — see
+// oracleDefault — so both uuid defaults are honoured by storm rather than by
+// the database, and there is nothing for the model to be wrong about.
+func checkDefault(*schema.Column) string { return "" }
 
 func checkForeignKey(t *schema.Table, fk *schema.ForeignKey, problems *[]string) {
 	checkIdent(t.Pos, "constraint", fk.Name, problems)
