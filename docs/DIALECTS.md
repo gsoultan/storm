@@ -208,7 +208,25 @@ in a subquery.
 
 **Unquoted identifiers fold UP**, where PostgreSQL folds them down. storm quotes
 what it writes, so generation is unaffected; `storm import` reads a catalogue
-that shouts.
+that shouts. And an unquoted name may not START with an underscore — `_storm_k`
+is ORA-00911 — so every internal alias storm invents is quoted too. No other
+target cares about either.
+
+**Oracle's JSON path must be a literal.** `JSON_EXISTS(doc, '$.' || k)` is
+ORA-00907, and nothing enumerates a document's keys, so the key-presence
+operators (`?|`, `?&`) are refused. SQL Server can answer the first through
+OPENJSON; Oracle answers neither.
+
+**The row constructor works for inequality**, which SQL Server's does not — so
+keyset pagination needs no expansion here. Measured by counting rows rather than
+by checking that the statement parses.
+
+**There is no shared ROW lock**, and a locked read may not be CAPPED:
+`FETCH FIRST … FOR UPDATE` is ORA-02014, because `FETCH FIRST` is an inline
+view. That is the work-queue shape, and it is one statement on all three other
+targets. `ROWNUM` parses and is assigned *before* `ORDER BY`, so it would claim
+n arbitrary rows rather than the n oldest — a different question with the same
+API, which is why storm refuses rather than substitutes.
 
 **Oracle has no native `BOOLEAN`** before 23c → `NUMBER(1)` plus a `CHECK`
 constraint, generated from one `s.Bool(...)` declaration. On 23c, which is what
