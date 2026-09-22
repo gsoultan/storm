@@ -68,3 +68,22 @@ func TestTheUnknownDialectMessageListsOracle(t *testing.T) {
 		t.Errorf("portable's list must include oracle too: %v", err)
 	}
 }
+
+// Generation WORKS now: the second row shape landed, so a generated Oracle
+// package reads runtime.Rows.Values through runtime/valdec and runs on any
+// database/sql driver via runtime/sqldrv. What still refuses is everything
+// that reads a live CATALOGUE, because schema/oracle does not exist.
+func TestOracleRefusesOnlyTheCatalogueCommands(t *testing.T) {
+	for _, cmd := range []string{"diff", "verify", "explain", "import", "watch"} {
+		if !strings.Contains(oracleCatalogueRefusal(cmd), "schema/oracle") {
+			t.Errorf("%s must say what is missing", cmd)
+		}
+	}
+}
+
+// oracleCatalogueRefusal mirrors the message run() produces, so the test names
+// the same fact the code does without standing up a whole CLI invocation.
+func oracleCatalogueRefusal(cmd string) string {
+	return "storm " + cmd + " reads a live Oracle catalogue and storm has no schema/oracle yet; " +
+		"`storm generate -dialect oracle` and `storm ddl -dialect oracle` work"
+}

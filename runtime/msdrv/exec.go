@@ -638,3 +638,6 @@ func (r *Rows) Columns() []string {
 	}
 	return out
 }
+
+// Values is nil: this adapter is the BYTE shape. See runtime.Rows.
+func (*Rows) Values() []any { return nil }

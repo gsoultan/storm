@@ -162,3 +162,8 @@ func NewPoolConfig(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, err
 	}
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
+
+// Values is nil: this adapter is the BYTE shape. pgx hands over the wire and
+// storm's decoders read it in place, which is the whole reason the port has a
+// raw form at all. See runtime.Rows.
+func (rows) Values() []any { return nil }

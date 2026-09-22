@@ -92,9 +92,86 @@ type decoders struct {
 	// directly. It is a hook rather than a rename because the call SHAPE
 	// differs: `sl.Str(rv[i])` takes no decoder at all.
 	text func(field string, i int) string
+
+	// rowType and accessor are which of runtime.Rows' two shapes this family
+	// reads — `[][]byte`/`RawValues` for a family that decodes wire bytes,
+	// `[]any`/`Values` for one that reads what a database/sql driver already
+	// decoded.
+	//
+	// Chosen HERE, at generate time, which is what keeps it from being a
+	// branch at run time: a generated package calls exactly one of the two and
+	// never asks which it has. The zero value is the byte shape, so the three
+	// families that predate the second one need no entry.
+	rowType  string
+	accessor string
+
+	// uuid renders the assignment for a NOT NULL uuid column, or nil for the
+	// families whose rows are byte slices and can be copied into the array
+	// directly. A hook rather than a rename for the same reason text is: the
+	// call SHAPE differs, because `copy(r.F[:], rv[i])` needs rv[i] to be a
+	// slice and the value shape's is an interface.
+	uuid func(field string, i int) string
+}
+
+// rowsType is the scanner's parameter type: `[][]byte` unless the family says
+// otherwise.
+func (d decoders) rowsType() string {
+	if d.rowType != "" {
+		return d.rowType
+	}
+	return "[][]byte"
+}
+
+// rowsAccessor is the Rows method a generated read calls.
+func (d decoders) rowsAccessor() string {
+	if d.accessor != "" {
+		return d.accessor
+	}
+	return "RawValues"
 }
 
 func decodersFor(d Dialect, runtimeImport string) decoders {
+	if d == DialectOracle {
+		// The FOURTH family, and the first that reads no bytes at all.
+		//
+		// A database/sql driver decodes before storm can see the wire, so a
+		// generated package for this target scans runtime.Rows.Values rather
+		// than RawValues — the second row shape, chosen here and therefore
+		// never a branch at run time. See runtime/valdec, whose every mapping
+		// was measured against go-ora rather than assumed.
+		return decoders{
+			pkg:      "valdec",
+			imp:      runtimeImport + "/runtime/valdec",
+			rowType:  "[]any",
+			accessor: "Values",
+			// EMPTY. The SQL Server and MySQL families rename where their
+			// bytes genuinely mean something else — DateTimeOffset is not
+			// Timestamptz — and here nothing does: the names are the same and
+			// only the ARGUMENT differs, which is the whole of what the second
+			// row shape changes.
+			fn: nil,
+			// The temporals and the decimal are fallible, for the reason every
+			// other family's are: they read a form a wrong value would
+			// misread, and reporting it beats returning a plausible zero.
+			fallible: map[kind]bool{
+				kindTimestamptz: true, kindDate: true,
+				kindTimeOfDay: true, kindNumeric: true,
+			},
+			// A string is already a string here — the driver allocated it —
+			// so the slab would be a second allocation for no lifetime
+			// benefit. The byte families need one because their wire buffer
+			// is reused underneath a live row.
+			text: func(field string, i int) string {
+				return fmt.Sprintf("r.%s = valdec.Str(rv[%d])", field, i)
+			},
+			// A NOT NULL uuid cannot be `copy(r.F[:], rv[i])` here: rv[i] is
+			// an `any`, and copy needs a slice. The byte families keep the
+			// copy, which is why this is a hook rather than a rename.
+			uuid: func(field string, i int) string {
+				return fmt.Sprintf("r.%s = valdec.UUID(rv[%d])", field, i)
+			},
+		}
+	}
 	if d == DialectMSSQL {
 		// The THIRD family. It shares no bytes with either of the others:
 		// little-endian like MySQL's, but temporals are hundred-nanosecond

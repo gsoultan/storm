@@ -91,3 +91,12 @@ var MySQLPlaceholder = Placeholder{Sigil: '?', Bare: true}
 // by NAME. Reusing an ordinal is therefore legal here and binds once, which is
 // what lets a row comparison expand into the OR-form SQL Server needs.
 var MSSQLPlaceholder = Placeholder{Sigil: '@', Prefix: "p"}
+
+// OraclePlaceholder is `:` followed by an ordinal.
+//
+// A bind variable named by a number, which is legal here and is not in T-SQL —
+// `@1` is a syntax error because an identifier may not start with a digit,
+// which is why MSSQLPlaceholder carries a Prefix and this does not. The name is
+// what binds, so reusing an ordinal binds once: the property that lets a
+// declared parameter appear in two union branches and be passed once.
+var OraclePlaceholder = Placeholder{Sigil: ':'}

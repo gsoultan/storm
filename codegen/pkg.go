@@ -288,6 +288,13 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 		g.p("")
 	}
 	g.p("\t%q", o.Import+"/runtime")
+	// The decoder family, when it is not `runtime` itself. This file holds the
+	// HAVING counters, which decode an int8 — and the table packages' header
+	// emitted this import while this one did not, so a family whose Int8 is
+	// not runtime's produced a package that could not compile.
+	if imp := g.dec.family(); imp != "" {
+		g.p("\t%q", imp)
+	}
 	for _, pkg := range planPackages(plans, named, arcPkgs) {
 		g.p("\t%q", o.PackageImport+"/"+pkg)
 	}

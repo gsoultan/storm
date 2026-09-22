@@ -335,6 +335,9 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 
 	if c.NotNull {
 		if k == kindUUID {
+			if d.uuid != nil {
+				return d.uuid(f, i)
+			}
 			return fmt.Sprintf("copy(r.%s[:], rv[%d])", f, i)
 		}
 		// A family whose decoder for this kind returns an error has to be

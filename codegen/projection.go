@@ -74,7 +74,7 @@ func (g *gen) projection(name string, columns []string) {
 			fallible = true
 		}
 	}
-	g.p("func scan%s(rv [][]byte, r *%sRow, sl *runtime.Slab) error {", name, name)
+	g.p("func scan%s(rv %s, r *%sRow, sl *runtime.Slab) error {", name, g.dec.rowsType(), name)
 	if fallible {
 		g.p("\tvar decErr error")
 	}

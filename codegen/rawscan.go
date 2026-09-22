@@ -414,7 +414,7 @@ func (g *gen) emitRawScanners(scanners []RawScanner, statements []string) {
 	g.p("}")
 	g.p("")
 	for _, rs := range scanners {
-		g.p("func scan%s(rv [][]byte, r *%s.%s, sl *runtime.Slab) error {", rs.TypeName, rs.TypePkg, rs.TypeName)
+		g.p("func scan%s(rv %s, r *%s.%s, sl *runtime.Slab) error {", rs.TypeName, g.dec.rowsType(), rs.TypePkg, rs.TypeName)
 		if rawHasFallible(rs, g.dec) {
 			g.p("\tvar decErr error")
 		}
