@@ -82,17 +82,36 @@ func TestEmptyStringIsNull(t *testing.T) {
 	//    anybody declared, so no column rule can refuse it. If SUBSTR of zero
 	//    length is NULL here and '' on PostgreSQL, then any lowering that
 	//    emits a string function has a semantic difference no Check can see.
+	//
+	//    A second, non-NULL column on purpose. The first run of this probe
+	//    asked for the expression alone and got "sql: no rows in result set"
+	//    from a SELECT against dual, which cannot return none — so the
+	//    question of whether Oracle returns a row and whether the DRIVER hands
+	//    it over are two questions, and they are separated here.
 	var sub sql.NullString
-	if err := db.QueryRow(`SELECT SUBSTR('abc', 1, 0) FROM dual`).Scan(&sub); err != nil {
-		t.Fatal(err)
+	var guard int
+	if err := db.QueryRow(
+		`SELECT SUBSTR('abc', 1, 0), 1 FROM dual`).Scan(&sub, &guard); err != nil {
+		t.Errorf("SUBSTR probe: %v", err)
+	} else {
+		t.Logf(`SUBSTR('abc',1,0) → Valid=%v String=%q  (PostgreSQL: Valid=true "")`, sub.Valid, sub.String)
 	}
-	t.Logf(`SUBSTR('abc',1,0) → Valid=%v String=%q  (PostgreSQL: Valid=true "")`, sub.Valid, sub.String)
 
-	var l sql.NullInt64
-	if err := db.QueryRow(`SELECT LENGTH('') FROM dual`).Scan(&l); err != nil {
-		t.Fatal(err)
+	// The same value as the ONLY column, which is what failed before. If this
+	// errors while the two-column form works, the finding is about go-ora and
+	// not about Oracle — and it would be a finding about the driver storm was
+	// considering adopting.
+	var alone sql.NullString
+	err = db.QueryRow(`SELECT SUBSTR('abc', 1, 0) FROM dual`).Scan(&alone)
+	t.Logf(`the same expression as the only column → err=%v Valid=%v`, err, alone.Valid)
+
+	var lengthOfEmpty sql.NullInt64
+	if err := db.QueryRow(`SELECT LENGTH(''), 1 FROM dual`).Scan(&lengthOfEmpty, &guard); err != nil {
+		t.Errorf("LENGTH probe: %v", err)
+	} else {
+		t.Logf(`LENGTH('') → Valid=%v Int64=%d  (PostgreSQL: Valid=true 0)`,
+			lengthOfEmpty.Valid, lengthOfEmpty.Int64)
 	}
-	t.Logf(`LENGTH('') → Valid=%v Int64=%d  (PostgreSQL: Valid=true 0)`, l.Valid, l.Int64)
 
 	// 6. Concatenation does NOT propagate the NULL, which is the one place
 	//    Oracle is friendlier than the standard — and is why the difference is

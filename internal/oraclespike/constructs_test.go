@@ -90,9 +90,22 @@ func TestEveryConstructM11NeedsExists(t *testing.T) {
 	query1(t, db, "GROUPING()",
 		`SELECT GROUPING(b) FROM c_probe GROUP BY CUBE(b)`)
 
-	// Row locks, including the form a work queue needs.
+	// Row locks. Three probes, not one, because the first run of this spike
+	// combined them and could not say which half Oracle refused.
 	query1(t, db, "FOR UPDATE SKIP LOCKED",
+		`SELECT a FROM c_probe FOR UPDATE SKIP LOCKED`)
+
+	// THE WORK-QUEUE SHAPE. `LIMIT n FOR UPDATE SKIP LOCKED` is one statement
+	// on PostgreSQL, MySQL and SQL Server, and it is how every job table storm
+	// generates for is read. Oracle implements FETCH FIRST as an inline view
+	// with a window function, and ORA-02014 refuses FOR UPDATE against one.
+	query1(t, db, "FETCH FIRST with FOR UPDATE",
 		`SELECT a FROM c_probe ORDER BY a FETCH FIRST 1 ROWS ONLY FOR UPDATE SKIP LOCKED`)
+
+	// And the idiom that replaces it, so the README can say what the lowering
+	// has to be rather than only what it cannot be.
+	query1(t, db, "ROWNUM with FOR UPDATE",
+		`SELECT a FROM c_probe WHERE ROWNUM <= 1 FOR UPDATE SKIP LOCKED`)
 
 	// The soft-delete question. Oracle has NO partial index — but a
 	// function-based unique index on a CASE is the same guarantee, because a
