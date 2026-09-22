@@ -132,7 +132,7 @@ func (g *gen) topFn(key string, kc *schema.Column, cols []string) {
 	g.p("\tout := make([]Row, 0, int64(len(ids))*n)")
 	g.p("\tfor rows.Next() {")
 	g.p("\t\tout = append(out, Row{})")
-	g.p("\t\tif err := scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {")
+	g.p("\t\tif err := scan(rows.%s(), &out[len(out)-1], &sl); err != nil {", g.dec.rowsAccessor())
 	g.p("\t\t\treturn nil, err")
 	g.p("\t\t}")
 	g.p("\t}")

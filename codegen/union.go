@@ -65,7 +65,7 @@ func (g *gen) emitUnion(u *schema.Union) {
 			fallible = true
 		}
 	}
-	g.p("func scan%s(rv [][]byte, r *%sRow, sl *runtime.Slab) error {", u.Name, u.Name)
+	g.p("func scan%s(rv %s, r *%sRow, sl *runtime.Slab) error {", u.Name, g.dec.rowsType(), u.Name)
 	if fallible {
 		g.p("\tvar decErr error")
 	}

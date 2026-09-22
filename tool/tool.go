@@ -240,16 +240,14 @@ func run(args []string) error {
 	// does not.
 	if tgt.dialect == codegen.DialectOracle {
 		switch cmd {
-		case "generate", "diff", "verify", "explain", "import", "watch":
+		case "diff", "verify", "explain", "import", "watch":
+			// These need a CATALOGUE reader, and schema/oracle does not exist
+			// yet. Generation does not: it needs a lowering and a runtime, and
+			// both are here — runtime/sqldrv over any database/sql driver,
+			// reading the port's second row shape.
 			return fmt.Errorf(
-				"storm %s needs an Oracle RUNTIME and storm has none yet.\n"+
-					"       The SQL is done and proven: `storm ddl -dialect oracle` emits DDL a\n"+
-					"       server applies, and `storm portable oracle` reports what does not port.\n"+
-					"       What is missing is a client. internal/oraclespike measured go-ora at\n"+
-					"       26.3 allocations per row where storm's own SQL Server client costs\n"+
-					"       0.09, and the gap is the driver's rather than database/sql's — so this\n"+
-					"       needs either a native client or a second row shape in runtime.Executor,\n"+
-					"       and that is an ADR rather than an afternoon", cmd)
+				"storm %s reads a live Oracle catalogue and storm has no schema/oracle yet; "+
+					"`storm generate -dialect oracle` and `storm ddl -dialect oracle` work", cmd)
 		}
 	}
 	if tgt.dialect != codegen.DialectPostgres {

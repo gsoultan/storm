@@ -4,6 +4,7 @@ import (
 	"github.com/gsoultan/storm/compile/mariadb"
 	"github.com/gsoultan/storm/compile/mssql"
 	"github.com/gsoultan/storm/compile/mysql"
+	"github.com/gsoultan/storm/compile/oracle"
 	"github.com/gsoultan/storm/compile/pgsql"
 	"github.com/gsoultan/storm/schema"
 )
@@ -671,6 +672,159 @@ func mssqlLowering() lowering {
 			}
 		},
 		MergeOutput: mssql.MergeOutput,
+	}
+}
+
+// oracleLowering is the FOURTH back end, and the first whose generated package
+// reads DECODED values rather than wire bytes.
+//
+// Most of the grammar is SQL Server's — OFFSET/FETCH, CROSS APPLY, no FILTER
+// clause — and three things diverge in ways worth naming here rather than only
+// in compile/oracle:
+//
+//   - It cannot RETURN the row it wrote. Oracle's RETURNING binds OUTPUT
+//     parameters and runtime.Executor carries none, so keys are client-side —
+//     MySQL's answer from a different direction.
+//   - Three of the seven lock modes are refused: there is no shared ROW lock.
+//     And a locked read may not be capped, which is the work-queue shape.
+//   - The row constructor WORKS, so keyset pagination needs no expansion. That
+//     is the one place this target is closer to PostgreSQL than to SQL Server,
+//     and it was measured rather than read.
+func oracleLowering() lowering {
+	return lowering{
+		name:  "oracle",
+		Ident: oracle.Ident,
+		Frag: func(op, ident string, c *schema.Column) (string, string, bool) {
+			switch op {
+			case "In", "NotIn":
+				// The JSON_TABLE column must be declared with the SAME type as
+				// the column it is matched against, or the comparison puts an
+				// implicit conversion on the indexed side and the seek becomes
+				// a scan. This is why Frag takes a column here and not a name.
+				if c == nil {
+					return "", "", false
+				}
+				a, b := oracle.InFrag(ident, oracle.ColumnType(c), op == "NotIn")
+				return a, b, true
+			}
+			return oracle.Frag(op, ident)
+		},
+		SelectPrefix:      oracle.SelectPrefix,
+		CountPrefix:       oracle.CountPrefix,
+		ExistsPrefix:      oracle.ExistsPrefix,
+		ExistsSuffix:      oracle.ExistsSuffix,
+		LimitOffsetSuffix: oracle.LimitOffsetSuffix,
+		DefaultOrderBy:    oracle.DefaultOrderBy,
+		OrderTerm:         oracle.OrderTerm,
+		OrderLead:         oracle.OrderLead,
+		OrderSep:          oracle.OrderSep,
+		NDirections:       oracle.NDirections,
+		TupleOpen:         oracle.TupleOpen,
+		TupleSep:          oracle.TupleSep,
+		TupleClose:        oracle.TupleClose,
+		RowCmpOp:          oracle.RowCmpOp,
+		RowCmpExpand:      oracle.RowCmpExpand,
+		OrderFallback:     oracle.OrderFallback,
+		PagingOffsetFirst: oracle.PagingOffsetFirst,
+
+		NumLockModes: oracle.NumLockModes,
+		LockSuffix:   oracle.LockSuffix,
+		LockHint:     oracle.LockHint,
+		LockName:     pgsqlLockName,
+		LockDoc:      pgsqlLockDoc,
+		LockNotes:    oracle.LockNotes,
+
+		LockRefusedCounted: pgsql.LockRefusedCounted,
+		LockRefusedProbed:  pgsql.LockRefusedProbed,
+		LockRefusedGrouped: pgsql.LockRefusedGrouped,
+		LockRefusedJoined:  pgsql.LockRefusedJoined,
+
+		JoinSelect: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+			live func(table, alias string) string) (string, error) {
+			return oracle.JoinSelect(t, j, aggFor,
+				func(tb, al string) oracle.Live { return oracle.Live(live(tb, al)) })
+		},
+		JoinSuffix: oracle.JoinSuffix,
+		JoinDeclaredWhere: func(j *schema.Join, driving string) (string, error) {
+			return oracle.JoinDeclaredWhere(j, oracle.Live(driving))
+		},
+		UnionSelect: func(u *schema.Union, live func(string) string) (string, error) {
+			return oracle.UnionSelect(u, func(t string) oracle.Live { return oracle.Live(live(t)) })
+		},
+		UnionSuffix: func(u *schema.Union) (string, error) {
+			// UnionOrderRefused is always nil here — Oracle has NULLS
+			// FIRST/LAST wherever an ORDER BY appears — and is still called,
+			// because a back end answering "nothing" is not the same as one
+			// the seam does not ask.
+			if err := oracle.UnionOrderRefused(u); err != nil {
+				return "", err
+			}
+			return oracle.UnionSuffix(u), nil
+		},
+		AggregateSelect: oracle.AggregateSelect,
+		AggregateSuffix: oracle.AggregateSuffix,
+
+		KeyType:           oracle.ColumnType,
+		RecursiveMaxDepth: oracle.MaxRecursionDepth,
+		// The key is storm's to generate: Oracle's RETURNING binds output
+		// parameters the port does not carry, and SYS_GUID() is not a uuid at
+		// all. Same answer MySQL gives, reached from a different direction.
+		KeysAreClientSide: true,
+
+		Recursive: func(t string, cols []string, key, parent, keyType string, dir int, live string) string {
+			return oracle.Recursive(t, cols, key, parent, keyType, dir, oracle.Live(live))
+		},
+		TopNWindow: func(t string, cols []string, key, keyType, live string) string {
+			return oracle.TopNWindow(t, cols, key, keyType, oracle.Live(live))
+		},
+		TopNLateral: func(t string, cols []string, key, keyType, live string) string {
+			return oracle.TopNLateral(t, cols, key, keyType, oracle.Live(live))
+		},
+		ExistsFrag: func(ct, fk, pt, pk, live string) string {
+			return oracle.ExistsFrag(ct, fk, pt, pk, oracle.Live(live))
+		},
+		NotExistsFrag: func(ct, fk, pt, pk, live string) string {
+			return oracle.NotExistsFrag(ct, fk, pt, pk, oracle.Live(live))
+		},
+		ExistsOpen: func(ct, fk, pt, pk, live string) string {
+			return oracle.ExistsOpen(ct, fk, pt, pk, oracle.Live(live))
+		},
+		NotExistsOpen: func(ct, fk, pt, pk, live string) string {
+			return oracle.NotExistsOpen(ct, fk, pt, pk, oracle.Live(live))
+		},
+
+		SoftDeleteWhere: oracle.SoftDeleteWhere,
+		SoftDeleteSet:   oracle.SoftDeleteSet,
+		RestoreSet:      oracle.RestoreSet,
+		LiveFor:         oracle.LiveFor,
+
+		InsertStmt:      oracle.InsertStmt,
+		InsertPrefix:    oracle.InsertPrefix,
+		InsertParts:     func([]string) (string, string, string, string) { return oracle.InsertParts() },
+		ReturningClause: oracle.ReturningClause,
+		UpdatePrefix:    oracle.UpdatePrefix,
+		DeletePrefix:    oracle.DeletePrefix,
+		SetFrag:         oracle.SetFrag,
+		BumpFrag:        oracle.BumpFrag,
+		NowFrag:         oracle.NowFrag,
+		SetLead:         oracle.SetLead,
+		SetSep:          oracle.SetSep,
+		WhereLead:       oracle.WhereLead,
+		WhereSep:        oracle.WhereSep,
+		Placeholder:     oracle.Placeholder,
+		PlaceholderExpr: "runtime.OraclePlaceholder",
+
+		// No upsert lowering yet. Oracle HAS MERGE — it was measured in
+		// internal/oraclespike before this package was written — and the
+		// generated form needs a returning clause to hand the row back, which
+		// this target does not have. Both are left out together rather than
+		// shipping an upsert that silently returns nothing.
+		Upsert: nil,
+
+		// A generated package for this target cannot return the row it wrote.
+		// Oracle's RETURNING binds OUTPUT parameters and runtime.Executor
+		// carries none, so keys are client-side. See compile/oracle/write.go.
+		noReturning: true,
 	}
 }
 

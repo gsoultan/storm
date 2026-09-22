@@ -712,7 +712,7 @@ rm -rf "$TMP2"
 # outsider can reach is not shipped, and a BOUNDARY nothing an outsider can
 # reach is not a boundary either. The refusal has to be as reachable as the
 # feature, or "storm generate refuses and says why" is a claim in a comment.
-echo "== a stranger can emit Oracle DDL, and is told where Oracle stops =="
+echo "== a stranger can generate for Oracle, and the result COMPILES =="
 cd "$TMP"
 if [ ! -d cmd/mystorm ]; then
   portable_module
@@ -730,14 +730,41 @@ if ! go run ./cmd/mystorm portable oracle > oraport.out 2>&1; then
   note "portable oracle refused a model that ports:"; sed 's/^/    /' oraport.out >&2
 fi
 
-# And the boundary. generate MUST refuse, and the refusal must name the reason
-# rather than failing somewhere deep — an adopter who reaches for it deserves
-# to learn what is missing in one line.
-if go run ./cmd/mystorm generate -dialect oracle orastore >oragen.err 2>&1; then
-  note "generate -dialect oracle SUCCEEDED, and storm has no Oracle runtime"
-elif ! grep -q 'runtime' oragen.err; then
-  note "generate -dialect oracle refused without naming the missing runtime:"
-  sed 's/^/    /' oragen.err | head -5 >&2
+# And the generated package, which COMPILES — this is the second row shape
+# proving itself. A package for this target scans runtime.Rows.Values through
+# runtime/valdec rather than the wire bytes every other target reads, and a
+# codegen that emitted one shape's accessor with the other's scanner signature
+# would fail exactly here.
+if ! go run ./cmd/mystorm generate -dialect oracle orastore >oragen.err 2>&1; then
+  note "generate -dialect oracle failed:"; sed 's/^/    /' oragen.err | head -10 >&2
+else
+  if ! GOFLAGS=-mod=mod go mod tidy >tidy4.err 2>&1; then
+    note "go mod tidy failed after generating for Oracle:"
+    sed 's/^/    /' tidy4.err | head -5 >&2
+  fi
+  if ! go vet ./orastore/... >oravet.err 2>&1; then
+    note "the generated Oracle package does not vet:"
+    sed 's/^/    /' oravet.err | head -10 >&2
+  fi
+  # The shape, not just the compile: a generated Oracle package must read the
+  # VALUE side of the port. If this says RawValues, codegen picked the wrong
+  # family and the package would scan nil against a database/sql driver.
+  if grep -rq 'RawValues' orastore/; then
+    note "the generated Oracle package reads RawValues; it must read Values"
+    grep -rn 'RawValues' orastore/ | head -3 | sed 's/^/    /' >&2
+  fi
+  if ! grep -rq 'valdec\.' orastore/; then
+    note "the generated Oracle package does not use runtime/valdec"
+  fi
+fi
+
+# The commands that still refuse, and the refusal must name what is missing
+# rather than failing somewhere deep.
+if go run ./cmd/mystorm import -dialect oracle >oraimp.err 2>&1; then
+  note "import -dialect oracle SUCCEEDED, and storm has no schema/oracle"
+elif ! grep -q 'schema/oracle' oraimp.err; then
+  note "import -dialect oracle refused without naming what is missing:"
+  sed 's/^/    /' oraimp.err | head -5 >&2
 fi
 
 if [ "$fail" -eq 0 ]; then

@@ -219,7 +219,7 @@ func (g *gen) emitHaving(np havingSpec) {
 	g.p("	var out []%s.Row", np.ParentPkg)
 	g.p("	for rows.Next() {")
 	g.p("		out = append(out, %s.Row{})", np.ParentPkg)
-	g.p("		if err := %s.Scan(rows.RawValues(), &out[len(out)-1], &sl); err != nil {", np.ParentPkg)
+	g.p("		if err := %s.Scan(rows.%s(), &out[len(out)-1], &sl); err != nil {", np.ParentPkg, g.dec.rowsAccessor())
 	g.p("			return nil, err")
 	g.p("		}")
 	g.p("	}")
@@ -252,7 +252,7 @@ func (g *gen) emitHaving(np havingSpec) {
 	g.p("	if !rows.Next() {")
 	g.p("		return 0, rows.Err()")
 	g.p("	}")
-	g.p("	return runtime.Int8(rows.RawValues()[0]), rows.Err()")
+	g.p("\treturn %s(rows.%s()[0]), rows.Err()", g.dec.q("Int8"), g.dec.rowsAccessor())
 	g.p("}")
 	g.p("")
 }

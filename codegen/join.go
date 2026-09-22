@@ -98,7 +98,7 @@ func (g *gen) join(j *schema.Join) {
 			fallible = true
 		}
 	}
-	g.p("func scan%s(rv [][]byte, r *%sRow, sl *runtime.Slab) error {", j.Name, j.Name)
+	g.p("func scan%s(rv %s, r *%sRow, sl *runtime.Slab) error {", j.Name, g.dec.rowsType(), j.Name)
 	if fallible {
 		g.p("\tvar decErr error")
 	}
@@ -151,7 +151,7 @@ func (g *gen) join(j *schema.Join) {
 	g.p("\tdefer rows.Close()")
 	g.p("\tfor rows.Next() {")
 	g.p("\t\tdst = append(dst, %sRow{})", j.Name)
-	g.p("\t\tif err := scan%s(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {", j.Name)
+	g.p("\t\tif err := scan%s(rows.%s(), &dst[len(dst)-1], sl); err != nil {", j.Name, g.dec.rowsAccessor())
 	g.p("\t\t\treturn dst, err")
 	g.p("\t\t}")
 	g.p("\t}")

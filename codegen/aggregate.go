@@ -96,7 +96,7 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 			fallible = true
 		}
 	}
-	g.p("func scan%s(rv [][]byte, r *%sRow, sl *runtime.Slab) error {", name, name)
+	g.p("func scan%s(rv %s, r *%sRow, sl *runtime.Slab) error {", name, g.dec.rowsType(), name)
 	if fallible {
 		g.p("\tvar decErr error")
 	}
@@ -166,7 +166,7 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tdefer rows.Close()")
 	g.p("\tfor rows.Next() {")
 	g.p("\t\tdst = append(dst, %sRow{})", name)
-	g.p("\t\tif err := scan%s(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {", name)
+	g.p("\t\tif err := scan%s(rows.%s(), &dst[len(dst)-1], sl); err != nil {", name, g.dec.rowsAccessor())
 	g.p("\t\t\treturn dst, err")
 	g.p("\t\t}")
 	g.p("\t}")

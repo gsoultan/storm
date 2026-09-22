@@ -163,3 +163,5 @@ func (drainExec) CopyFrom(context.Context, string, []string, stormrt.CopySource)
 func (drainExec) Batch(context.Context, []stormrt.BatchOp, func(int, stormrt.Rows, int64, error) error) error {
 	return nil
 }
+
+func (noRows) Values() []any { return nil } // the BYTE shape; see runtime.Rows
