@@ -99,6 +99,26 @@ generated from that would declare Go fields from shouting names; a model written
 by hand would diff against it forever. `schema/oracle` needs a folding rule that
 `schema/pg` and `schema/mssql` did not.
 
+## What running the back end added
+
+M11 started after the three results below, and `compile/oraddl` and
+`compile/oracle` are gated from this module. Six things came out of running
+them that reading the documentation did not give:
+
+| finding | consequence |
+|---|---|
+| **An unquoted identifier may not start with an underscore** — `_storm_k` is ORA-00911 | Every internal alias storm invents goes through `Ident`. No other target cares |
+| **A JSON path must be a LITERAL** — `JSON_EXISTS(doc, '$.' || k)` is ORA-00907, and nothing enumerates a document's keys | `HasAnyKey` and `HasAllKeys` are both REFUSED. This reverses the first draft, which claimed Oracle was richer than SQL Server here: SQL Server can do one of the two through OPENJSON, Oracle neither |
+| **The row constructor WORKS for inequality** | `RowCmpExpand` is false. The one place this back end is closer to PostgreSQL than to SQL Server, and it removes a whole expansion |
+| **`go-ora`'s `Prepare` never reaches the server** | The gate EXECUTEs. Two statements Oracle refuses outright prepared without error — a PREPARE that does not round-trip proves nothing |
+| **The native JSON type needs an ASSM tablespace** — ORA-43853 in `SYSTEM` | The gate runs as an application user in `USERS`, which is what an application does anyway |
+| **A trailing semicolon is ORA-00911** through the protocol | `oraddl.Statements` is the primitive and `Create` (the migration FILE) is built from it, rather than a splitter stripping a terminator storm added |
+
+The first two were caught because the gate EXECUTES rather than renders, which
+is P6.7 again. The third was caught because the probe counted ROWS rather than
+checking that a statement parsed — a row constructor that silently compared only
+the leading column would have passed a weaker test.
+
 ## Result 2: the driver costs 26 allocations per row
 
 ```
