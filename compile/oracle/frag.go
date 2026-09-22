@@ -59,6 +59,14 @@ var frags = map[string]frag{
 
 // wrapped are the operators that are FUNCTIONS here. They take the identifier
 // as an argument rather than following it.
+// keyAlias is the alias the unpacked key list is given.
+//
+// QUOTED, and that is not decoration. An unquoted Oracle identifier must begin
+// with a LETTER, so `_storm_k` is ORA-00911 "invalid character" — where every
+// other target storm has accepts a leading underscore happily. Every internal
+// alias this package invents goes through Ident for that reason.
+var keyAlias = Ident("_storm_k")
+
 var wrapped = map[string]struct{ open, close string }{
 	// PostgreSQL's `?|` — does this document have ANY of these top-level keys.
 	// JSON_EXISTS with a path that names the keys answers it directly, and the
@@ -66,18 +74,18 @@ var wrapped = map[string]struct{ open, close string }{
 	// shape does not depend on how many keys the caller passed.
 	"HasAnyKey": {
 		"EXISTS (SELECT 1 FROM JSON_TABLE(" + Placeholder +
-			", '$[*]' COLUMNS (k VARCHAR2(4000) PATH '$')) _storm_k " +
-			"WHERE JSON_EXISTS(",
-		", '$.' || _storm_k.k))",
+			", '$[*]' COLUMNS (k VARCHAR2(4000) PATH '$')) " + keyAlias +
+			" WHERE JSON_EXISTS(",
+		", '$.' || " + keyAlias + ".k))",
 	},
 	// And `?&` — ALL of them. Expressible here because the bound list is
 	// mentioned once and counted by the same subquery, which is exactly what
 	// SQL Server could not do with a single-placeholder fragment.
 	"HasAllKeys": {
 		"(SELECT count(*) FROM JSON_TABLE(" + Placeholder +
-			", '$[*]' COLUMNS (k VARCHAR2(4000) PATH '$')) _storm_k " +
-			"WHERE NOT JSON_EXISTS(",
-		", '$.' || _storm_k.k)) = 0",
+			", '$[*]' COLUMNS (k VARCHAR2(4000) PATH '$')) " + keyAlias +
+			" WHERE NOT JSON_EXISTS(",
+		", '$.' || " + keyAlias + ".k)) = 0",
 	},
 }
 

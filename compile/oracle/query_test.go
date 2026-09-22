@@ -211,3 +211,23 @@ func TestCountReturnsSomethingWideEnough(t *testing.T) {
 		t.Errorf("got %s", oracle.CountPrefix("t"))
 	}
 }
+
+// An unquoted Oracle identifier must begin with a LETTER, so an internal alias
+// spelled `_storm_k` is ORA-00911 — where every other target storm has accepts
+// a leading underscore. Found by running the lowering, not by reading it.
+func TestInternalAliasesAreQuoted(t *testing.T) {
+	for _, op := range []string{"HasAnyKey", "HasAllKeys"} {
+		a, b, ok := oracle.Frag(op, `"doc"`)
+		if !ok {
+			t.Fatalf("%s has no lowering", op)
+		}
+		got := a + b
+		if strings.Contains(got, " _storm") || strings.Contains(got, "(_storm") {
+			t.Errorf("%s uses a bare alias starting with an underscore, which is "+
+				"ORA-00911 here:\n%s", op, got)
+		}
+		if !strings.Contains(got, `"_storm_k"`) {
+			t.Errorf("%s must quote its alias:\n%s", op, got)
+		}
+	}
+}
