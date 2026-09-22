@@ -17,6 +17,7 @@ on:
     paths:
       - 'internal/oraclespike/**'
       - 'compile/oraddl/**'
+      - 'compile/oracle/**'
       - '.github/workflows/oracle-spike.yml'
 
 jobs:
@@ -59,7 +60,7 @@ jobs:
       # the pass/fail: a spike reports, a gate refuses.
       # Result 1 and 3, and — since M11 started — the DDL compile/oraddl emits,
       # APPLIED. P6.7: a generator that agrees with itself proves nothing.
-      - name: what Oracle has, what it means, and whether the DDL applies
+      - name: what Oracle has, what it means, and whether storm's SQL runs
         run: cd internal/oraclespike && go test -count=1 -v ./...
 
       # Result 2: what a database/sql Oracle driver costs per row. The same
