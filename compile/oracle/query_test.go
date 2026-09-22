@@ -75,10 +75,17 @@ func TestNullPlacementIsSpelledOnlyWhenItDiffersFromTheDefault(t *testing.T) {
 	}
 }
 
-// There is no row constructor for inequality, so keyset pagination expands.
-func TestRowComparisonExpands(t *testing.T) {
-	if !oracle.RowCmpExpand {
-		t.Error("(a,b) > (:1,:2) is ORA-00920; the comparison has to expand")
+// The constructor works, so the comparison does NOT expand — the one place
+// this back end is closer to PostgreSQL than to SQL Server. Measured by
+// internal/oraclespike's lowering gate, which counts rows rather than checking
+// that the statement parses.
+func TestRowComparisonUsesTheConstructor(t *testing.T) {
+	if oracle.RowCmpExpand {
+		t.Error("Oracle's row constructor compares lexicographically; expanding it " +
+			"would emit an OR-chain for nothing")
+	}
+	if oracle.TupleOpen != "(" || oracle.TupleSep != ", " || oracle.TupleClose != ")" {
+		t.Error("the punctuation is live now, not vestigial")
 	}
 }
 

@@ -11,9 +11,12 @@
 //     ordinal binds once, so ADR-0010's carrier needs no Prefix here (unlike
 //     T-SQL, where `@1` is a syntax error because an identifier may not start
 //     with a digit).
-//   - There is no row constructor for INEQUALITY. `(a, b) > (:1, :2)` does not
-//     parse — `IN` takes one and `>` does not — so keyset pagination expands
-//     into the OR-chain it means, exactly as it does on SQL Server.
+//   - The row constructor WORKS, for inequality as well as for IN. That is
+//     the one place this back end is closer to PostgreSQL than to SQL Server,
+//     and it was measured rather than assumed: the documentation reads as
+//     though `>` is not among the operators a constructor takes, and running
+//     it says otherwise — with the right rows, including on a tie in the
+//     leading key. So keyset pagination needs no expansion here.
 //   - A ROW CAP AND A ROW LOCK CANNOT BE COMBINED. `FETCH FIRST n ROWS ONLY
 //     … FOR UPDATE` is ORA-02014, because FETCH FIRST is implemented as an
 //     inline view and Oracle will not lock through one. That is the work-queue
@@ -149,23 +152,24 @@ const (
 
 // Row comparison — what keyset pagination filters with.
 //
-// Oracle has NO row constructor for inequality. `(a, b) > (:1, :2)` is
-// ORA-00920, not a slower plan — the constructor exists for IN and for nothing
-// else. So the comparison expands into the OR-chain it means, in
-// runtime.expandRowCmp, because it is the SPLICER that knows the ordinals.
-// RowCmpExpand is how this package asks for it.
+// The constructor is used directly. `(a, b) > (:1, :2)` parses AND compares
+// lexicographically, which is the one thing SQL Server could not do and the
+// reason compile/mssql expands the comparison into an OR-chain.
 //
-// The punctuation below is still supplied and still correct — it is what the
-// expansion would use if this back end grew the constructor — but nothing
-// reads it while RowCmpExpand is set.
+// This was measured, not read. compile/oracle's first draft assumed the
+// expansion was needed — Oracle's documentation lists the constructor under IN
+// and says little about inequality — and internal/oraclespike's lowering gate
+// asked the question properly: not "does it parse" but "does it return the
+// right rows", with a tie on the leading key, because a constructor that
+// silently compared only the first column would pass a weaker test.
 const (
 	TupleOpen  = "("
 	TupleSep   = ", "
 	TupleClose = ")"
 )
 
-// RowCmpExpand asks the splicer to expand a row comparison into an OR-chain.
-const RowCmpExpand = true
+// RowCmpExpand is false: the splicer emits the constructor as written.
+const RowCmpExpand = false
 
 // PagingOffsetFirst says the paging arguments bind offset-then-limit.
 const PagingOffsetFirst = true
