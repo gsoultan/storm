@@ -114,10 +114,14 @@ func TestTheDDLStormEmitsApplies(t *testing.T) {
 	// Every NOT NULL column named, so the only thing that can refuse this is
 	// the CHECK. An insert short of a column would be refused by ORA-01400 and
 	// would look like a pass.
+	// The KEY is supplied by the caller, which is the whole of what
+	// KeysAreClientSide means: oraddl emits no DEFAULT for a uuid column,
+	// because SYS_GUID() is not a uuid and RETURNING ... INTO needs output
+	// binds the Executor port does not carry. A client generates the id.
 	const insOrg = `INSERT INTO "ddl_orgs" ` +
-		`("name","seats","balance","active","opened","status","doc") ` +
-		`VALUES (:1,1,0,TRUE,DATE '2026-01-01',:2,JSON('{}'))`
-	if _, err := db.Exec(insOrg, "bad", "nope"); err == nil {
+		`("id","name","seats","balance","active","opened","status","doc") ` +
+		`VALUES (:1,:2,1,0,TRUE,DATE '2026-01-01',:3,JSON('{}'))`
+	if _, err := db.Exec(insOrg, uuidBytes(1), "bad", "nope"); err == nil {
 		t.Error("a value outside the enum's labels was accepted; the CHECK is not doing its job")
 	} else if !strings.Contains(err.Error(), "ORA-02290") {
 		t.Errorf("the enum column was refused by something other than its CHECK: %v", err)
@@ -126,18 +130,19 @@ func TestTheDDLStormEmitsApplies(t *testing.T) {
 	// The soft-delete unique. Two live rows with one email must collide; a
 	// deleted one must not — which is the property a partial index gives and
 	// the reason MySQL cannot take this model.
-	mustExec(t, db, insOrg, "acme", "new")
+	mustExec(t, db, insOrg, uuidBytes(2), "acme", "new")
 	var orgID []byte
 	if err := db.QueryRow(`SELECT "id" FROM "ddl_orgs" WHERE "name" = 'acme'`).Scan(&orgID); err != nil {
 		t.Fatal(err)
 	}
-	ins := `INSERT INTO "ddl_members" ("email","rank","deleted_at","org_id") VALUES (:1,:2,:3,:4)`
-	mustExec(t, db, ins, "a@example.com", 1, nil, orgID)
-	if _, err := db.Exec(ins, "a@example.com", 2, nil, orgID); err == nil {
+	ins := `INSERT INTO "ddl_members" ("id","email","rank","deleted_at","org_id") ` +
+		`VALUES (:1,:2,:3,:4,:5)`
+	mustExec(t, db, ins, uuidBytes(10), "a@example.com", 1, nil, orgID)
+	if _, err := db.Exec(ins, uuidBytes(11), "a@example.com", 2, nil, orgID); err == nil {
 		t.Error("two LIVE rows with one email were accepted; the live-scoped unique is not enforced")
 	}
 	// Soft-deleted, the same email is free again.
-	mustExec(t, db, ins, "a@example.com", 3, time.Now().UTC(), orgID)
+	mustExec(t, db, ins, uuidBytes(12), "a@example.com", 3, time.Now().UTC(), orgID)
 }
 
 // A model Oracle cannot take is refused by NAME, before anything is applied.
@@ -191,4 +196,12 @@ func firstLine2(s string) string {
 		return strings.TrimSpace(s[:i])
 	}
 	return strings.TrimSpace(s)
+}
+
+// uuidBytes is a distinct 16-byte key. The shape of a client-generated id,
+// which is what this target uses — not the value storm would generate.
+func uuidBytes(n byte) []byte {
+	b := make([]byte, 16)
+	b[15] = n
+	return b
 }
