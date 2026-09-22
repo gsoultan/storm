@@ -147,7 +147,7 @@ func TestInListIsOneBoundDocument(t *testing.T) {
 func TestEveryFragmentBindsAtMostOneValue(t *testing.T) {
 	for _, op := range []string{
 		"Eq", "NotEq", "Gt", "Gte", "Lt", "Lte", "Like", "ILike",
-		"IsNull", "IsNotNull", "EqLower", "HasAnyKey", "HasAllKeys",
+		"IsNull", "IsNotNull", "EqLower",
 	} {
 		a, b, ok := oracle.Frag(op, `"c"`)
 		if !ok {
@@ -167,6 +167,24 @@ func TestJSONContainmentIsRefusedByName(t *testing.T) {
 		}
 		if why := oracle.Refused(op); !strings.Contains(why, "JSON_EXISTS") {
 			t.Errorf("the refusal must name what Oracle does have: %s", why)
+		}
+	}
+}
+
+// The key-presence operators are refused too, and the reason is one this
+// package got WRONG until it ran: a JSON path must be a literal here, so a key
+// that arrives as a bound value cannot be looked up, and nothing enumerates a
+// document's keys the way SQL Server's OPENJSON does.
+func TestDynamicJSONKeyLookupIsRefusedByName(t *testing.T) {
+	for _, op := range []string{"HasAnyKey", "HasAllKeys"} {
+		if oracle.Supported(op) {
+			t.Errorf("%s is claimed; JSON_EXISTS with a computed path is ORA-00907", op)
+		}
+		why := oracle.Refused(op)
+		for _, want := range []string{"literal", "ORA-00907", "enumerates"} {
+			if !strings.Contains(why, want) {
+				t.Errorf("the refusal must mention %q: %s", want, why)
+			}
 		}
 	}
 }
@@ -209,25 +227,5 @@ func TestCountReturnsSomethingWideEnough(t *testing.T) {
 	// Server there is no count_big to reach for.
 	if !strings.Contains(oracle.CountPrefix("t"), "count(*)") {
 		t.Errorf("got %s", oracle.CountPrefix("t"))
-	}
-}
-
-// An unquoted Oracle identifier must begin with a LETTER, so an internal alias
-// spelled `_storm_k` is ORA-00911 — where every other target storm has accepts
-// a leading underscore. Found by running the lowering, not by reading it.
-func TestInternalAliasesAreQuoted(t *testing.T) {
-	for _, op := range []string{"HasAnyKey", "HasAllKeys"} {
-		a, b, ok := oracle.Frag(op, `"doc"`)
-		if !ok {
-			t.Fatalf("%s has no lowering", op)
-		}
-		got := a + b
-		if strings.Contains(got, " _storm") || strings.Contains(got, "(_storm") {
-			t.Errorf("%s uses a bare alias starting with an underscore, which is "+
-				"ORA-00911 here:\n%s", op, got)
-		}
-		if !strings.Contains(got, `"_storm_k"`) {
-			t.Errorf("%s must quote its alias:\n%s", op, got)
-		}
 	}
 }
