@@ -29,8 +29,15 @@ const dsnEnv = "STORM_ORACLE_DSN"
 // and in CI — there is no Azure SQL Edge equivalent to caveat.
 //
 //	container run -d --name storm-oracle -p 1521:1521 \
-//	  -e ORACLE_PASSWORD=Storm1Passw0rd gvenzl/oracle-free:slim
-//	STORM_ORACLE_DSN='oracle://system:Storm1Passw0rd@localhost:1521/FREEPDB1' go test ./...
+//	  -e ORACLE_PASSWORD=Storm1Passw0rd \
+//	  -e APP_USER=storm -e APP_USER_PASSWORD=Storm1Passw0rd gvenzl/oracle-free:slim
+//	STORM_ORACLE_DSN='oracle://storm:Storm1Passw0rd@localhost:1521/FREEPDB1' go test ./...
+//
+// APP_USER, not `system`. A normal user lands in the USERS tablespace; SYSTEM
+// has manual segment space management, and the native JSON type is ORA-43853
+// there. Connecting as system made a type storm generates unusable for a reason
+// no real deployment would hit — which is its own argument for running the gate
+// the way an application would.
 func open(t testing.TB) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv(dsnEnv)

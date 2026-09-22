@@ -31,6 +31,13 @@ jobs:
         image: gvenzl/oracle-free:slim
         env:
           ORACLE_PASSWORD: Storm1Passw0rd
+          # A NORMAL user in a NORMAL tablespace, not SYSTEM. The native JSON
+          # type is ORA-43853 in a tablespace without automatic segment space
+          # management, and SYSTEM is exactly that — so connecting as `system`
+          # made a type storm generates unusable for a reason no real
+          # deployment would hit. gvenzl/oracle-free creates APP_USER in USERS.
+          APP_USER: storm
+          APP_USER_PASSWORD: Storm1Passw0rd
         ports: ["1521:1521"]
         options: >-
           --health-cmd healthcheck.sh
@@ -38,7 +45,7 @@ jobs:
           --health-timeout 10s
           --health-retries 30
     env:
-      STORM_ORACLE_DSN: oracle://system:Storm1Passw0rd@127.0.0.1:1521/FREEPDB1
+      STORM_ORACLE_DSN: oracle://storm:Storm1Passw0rd@127.0.0.1:1521/FREEPDB1
       GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v7
