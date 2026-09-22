@@ -225,6 +225,8 @@ func loweringFor(d Dialect) lowering {
 		return mariadbLowering()
 	case DialectMSSQL:
 		return mssqlLowering()
+	case DialectOracle:
+		return oracleLowering()
 	}
 	return postgresLowering()
 }
