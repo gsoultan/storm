@@ -67,20 +67,19 @@ type runner struct {
 	n  int
 }
 
-// exec PREPAREs and EXECUTEs one statement. Both, because prepare alone catches
-// syntax and nothing else: a collation that parses and does not exist, or a
-// bind Oracle will not compare, only fails on execution.
+// exec EXECUTES one statement, and does not bother preparing it first.
+//
+// The first run of this gate DID prepare, and learned that go-ora's Prepare
+// never reaches the server: two statements Oracle refuses outright — the row
+// constructor and a capped locked read — prepared without error and then failed
+// on execution. A PREPARE that does not round-trip proves nothing, which is the
+// same shape of defect as a gate that passes by skipping.
 func (r *runner) exec(t *testing.T, name, stmt string, args ...any) {
 	t.Helper()
 	t.Run(name, func(t *testing.T) {
-		st, err := r.db.Prepare(stmt)
+		rows, err := r.db.Query(stmt, args...)
 		if err != nil {
-			t.Fatalf("PREPARE refused:\n  %s\n  %v", stmt, err)
-		}
-		defer st.Close()
-		rows, err := st.Query(args...)
-		if err != nil {
-			t.Fatalf("EXECUTE refused:\n  %s\n  %v", stmt, err)
+			t.Fatalf("refused:\n  %s\n  %v", stmt, err)
 		}
 		defer rows.Close()
 		for rows.Next() {
@@ -90,6 +89,23 @@ func (r *runner) exec(t *testing.T, name, stmt string, args ...any) {
 		}
 	})
 	r.n++
+}
+
+// refuses asserts the server rejects a statement, by EXECUTING it. Same reason.
+func refuses(t *testing.T, db *sql.DB, name, stmt, wantORA string, args ...any) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		rows, err := db.Query(stmt, args...)
+		if err == nil {
+			rows.Close()
+			t.Errorf("the server accepted this, so the refusal may be removable:\n  %s", stmt)
+			return
+		}
+		t.Logf("confirmed: %v", firstLine(err))
+		if wantORA != "" && !strings.Contains(err.Error(), wantORA) {
+			t.Errorf("expected %s, got: %v", wantORA, err)
+		}
+	})
 }
 
 func TestEveryStatementTheLoweringProducesRuns(t *testing.T) {
@@ -105,8 +121,10 @@ func TestEveryStatementTheLoweringProducesRuns(t *testing.T) {
 	r.exec(t, "count", oracle.CountPrefix(loTable))
 	r.exec(t, "exists", oracle.ExistsPrefix(loTable)+oracle.ExistsSuffix())
 	r.exec(t, "ordered", sel+oracle.OrderLead+oracle.DefaultOrderBy([]string{"id"}, "id"))
-	r.exec(t, "capped", sel+oracle.OrderLead+`"id"`+oracle.LimitOffsetSuffix(false), 2)
-	r.exec(t, "paged", sel+oracle.OrderLead+`"id"`+oracle.LimitOffsetSuffix(true), 1, 2)
+	// numbered, because a suffix carries the bare sigil the SPLICER numbers —
+	// the same reason the operator fragments below go through it.
+	r.exec(t, "capped", numbered(sel+oracle.OrderLead+`"id"`+oracle.LimitOffsetSuffix(false)), 2)
+	r.exec(t, "paged", numbered(sel+oracle.OrderLead+`"id"`+oracle.LimitOffsetSuffix(true)), 1, 2)
 
 	// Every ORDER BY direction, including the two placements neither MySQL nor
 	// SQL Server can spell.
@@ -177,15 +195,9 @@ func TestEveryStatementTheLoweringProducesRuns(t *testing.T) {
 		oracle.OrderLead + `"rank", "id"`
 	r.exec(t, "expanded keyset comparison", keyset, 10, 10, 1)
 
-	// And the form that does NOT parse, so the refusal is not folklore.
-	t.Run("the row constructor Oracle lacks", func(t *testing.T) {
-		_, err := db.Prepare(sel + ` WHERE ("rank", "id") > (:1, :2)`)
-		if err == nil {
-			t.Error("(a,b) > (:1,:2) parsed; RowCmpExpand may not be needed after all")
-		} else {
-			t.Logf("confirmed: %v", firstLine(err))
-		}
-	})
+	// And the form that does NOT run, so RowCmpExpand is not folklore.
+	refuses(t, db, "the row constructor Oracle lacks",
+		sel+` WHERE ("rank", "id") > (:1, :2)`, "", 10, 1)
 
 	// ---- the three lock modes this target has ----
 	for _, m := range []int{oracle.LockUpdate, oracle.LockUpdateNoWait, oracle.LockUpdateSkipLocked} {
@@ -199,18 +211,9 @@ func TestEveryStatementTheLoweringProducesRuns(t *testing.T) {
 
 	// And the combination that is ORA-02014, so LockRefusedCapped is a
 	// measured refusal rather than a remembered one.
-	t.Run("a capped locked read is refused by the server", func(t *testing.T) {
-		_, err := db.Prepare(sel + oracle.OrderLead + `"id"` +
-			oracle.LimitOffsetSuffix(false) + oracle.LockSuffix(oracle.LockUpdateSkipLocked))
-		if err == nil {
-			t.Error("FETCH FIRST with FOR UPDATE prepared; the refusal may be removable")
-		} else {
-			t.Logf("confirmed: %v", firstLine(err))
-			if !strings.Contains(err.Error(), "ORA-02014") {
-				t.Errorf("expected ORA-02014, which is what LockRefusedCapped names: %v", err)
-			}
-		}
-	})
+	refuses(t, db, "a capped locked read",
+		numbered(sel+oracle.OrderLead+`"id"`+oracle.LimitOffsetSuffix(false)+
+			oracle.LockSuffix(oracle.LockUpdateSkipLocked)), "ORA-02014", 1)
 
 	// ---- the write path ----
 	a, _ := oracle.NowFrag("updated_at")
