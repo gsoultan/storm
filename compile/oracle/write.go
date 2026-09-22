@@ -53,10 +53,12 @@ func InsertStmt(table string, cols []string, returning []string) (string, error)
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		// The bare sigil; the splicer numbers it. Unlike MySQL's `?`, position
-		// alone does not bind here — `:1` is a NAME that happens to look like
-		// an ordinal, and a repeated one binds once.
-		b.WriteString(Placeholder)
+		// NUMBERED HERE, because this statement's text is fixed at generate
+		// time and no splicer will ever see it. MySQL can write the bare `?`
+		// because position is what binds there; `:` on its own is ORA-01745,
+		// "invalid host/bind variable name" — the same shape of defect M10
+		// hit when a fixed-text SQL Server statement left a bare `@`.
+		b.WriteString(Param(i + 1))
 	}
 	b.WriteString(")")
 	return b.String(), nil

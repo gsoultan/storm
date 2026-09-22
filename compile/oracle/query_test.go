@@ -236,3 +236,22 @@ func TestCountReturnsSomethingWideEnough(t *testing.T) {
 		t.Errorf("got %s", oracle.CountPrefix("t"))
 	}
 }
+
+// A statement whose text is FIXED at generate time must carry its own
+// ordinals: no splicer will ever see it, and `:` alone is ORA-01745.
+//
+// M10 hit the same shape of defect with a bare `@`, and it reached a live
+// server both times — which is the argument for a gate that executes.
+func TestFixedTextStatementsNumberTheirOwnPlaceholders(t *testing.T) {
+	got, err := oracle.InsertStmt("users", []string{"id", "email"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "(:1, :2)") {
+		t.Errorf("an insert's placeholders must be numbered: %s", got)
+	}
+	// And the bare sigil must not survive anywhere in it.
+	if strings.Contains(got, ":,") || strings.HasSuffix(got, ":)") {
+		t.Errorf("a bare sigil reached a fixed-text statement: %s", got)
+	}
+}
