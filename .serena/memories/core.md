@@ -242,6 +242,8 @@ TDS client as well as a lowering. See [[m10_sqlserver]].
   port, so M9 needs the protocol subset
 - [[m10_sqlserver]] — M10's estimate, measured before it starts: every construct
   exists, the library costs 11.3 allocs/row, so it is a lowering AND a client
+- [[m11_oracle]] — M11's estimate: 26.3 allocs/row, the work queue is ORA-02014,
+  and the capability model CAN carry empty-string-is-NULL, so M12 lives
 - [[softdelete]] — opt-in soft delete, why a REJECTED entry turned out to be a
   design and not a ban, and the queued-delete defect that would have destroyed
   recoverable rows

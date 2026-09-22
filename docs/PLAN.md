@@ -427,8 +427,43 @@ and no `FILTER (WHERE …)`, which becomes `SUM(CASE WHEN … END)`.
 placeholder or output clause reaches MySQL SQL, verified both ways.
 
 | M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **DONE** — lowering, DDL, TDS client, codegen, upsert, bulk load, the CLI, the escape hatch and `storm import`. `migrate.Auto` needs a DDL seam inside `migrate/` and is a decision of its own |
-| M11 | Oracle | 4 | empty-string-is-NULL surfaced at declare time | capability model cannot carry Oracle → **Mongo is cancelled** |
+| M11 | Oracle | 4 → **6** | empty-string-is-NULL surfaced at declare time | ~~capability model cannot carry Oracle~~ — **measured, it can**. See below |
 | M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |
+
+**M11 was estimated before it started, measured 2026-09-22**
+(`internal/oraclespike`). Three questions this time rather than two, because
+PLAN.md made the third one M12's kill criterion.
+
+*The engine has everything but one.* `MERGE`, `OFFSET…FETCH`, recursive CTEs,
+window functions, `CROSS APPLY`, `JSON_TABLE`, `GROUPING SETS`, `GROUPING()`,
+native `BOOLEAN` (23c, so no `NUMBER(1)`+`CHECK` after all), `IDENTITY`,
+128-character identifiers, and a partial UNIQUE via a function-based index on a
+`CASE` — the third target in a row where soft delete's live-scoped uniqueness
+survives, leaving MySQL the odd one out. The missing one is the **work queue**:
+`FETCH FIRST … FOR UPDATE SKIP LOCKED` is ORA-02014, because Oracle implements
+`FETCH FIRST` as an inline view. `ROWNUM … FOR UPDATE` works, but `ROWNUM` is
+applied before `ORDER BY`, so a bounded ORDERED locked fetch is a subquery and a
+real lowering. And unquoted identifiers fold **UP**, which no other target does
+and which `storm import` has to know.
+
+*The driver costs 26.3 allocations per row* through `driver.Rows` — 3.3 per
+column, against go-mssqldb's 1.4 and `runtime/msdrv`'s 0.09. Through
+`database/sql` it is 26.5, so the cost is the driver's and not the standard
+library's. Same answer as M9 and M10 by a wider margin: M11 is a lowering AND a
+client. Two go-ora defects turned up while measuring, both on statements a
+first-day user would write: a row whose only column is NULL is dropped, and
+`SELECT LENGTH(''), 1 FROM dual` fails in the protocol layer.
+
+*The capability model carries it, so M12 is not cancelled.* Half of the
+mechanism DIALECTS.md described is impossible — the generated query DSL's
+`Eq(v string)` binds a runtime value, so `Eq("")` can never be a declare-time
+error. The half that survives is enough: an empty string reaching a `NOT NULL`
+column is ORA-01400, so the difference is silent in exactly ONE place, the
+**nullable text column**, and refusing that makes everything else consistent —
+including `Eq("")`, which then correctly matches nothing because nothing can be
+`''`. The IR's function registry has no `SUBSTR`, so the expression leak is
+unreachable through the model DSL. Estimate raised from 4 to 6 weeks: the work
+queue lowering, the identifier folding and the client are all new.
 
 **M10 was re-estimated before it started, measured 2026-09-20**
 (`internal/mssqlspike`). The same question M9 answered, asked again: the plan's
