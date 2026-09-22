@@ -238,37 +238,57 @@ result set.
 
 ## Oracle: what works today
 
-M11 is **SQL-complete and runtime-incomplete**, and the boundary is drawn in the
-CLI rather than discovered in a package that will not link.
+M11 **runs**. The whole stack is gated against Oracle Free by
+`internal/oraclespike`: the DDL applies, every statement the lowering produces
+executes, and a GENERATED PACKAGE inserts, selects, pages and enforces its
+soft-delete unique through a real driver.
 
 | command | Oracle |
 |---|---|
-| `storm ddl -dialect oracle` | **works** — `compile/oraddl`, applied against a live server |
-| `storm portable oracle` | **works** — every refusal above, reported in one pass |
-| `storm generate -dialect oracle` | refuses, naming the missing runtime |
-| `storm diff` / `verify` / `explain` / `import` / `watch` | refuse, same reason |
+| `storm ddl -dialect oracle` | works |
+| `storm portable oracle` | works |
+| `storm generate -dialect oracle` | **works** |
+| `storm diff` / `verify` / `explain` / `import` / `watch` | refuse — `schema/oracle` does not exist |
 
-`compile/oracle` is complete too — every operator, both greatest-n-per-group
-forms, recursion, unions, aggregates and the write path — and every statement it
-produces is EXECUTED against Oracle Free by `internal/oraclespike`. What is
-missing is a **client**. A generated package reads `runtime.Rows.RawValues()`,
-and a `database/sql` driver decodes before storm can see the bytes; go-ora costs
-**26.3 allocations per row** where storm's own SQL Server client costs 0.09, and
-the gap is the driver's rather than `database/sql`'s. So Oracle needs either a
-native client or a second row shape in the port — an ADR, not an afternoon.
+### It reads a different side of the port
 
-Two things about this target that no other has:
+This is the only target whose generated package scans **decoded values** rather
+than wire bytes. `runtime.Rows` has two accessors and a generated package calls
+exactly one, chosen at GENERATE time — so there is no branch at run time, the
+same rule every other dialect decision follows.
 
-**Keys are client-side**, as they are on MySQL, and for a different reason.
-Oracle has `RETURNING … INTO`, and the `INTO` binds OUTPUT parameters —
-`runtime.Executor` has nowhere to put one. `SYS_GUID()` exists and is not a uuid
-at all (host-and-sequence derived), so borrowing it would put a guessable,
-unsorted value where the model asked for random or time-ordered.
+The reason is that a `database/sql` driver decodes before storm can see the
+wire. `runtime/sqldrv` adapts any of them; `runtime/valdec` is the decoder
+family that reads what they hand over. **The consequence is wider than Oracle:
+any `database/sql` driver satisfies storm's Executor port now.**
 
-**Recursion needs no path column.** Oracle's `CYCLE key SET flag TO 'Y'` detects
-a repeated key server-side, so where PostgreSQL carries an array, MySQL a
+**It is the slow path and says so.** storm's own clients cost 0.09 to 1.07
+allocations per row; go-ora costs 26.3, and `database/sql` accounts for 0.2 of
+that. `CopyFrom` is emulated one INSERT per row and `Batch` is N round trips,
+both documented rather than silently degraded.
+
+What makes it LOSSLESS is a measurement: every Oracle NUMBER arrives as an exact
+decimal **string**, including 2^53+1 and a 34-significant-digit value. A float64
+would have rounded both, so `valdec` refuses a float for an exact numeric — the
+precision is already gone by then and the error is the only place to say so.
+
+### Three things about this target that no other has
+
+**Keys are client-side**, as on MySQL, for a different reason. Oracle has
+`RETURNING … INTO`, and the `INTO` binds OUTPUT parameters — `runtime.Executor`
+has nowhere to put one. `SYS_GUID()` is not a uuid at all (host-and-sequence
+derived), so borrowing it would put a guessable, unsorted value where the model
+asked for random or time-ordered.
+
+**Recursion needs no path column.** `CYCLE key SET flag TO 'Y'` detects a
+repeated key server-side, so where PostgreSQL carries an array, MySQL a
 `CHAR(4000)` that can truncate and SQL Server an `NVARCHAR(MAX)` the anchor must
 CAST, this back end carries nothing.
+
+**A `[16]byte` argument is a bulk-insert request** to go-ora, which answers any
+insert carrying one with "to activate bulk insert/merge all parameters should be
+arrays". `runtime/sqldrv` converts it to a `[]byte`, which `database/sql`
+required anyway.
 
 ## MongoDB is a back end, not a dialect
 
