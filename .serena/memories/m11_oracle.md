@@ -117,39 +117,61 @@ partial UNIQUE ports as a function-based index on a `CASE`.
 Gate state: the DDL applies, 29 lowered statements execute, both refusals are
 asserted against the server.
 
-## Where M11 stopped, and why there
+## M11 RUNS (2026-09-23)
 
-**SQL-complete, runtime-incomplete**, and the line is drawn in the CLI rather
-than discovered in a package that will not link.
+`storm generate -dialect oracle` works, and the whole stack is gated: model →
+generator → generated package → `runtime/sqldrv` → go-ora → Oracle. The
+generated package inserts, selects, pages and enforces its soft-delete unique
+against a real server.
 
-Done and gated live: `compile/oraddl` (DDL + Check), `compile/oracle` (every
-operator, joins, unions, aggregates, recursion, both top-N forms, the write
-path), `storm ddl -dialect oracle`, `storm portable oracle`,
-`codegen.DialectOracle`.
+### The architectural change: a second row shape
 
-`storm generate` REFUSES, naming the reason. **The blocker is the port, not the
-protocol.** A generated package reads `runtime.Rows.RawValues() [][]byte`, and a
-`database/sql` driver decodes into `driver.Value` before storm sees the bytes —
-so a go-ora adapter cannot satisfy the port without re-encoding what it just
-decoded. go-ora is 26.3 allocs/row against msdrv's 0.09, and the gap is the
-DRIVER's (database/sql adds 0.2), so "use database/sql better" is not available.
+`runtime.Rows` gained `Values() []any` beside `RawValues() [][]byte`. A
+generated package calls exactly ONE, chosen at GENERATE time by the dialect —
+no run-time branch, the same rule every other dialect decision follows. An
+adapter implements one and returns nil from the other; that is a CONTRACT
+rather than a type, because the alternative is a second Executor interface and
+every decorator written twice.
 
-Two ways forward, and picking one is an ADR:
+**The consequence is wider than Oracle: any `database/sql` driver satisfies the
+port now.** That was not why it was added.
 
-1. **A native TTC client.** What M9 and M10 did — but TDS and the MySQL
-   protocol have PUBLIC SPECIFICATIONS and TTC does not. go-ora is years of
-   reverse engineering. This is not a 6-week job and the estimate should not
-   pretend otherwise.
-2. **A second row shape in the port** — a `ValueRows` alongside `RawValues`, so
-   a `database/sql` driver can satisfy `runtime.Executor` at its own cost. This
-   is ADR-0005 territory (the port's width is a decision) and it would open
-   EVERY database/sql driver to storm, which is a bigger capability than Oracle.
+- `runtime/valdec` — the fourth decoder family, the first that reads no bytes.
+- `runtime/sqldrv` — a generic `database/sql` adapter. Documents what it does
+  not do: CopyFrom emulated one INSERT per row, Batch N round trips.
 
-Option 2 is probably right and is deliberately not taken at the end of a long
-change.
+**The measurement that made it possible**: every Oracle NUMBER arrives as an
+exact decimal STRING (2^53+1 and 34 significant digits both intact). A float64
+would have rounded both, so valdec REFUSES a float for an exact numeric — the
+precision is gone by then and the error is the only place to say so.
 
-Also not built: `schema/oracle` introspection (needs the case-folding rule),
-migrate's Oracle half, MERGE/upsert.
+### What running it found, beyond the lowering
+
+| finding | where |
+|---|---|
+| a `[16]byte` argument is a BULK-INSERT REQUEST to go-ora ("all parameters should be arrays") | every insert failed; `sqldrv.normalize` converts it, which database/sql required anyway |
+| a fixed-text insert must NUMBER its own placeholders — `:` alone is ORA-01745 | same defect M10 hit with a bare `@`, and it reached a live server both times |
+| `loweringFor` had no case for Oracle | shipped one commit emitting POSTGRES SQL with Oracle decoders, and the package compiled, used valdec and read Values — all three checks true |
+| the root package file emitted a HAVING decoder call without importing the family | a generated **SQL Server** package with a HAVING count had been uncompilable too |
+| go-ora reports a 23c native BOOLEAN as NUMBER and yields "1" | a bool-only decoder would read every true as false |
+| storm.Decimal holds 18 significant digits, so numeric(19,4) is refused by codegen | a storm rule, not an Oracle one; oraddl took the same model happily |
+
+The `loweringFor` one is the most instructive: it was found by a test written to
+cover a COVERAGE DIP, which is the argument for covering new code rather than
+lowering a floor to fit it. Three gates now stop it recurring —
+`TestEveryDialectFillsTheSeam` walks the struct rather than naming fields,
+`TestOracleGeneratedPackageCarriesOracleSQL` is the MySQL gate's namesake, and
+the outsider gate checks the generated package binds with Oracle's placeholder.
+
+### Still not built
+
+`schema/oracle` introspection (needs the case-folding rule), migrate's Oracle
+half, MERGE/upsert. `storm diff`, `verify`, `explain`, `import` and `watch`
+refuse by name.
+
+A NATIVE TTC client is still the open question for performance — 26.3
+allocations per row against 0.09 — and the estimate correction stands: TDS and
+MySQL's protocol have public specifications and TTC does not.
 
 ## Operational notes
 
