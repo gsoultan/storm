@@ -756,6 +756,20 @@ else
   if ! grep -rq 'valdec\.' orastore/; then
     note "the generated Oracle package does not use runtime/valdec"
   fi
+  # AND THE SQL, which is a different claim from the decoders.
+  #
+  # This gate passed once on a package that compiled, used valdec and read
+  # Values — and carried PostgreSQL statements, because loweringFor had no case
+  # for the target. Every check above was true and the package would have
+  # failed on its first query.
+  if ! grep -rq 'OraclePlaceholder' orastore/; then
+    note "the generated Oracle package does not bind with Oracle's placeholder"
+  fi
+  if grep -rqE 'MSSQLPlaceholder|MySQLPlaceholder|OPENJSON|count_big' orastore/; then
+    note "another dialect's SQL reached the Oracle package:"
+    grep -rnE 'MSSQLPlaceholder|MySQLPlaceholder|OPENJSON|count_big' orastore/ |
+      head -3 | sed 's/^/    /' >&2
+  fi
 fi
 
 # The commands that still refuse, and the refusal must name what is missing
