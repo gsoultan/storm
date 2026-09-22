@@ -1,0 +1,214 @@
+package oracle
+
+import (
+	"strings"
+
+	"github.com/gsoultan/storm/schema"
+)
+
+// Declared grouped reads.
+//
+// This is the construct where Oracle is closest to PostgreSQL and furthest
+// from MySQL. GROUPING SETS, CUBE and ROLLUP all exist, in the FUNCTION form —
+// `GROUP BY ROLLUP(a, b)` rather than MySQL's `GROUP BY a, b WITH ROLLUP` — so
+// an aggregation over arbitrary grouping combinations is emitted here and
+// refused there. So is GROUPING(), which is what tells a subtotal row from a
+// detail row carrying a NULL.
+//
+// One thing still needs help. PostgreSQL orders a rollup's output NULLS FIRST,
+// so subtotal rows sit above the detail they summarise. Oracle, like MySQL,
+// sorts NULLs first ASCENDING already — so only a DESCENDING key needs a
+// leading sort term; here the ordering simply says NULLS FIRST, which neither
+// MySQL nor SQL Server can spell.
+//
+// FILTER (WHERE …) is refused by the expression renderer, which is where an
+// aggregate's measures are rendered.
+
+// AggregateSelect is everything before the WHERE clause of a grouped read.
+func AggregateSelect(table string, agg *schema.Aggregate) (string, error) {
+	var b strings.Builder
+	var w exprWriter
+	for i, g := range agg.By {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		w.b.Reset()
+		w.writeExpr(g.Expr)
+		b.WriteString(w.b.String())
+		b.WriteString(" AS ")
+		b.WriteString(Ident(columnCase(g.As)))
+	}
+	for i, t := range agg.Terms {
+		if i > 0 || len(agg.By) > 0 {
+			b.WriteString(", ")
+		}
+		w.b.Reset()
+		w.writeExpr(t.Expr)
+		b.WriteString(w.b.String())
+		b.WriteString(" AS ")
+		b.WriteString(Ident(columnCase(t.As)))
+	}
+	return "SELECT " + b.String() + " FROM " + Ident(table), w.err
+}
+
+// GroupBy renders the grouping clause.
+//
+// The grouping-set forms wrap the column list rather than following it, which
+// is the standard spelling and PostgreSQL's — MySQL's trailing WITH ROLLUP is
+// the odd one out.
+func GroupBy(agg *schema.Aggregate) (string, error) {
+	if len(agg.By) == 0 {
+		return "", nil
+	}
+	var b strings.Builder
+	var w exprWriter
+	writeAll := func() {
+		for i, g := range agg.By {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			w.b.Reset()
+			w.writeExpr(g.Expr)
+			b.WriteString(w.b.String())
+		}
+	}
+	b.WriteString(" GROUP BY ")
+	if agg.Sets == nil {
+		writeAll()
+		return b.String(), w.err
+	}
+	switch agg.Sets.Kind {
+	case schema.SetsRollup:
+		b.WriteString("ROLLUP(")
+		writeAll()
+		b.WriteByte(')')
+	case schema.SetsCube:
+		b.WriteString("CUBE(")
+		writeAll()
+		b.WriteByte(')')
+	default:
+		b.WriteString("GROUPING SETS (")
+		for i, set := range agg.Sets.Sets {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteByte('(')
+			for j, idx := range set {
+				if j > 0 {
+					b.WriteString(", ")
+				}
+				w.b.Reset()
+				w.writeExpr(agg.By[idx].Expr)
+				b.WriteString(w.b.String())
+			}
+			b.WriteByte(')')
+		}
+		b.WriteByte(')')
+	}
+	return b.String(), w.err
+}
+
+// AggregateSuffix is the GROUP BY, HAVING and ORDER BY that follow the
+// predicates, in the order SQL wants them.
+//
+// The ordering is not cosmetic: Oracle promises no order for a GROUP BY
+// either, and an unordered result makes a paginated report shuffle between
+// requests.
+func AggregateSuffix(agg *schema.Aggregate) (string, error) {
+	var b strings.Builder
+	var w exprWriter
+
+	g, err := GroupBy(agg)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(g)
+
+	if agg.Having != nil {
+		b.WriteString(" HAVING ")
+		w.b.Reset()
+		w.writeCond(*agg.Having)
+		b.WriteString(w.b.String())
+	}
+
+	// subtotalsFirst keeps a rollup's subtotal rows above the detail they
+	// summarise. A subtotal row has NULL in the grouped column it is a total
+	// OF, so "subtotals first" is "NULLs first".
+	//
+	// SPELLED, not computed. SQL Server has no NULLS FIRST and needs
+	// `CASE WHEN x IS NULL THEN 0 ELSE 1 END` as a leading key; Oracle has the
+	// placement, so the ordering says what it means.
+	//
+	// And it is needed on the ASCENDING side here, which is the opposite of
+	// SQL Server. Oracle sorts NULLs LAST ascending and FIRST descending —
+	// PostgreSQL's arrangement — so descending already puts subtotals where
+	// they belong and ascending does not.
+	subtotalsFirst := func(desc bool) {
+		if agg.Sets == nil || desc {
+			return
+		}
+		b.WriteString(" NULLS FIRST")
+	}
+
+	if len(agg.OrderBy) > 0 {
+		b.WriteString(" ORDER BY ")
+		for i, o := range agg.OrderBy {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(Ident(columnCase(o.As)))
+			if o.Desc {
+				b.WriteString(" DESC")
+			}
+			if isGrouping(agg, o.As) {
+				subtotalsFirst(o.Desc)
+			}
+		}
+		// Every grouping column not already named is appended as a tiebreak: a
+		// measure is not unique, and a top-N report is exactly the query that
+		// pages.
+		for _, gb := range agg.By {
+			if named(agg.OrderBy, gb.As) {
+				continue
+			}
+			b.WriteString(", ")
+			b.WriteString(Ident(columnCase(gb.As)))
+		}
+		return b.String(), w.err
+	}
+
+	if len(agg.By) > 0 {
+		b.WriteString(" ORDER BY ")
+		for i, gb := range agg.By {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			// By the ALIAS, not by repeating the expression: for a rollup the
+			// expression is NULL in subtotal rows and the alias is what the
+			// outer scope sees.
+			b.WriteString(Ident(columnCase(gb.As)))
+		}
+	}
+	return b.String(), w.err
+}
+
+// named reports whether an ordering already mentions an output.
+func named(order []schema.AggOrder, as string) bool {
+	for _, o := range order {
+		if o.As == as {
+			return true
+		}
+	}
+	return false
+}
+
+// isGrouping reports whether an output is one of the grouping columns — the
+// only ones a rollup makes NULL.
+func isGrouping(agg *schema.Aggregate, as string) bool {
+	for _, g := range agg.By {
+		if g.As == as {
+			return true
+		}
+	}
+	return false
+}

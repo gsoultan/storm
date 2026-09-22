@@ -262,16 +262,25 @@ func TestVarcharNeedsASizeAndHasACeiling(t *testing.T) {
 	}
 }
 
-func TestUUIDv7IsRefusedRatherThanSubstituted(t *testing.T) {
-	c := id()
-	c.Default = "uuidv7()"
-	err := oraddl.Check(sch(tbl("orgs", c)))
-	if err == nil || !strings.Contains(err.Error(), "SYS_GUID") {
-		t.Fatalf("uuidv7() must be refused and SYS_GUID named as what it is not: %v", err)
-	}
-	def, _ := oraddl.ColumnDef("orgs", c, nil)
-	if strings.Contains(def, "SYS_GUID") {
-		t.Errorf("a model that skipped Check must not silently get SYS_GUID: %s", def)
+// Both uuid defaults are ACCEPTED and neither is emitted: the key is generated
+// client-side, as it is on MySQL. SYS_GUID() looks available and is not a uuid
+// — Oracle documents it as host-and-sequence derived — so a column defaulted to
+// it would be guessable where the model asked for random and unsorted where it
+// asked for time-ordered.
+func TestUUIDDefaultsAreClientSideAndEmitNothing(t *testing.T) {
+	for _, def := range []string{"uuidv7()", "gen_random_uuid()"} {
+		c := id()
+		c.Default = def
+		if err := oraddl.Check(sch(tbl("orgs", c))); err != nil {
+			t.Errorf("%s must port — storm generates it client-side: %v", def, err)
+		}
+		got, err := oraddl.ColumnDef("orgs", c, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(got, "DEFAULT") || strings.Contains(got, "SYS_GUID") {
+			t.Errorf("%s must emit no default: %s", def, got)
+		}
 	}
 }
 

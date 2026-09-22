@@ -349,15 +349,21 @@ func oracleDefault(c *schema.Column) string {
 	switch strings.ToLower(strings.TrimSpace(c.Default)) {
 	case "now()", "current_timestamp":
 		return "SYSTIMESTAMP"
-	case "gen_random_uuid()":
-		// SYS_GUID() is 16 bytes and fills a RAW(16), so a server-generated
-		// key works here as it does on SQL Server. It is NOT a version 4 uuid
-		// — Oracle documents it as host-and-sequence derived — so it is not
-		// random and should not be treated as unguessable. Check says so.
-		return "SYS_GUID()"
-	case "uuidv7()":
-		// Refused by Check with the reasoning; nothing is emitted, so a model
-		// that reached here without the check does not silently get SYS_GUID.
+	case "gen_random_uuid()", "uuidv7()":
+		// NO default, and the key is generated CLIENT-SIDE — the same answer
+		// MySQL gives, reached from a different direction.
+		//
+		// SYS_GUID() exists and fills a RAW(16), so a server default LOOKS
+		// available. Two things say otherwise. It is not a uuid at all: Oracle
+		// documents it as host-and-sequence derived, so it is neither the
+		// version 4 that `gen_random_uuid()` promises nor the time-ordered
+		// version 7 that `uuidv7()` does, and a value that is guessable and
+		// unsorted where the model asked for random or ordered is worse than
+		// no value. And reading a server-generated key back needs
+		// `RETURNING ... INTO`, which binds OUTPUT parameters that
+		// runtime.Executor does not carry — see compile/oracle's KeysAreClientSide.
+		//
+		// The unit of work needs ids before the rows exist anyway.
 		return ""
 	}
 	return c.Default

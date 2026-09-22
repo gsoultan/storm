@@ -39,7 +39,10 @@
 // Output is byte-deterministic: same input, same bytes, always.
 package oracle
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Ident quotes an identifier with double quotes, which is Oracle's spelling —
 // and which also PRESERVES CASE. An unquoted name folds to UPPER here, where
@@ -211,3 +214,10 @@ func UpdatePrefix(table string) string { return "UPDATE " + Ident(table) + " SET
 // STATEMENT time, so two statements in one transaction stamp different
 // instants.
 func NowFrag(col string) (a, b string) { return Ident(col) + " = SYSTIMESTAMP", "" }
+
+// Param renders a placeholder with its ordinal already decided.
+//
+// For the statements whose text is fixed at GENERATE time rather than spliced
+// at run time — a declared union, a declared join — where there is no token
+// stream for the splicer to number against.
+func Param(n int) string { return Placeholder + strconv.Itoa(n) }
