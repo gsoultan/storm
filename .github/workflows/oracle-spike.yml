@@ -54,4 +54,5 @@ jobs:
       # measurement M9 and M10 took, which is what decides whether M11 is a
       # lowering or a lowering plus a client.
       - name: what the driver costs per row
+        if: always() # the measurement is wanted even when a probe reported NO
         run: cd internal/oraclespike && go test -count=1 -run XXX -bench . -benchtime 30x ./...

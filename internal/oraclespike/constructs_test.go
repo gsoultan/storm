@@ -12,40 +12,49 @@ import (
 	"testing"
 )
 
-// probe runs one statement and reports whether the server accepted it. A
-// construct that parses but does not execute is not a construct storm has.
+// probe runs one statement and REPORTS whether the server accepted it.
+//
+// It does not fail. A spike reports; a gate refuses, and there is no Oracle
+// back end to protect yet — a construct that turns out to be missing is this
+// file's OUTPUT, not its error. The three facts M12's kill criterion actually
+// rests on are asserted in empty_test.go, where failing is the point.
 func probe(t *testing.T, db *sql.DB, name, stmt string) bool {
 	t.Helper()
-	var ok bool
-	t.Run(name, func(t *testing.T) {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Errorf("NOT AVAILABLE\n  %s\n  %v", stmt, err)
-			return
-		}
-		ok = true
-	})
-	return ok
+	if _, err := db.Exec(stmt); err != nil {
+		t.Logf("  %-46s NO   %v", name, firstLine(err))
+		return false
+	}
+	t.Logf("  %-46s yes", name)
+	return true
 }
 
 func query1(t *testing.T, db *sql.DB, name, stmt string) bool {
 	t.Helper()
-	var ok bool
-	t.Run(name, func(t *testing.T) {
-		rows, err := db.Query(stmt)
-		if err != nil {
-			t.Errorf("NOT AVAILABLE\n  %s\n  %v", stmt, err)
-			return
+	rows, err := db.Query(stmt)
+	if err != nil {
+		t.Logf("  %-46s NO   %v", name, firstLine(err))
+		return false
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			t.Logf("  %-46s NO   %v", name, firstLine(err))
+			return false
 		}
-		defer rows.Close()
-		if !rows.Next() {
-			if err := rows.Err(); err != nil {
-				t.Errorf("NOT AVAILABLE\n  %s\n  %v", stmt, err)
-				return
-			}
-		}
-		ok = true
-	})
-	return ok
+	}
+	t.Logf("  %-46s yes", name)
+	return true
+}
+
+// firstLine trims an ORA- message to its number and sentence. go-ora appends
+// "error occur at position: n" on a second line, which is about the driver's
+// buffer rather than the statement.
+func firstLine(err error) string {
+	s := err.Error()
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 func TestEveryConstructM11NeedsExists(t *testing.T) {
