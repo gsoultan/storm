@@ -160,17 +160,17 @@ func TestEveryStatementTheLoweringProducesRuns(t *testing.T) {
 		r.exec(t, "op "+c.op, sel+oracle.WhereLead+numbered(a+b), c.args...)
 	}
 
-	// The JSON operators, which are the one group richer here than on SQL
-	// Server: HasAllKeys is expressible because the bound list is mentioned
-	// once.
+	// The JSON key-presence operators are REFUSED, and this is the measurement
+	// behind that. A path must be a literal here, so a key that arrives as a
+	// bound value cannot be looked up — the first draft of compile/oracle
+	// claimed the opposite and ORA-00907 corrected it.
 	for _, op := range []string{"HasAnyKey", "HasAllKeys"} {
-		a, b, ok := oracle.Frag(op, tq+"."+oracle.Ident("doc"))
-		if !ok {
-			t.Errorf("%s has no lowering", op)
-			continue
+		if oracle.Supported(op) {
+			t.Errorf("%s is claimed but JSON_EXISTS takes a literal path", op)
 		}
-		r.exec(t, "op "+op, sel+oracle.WhereLead+numbered(a+b), `["a","b"]`)
 	}
+	refuses(t, db, "a JSON path built by concatenation",
+		`SELECT 1 FROM `+tq+` WHERE JSON_EXISTS(`+tq+`."doc", '$.' || 'a')`, "ORA-00907")
 
 	// ---- the IN list: one bound document, whatever the arity ----
 	for _, tc := range []struct {
@@ -195,9 +195,42 @@ func TestEveryStatementTheLoweringProducesRuns(t *testing.T) {
 		oracle.OrderLead + `"rank", "id"`
 	r.exec(t, "expanded keyset comparison", keyset, 10, 10, 1)
 
-	// And the form that does NOT run, so RowCmpExpand is not folklore.
-	refuses(t, db, "the row constructor Oracle lacks",
-		sel+` WHERE ("rank", "id") > (:1, :2)`, "", 10, 1)
+	// And whether the row constructor is actually absent.
+	//
+	// The first run of this gate found that Oracle ACCEPTS the statement,
+	// which would make RowCmpExpand unnecessary — so this asks the question
+	// properly: not "does it parse" but "does it return the right rows". Rows
+	// are (rank,id) = (10,1), (20,2), (30,3), so `> (10,1)` is two of them.
+	// A constructor that parses and compares only the first column would give
+	// the same answer for this data, so the second case uses a tie.
+	t.Run("the row constructor", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			rank, id int
+			wantRows int
+		}{
+			{"strictly greater", 10, 1, 2},
+			{"a tie on the leading key", 20, 1, 2}, // (20,2) and (30,3)
+		} {
+			var n int
+			err := db.QueryRow(
+				`SELECT count(*) FROM `+tq+` WHERE ("rank", "id") > (:1, :2)`,
+				tc.rank, tc.id).Scan(&n)
+			if err != nil {
+				t.Logf("%s: refused — %v", tc.name, firstLine(err))
+				t.Log("RowCmpExpand is needed, which is what compile/oracle assumes")
+				return
+			}
+			if n != tc.wantRows {
+				t.Errorf("%s: the constructor parsed and returned %d rows, want %d — "+
+					"it is not comparing the way a keyset filter needs", tc.name, n, tc.wantRows)
+				return
+			}
+			t.Logf("%s: %d rows, correct", tc.name, n)
+		}
+		t.Log("Oracle's row constructor WORKS for inequality; RowCmpExpand may be " +
+			"droppable, which would remove a whole expansion from this back end")
+	})
 
 	// ---- the three lock modes this target has ----
 	for _, m := range []int{oracle.LockUpdate, oracle.LockUpdateNoWait, oracle.LockUpdateSkipLocked} {

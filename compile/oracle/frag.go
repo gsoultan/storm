@@ -59,35 +59,11 @@ var frags = map[string]frag{
 
 // wrapped are the operators that are FUNCTIONS here. They take the identifier
 // as an argument rather than following it.
-// keyAlias is the alias the unpacked key list is given.
+// wrapped are the operators that are FUNCTIONS here, taking the identifier as
+// an argument rather than following it.
 //
-// QUOTED, and that is not decoration. An unquoted Oracle identifier must begin
-// with a LETTER, so `_storm_k` is ORA-00911 "invalid character" — where every
-// other target storm has accepts a leading underscore happily. Every internal
-// alias this package invents goes through Ident for that reason.
-var keyAlias = Ident("_storm_k")
-
-var wrapped = map[string]struct{ open, close string }{
-	// PostgreSQL's `?|` — does this document have ANY of these top-level keys.
-	// JSON_EXISTS with a path that names the keys answers it directly, and the
-	// key list is ONE bound array unpacked by JSON_TABLE, so the statement's
-	// shape does not depend on how many keys the caller passed.
-	"HasAnyKey": {
-		"EXISTS (SELECT 1 FROM JSON_TABLE(" + Placeholder +
-			", '$[*]' COLUMNS (k VARCHAR2(4000) PATH '$')) " + keyAlias +
-			" WHERE JSON_EXISTS(",
-		", '$.' || " + keyAlias + ".k))",
-	},
-	// And `?&` — ALL of them. Expressible here because the bound list is
-	// mentioned once and counted by the same subquery, which is exactly what
-	// SQL Server could not do with a single-placeholder fragment.
-	"HasAllKeys": {
-		"(SELECT count(*) FROM JSON_TABLE(" + Placeholder +
-			", '$[*]' COLUMNS (k VARCHAR2(4000) PATH '$')) " + keyAlias +
-			" WHERE NOT JSON_EXISTS(",
-		", '$.' || " + keyAlias + ".k)) = 0",
-	},
-}
+// EMPTY, and that is a finding rather than an omission. See refused below.
+var wrapped = map[string]struct{ open, close string }{}
 
 // refused are the operators this back end has no honest lowering for, each with
 // the reason a generation error will carry.
@@ -98,9 +74,28 @@ var wrapped = map[string]struct{ open, close string }{
 // document contains another. Answering it would mean walking both with
 // JSON_TABLE recursively, which is not a fragment and is not something storm
 // may write on a caller's behalf without them knowing its cost.
+const noContainment = "Oracle has no JSON containment predicate (no @>, no JSON_CONTAINS); " +
+	"its JSON support is JSON_EXISTS, JSON_VALUE, JSON_QUERY and JSON_TABLE"
+
+// A JSON path must be a LITERAL. `JSON_EXISTS(doc, '$.' || k)` is ORA-00907,
+// so a key that arrives as a bound value cannot be looked up at all — and
+// enumerating a document's keys, which is how SQL Server answers HasAnyKey
+// through OPENJSON, has no Oracle function either.
+//
+// This reverses what this package's first draft claimed. It said Oracle was
+// RICHER than SQL Server here, because JSON_EXISTS looked like it answered key
+// presence directly and HasAllKeys was expressible where SQL Server's
+// formulation needed the bound list twice. Running it says the opposite:
+// SQL Server can do one of the two and Oracle can do neither.
+const noDynamicKey = "Oracle's JSON path must be a literal — JSON_EXISTS(doc, '$.' || k) is " +
+	"ORA-00907 — and it has no function that enumerates a document's keys, so a key " +
+	"list that arrives as a bound value cannot be looked up"
+
 var refused = map[string]string{
-	"JSONContains":    "Oracle has no JSON containment predicate (no @>, no JSON_CONTAINS); its JSON support is JSON_EXISTS, JSON_VALUE, JSON_QUERY and JSON_TABLE",
-	"JSONContainedBy": "Oracle has no JSON containment predicate (no @>, no JSON_CONTAINS); its JSON support is JSON_EXISTS, JSON_VALUE, JSON_QUERY and JSON_TABLE",
+	"JSONContains":    noContainment,
+	"JSONContainedBy": noContainment,
+	"HasAnyKey":       noDynamicKey,
+	"HasAllKeys":      noDynamicKey,
 }
 
 // prefixes wrap the IDENTIFIER for operators whose left side is an expression
