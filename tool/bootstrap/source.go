@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	tooldiscover "github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/tool/oratool"
 )
 
 // Source renders the bootstrap main that used to be written by hand.
@@ -37,7 +38,7 @@ func modelless(args []string) bool {
 // level storm reads — runtime/valdec's mappings were measured against this one
 // (see internal/oraclespike). A different driver needs its own measurement,
 // not a different string.
-const oracleDriver = "github.com/sijms/go-ora/v2"
+const oracleDriver = oratool.OracleDriverPath
 
 // driverFor is the database/sql driver a command's dialect needs, or "".
 func driverFor(args []string) string {

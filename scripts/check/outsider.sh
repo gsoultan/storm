@@ -772,13 +772,26 @@ else
   fi
 fi
 
-# The commands that still refuse, and the refusal must name what is missing
-# rather than failing somewhere deep.
-if go run ./cmd/mystorm import -dialect oracle >oraimp.err 2>&1; then
-  note "import -dialect oracle SUCCEEDED, and storm has no schema/oracle"
-elif ! grep -q 'schema/oracle' oraimp.err; then
-  note "import -dialect oracle refused without naming what is missing:"
-  sed 's/^/    /' oraimp.err | head -5 >&2
+# `storm import -dialect oracle` works — schema/oracle reads the catalogue —
+# but the DRIVER is the adopter's, and this stranger's module does not have
+# one. What is gated here is the MESSAGE: database/sql says "unknown driver
+# (forgotten import?)", which names neither the package nor where to put it.
+# A DSN it will never reach: the driver check comes after the flag check, and
+# without one this only proves that -dsn is required.
+if go run ./cmd/mystorm import -dialect oracle \
+   -dsn 'oracle://u:p@127.0.0.1:1521/X' >oraimp.err 2>&1; then
+  note "import -dialect oracle connected, and this module has no Oracle driver"
+elif ! grep -q 'sijms/go-ora' oraimp.err; then
+  note "the missing-driver refusal does not name the import to add:"
+  sed 's/^/    /' oraimp.err | head -8 >&2
+fi
+
+# And the commands that still refuse outright, which must name what is missing.
+if go run ./cmd/mystorm diff -dialect oracle x >oradiff.err 2>&1; then
+  note "diff -dialect oracle SUCCEEDED, and migrate has no Oracle half"
+elif ! grep -q "migrate's Oracle half" oradiff.err; then
+  note "diff -dialect oracle refused without naming what is missing:"
+  sed 's/^/    /' oradiff.err | head -5 >&2
 fi
 
 if [ "$fail" -eq 0 ]; then

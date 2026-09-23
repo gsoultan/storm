@@ -17,11 +17,43 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/gsoultan/storm/codegen"
 	"github.com/gsoultan/storm/runtime/sqldrv"
 	oraintro "github.com/gsoultan/storm/schema/oracle"
 )
+
+// OracleDriverPath is the database/sql driver storm's Oracle support is
+// written against, named so a refusal can say which import is missing.
+//
+// Named rather than taken from a flag: a driver is a wire-protocol
+// implementation, and two are not interchangeable at the level storm reads —
+// runtime/valdec's mappings were MEASURED against this one. A different driver
+// needs its own measurement, not a different string.
+const OracleDriverPath = "github.com/sijms/go-ora/v2"
+
+// missingDriver turns database/sql's "unknown driver" into an instruction.
+//
+// The driver is the ADOPTER'S — a prebuilt storm binary cannot link every one
+// — so this is the failure a hand-written tool.Main hits first, and go's own
+// message ("forgotten import?") names neither the package nor where to put it.
+// `storm`'s generated bootstrap adds the import itself; a hand-written main
+// has to be told.
+func missingDriver(driver string, err error) error {
+	if !strings.Contains(err.Error(), "unknown driver") {
+		return err
+	}
+	return fmt.Errorf("%w\n"+
+		"       storm reaches Oracle through database/sql, and the DRIVER is yours to\n"+
+		"       choose — a prebuilt storm binary cannot link every one. Add it to the\n"+
+		"       file that calls tool.Main:\n\n"+
+		"           import _ %q\n\n"+
+		"       then: go get %s\n"+
+		"       (`storm` run without a hand-written bootstrap adds this itself)",
+		err, OracleDriverPath, OracleDriverPath)
+}
 
 // ImportModel is `storm import` against Oracle.
 //
@@ -41,11 +73,11 @@ func ImportModel(ctx context.Context, driver, dsn, ns, modulePath string) ([]byt
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return nil, err
+		return nil, missingDriver(driver, err)
 	}
 	defer db.Close()
 	if err := db.PingContext(ctx); err != nil {
-		return nil, err
+		return nil, missingDriver(driver, err)
 	}
 	if ns == "public" {
 		// -schema defaults to PostgreSQL's namespace, and Oracle has no such

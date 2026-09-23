@@ -33,3 +33,38 @@ func TestAnUnregisteredDriverIsNamed(t *testing.T) {
 		t.Errorf("the error must name the driver: %v", err)
 	}
 }
+
+// go's own message names neither the package nor where to put it. The driver
+// is the adopter's — a prebuilt storm binary cannot link every one — so this
+// is the first failure a hand-written tool.Main hits, and it has to be an
+// instruction rather than a diagnosis.
+func TestTheMissingDriverRefusalIsAnInstruction(t *testing.T) {
+	_, err := ImportModel(context.Background(), "no-such-driver",
+		"oracle://u:p@h:1521/x", "", "example.com/m")
+	if err == nil {
+		t.Fatal("an unregistered driver must not succeed")
+	}
+	for _, want := range []string{
+		OracleDriverPath, // which package
+		"import _",       // and what to write
+		"go get",         // and how to get it
+		"tool.Main",      // and where it goes
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must mention %q:\n%v", want, err)
+		}
+	}
+}
+
+// An error that is NOT about a missing driver passes through unchanged: a DSN
+// that does not parse is a different problem and must not be answered with an
+// import instruction.
+func TestOtherErrorsAreNotDressedUpAsAMissingDriver(t *testing.T) {
+	_, err := ImportModel(context.Background(), "no-such-driver", "", "", "example.com/m")
+	if err == nil {
+		t.Fatal("an empty DSN must be refused")
+	}
+	if strings.Contains(err.Error(), "go get") {
+		t.Errorf("an empty DSN is not a missing driver:\n%v", err)
+	}
+}
