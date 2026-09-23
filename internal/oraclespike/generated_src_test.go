@@ -58,7 +58,6 @@ func (u *genUser) Schema(t *storm.Table) {
 	// than firing on whichever index it happens to hit — the distinction that
 	// makes MySQL's ON DUPLICATE KEY unusable and Oracle's MERGE fine.
 	t.Unique(&u.Email)
-	t.Index(&u.Email).Unique().Where(` + "`" + `"deleted_at" IS NULL` + "`" + `)
 }
 
 func TestMain(m *testing.M) {

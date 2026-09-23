@@ -611,3 +611,29 @@ func TestStormsOwnPartialPredicateIsQuotedAndTheModelsIsNot(t *testing.T) {
 		t.Errorf("a declared predicate is the model's SQL and passes through:\n%s", got)
 	}
 }
+
+// PostgreSQL and SQL Server allow a duplicate index and only waste space;
+// Oracle refuses it with ORA-01408. So a model carrying one applies everywhere
+// else and fails here — which is exactly what a portability Check is for.
+func TestADuplicateIndexIsRefused(t *testing.T) {
+	tb := tbl("users", id(), col("email", schema.TypeText, true))
+	tb.Indexes = []*schema.Index{
+		{Name: "a", Unique: true, Columns: []schema.IndexColumn{{Name: "email"}}},
+		{Name: "b", Columns: []schema.IndexColumn{{Name: "email"}}},
+	}
+	err := oraddl.Check(sch(tb))
+	if err == nil || !strings.Contains(err.Error(), "ORA-01408") {
+		t.Fatalf("a duplicate index must be refused: %v", err)
+	}
+	// And the message names the way it is usually produced by accident.
+	if !strings.Contains(err.Error(), "soft-delete") {
+		t.Errorf("the refusal should say how this happens without noticing: %v", err)
+	}
+
+	// Two indexes over the same columns with DIFFERENT predicates are two
+	// different indexes and must both survive.
+	tb.Indexes[1].Where = `"email" <> 'x'`
+	if err := oraddl.Check(sch(tb)); err != nil {
+		t.Errorf("different predicates are different indexes: %v", err)
+	}
+}

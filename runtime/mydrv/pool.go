@@ -246,8 +246,12 @@ type Tx struct {
 	done bool
 }
 
-// Begin starts a transaction on a connection taken from the pool.
-func (p *Pool) Begin(ctx context.Context) (*Tx, error) {
+// Begin starts a transaction on a connection taken from the pool, and returns
+// it as a runtime.Tx so that a caller who holds a runtime.DB does not have to
+// know which database is behind it. The concrete type is still *Tx and its
+// fields were never exported, so nothing a caller could write against it is
+// lost by naming the interface here.
+func (p *Pool) Begin(ctx context.Context) (runtime.Tx, error) {
 	c, err := p.acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -321,8 +325,11 @@ func (t *Tx) end(ctx context.Context, verb string) error {
 	return err
 }
 
-// ErrTxDone is returned by a transaction used after it committed or rolled back.
-var ErrTxDone = errors.New("mydrv: the transaction has already finished")
+// ErrTxDone is returned by a transaction used after it committed or rolled
+// back. It IS runtime.ErrTxDone rather than a second error with the same
+// meaning, so that errors.Is against the shared one holds for every adapter —
+// which is what makes a helper written over runtime.Tx portable.
+var ErrTxDone = runtime.ErrTxDone
 
 var (
 	_ runtime.Executor = (*Pool)(nil)

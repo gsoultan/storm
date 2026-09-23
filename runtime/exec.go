@@ -108,10 +108,16 @@ type Executor interface {
 	Batch(ctx context.Context, ops []BatchOp, each func(i int, rows Rows, affected int64, err error) error) error
 }
 
-// Transactions are deliberately absent. A transaction is an Executor you were
-// given, not a method you call on one — which keeps Unit composable with
-// whatever ownership model the caller already has, and keeps Begin, Commit and
-// Rollback out of the five-method budget.
+// Transactions are deliberately absent FROM THE PORT. A transaction is an
+// Executor you were given, not a method you call on one — which keeps Unit
+// composable with whatever ownership model the caller already has, and keeps
+// Begin, Commit and Rollback out of the five-method budget.
+//
+// They are not absent from the package. Tx and DB in tx.go name the two things
+// a caller holds when they own a transaction's lifetime, so that owning one is
+// a thing you can write generically instead of a thing each adapter spells its
+// own way. See ADR-0011 for why that is not the same decision as widening the
+// port.
 
 // CountingExecutor wraps an Executor and counts round trips. This is what
 // proves the N+1 guarantee in tests — and it is exported so it can prove it in
