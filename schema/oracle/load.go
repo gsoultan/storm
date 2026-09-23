@@ -64,8 +64,8 @@ func loadColumns(ctx context.Context, c Conn, ns string, s *schema.Schema,
 		// that inserts the expression as a literal.
 		if r.str2(9) == "YES" {
 			col.Generated = strings.TrimSpace(r.str2(8))
-		} else if d := strings.TrimSpace(r.str2(8)); d != "" {
-			col.Default = unwrap(d)
+		} else if d := unwrap(strings.TrimSpace(r.str2(8))); !isNoDefault(d) {
+			col.Default = d
 		}
 		if r.str2(10) == "YES" {
 			col.Identity = true
@@ -145,6 +145,21 @@ func typeOf(name string, dataLen, charLen, prec, scale int64, precNull bool) sch
 	// a type storm does not know refuses at generate time with the name in
 	// the message, which is better than a silent substitution.
 	return schema.Type{Name: strings.ToLower(name)}
+}
+
+// isNoDefault reports whether a stored default means "none".
+//
+// TWO SPELLINGS FOR ONE FACT. A column that never had a default reports
+// data_default as SQL NULL, which arrives here as "". A column whose default
+// was DROPPED — `MODIFY (c DEFAULT NULL)`, which is how Oracle drops one —
+// reports the four characters N-U-L-L. They mean the same thing, and reading
+// the second as a default value makes `storm diff` propose to drop a default
+// that is already gone, forever.
+//
+// Found by the migrate gate: the first plan applied, and the second one
+// contained the same DEFAULT NULL.
+func isNoDefault(d string) bool {
+	return d == "" || strings.EqualFold(d, "NULL")
 }
 
 // unwrap strips the parentheses Oracle adds around a stored default, so a

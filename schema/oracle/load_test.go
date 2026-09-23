@@ -257,3 +257,32 @@ func TestForeignKeysGatherAndCarryNoOnUpdate(t *testing.T) {
 		t.Errorf("an ON UPDATE appeared from a dialect that has no such clause: %q", fk.OnUpdate)
 	}
 }
+
+// TWO SPELLINGS FOR ONE FACT. A column that never had a default reports
+// data_default as SQL NULL; one whose default was DROPPED — `MODIFY (c DEFAULT
+// NULL)`, which is how Oracle drops one — reports the four characters N-U-L-L.
+// Reading the second as a default value makes `storm diff` propose to drop a
+// default that is already gone, forever.
+func TestADroppedDefaultIsNoDefault(t *testing.T) {
+	for _, stored := range []any{nil, "", "NULL", "null", "(NULL)", " NULL "} {
+		s := introspect(t, map[string][][]any{
+			"all_tables": {{"T"}},
+			"all_tab_cols": {
+				{"T", "C", "NUMBER", int64(22), nil, int64(19), int64(0), "Y", stored, "NO", "NO"},
+			},
+		})
+		if got := s.Table("t").Column("c").Default; got != "" {
+			t.Errorf("data_default %#v came back as the default %q", stored, got)
+		}
+	}
+	// And a real default still survives.
+	s := introspect(t, map[string][][]any{
+		"all_tables": {{"T"}},
+		"all_tab_cols": {
+			{"T", "C", "NUMBER", int64(22), nil, int64(19), int64(0), "Y", "(7)", "NO", "NO"},
+		},
+	})
+	if got := s.Table("t").Column("c").Default; got != "7" {
+		t.Errorf("a real default came back as %q", got)
+	}
+}
