@@ -50,8 +50,20 @@ argument reads as a bulk-insert request to go-ora; and a fixed-text insert must
 number its own placeholders, which is ORA-01745 and the same defect M10 hit with
 a bare `@`.
 
-Still refused: `storm diff`, `verify`, `explain`, `import` and `watch`, because
-`schema/oracle` does not exist yet.
+**`storm import -dialect oracle` works.** `schema/oracle` is the only
+introspector that reads the port's value side — which is what let its loaders be
+tested against a FAKE catalogue, because a row is a `[]any` and a canned one is a
+literal. That is where the awkward rows can be handed over on purpose: a
+system-generated NOT NULL check, an index that backs a constraint, a VIRTUAL
+column whose expression is stored where a default is. Those are the rows that
+get imported wrong, and a round trip against a real server cannot ask for them.
+
+It is also the only one that **folds case**: Oracle folds an unquoted identifier
+UP, so a database storm did not create says `USERS`. Expressions are not folded,
+because `'PAID'` is not `'paid'`.
+
+Still refused: `storm diff`, `verify`, `explain` and `watch`, because migrate has
+no Oracle half.
 
 Found on the way, in code that was already shipping: the root package file
 emitted a HAVING counter's decoder call without importing the decoder family, so
