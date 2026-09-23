@@ -88,23 +88,14 @@ const driverName = "oracle"
 // adopting an existing database means having a model to start from, and the
 // DDL is already in the database.
 //
-// The DRIVER is the caller's. database/sql needs one registered, and this
-// package registers none: an application that already imports go-ora keeps the
-// version it chose, and `cmd/storm` is where the choice is made visible.
-func ImportModel(ctx context.Context, driver, dsn, ns, modulePath string) ([]byte, error) {
-	if dsn == "" {
-		return nil, errors.New(
-			"import reads a live database: pass -dsn oracle://user:pass@host:1521/FREEPDB1 " +
-				"(or set $STORM_DSN)")
-	}
-	db, err := sql.Open(driver, dsn)
+// The DRIVER is the caller's — see Open.
+func ImportModel(ctx context.Context, dsn, ns, modulePath string) ([]byte, error) {
+	ex, closeDB, err := Open(dsn)
 	if err != nil {
-		return nil, missingDriver(driver, err)
+		return nil, err
 	}
-	defer db.Close()
-	if err := db.PingContext(ctx); err != nil {
-		return nil, missingDriver(driver, err)
-	}
+	defer closeDB()
+
 	if ns == "public" {
 		// -schema defaults to PostgreSQL's namespace, and Oracle has no such
 		// schema at all. The empty string is not a fallback here — it means
@@ -112,7 +103,7 @@ func ImportModel(ctx context.Context, driver, dsn, ns, modulePath string) ([]byt
 		// names resolve against and therefore the right default.
 		ns = ""
 	}
-	s, err := oraintro.Introspect(ctx, sqldrv.New(db), ns)
+	s, err := oraintro.Introspect(ctx, ex, ns)
 	if err != nil {
 		return nil, err
 	}

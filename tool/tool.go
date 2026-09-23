@@ -246,8 +246,7 @@ func run(args []string) error {
 			// The DRIVER is the adopter's — see tool/bootstrap, which
 			// blank-imports it into the bootstrap rather than linking every
 			// driver into a prebuilt storm binary.
-			src, err := oratool.ImportModel(context.Background(),
-				"oracle", *dsn, *ns, modulePath)
+			src, err := oratool.ImportModel(context.Background(), *dsn, *ns, modulePath)
 			if err != nil {
 				return err
 			}
@@ -274,9 +273,9 @@ func run(args []string) error {
 		case "explain", "import", "watch":
 			return refuse()
 		case "diff", "verify":
-			// These two do have a SQL Server form — migrate's DDL seam and
-			// schema/mssql's introspector — and nothing else does.
-			if tgt.dialect != codegen.DialectMSSQL {
+			// These have a SQL Server form and an Oracle one — migrate's DDL
+			// seam plus each target's introspector — and nothing else does.
+			if tgt.dialect != codegen.DialectMSSQL && tgt.dialect != codegen.DialectOracle {
 				return refuse()
 			}
 		}

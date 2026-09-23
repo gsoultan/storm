@@ -249,7 +249,9 @@ soft-delete unique through a real driver.
 | `storm portable oracle` | works |
 | `storm generate -dialect oracle` | **works** |
 | `storm import -dialect oracle` | **works** — `schema/oracle`, round-tripped against a live server |
-| `storm diff` / `verify` / `explain` / `watch` | refuse — migrate has no Oracle half |
+| `storm diff` / `storm verify` | **work** — migrate's Oracle half |
+| `storm verify -pending` | refuses — see below |
+| `storm explain` / `storm watch` | refuse — no Oracle plan reader |
 
 ### It reads a different side of the port
 
@@ -292,6 +294,26 @@ resolves a driver by name from a global registry something has to have written
 to — a prebuilt `storm` binary cannot link every one. `storm` run without a
 hand-written bootstrap adds the import itself; a hand-written `tool.Main` is
 told which import to add, in the error.
+
+### A third kind of scratch namespace
+
+PostgreSQL normalises through a scratch SCHEMA and a `search_path`. SQL Server
+through a scratch DATABASE, because it has no `search_path` and an unqualified
+name resolves in the login's default schema. Oracle has neither problem and a
+different one: **a schema IS a user**, so a scratch namespace would mean
+`CREATE USER` — a server-wide object needing DBA rights an application's account
+will not have.
+
+So it is a per-process **name prefix** in the connected user's own schema. The
+cheapest of the three and the only one needing no privilege the application
+lacks — and the reason `verify -pending` refuses: replaying arbitrary migration
+files into a prefix would apply them under their real names, which is not a
+scratch at all.
+
+It also surfaced the first target where **a constraint name is schema-scoped
+rather than table-scoped**. Prefixing the table is not enough: a scratch
+`sn_123_mig_orgs` still carries a unique called `uq_mig_orgs_name`, which is the
+live table's, and that is ORA-02264.
 
 ### Three things about this target that no other has
 

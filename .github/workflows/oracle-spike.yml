@@ -102,7 +102,7 @@ jobs:
           cov ./runtime/valdec 70   # 75.0
           cov ./runtime/sqldrv 65   # 68.7
           cov ./schema/oracle 88    # 91.6
-          cov ./tool/oratool 35     # 35.7 — see below
+          cov ./tool/oratool 40     # 44.0 — see below
           exit "$fail"
           #
           # TWO OF THESE ARE LOWER THAN THEIR SIBLINGS, and both for the same

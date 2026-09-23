@@ -786,12 +786,15 @@ elif ! grep -q 'sijms/go-ora' oraimp.err; then
   sed 's/^/    /' oraimp.err | head -8 >&2
 fi
 
-# And the commands that still refuse outright, which must name what is missing.
-if go run ./cmd/mystorm diff -dialect oracle x >oradiff.err 2>&1; then
-  note "diff -dialect oracle SUCCEEDED, and migrate has no Oracle half"
-elif ! grep -q "migrate's Oracle half" oradiff.err; then
-  note "diff -dialect oracle refused without naming what is missing:"
-  sed 's/^/    /' oradiff.err | head -5 >&2
+# And the command that still refuses outright, which must name what is missing.
+# `diff` and `verify` WORK now; explain does not, because Oracle's plan reader
+# is EXPLAIN PLAN FOR plus DBMS_XPLAN rather than a translation of EXPLAIN
+# (FORMAT JSON).
+if go run ./cmd/mystorm explain -dialect oracle >oraexp.err 2>&1; then
+  note "explain -dialect oracle SUCCEEDED, and storm has no Oracle plan reader"
+elif ! grep -q 'no Oracle form' oraexp.err; then
+  note "explain -dialect oracle refused without naming what is missing:"
+  sed 's/^/    /' oraexp.err | head -5 >&2
 fi
 
 if [ "$fail" -eq 0 ]; then
