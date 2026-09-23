@@ -781,7 +781,7 @@ func (g *gen) mergeTargets(ins []colInfo) {
 	g.p("// build time. The runtime splices; it chooses none of it.")
 	g.p("var mergeParts = runtime.MergeParts{")
 	g.p("\tInto: %q, Sep: %q, AsSrc: %q,", p.Into, p.Sep, p.AsSrc)
-	g.p("\tOnLead: %q, OnSep: %q, Eq: %q,", p.OnLead, p.OnSep, p.Eq)
+	g.p("\tOnLead: %q, OnSep: %q, OnClose: %q, Eq: %q,", p.OnLead, p.OnSep, p.OnClose, p.Eq)
 	g.p("\tTgt: %q, Src: %q,", p.Tgt, p.Src)
 	g.p("\tMatched: %q, NotMatched: %q,", p.Matched, p.NotMatched)
 	g.p("\tValues: %q, Close: %q, End: %q,", p.Values, p.Close, p.End)

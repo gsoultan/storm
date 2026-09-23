@@ -54,6 +54,10 @@ func (u *genUser) Schema(t *storm.Table) {
 	t.Col(&u.Name).Size(120)
 	t.Col(&u.Balance).Numeric(18, 4)
 	t.SoftDelete(&u.DeletedAt)
+	// A conflict TARGET, so the upsert names the columns it matches on rather
+	// than firing on whichever index it happens to hit — the distinction that
+	// makes MySQL's ON DUPLICATE KEY unusable and Oracle's MERGE fine.
+	t.Unique(&u.Email)
 	t.Index(&u.Email).Unique().Where(` + "`" + `"deleted_at" IS NULL` + "`" + `)
 }
 
@@ -202,6 +206,49 @@ func TestSoftDeleteScopedUnique(t *testing.T) {
 	b := &sd.Row{ID: id(21), Email: "dup@example.com", Name: "B", Balance: bal}
 	if err := sd.Insert(ctx, ex, b); err == nil {
 		t.Error("two LIVE rows with one email were accepted")
+	}
+}
+
+// THE UPSERT, which is a MERGE here. Four things about it were measured rather
+// than read — see compile/oracle/merge.go — and two came back the opposite way
+// round from the documentation.
+func TestUpsertIsAMerge(t *testing.T) {
+	ctx := context.Background()
+	bal, _ := runtime.ParseDecimal("5")
+
+	first := &sd.Row{ID: id(30), Email: "up@example.com", Name: "First", Rank: 1, Balance: bal}
+	if err := sd.New().OnConflictEmail().DoUpdate().Upsert(ctx, ex, first); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	// The same email, a different key: the MATCHED branch must fire and
+	// overwrite rather than raise ORA-00001 on the unique index.
+	second := &sd.Row{ID: id(31), Email: "up@example.com", Name: "Second", Rank: 2, Balance: bal}
+	if err := sd.New().OnConflictEmail().DoUpdate().Upsert(ctx, ex, second); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	rows, err := sd.New().Where(sd.Email.Eq("up@example.com")).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("the upsert inserted a second row instead of matching: %d rows", len(rows))
+	}
+	if rows[0].Name != "Second" {
+		t.Errorf("the MATCHED branch did not overwrite: %q", rows[0].Name)
+	}
+
+	// And the idempotent form, which omits the MATCHED branch entirely.
+	third := &sd.Row{ID: id(32), Email: "up@example.com", Name: "Third", Rank: 3, Balance: bal}
+	if err := sd.New().OnConflictEmail().DoNothing().Upsert(ctx, ex, third); err != nil {
+		t.Fatalf("do-nothing upsert: %v", err)
+	}
+	rows, err = sd.New().Where(sd.Email.Eq("up@example.com")).All(ctx, ex, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Name != "Second" {
+		t.Errorf("DoNothing changed the row: %+v", rows)
 	}
 }
 `

@@ -26,6 +26,15 @@ type MergeParts struct {
 	OnLead string
 	// OnSep joins the key comparisons: ` AND `
 	OnSep string
+	// OnClose ends the match condition, for a back end that PARENTHESISES it.
+	//
+	// Empty on SQL Server, `)` on Oracle, where an unparenthesised ON is
+	// ORA-00969 "missing ON keyword". It is a field of its own rather than a
+	// prefix on Matched and NotMatched because those are alternatives: the
+	// splicer writes at most one of the two branches' leading text before the
+	// other, and a paren in both would leave a stray one in the form that has
+	// a MATCHED branch.
+	OnClose string
 	// Eq is the comparison and the assignment operator alike: ` = `
 	Eq string
 	// Tgt and Src qualify a column to the target or the source row.
@@ -84,6 +93,7 @@ func SpliceMerge(p MergeParts, cols, keys, set []string, ph Placeholder, out str
 		b.WriteString(p.Src)
 		b.WriteString(k)
 	}
+	b.WriteString(p.OnClose)
 
 	if len(set) > 0 {
 		b.WriteString(p.Matched)
