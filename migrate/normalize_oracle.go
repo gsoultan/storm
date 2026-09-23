@@ -91,12 +91,21 @@ func NormalizeOracle(ctx context.Context, c Conn, s *schema.Schema) (_ *schema.S
 	return unprefixed(got, prefix), nil
 }
 
-// prefixed copies a schema with every TABLE name prefixed, and reports the
-// names it used so they can be dropped.
+// prefixed copies a schema with every NAME prefixed, and reports the tables it
+// used so they can be dropped.
 //
-// Only tables: a constraint or index name is derived from the table's by
-// oraddl, so prefixing the table prefixes those too — and prefixing them
-// separately would produce names the round trip could not match back.
+// EVERY name, not just the table's — that was the first draft and it was
+// ORA-02264, "name already used by an existing constraint", on the first run.
+// A constraint and an index are schema-scoped here, not table-scoped: two
+// tables in one schema cannot share an index name, and a scratch table called
+// sn_123_mig_orgs still carries a unique called uq_mig_orgs_name, which is the
+// live table's. PostgreSQL and SQL Server both scope these to the table, so
+// this is the first target where prefixing a table is not enough.
+//
+// The derived names oraddl builds at RENDER time — an enum's
+// ck_<table>_<column> — are prefixed for free, because the table they are
+// derived from already is. The ones schema.Normalize materialised BEFORE this
+// ran are not, and those are the collisions.
 func prefixed(s *schema.Schema, prefix string) (*schema.Schema, []string, error) {
 	out := &schema.Schema{Enums: s.Enums}
 	names := make([]string, 0, len(s.Tables))
@@ -108,16 +117,34 @@ func prefixed(s *schema.Schema, prefix string) (*schema.Schema, []string, error)
 				"migrate: table %s is too long to normalise — the scratch prefix %q takes it "+
 					"past Oracle's 128-character identifier limit", t.Name, prefix)
 		}
-		// The foreign keys point at prefixed tables too, or the DDL refuses.
-		if len(t.ForeignKeys) > 0 {
-			fks := make([]*schema.ForeignKey, len(t.ForeignKeys))
-			for i, fk := range t.ForeignKeys {
-				c := *fk
-				c.RefTable = prefix + fk.RefTable
-				fks[i] = &c
-			}
-			cp.ForeignKeys = fks
+
+		cp.Uniques = make([]*schema.Unique, len(t.Uniques))
+		for i, u := range t.Uniques {
+			c := *u
+			c.Name = prefix + u.Name
+			cp.Uniques[i] = &c
 		}
+		cp.Checks = make([]*schema.Check, len(t.Checks))
+		for i, ck := range t.Checks {
+			c := *ck
+			c.Name = prefix + ck.Name
+			cp.Checks[i] = &c
+		}
+		cp.Indexes = make([]*schema.Index, len(t.Indexes))
+		for i, ix := range t.Indexes {
+			c := *ix
+			c.Name = prefix + ix.Name
+			cp.Indexes[i] = &c
+		}
+		cp.ForeignKeys = make([]*schema.ForeignKey, len(t.ForeignKeys))
+		for i, fk := range t.ForeignKeys {
+			c := *fk
+			c.Name = prefix + fk.Name
+			// And the table it points AT, or the DDL refuses.
+			c.RefTable = prefix + fk.RefTable
+			cp.ForeignKeys[i] = &c
+		}
+
 		out.Tables = append(out.Tables, &cp)
 		names = append(names, cp.Name)
 	}
@@ -126,10 +153,17 @@ func prefixed(s *schema.Schema, prefix string) (*schema.Schema, []string, error)
 
 // unprefixed is the inverse, applied to what came back from the catalogue.
 //
+// The prefix is removed from ANYWHERE in a name rather than only from the
+// front, because the two ways a name acquires it put it in different places: a
+// declared `uq_mig_orgs_name` becomes `sn_123_uq_mig_orgs_name`, and an enum's
+// check derived from the prefixed table becomes `ck_sn_123_mig_orgs_status`.
+// One rule covers both.
+//
 // Tables the prefix does not match are DROPPED rather than kept: the connected
 // user's own schema holds the application's real tables, and normalisation must
 // return the MODEL's shape and nothing else.
 func unprefixed(s *schema.Schema, prefix string) *schema.Schema {
+	strip := func(n string) string { return strings.Replace(n, prefix, "", 1) }
 	out := &schema.Schema{}
 	for _, t := range s.Tables {
 		if !strings.HasPrefix(t.Name, prefix) {
@@ -137,8 +171,25 @@ func unprefixed(s *schema.Schema, prefix string) *schema.Schema {
 		}
 		cp := *t
 		cp.Name = strings.TrimPrefix(t.Name, prefix)
+		for _, u := range cp.Uniques {
+			u.Name = strip(u.Name)
+		}
+		for _, ck := range cp.Checks {
+			ck.Name = strip(ck.Name)
+		}
+		for _, ix := range cp.Indexes {
+			ix.Name = strip(ix.Name)
+			// An index KEY may be an expression naming the table — a partial
+			// unique's CASE does not, but a function-based key could.
+			for i := range ix.Columns {
+				if ix.Columns[i].Expr {
+					ix.Columns[i].Name = strip(ix.Columns[i].Name)
+				}
+			}
+		}
 		for _, fk := range cp.ForeignKeys {
-			fk.RefTable = strings.TrimPrefix(fk.RefTable, prefix)
+			fk.Name = strip(fk.Name)
+			fk.RefTable = strip(fk.RefTable)
 		}
 		out.Tables = append(out.Tables, &cp)
 	}
