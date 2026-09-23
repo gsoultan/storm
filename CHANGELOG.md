@@ -14,6 +14,41 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `storm diff` and `storm verify` for Oracle, and a third kind of scratch namespace
+
+migrate's Oracle half. The DDL seam was already there, so this is the renderers
+plus a normaliser — and the normaliser is where the interesting part is.
+
+PostgreSQL normalises through a scratch SCHEMA and a `search_path`; SQL Server
+through a scratch DATABASE, because it has no `search_path`. Oracle has neither
+problem and a different one: **a schema IS a user**, so a scratch namespace
+would mean `CREATE USER` — a server-wide object needing DBA rights an
+application's account will not have. So it is a per-process **name prefix** in
+the connected user's own schema: the cheapest of the three and the only one
+needing no privilege the application lacks.
+
+That surfaced the first target where **a constraint name is schema-scoped rather
+than table-scoped**. Prefixing the table is not enough — a scratch
+`sn_123_mig_orgs` still carries a unique called `uq_mig_orgs_name`, which is the
+live table's, and that is ORA-02264. PostgreSQL and SQL Server both scope these
+to the table.
+
+Four statements are spelled differently and three fail in a way no text
+assertion sees. `MODIFY` restates only what CHANGED — the opposite of SQL
+Server's `ALTER COLUMN`, and repeating a `NOT NULL` a column already has is
+ORA-01442. A DEFAULT is a property of the COLUMN as on PostgreSQL, so dropping
+one needs no catalogue search. `DROP INDEX` takes no `ON`, because an index name
+is unique per schema. And there is no terminating semicolon.
+
+`storm verify -pending` refuses, and the reason is the scratch mechanism rather
+than a missing feature: replaying arbitrary migration files into a name prefix
+would apply them under their real names, which is not a scratch at all.
+
+One more thing the gate found: Oracle stores a DROPPED default as the four
+characters `NULL`, because `MODIFY (c DEFAULT NULL)` is how you drop one.
+Reading that as a default VALUE made `storm diff` propose to drop a default that
+was already gone, forever.
+
 ### Oracle runs, and any `database/sql` driver now fits the port
 
 `storm generate -dialect oracle` works. The whole stack is gated against Oracle
