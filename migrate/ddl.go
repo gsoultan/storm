@@ -19,6 +19,7 @@ type Dialect string
 const (
 	Postgres Dialect = "postgres"
 	MSSQL    Dialect = "mssql"
+	Oracle   Dialect = "oracle"
 )
 
 // ddl is the seam every statement in this package is written through.
@@ -116,6 +117,8 @@ func ddlFor(d Dialect, enums map[string]*schema.Enum) (ddl, error) {
 		return postgresDDL(), nil
 	case MSSQL:
 		return mssqlDDL(enums), nil
+	case Oracle:
+		return oracleDDL(enums), nil
 	default:
 		return ddl{}, fmt.Errorf("migrate: no DDL for dialect %q", d)
 	}

@@ -253,15 +253,15 @@ func run(args []string) error {
 			}
 			_, err = os.Stdout.Write(src)
 			return err
-		case "diff", "verify", "explain", "watch":
-			// These need migrate's Oracle half, which does not exist yet.
-			// Introspection does — `storm import` above uses it — so the
-			// missing piece is the PLAN engine and its applier, not the
-			// catalogue reader.
+		case "explain", "watch":
+			// explain needs a PLAN reader — Oracle's is EXPLAIN PLAN FOR plus
+			// DBMS_XPLAN, which is a different shape from EXPLAIN (FORMAT
+			// JSON) and not a translation. watch is generate in a loop and
+			// will follow it for free.
 			return fmt.Errorf(
-				"storm %s needs migrate's Oracle half, which storm does not have yet; "+
-					"`storm import`, `storm generate` and `storm ddl` all work for -dialect oracle",
-				cmd)
+				"storm %s has no Oracle form yet; `storm diff`, `storm verify`, "+
+					"`storm import`, `storm generate` and `storm ddl` all work for "+
+					"-dialect oracle", cmd)
 		}
 	}
 	if tgt.dialect != codegen.DialectPostgres {
@@ -1172,6 +1172,25 @@ func portable(dialect string, model *schema.Schema) error {
 func livePlan(dialect codegen.Dialect, dsn, ns string, model *schema.Schema,
 	o migrate.Options) (migrate.Plan, error) {
 
+	if dialect == codegen.DialectOracle {
+		db, closeDB, err := oratool.Open(dsn)
+		if err != nil {
+			return migrate.Plan{}, err
+		}
+		defer closeDB()
+		if o.Concurrently {
+			return migrate.Plan{}, errors.New("-concurrently has no Oracle form: the " +
+				"ONLINE index build there is an Enterprise Edition feature, so storm " +
+				"does not emit it")
+		}
+		if ns == "public" {
+			// -schema defaults to PostgreSQL's namespace. Oracle has no such
+			// schema, and the empty string is not a fallback here — it means
+			// the CONNECTED USER, which is what an application sees.
+			ns = ""
+		}
+		return migrate.ForOracle(context.Background(), db, ns, model)
+	}
 	if dialect == codegen.DialectMSSQL {
 		dial, err := mstool.Dialer(dsn)
 		if err != nil {

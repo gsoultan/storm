@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/runtime/sqldrv"
 	oraintro "github.com/gsoultan/storm/schema/oracle"
 )
@@ -54,6 +55,31 @@ func missingDriver(driver string, err error) error {
 		"       (`storm` run without a hand-written bootstrap adds this itself)",
 		err, OracleDriverPath, OracleDriverPath)
 }
+
+// Open connects and wraps the handle as a storm Executor.
+//
+// The DRIVER is the caller's, for the reason ImportModel's is: database/sql
+// resolves one by name from a global registry, and a prebuilt storm binary
+// cannot link every one.
+func Open(dsn string) (migrate.Conn, func(), error) {
+	if dsn == "" {
+		return nil, nil, errors.New(
+			"this reads a live database: pass -dsn oracle://user:pass@host:1521/FREEPDB1 " +
+				"(or set $STORM_DSN)")
+	}
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, nil, missingDriver(driverName, err)
+	}
+	if err := db.PingContext(context.Background()); err != nil {
+		db.Close()
+		return nil, nil, missingDriver(driverName, err)
+	}
+	return sqldrv.New(db), func() { db.Close() }, nil
+}
+
+// driverName is what database/sql registers go-ora as.
+const driverName = "oracle"
 
 // ImportModel is `storm import` against Oracle.
 //
