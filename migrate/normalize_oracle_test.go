@@ -9,9 +9,12 @@ package migrate
 // equivalent of, and ORA-02264 on the first run was one of them being wrong.
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -160,5 +163,109 @@ func TestUnprefixDropsTheApplicationsOwnTables(t *testing.T) {
 		}
 		t.Errorf("normalisation returned %v; it must return the model's shape and "+
 			"nothing else", names)
+	}
+}
+
+// ---- NormalizeOracle's refusals, which need no server ------------------------
+
+type oraFakeConn struct {
+	execErr  error
+	queryErr error
+	execs    []string
+}
+
+func (c *oraFakeConn) Exec(_ context.Context, sql string, _ []any) (int64, error) {
+	c.execs = append(c.execs, sql)
+	return 0, c.execErr
+}
+
+func (c *oraFakeConn) Query(_ context.Context, _ string, _ []any) (runtime.Rows, error) {
+	if c.queryErr != nil {
+		return nil, c.queryErr
+	}
+	return emptyOraRows{}, nil
+}
+
+type emptyOraRows struct{}
+
+func (emptyOraRows) Next() bool          { return false }
+func (emptyOraRows) Values() []any       { return nil }
+func (emptyOraRows) RawValues() [][]byte { return nil }
+func (emptyOraRows) Close()              {}
+func (emptyOraRows) Err() error          { return nil }
+
+// A model Oracle cannot express is refused BEFORE anything is applied, and the
+// message names the caller's table rather than the scratch one — the scratch
+// mechanism leaking into the sentence somebody has to act on is the one place
+// it must not.
+func TestNormalizeOracleRefusesWithTheCallersNames(t *testing.T) {
+	s := &schema.Schema{Tables: []*schema.Table{{
+		Name:       "orgs",
+		PrimaryKey: []string{"id"},
+		Columns: []*schema.Column{
+			{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+			// Nullable text: the empty-string rule.
+			{Name: "note", Type: schema.Type{Name: schema.TypeText}},
+		},
+	}}}
+	c := &oraFakeConn{}
+	_, err := NormalizeOracle(context.Background(), c, s)
+	if err == nil {
+		t.Fatal("a nullable text column must be refused")
+	}
+	if !strings.Contains(err.Error(), "orgs.note") {
+		t.Errorf("the refusal must name the caller's column: %v", err)
+	}
+	if strings.Contains(err.Error(), oraScratchPrefix) {
+		t.Errorf("the scratch prefix leaked into the message: %v", err)
+	}
+	// Nothing was applied, but the drop DID run — the leftover sweep is
+	// unconditional, because a crashed earlier run is exactly what it is for.
+	for _, e := range c.execs {
+		if strings.HasPrefix(e, "CREATE") {
+			t.Errorf("DDL was applied for a model that does not port: %s", e)
+		}
+	}
+}
+
+// A server that refuses the DDL is reported WITH the statement, because
+// "apply model DDL" on its own names nothing a reader can look at.
+func TestNormalizeOracleNamesTheStatementTheServerRefused(t *testing.T) {
+	c := &oraFakeConn{execErr: errors.New("ORA-00955: name is already used")}
+	_, err := NormalizeOracle(context.Background(), c, oraFixture())
+	if err == nil {
+		t.Fatal("a refused statement must reach the caller")
+	}
+	if !strings.Contains(err.Error(), "ORA-00955") {
+		t.Errorf("the server's error must survive: %v", err)
+	}
+	if !strings.Contains(err.Error(), "CREATE TABLE") {
+		t.Errorf("the refusal must name the statement: %v", err)
+	}
+}
+
+// Everything is dropped on every exit path, including failure — and the drop
+// runs BEFORE the apply too, so a crashed earlier run with this pid cleans up.
+func TestNormalizeOracleDropsOnEveryPath(t *testing.T) {
+	c := &oraFakeConn{queryErr: errors.New("catalogue unavailable")}
+	if _, err := NormalizeOracle(context.Background(), c, oraFixture()); err == nil {
+		t.Fatal("a failed introspection must reach the caller")
+	}
+	var drops int
+	for _, e := range c.execs {
+		if strings.HasPrefix(e, "DROP TABLE") {
+			drops++
+		}
+	}
+	// Two tables, dropped before the apply and again on the way out.
+	if drops != 4 {
+		t.Errorf("got %d drops, want 4 (two tables, swept before and after):\n%v",
+			drops, c.execs)
+	}
+	for _, e := range c.execs {
+		if strings.HasPrefix(e, "DROP TABLE") && !strings.Contains(e, "CASCADE CONSTRAINTS") {
+			t.Errorf("a drop without CASCADE CONSTRAINTS is ORA-02449 when a foreign "+
+				"key points at it: %s", e)
+		}
 	}
 }
