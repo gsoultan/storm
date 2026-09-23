@@ -11,6 +11,7 @@ const generatedLiveSrc = `package PKG_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -261,7 +262,11 @@ func TestUpsertIsAMerge(t *testing.T) {
 	third.SetName("Third")
 	third.SetBalance(bal)
 	third.SetActive(true)
-	if _, err := third.OnConflictEmail().DoNothing().Insert(ctx, ex); err != nil {
+	// ErrConflict is the SUCCESS case of an idempotent insert: DO NOTHING
+	// suppresses the returned row, and a caller that treats "no row" as a
+	// failure retries forever.
+	if _, err := third.OnConflictEmail().DoNothing().Insert(ctx, ex); err != nil &&
+		!errors.Is(err, runtime.ErrConflict) {
 		t.Fatalf("the do-nothing upsert: %v", err)
 	}
 	rows, err = sd.New().Where(sd.Email.Eq("up@example.com")).All(ctx, ex, nil)
