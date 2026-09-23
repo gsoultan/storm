@@ -228,6 +228,26 @@ func TestWhatAnOracleUpsertWouldCost(t *testing.T) {
 		WHEN MATCHED THEN UPDATE SET "m"."name" = "s"."name"
 		WHEN NOT MATCHED THEN INSERT ("id", "name") VALUES ("s"."id", "s"."name")`)
 
+	// Does the ON condition need PARENTHESES? runtime.MergeParts has one slot
+	// before the keys and two after — Matched and NotMatched — so a closing
+	// paren would have to appear in both, and the form that has a MATCHED
+	// branch would then carry a stray one. If the parens are optional the
+	// existing carrier fits; if they are required it does not.
+	probe(t, db, "MERGE with an unparenthesised ON", `
+		MERGE INTO "up_probe" "m"
+		USING (VALUES (3, 'c')) "s" ("id", "name")
+		ON "m"."id" = "s"."id"
+		WHEN MATCHED THEN UPDATE SET "m"."name" = "s"."name"
+		WHEN NOT MATCHED THEN INSERT ("id", "name") VALUES ("s"."id", "s"."name")`)
+
+	// And the idempotent-insert form, which SpliceMerge emits by omitting the
+	// MATCHED branch entirely.
+	probe(t, db, "MERGE with no MATCHED branch", `
+		MERGE INTO "up_probe" "m"
+		USING (VALUES (4, 'd')) "s" ("id", "name")
+		ON ("m"."id" = "s"."id")
+		WHEN NOT MATCHED THEN INSERT ("id", "name") VALUES ("s"."id", "s"."name")`)
+
 	// And whether it can hand the row back, which is what storm's upsert
 	// promises its caller.
 	//
