@@ -631,7 +631,9 @@ func TestADuplicateIndexIsRefused(t *testing.T) {
 	}
 
 	// Two indexes over the same columns with DIFFERENT predicates are two
-	// different indexes and must both survive.
+	// different indexes and must both survive. Unique, because a partial
+	// NON-unique index is refused by its own rule and would mask this one.
+	tb.Indexes[1].Unique = true
 	tb.Indexes[1].Where = `"email" <> 'x'`
 	if err := oraddl.Check(sch(tb)); err != nil {
 		t.Errorf("different predicates are different indexes: %v", err)

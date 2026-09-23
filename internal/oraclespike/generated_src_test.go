@@ -221,6 +221,7 @@ func TestUpsertIsAMerge(t *testing.T) {
 	first.SetName("First")
 	first.SetRank(7)
 	first.SetBalance(bal)
+	first.SetActive(true)
 	if _, err := first.OnConflictEmail().Insert(ctx, ex); err != nil {
 		t.Fatalf("the first upsert: %v", err)
 	}
@@ -234,6 +235,7 @@ func TestUpsertIsAMerge(t *testing.T) {
 	second.SetEmail("up@example.com")
 	second.SetName("Second")
 	second.SetBalance(bal)
+	second.SetActive(true)
 	if _, err := second.OnConflictEmail().Insert(ctx, ex); err != nil {
 		t.Fatalf("the second upsert: %v", err)
 	}
@@ -258,6 +260,7 @@ func TestUpsertIsAMerge(t *testing.T) {
 	third.SetEmail("up@example.com")
 	third.SetName("Third")
 	third.SetBalance(bal)
+	third.SetActive(true)
 	if _, err := third.OnConflictEmail().DoNothing().Insert(ctx, ex); err != nil {
 		t.Fatalf("the do-nothing upsert: %v", err)
 	}
