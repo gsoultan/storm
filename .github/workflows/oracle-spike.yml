@@ -21,6 +21,7 @@ on:
       - 'runtime/valdec/**'
       - 'runtime/sqldrv/**'
       - 'schema/oracle/**'
+      - 'tool/oratool/**'
       - '.github/workflows/oracle-spike.yml'
 
 jobs:

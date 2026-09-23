@@ -248,7 +248,8 @@ soft-delete unique through a real driver.
 | `storm ddl -dialect oracle` | works |
 | `storm portable oracle` | works |
 | `storm generate -dialect oracle` | **works** |
-| `storm diff` / `verify` / `explain` / `import` / `watch` | refuse — `schema/oracle` does not exist |
+| `storm import -dialect oracle` | **works** — `schema/oracle`, round-tripped against a live server |
+| `storm diff` / `verify` / `explain` / `watch` | refuse — migrate has no Oracle half |
 
 ### It reads a different side of the port
 
@@ -271,6 +272,26 @@ What makes it LOSSLESS is a measurement: every Oracle NUMBER arrives as an exact
 decimal **string**, including 2^53+1 and a 34-significant-digit value. A float64
 would have rounded both, so `valdec` refuses a float for an exact numeric — the
 precision is already gone by then and the error is the only place to say so.
+
+### The catalogue reads differently too
+
+`schema/oracle` is the only introspector that reads the port's **value** side,
+and the only one that **folds case**. Oracle stores an identifier as it was
+created and folds an unquoted one UP, so a database storm did not create says
+`USERS`. PostgreSQL folds down and SQL Server preserves; Oracle is the only one
+where the ordinary case is shouting. A name that is ALL UPPERCASE is lowered and
+one with any lowercase is left alone — the second can only have come from a
+quoted identifier, which is what storm itself writes.
+
+Expressions are **not** folded. A CHECK's text and a function-based index's key
+are SQL, and lowering them would change what they mean: `'PAID'` is not
+`'paid'`.
+
+And the **driver is yours**. storm reaches Oracle through `database/sql`, which
+resolves a driver by name from a global registry something has to have written
+to — a prebuilt `storm` binary cannot link every one. `storm` run without a
+hand-written bootstrap adds the import itself; a hand-written `tool.Main` is
+told which import to add, in the error.
 
 ### Three things about this target that no other has
 
