@@ -391,8 +391,8 @@ func CreateIndex(t *schema.Table, ix *schema.Index) string {
 		if c.Expr {
 			key = "(" + c.Name + ")"
 		}
-		if ix.Where != "" {
-			key = "CASE WHEN " + ix.Where + " THEN " + key + " END"
+		if w := indexWhere(ix); w != "" {
+			key = "CASE WHEN " + w + " THEN " + key + " END"
 		}
 		if c.Desc {
 			key += " DESC"
@@ -402,6 +402,24 @@ func CreateIndex(t *schema.Table, ix *schema.Index) string {
 	b.WriteString(strings.Join(parts, ", "))
 	b.WriteString(")")
 	return b.String()
+}
+
+// indexWhere is the partial predicate, in ORACLE's spelling.
+//
+// A DECLARED Where is the model's own SQL and is passed through unchanged —
+// rewriting somebody's expression is guesswork. Storm's OWN live-rows
+// predicate is not: it is written as a BARE column name, which folds to
+// lowercase on PostgreSQL and matches, and folds UP here, where the column
+// storm created is quoted lowercase. `deleted_at IS NULL` is ORA-00904 against
+// "deleted_at".
+//
+// So when schema.Index says the predicate is storm's, this builds it instead.
+// The same cut checkExpr makes for an arc's CHECK.
+func indexWhere(ix *schema.Index) string {
+	if ix.LiveCol != "" {
+		return Ident(ix.LiveCol) + " IS NULL"
+	}
+	return ix.Where
 }
 
 // AddForeignKey renders an ALTER TABLE ... ADD CONSTRAINT.

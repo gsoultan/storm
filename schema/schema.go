@@ -315,6 +315,20 @@ type Index struct {
 	Method  string // "btree" when empty
 	Where   string // partial-index predicate; "" for none
 
+	// LiveCol names the soft-delete column when Where is STORM'S OWN
+	// live-rows predicate rather than the model's, or is empty.
+	//
+	// The same distinction Check.Arc draws, for the same reason. A declared
+	// Where is somebody's SQL and every back end passes it through unchanged;
+	// this one storm wrote, in PostgreSQL's spelling — a BARE column name,
+	// which folds to lowercase there and matches. Oracle folds an unquoted
+	// name UP, so `deleted_at IS NULL` is ORA-00904 "invalid identifier"
+	// against a column storm itself created as "deleted_at".
+	//
+	// A back end that needs its own spelling reads this and builds the
+	// predicate; the rest read Where and are unaffected.
+	LiveCol string
+
 	// Include are the non-key columns carried in the index's leaf entries
 	// (INCLUDE), so a read that touches only the key and these is answered
 	// from the index alone — the covering index. They take part in no
