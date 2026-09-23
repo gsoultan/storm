@@ -179,8 +179,15 @@ func TestMSSQL_ConcurrentlyIsTheIdentity(t *testing.T) {
 }
 
 func TestDialectIsRefusedByName(t *testing.T) {
-	if _, err := DiffFor(msch(), msch(), Dialect("oracle")); err == nil {
+	if _, err := DiffFor(msch(), msch(), Dialect("db2")); err == nil {
 		t.Fatal("an unknown dialect must not silently render as PostgreSQL")
+	}
+	// And the known ones are known, so a typo in the constant fails here
+	// rather than by quietly rendering another target's DDL.
+	for _, d := range []Dialect{"", Postgres, MSSQL, Oracle} {
+		if _, err := DiffFor(msch(), msch(), d); err != nil {
+			t.Errorf("%q is a dialect storm has: %v", d, err)
+		}
 	}
 }
 

@@ -22,6 +22,7 @@ on:
       - 'runtime/sqldrv/**'
       - 'schema/oracle/**'
       - 'tool/oratool/**'
+      - 'migrate/**'
       - '.github/workflows/oracle-spike.yml'
 
 jobs:

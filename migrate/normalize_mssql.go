@@ -28,12 +28,23 @@ import (
 // database at LOGIN, so nothing already connected can be moved to the new one,
 // which is why this takes a dialer rather than a connection.
 
-// MSSQLConn is the slice of a SQL Server driver this package needs.
-// runtime.Executor satisfies it, and so does *msdrv.Conn.
-type MSSQLConn interface {
+// Conn is the slice of a driver this package needs for the targets that are
+// not PostgreSQL. runtime.Executor satisfies it, so a *msdrv.Conn does and so
+// does a sqldrv.Exec over any database/sql handle.
+//
+// Dialect-neutral on purpose: it started as MSSQLConn, and Oracle arriving
+// made the name a lie before the interface changed at all.
+type Conn interface {
 	Query(ctx context.Context, sql string, args []any) (runtime.Rows, error)
 	Exec(ctx context.Context, sql string, args []any) (int64, error)
 }
+
+// MSSQLConn is Conn under the name it shipped as.
+//
+// An ALIAS rather than a second interface: the two are the same type, so an
+// implementation of one is an implementation of the other and no caller has to
+// be edited. Kept because it is in the public surface.
+type MSSQLConn = Conn
 
 // MSSQLDialer opens a connection to one database on the target server.
 //
