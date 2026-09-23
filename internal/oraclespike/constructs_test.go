@@ -230,11 +230,24 @@ func TestWhatAnOracleUpsertWouldCost(t *testing.T) {
 
 	// And whether it can hand the row back, which is what storm's upsert
 	// promises its caller.
-	probe(t, db, "MERGE with a RETURNING clause", `
-		MERGE INTO "up_probe" "m"
-		USING (SELECT 2 AS "id", 'b' AS "name" FROM dual) "s"
-		ON ("m"."id" = "s"."id")
-		WHEN MATCHED THEN UPDATE SET "m"."name" = "s"."name"
-		WHEN NOT MATCHED THEN INSERT ("id", "name") VALUES ("s"."id", "s"."name")
-		RETURNING "m"."id" INTO :1`)
+	//
+	// WITH AN OUT BIND. The first draft passed none and got ORA-01008, "value
+	// for bind variable placeholder was not provided" — which is a BIND error,
+	// so the statement had already parsed. Reading that as "RETURNING is not
+	// allowed on MERGE" would have recorded a decision the server never made.
+	t.Run("MERGE with a RETURNING clause", func(t *testing.T) {
+		var out int64
+		_, err := db.Exec(`
+			MERGE INTO "up_probe" "m"
+			USING (SELECT 2 AS "id", 'b' AS "name" FROM dual) "s"
+			ON ("m"."id" = "s"."id")
+			WHEN MATCHED THEN UPDATE SET "m"."name" = "s"."name"
+			WHEN NOT MATCHED THEN INSERT ("id", "name") VALUES ("s"."id", "s"."name")
+			RETURNING "m"."id" INTO :1`, sql.Out{Dest: &out})
+		if err != nil {
+			t.Logf("  %-46s NO   %v", "MERGE ... RETURNING INTO", firstLine(err))
+			return
+		}
+		t.Logf("  %-46s yes  (returned %d)", "MERGE ... RETURNING INTO", out)
+	})
 }
