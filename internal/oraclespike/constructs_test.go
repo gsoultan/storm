@@ -191,3 +191,50 @@ func TestUnquotedIdentifiersFoldUp(t *testing.T) {
 		t.Errorf("expected 2 tables, got %d", n)
 	}
 }
+
+// The UPSERT question, asked properly.
+//
+// Oracle HAS MERGE — TestEveryConstructM11NeedsExists proves that — and storm
+// still generates no upsert for this target. Two things decide whether it
+// could, and both are asked here rather than read, because "the documentation
+// does not mention it" has been wrong twice in this file already.
+//
+//  1. Can the SOURCE be a row constructor? runtime.MergeParts writes the
+//     values and the column names as two separate lists —
+//     `USING (VALUES (:1, :2)) s (a, b)` — which is SQL Server's shape. If
+//     Oracle needs `USING (SELECT :1 AS a, :2 AS b FROM dual)` then the two
+//     interleave and the existing carrier cannot express it.
+//  2. Can a MERGE RETURN the row it wrote? storm's upsert hands one back.
+func TestWhatAnOracleUpsertWouldCost(t *testing.T) {
+	db := open(t)
+	drop(db, "TABLE", `"up_probe" CASCADE CONSTRAINTS PURGE`)
+	mustExec(t, db, `CREATE TABLE "up_probe" (
+		"id" NUMBER(19) PRIMARY KEY, "name" VARCHAR2(40 CHAR) NOT NULL)`)
+	t.Cleanup(func() { drop(db, "TABLE", `"up_probe" CASCADE CONSTRAINTS PURGE`) })
+
+	// The shape storm already has a carrier for.
+	probe(t, db, "MERGE with a VALUES row constructor as its source", `
+		MERGE INTO "up_probe" "m"
+		USING (VALUES (1, 'a')) "s" ("id", "name")
+		ON ("m"."id" = "s"."id")
+		WHEN MATCHED THEN UPDATE SET "m"."name" = "s"."name"
+		WHEN NOT MATCHED THEN INSERT ("id", "name") VALUES ("s"."id", "s"."name")`)
+
+	// The shape Oracle wants, where the values and the names INTERLEAVE.
+	probe(t, db, "MERGE with a SELECT ... FROM dual as its source", `
+		MERGE INTO "up_probe" "m"
+		USING (SELECT 1 AS "id", 'a' AS "name" FROM dual) "s"
+		ON ("m"."id" = "s"."id")
+		WHEN MATCHED THEN UPDATE SET "m"."name" = "s"."name"
+		WHEN NOT MATCHED THEN INSERT ("id", "name") VALUES ("s"."id", "s"."name")`)
+
+	// And whether it can hand the row back, which is what storm's upsert
+	// promises its caller.
+	probe(t, db, "MERGE with a RETURNING clause", `
+		MERGE INTO "up_probe" "m"
+		USING (SELECT 2 AS "id", 'b' AS "name" FROM dual) "s"
+		ON ("m"."id" = "s"."id")
+		WHEN MATCHED THEN UPDATE SET "m"."name" = "s"."name"
+		WHEN NOT MATCHED THEN INSERT ("id", "name") VALUES ("s"."id", "s"."name")
+		RETURNING "m"."id" INTO :1`)
+}
