@@ -206,8 +206,8 @@ func (l lowering) canReturn() bool { return !l.noReturning }
 // runtime.MergeParts field for field, because it IS that — carried through
 // codegen without codegen importing runtime or naming a keyword.
 type mergeParts struct {
-	Into, Sep, AsSrc, OnLead, OnSep, Eq, Tgt, Src string
-	Matched, NotMatched, Values, Close, End       string
+	Into, Sep, AsSrc, OnLead, OnSep, OnClose, Eq, Tgt, Src string
+	Matched, NotMatched, Values, Close, End                string
 }
 
 // upsertLowering is the conflict-target form, which only PostgreSQL has today.
@@ -668,7 +668,7 @@ func mssqlLowering() lowering {
 			p := mssql.Merge(table)
 			return mergeParts{
 				Into: p.Into, Sep: p.Sep, AsSrc: p.AsSrc, OnLead: p.OnLead,
-				OnSep: p.OnSep, Eq: p.Eq, Tgt: p.Tgt, Src: p.Src,
+				OnSep: p.OnSep, OnClose: p.OnClose, Eq: p.Eq, Tgt: p.Tgt, Src: p.Src,
 				Matched: p.Matched, NotMatched: p.NotMatched,
 				Values: p.Values, Close: p.Close, End: p.End,
 			}
@@ -816,12 +816,20 @@ func oracleLowering() lowering {
 		Placeholder:     oracle.Placeholder,
 		PlaceholderExpr: "runtime.OraclePlaceholder",
 
-		// No upsert lowering yet. Oracle HAS MERGE — it was measured in
-		// internal/oraclespike before this package was written — and the
-		// generated form needs a returning clause to hand the row back, which
-		// this target does not have. Both are left out together rather than
-		// shipping an upsert that silently returns nothing.
+		// Not the inference form: MERGE is a statement of its own. See Merge,
+		// whose four facts were measured and two of which came back the
+		// opposite way round from the documentation.
 		Upsert: nil,
+		Merge: func(table string) mergeParts {
+			p := oracle.Merge(table)
+			return mergeParts{
+				Into: p.Into, Sep: p.Sep, AsSrc: p.AsSrc, OnLead: p.OnLead,
+				OnSep: p.OnSep, OnClose: p.OnClose, Eq: p.Eq, Tgt: p.Tgt, Src: p.Src,
+				Matched: p.Matched, NotMatched: p.NotMatched,
+				Values: p.Values, Close: p.Close, End: p.End,
+			}
+		},
+		MergeOutput: oracle.MergeOutput,
 
 		// A generated package for this target cannot return the row it wrote.
 		// Oracle's RETURNING binds OUTPUT parameters and runtime.Executor

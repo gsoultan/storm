@@ -42,6 +42,9 @@ func (u *genUser) Schema(t *storm.Table) {
 	t.Col(&u.Balance).Numeric(18, 4)
 	t.SoftDelete(&u.DeletedAt)
 	t.Index(&u.Email).Unique().Where(`"deleted_at" IS NULL`)
+	// A conflict TARGET for the upsert, which must name the columns it
+	// matches on rather than firing on whichever index it hits.
+	t.Unique(&u.Email)
 }
 
 func TestTheGeneratedOraclePackageRuns(t *testing.T) {

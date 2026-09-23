@@ -37,8 +37,8 @@ const (
 // MergeParts is the punctuation a MERGE is spliced from. The field names and
 // the order mirror runtime.MergeParts, which is what receives it.
 type MergeParts struct {
-	Into, Sep, AsSrc, OnLead, OnSep, Eq, Tgt, Src string
-	Matched, NotMatched, Values, Close, End       string
+	Into, Sep, AsSrc, OnLead, OnSep, OnClose, Eq, Tgt, Src string
+	Matched, NotMatched, Values, Close, End                string
 }
 
 // Merge returns the punctuation for one table.
