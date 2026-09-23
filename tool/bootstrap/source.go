@@ -31,6 +31,33 @@ func modelless(args []string) bool {
 	return len(args) > 0 && args[0] == "import"
 }
 
+// oracleDriver is the database/sql driver storm's Oracle support is written
+// against. Named here rather than taken from a flag: a driver is a wire
+// protocol implementation, and two of them are not interchangeable at the
+// level storm reads — runtime/valdec's mappings were measured against this one
+// (see internal/oraclespike). A different driver needs its own measurement,
+// not a different string.
+const oracleDriver = "github.com/sijms/go-ora/v2"
+
+// driverFor is the database/sql driver a command's dialect needs, or "".
+func driverFor(args []string) string {
+	for i, a := range args {
+		switch {
+		case a == "-dialect" && i+1 < len(args):
+			if isOracle(args[i+1]) {
+				return oracleDriver
+			}
+		case strings.HasPrefix(a, "-dialect="):
+			if isOracle(strings.TrimPrefix(a, "-dialect=")) {
+				return oracleDriver
+			}
+		}
+	}
+	return ""
+}
+
+func isOracle(s string) bool { return s == "oracle" || s == "ora" }
+
 // SourceFor is Source for a known command, so a command that needs no model is
 // not refused for lacking one.
 func SourceFor(r *tooldiscover.Result, args []string) ([]byte, error) {
@@ -70,6 +97,20 @@ func SourceFor(r *tooldiscover.Result, args []string) ([]byte, error) {
 		b.WriteString("\t" + strconv.Quote(stormPath) + "\n")
 	}
 	b.WriteString("\t" + strconv.Quote(stormPath+"/tool") + "\n\n")
+	// The database/sql DRIVER, blank-imported, for a target that goes through
+	// one. storm's own clients need no registration — a *msdrv.Conn is passed
+	// directly — but Oracle is adapted over database/sql, and database/sql
+	// resolves a driver by NAME from a global registry that something has to
+	// have written to.
+	//
+	// It goes in the BOOTSTRAP rather than in storm, and that is the point: a
+	// prebuilt `storm` binary cannot link every driver, and the adopter's
+	// module already has the one they chose, at the version they chose. If it
+	// does not, `go run` says which package is missing, which is the same
+	// answer missingToolDep gives for storm/tool itself.
+	if drv := driverFor(args); drv != "" {
+		b.WriteString("\t_ " + strconv.Quote(drv) + "\n\n")
+	}
 	for _, p := range pkgs {
 		fmt.Fprintf(&b, "\t%s %s\n", alias[p], strconv.Quote(p))
 	}

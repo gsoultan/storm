@@ -52,6 +52,7 @@ import (
 	"github.com/gsoultan/storm/schema"
 	pgintro "github.com/gsoultan/storm/schema/pg"
 	"github.com/gsoultan/storm/tool/mstool"
+	"github.com/gsoultan/storm/tool/oratool"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -240,14 +241,27 @@ func run(args []string) error {
 	// does not.
 	if tgt.dialect == codegen.DialectOracle {
 		switch cmd {
-		case "diff", "verify", "explain", "import", "watch":
-			// These need a CATALOGUE reader, and schema/oracle does not exist
-			// yet. Generation does not: it needs a lowering and a runtime, and
-			// both are here — runtime/sqldrv over any database/sql driver,
-			// reading the port's second row shape.
+		case "import":
+			// The on-ramp: read the catalogue, print the Go model it implies.
+			// The DRIVER is the adopter's — see tool/bootstrap, which
+			// blank-imports it into the bootstrap rather than linking every
+			// driver into a prebuilt storm binary.
+			src, err := oratool.ImportModel(context.Background(),
+				"oracle", *dsn, *ns, modulePath)
+			if err != nil {
+				return err
+			}
+			_, err = os.Stdout.Write(src)
+			return err
+		case "diff", "verify", "explain", "watch":
+			// These need migrate's Oracle half, which does not exist yet.
+			// Introspection does — `storm import` above uses it — so the
+			// missing piece is the PLAN engine and its applier, not the
+			// catalogue reader.
 			return fmt.Errorf(
-				"storm %s reads a live Oracle catalogue and storm has no schema/oracle yet; "+
-					"`storm generate -dialect oracle` and `storm ddl -dialect oracle` work", cmd)
+				"storm %s needs migrate's Oracle half, which storm does not have yet; "+
+					"`storm import`, `storm generate` and `storm ddl` all work for -dialect oracle",
+				cmd)
 		}
 	}
 	if tgt.dialect != codegen.DialectPostgres {

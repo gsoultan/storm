@@ -73,6 +73,32 @@ jobs:
       #
       # It generates into the spike module rather than storm's, because running
       # needs go-ora and storm's go.mod does not have it.
+      # The packages whose live half only runs where there is an Oracle. Their
+      # floors are here rather than in scripts/check/coverage.sh for the reason
+      # the SQL Server ones are in scripts/check/mssql.sh: measured without a
+      # server, they would be measuring a suite that skipped.
+      - name: the Oracle packages are above their floors
+        run: |
+          fail=0
+          cov() {
+            pct=$(go test -count=1 -cover "$1" 2>/dev/null |
+              sed -n 's/.*coverage: \([0-9.]*\)%.*/\1/p')
+            if [ -z "$pct" ]; then
+              echo "  $1 reported no coverage at all, so its tests did not run" >&2
+              fail=1; return
+            fi
+            ok=$(awk -v a="$pct" -v b="$2" 'BEGIN{print (a+0 >= b+0) ? "ok" : "low"}')
+            printf '  %-34s %6s%%  floor %s%%  %s\n' "$1" "$pct" "$2" "$ok"
+            [ "$ok" = "ok" ] || fail=1
+          }
+          cov ./compile/oraddl 85
+          cov ./compile/oracle 80
+          cov ./runtime/valdec 70
+          cov ./runtime/sqldrv 55
+          cov ./schema/oracle 70
+          cov ./tool/oratool 60
+          exit "$fail"
+
       - name: the generated package RUNS
         run: cd internal/oraclespike && go test -count=1 -v -timeout 300s -run TestTheGeneratedOraclePackageRuns ./...
 

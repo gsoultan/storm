@@ -174,3 +174,43 @@ func TestImportRunsInAModuleWithNoModels(t *testing.T) {
 		t.Error("Source without a command accepted a module with no models")
 	}
 }
+
+// The database/sql DRIVER, blank-imported for a target that goes through one.
+//
+// storm's own clients need no registration — a *msdrv.Conn is passed directly
+// — but Oracle is adapted over database/sql, which resolves a driver by NAME
+// from a global registry something has to have written to. It goes in the
+// bootstrap because a prebuilt `storm` binary cannot link every driver and the
+// adopter's module already has the one they chose.
+func TestTheOracleBootstrapBlankImportsTheDriver(t *testing.T) {
+	r := &tooldiscover.Result{
+		Module: &tooldiscover.Module{Path: "example.com/m", Root: "/tmp"},
+		Models: []tooldiscover.Model{
+			{ImportPath: "example.com/m/model", TypeName: "User", Why: "embeds storm.Model"},
+		},
+	}
+	for _, args := range [][]string{
+		{"import", "-dialect", "oracle"},
+		{"import", "-dialect=ora"},
+	} {
+		src, err := SourceFor(r, args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !strings.Contains(string(src), `_ "github.com/sijms/go-ora/v2"`) {
+			t.Errorf("%v: no driver import:\n%s", args, src)
+		}
+	}
+	// And no other target gains one: they are passed a connection directly.
+	for _, args := range [][]string{
+		{"generate"}, {"ddl", "-dialect", "mssql"}, {"import", "-dialect", "postgres"},
+	} {
+		src, err := SourceFor(r, args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if strings.Contains(string(src), "go-ora") {
+			t.Errorf("%v: a driver import reached a target that needs none", args)
+		}
+	}
+}
