@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -64,7 +65,11 @@ func NormalizeOracle(ctx context.Context, c Conn, s *schema.Schema) (_ *schema.S
 
 	stmts, err := oraddl.Statements(scratch)
 	if err != nil {
-		return nil, err
+		// The prefix out of the MESSAGE. A refusal from normalisation is about
+		// the caller's MODEL, and reporting `sn_3376_mig_orgs.region` names a
+		// table nobody wrote — the scratch mechanism leaking into the one
+		// place it must not, which is the sentence somebody has to act on.
+		return nil, errors.New(strings.ReplaceAll(err.Error(), prefix, ""))
 	}
 	drop := func() {
 		// Detached from the caller's context: the reason this is unwinding may
