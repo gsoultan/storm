@@ -101,9 +101,14 @@ func TestOracleAltersApply(t *testing.T) {
 		edit  func(*schema.Table)
 		wants string
 	}{
+		// NOT NULL with a default, because the empty-string rule refuses a
+		// nullable text column — and a NOT NULL column added to a table that
+		// may have rows needs one. The rule firing on the first draft of this
+		// test is the rule working.
 		{"add a column", func(tb *schema.Table) {
 			tb.Columns = append(tb.Columns, &schema.Column{
 				Name: "region", Type: schema.Type{Name: schema.TypeVarchar, Size: 40},
+				NotNull: true, Default: "'x'",
 			})
 		}, `ADD "region"`},
 
@@ -111,13 +116,15 @@ func TestOracleAltersApply(t *testing.T) {
 			tb.Column("name").Type.Size = 300
 		}, `MODIFY ("name"`},
 
-		{"make a column NOT NULL", func(tb *schema.Table) {
-			tb.Column("region").NotNull = true
-		}, `MODIFY ("region" NOT NULL)`},
+		// The nullability steps use a NUMBER, for the same reason: a text
+		// column cannot legally become nullable on this target.
+		{"make a column nullable", func(tb *schema.Table) {
+			tb.Column("seats").NotNull = false
+		}, `MODIFY ("seats" NULL)`},
 
-		{"make it nullable again", func(tb *schema.Table) {
-			tb.Column("region").NotNull = false
-		}, `MODIFY ("region" NULL)`},
+		{"make it NOT NULL again", func(tb *schema.Table) {
+			tb.Column("seats").NotNull = true
+		}, `MODIFY ("seats" NOT NULL)`},
 
 		{"replace a default", func(tb *schema.Table) {
 			tb.Column("seats").Default = "2"
