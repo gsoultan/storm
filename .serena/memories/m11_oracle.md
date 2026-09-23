@@ -210,10 +210,41 @@ blank-imports it when `-dialect oracle` is seen; a hand-written `tool.Main` gets
 an error naming the import, the file, and the `go get`. The outsider gate found
 that message was go's own ("forgotten import?") by BEING that module.
 
+### migrate's Oracle half (same day)
+
+`storm diff` and `storm verify` work. The DDL seam was already there; the
+NORMALISER is the interesting part and it is a THIRD mechanism.
+
+PostgreSQL: scratch SCHEMA + search_path. SQL Server: scratch DATABASE (no
+search_path). Oracle: **a schema IS a user**, so a scratch namespace means
+CREATE USER — DBA rights an application account will not have. So it is a
+per-process **name PREFIX** in the connected user's own schema. Cheapest of the
+three, and the only one needing no privilege the application lacks. The cost:
+a leak is a table in the application's namespace, so a test asserts there is
+none.
+
+**First target where a constraint name is SCHEMA-scoped, not table-scoped.**
+Prefixing the table is not enough — `sn_123_mig_orgs` still carries
+`uq_mig_orgs_name`, which is the live table's. ORA-02264 on the first run.
+The inverse strips the prefix from ANYWHERE in a name, because a declared
+`uq_orgs_name` and a derived `ck_sn_1_orgs_status` put it in different places.
+
+Four spellings differ: `MODIFY` restates only what CHANGED (repeating a NOT NULL
+is ORA-01442 — the opposite of SQL Server); a DEFAULT is a COLUMN property as on
+PostgreSQL; `DROP INDEX` takes no `ON`; no terminating semicolon. `DROP TABLE`
+needs `CASCADE CONSTRAINTS PURGE` — ORA-02449 and the recycle bin.
+
+**Oracle stores a DROPPED default as the text `NULL`**, because
+`MODIFY (c DEFAULT NULL)` is how you drop one. Reading it as a default VALUE
+made diff propose to drop a default already gone, forever.
+
+`verify -pending` refuses: replaying arbitrary files into a name prefix applies
+them under their REAL names, which is not a scratch at all.
+
 ### Still not built
 
-migrate's Oracle half, MERGE/upsert. `storm diff`, `verify`, `explain` and
-`watch` refuse by name and say what is missing.
+MERGE/upsert. `storm explain` and `storm watch` refuse — Oracle's plan reader is
+EXPLAIN PLAN FOR + DBMS_XPLAN, a different shape rather than a translation.
 
 A NATIVE TTC client is still the open question for performance — 26.3
 allocations per row against 0.09 — and the estimate correction stands: TDS and
