@@ -156,6 +156,25 @@ precision is gone by then and the error is the only place to say so.
 | go-ora reports a 23c native BOOLEAN as NUMBER and yields "1" | a bool-only decoder would read every true as false |
 | storm.Decimal holds 18 significant digits, so numeric(19,4) is refused by codegen | a storm rule, not an Oracle one; oraddl took the same model happily |
 
+### The coverage lesson, learned twice
+
+Six floors for the Oracle packages were set from INTUITION and all six were
+wrong — the exact mistake `tool/mstool`'s floor note had recorded a fortnight
+earlier, made again by the same person who wrote the note. They are measured
+now, with the numbers in the comment.
+
+But `compile/oracle` at **7.1%** was not a floor problem: its joins, unions,
+aggregates, recursion, top-N and write path had no unit tests at all. They were
+executed by the live gate and nothing else — and a live gate cannot say WHICH
+decision produced the bytes. `FROM t x` and `FROM t AS x` are both accepted by
+some server; only one is this dialect's.
+
+Two floors are permanently lower than their siblings for a STRUCTURAL reason
+worth remembering: `compile/oracle` (74) and `tool/oratool` (36) have a large
+part of their exercise in `internal/oraclespike`, a SEPARATE MODULE whose
+coverage does not count toward them. The code runs; it runs from somewhere that
+cannot be measured from.
+
 The `loweringFor` one is the most instructive: it was found by a test written to
 cover a COVERAGE DIP, which is the argument for covering new code rather than
 lowering a floor to fit it. Three gates now stop it recurring —
@@ -163,11 +182,38 @@ lowering a floor to fit it. Three gates now stop it recurring —
 `TestOracleGeneratedPackageCarriesOracleSQL` is the MySQL gate's namesake, and
 the outsider gate checks the generated package binds with Oracle's placeholder.
 
+### The on-ramp landed too (same day)
+
+`schema/oracle` + `tool/oratool`: `storm import -dialect oracle` works,
+round-tripped against a live server.
+
+**It is the only introspector that folds case.** Oracle folds an unquoted
+identifier UP, so a database storm did not create says `USERS`. PostgreSQL
+folds down and SQL Server preserves — Oracle is the only one where the ordinary
+case is SHOUTING. ALL-UPPERCASE is lowered; anything with lowercase in it came
+from a quoted identifier (which is what storm writes) and is left alone. The two
+cannot be confused and both round-trip. **Expressions are NOT folded** — a
+CHECK's text and a function-based index's key are SQL, and `'PAID'` is not
+`'paid'`.
+
+**It is the only introspector that reads the VALUE side of the port**, and that
+is what made it 91.6% covered: a row is a `[]any`, so a FAKE catalogue is a
+literal. That let the awkward rows be handed over deliberately — a
+system-generated NOT NULL check (Oracle implements NOT NULL as one), an index
+that BACKS a constraint (importing both makes every diff propose to drop one
+forever), a VIRTUAL column whose expression is stored where a default is. Those
+are the rows that get imported WRONG and a live round trip cannot ask for them.
+
+**The driver is the ADOPTER'S.** database/sql resolves by name from a global
+registry; a prebuilt storm binary cannot link every driver. `tool/bootstrap`
+blank-imports it when `-dialect oracle` is seen; a hand-written `tool.Main` gets
+an error naming the import, the file, and the `go get`. The outsider gate found
+that message was go's own ("forgotten import?") by BEING that module.
+
 ### Still not built
 
-`schema/oracle` introspection (needs the case-folding rule), migrate's Oracle
-half, MERGE/upsert. `storm diff`, `verify`, `explain`, `import` and `watch`
-refuse by name.
+migrate's Oracle half, MERGE/upsert. `storm diff`, `verify`, `explain` and
+`watch` refuse by name and say what is missing.
 
 A NATIVE TTC client is still the open question for performance — 26.3
 allocations per row against 0.09 — and the estimate correction stands: TDS and
