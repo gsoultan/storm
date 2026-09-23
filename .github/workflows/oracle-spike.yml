@@ -91,13 +91,31 @@ jobs:
             printf '  %-34s %6s%%  floor %s%%  %s\n' "$1" "$pct" "$2" "$ok"
             [ "$ok" = "ok" ] || fail=1
           }
-          cov ./compile/oraddl 85
-          cov ./compile/oracle 80
-          cov ./runtime/valdec 70
-          cov ./runtime/sqldrv 55
-          cov ./schema/oracle 70
-          cov ./tool/oratool 60
+          # Every number here is just under a MEASURED one, taken on the run
+          # that added these floors. The first attempt guessed them and all six
+          # were wrong — which is the same mistake tool/mstool's floor recorded
+          # a fortnight earlier, made again by the person who wrote that note.
+          cov ./compile/oraddl 90   # 93.1
+          cov ./compile/oracle 70   # 74.3 — see below
+          cov ./runtime/valdec 70   # 75.0
+          cov ./runtime/sqldrv 65   # 68.7
+          cov ./schema/oracle 88    # 91.6
+          cov ./tool/oratool 35     # 35.7 — see below
           exit "$fail"
+          #
+          # TWO OF THESE ARE LOWER THAN THEIR SIBLINGS, and both for the same
+          # structural reason rather than for want of tests.
+          #
+          # compile/oracle is 74 where compile/mssql is 95, because a large part
+          # of its expression writer and its declared reads are exercised by
+          # internal/oraclespike — a SEPARATE MODULE, whose coverage does not
+          # count here. The code is run; it is run from somewhere that cannot
+          # be measured from.
+          #
+          # tool/oratool is 36 because ImportModel's only non-refusal path
+          # needs a server, and the tests that give it one are in that same
+          # separate module. The refusals an adopter meets first ARE covered,
+          # which is what this floor protects.
 
       - name: the generated package RUNS
         run: cd internal/oraclespike && go test -count=1 -v -timeout 300s -run TestTheGeneratedOraclePackageRuns ./...
