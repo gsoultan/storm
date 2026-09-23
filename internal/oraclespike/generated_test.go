@@ -41,9 +41,10 @@ func (u *genUser) Schema(t *storm.Table) {
 	t.Col(&u.Name).Size(120)
 	t.Col(&u.Balance).Numeric(18, 4)
 	t.SoftDelete(&u.DeletedAt)
-	t.Index(&u.Email).Unique().Where(`"deleted_at" IS NULL`)
-	// A conflict TARGET for the upsert, which must name the columns it
-	// matches on rather than firing on whichever index it hits.
+	// ONE declaration. storm rewrites a soft-delete table's unique into a
+	// partial unique over the live rows by itself, so declaring the index as
+	// well produced two identical ones — which PostgreSQL tolerates and
+	// Oracle refuses with ORA-01408.
 	t.Unique(&u.Email)
 }
 

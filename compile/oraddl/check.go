@@ -62,6 +62,7 @@ func Check(s *schema.Schema) error {
 		for _, ix := range t.Indexes {
 			checkIndex(t, ix, &problems)
 		}
+		checkDuplicateIndexes(t, &problems)
 	}
 
 	for _, e := range s.Enums {
@@ -241,4 +242,50 @@ func checkIdent(pos, kind, name string, problems *[]string) {
 			"  %s%s name %q is %d characters; Oracle's limit is %d",
 			at(pos), kind, name, len([]rune(name)), maxIdent))
 	}
+}
+
+// checkDuplicateIndexes refuses two indexes over the same key expression.
+//
+// PostgreSQL and SQL Server both allow a duplicate index — wasteful, and only
+// a warning. Oracle refuses it outright with ORA-01408, "such column list
+// already indexed", so a model that carries one applies everywhere else and
+// fails here.
+//
+// It is easy to produce without noticing: storm rewrites a soft-delete table's
+// UNIQUE into a partial unique index over the live rows, so declaring both
+// `t.Unique(&m.Email)` and `t.Index(&m.Email).Unique().Where(...)` yields two
+// identical indexes rather than the one the author meant. That is how this was
+// found.
+func checkDuplicateIndexes(t *schema.Table, problems *[]string) {
+	seen := map[string]string{}
+	for _, ix := range t.Indexes {
+		key := indexShape(t, ix)
+		if prev, dup := seen[key]; dup {
+			*problems = append(*problems, fmt.Sprintf(
+				"  %s%s: indexes %s and %s cover the same columns with the same predicate; "+
+					"Oracle refuses a duplicate index (ORA-01408) where PostgreSQL only "+
+					"wastes space on one\n"+
+					"      drop one — and note that a soft-delete table's UNIQUE is already "+
+					"rewritten into a partial unique index, so declaring both is this",
+				at(t.Pos), t.Name, prev, indexName(t, ix)))
+			continue
+		}
+		seen[key] = indexName(t, ix)
+	}
+}
+
+// indexShape is what makes two indexes the same to Oracle: the key expressions
+// in order, and the predicate. The NAME is not part of it, and neither is
+// uniqueness — a unique and a non-unique index over one key list still collide.
+func indexShape(t *schema.Table, ix *schema.Index) string {
+	var b strings.Builder
+	for _, c := range ix.Columns {
+		b.WriteString(c.Name)
+		if c.Desc {
+			b.WriteString(" DESC")
+		}
+		b.WriteByte('\x00')
+	}
+	b.WriteString(indexWhere(ix))
+	return b.String()
 }
