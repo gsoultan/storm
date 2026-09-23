@@ -69,21 +69,23 @@ func TestTheUnknownDialectMessageListsOracle(t *testing.T) {
 	}
 }
 
-// Generation WORKS now: the second row shape landed, so a generated Oracle
-// package reads runtime.Rows.Values through runtime/valdec and runs on any
-// database/sql driver via runtime/sqldrv. What still refuses is everything
-// that reads a live CATALOGUE, because schema/oracle does not exist.
-func TestOracleRefusesOnlyTheCatalogueCommands(t *testing.T) {
-	for _, cmd := range []string{"diff", "verify", "explain", "import", "watch"} {
-		if !strings.Contains(oracleCatalogueRefusal(cmd), "schema/oracle") {
+// What Oracle still refuses, and it is no longer the catalogue: schema/oracle
+// reads one and `storm import` uses it. What is missing is migrate's half —
+// the PLAN engine and its applier.
+func TestOracleRefusesOnlyTheMigrationCommands(t *testing.T) {
+	for _, cmd := range []string{"diff", "verify", "explain", "watch"} {
+		msg := oracleMigrateRefusal(cmd)
+		if !strings.Contains(msg, "migrate's Oracle half") {
 			t.Errorf("%s must say what is missing", cmd)
+		}
+		if !strings.Contains(msg, "storm import") {
+			t.Errorf("%s must name what DOES work, or an adopter reads it as "+
+				"\"Oracle is unsupported\"", cmd)
 		}
 	}
 }
 
-// oracleCatalogueRefusal mirrors the message run() produces, so the test names
-// the same fact the code does without standing up a whole CLI invocation.
-func oracleCatalogueRefusal(cmd string) string {
-	return "storm " + cmd + " reads a live Oracle catalogue and storm has no schema/oracle yet; " +
-		"`storm generate -dialect oracle` and `storm ddl -dialect oracle` work"
+func oracleMigrateRefusal(cmd string) string {
+	return "storm " + cmd + " needs migrate's Oracle half, which storm does not have yet; " +
+		"`storm import`, `storm generate` and `storm ddl` all work for -dialect oracle"
 }
