@@ -1,0 +1,164 @@
+package migrate
+
+// The scratch-name rewrite, which is where the first live run failed.
+//
+// Oracle's scratch namespace is a name PREFIX in the connected user's own
+// schema — a schema IS a user here, so a real one would mean CREATE USER and a
+// privilege an application's account will not have. That makes these two pure
+// functions load-bearing in a way the other two targets' normalisers have no
+// equivalent of, and ORA-02264 on the first run was one of them being wrong.
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/gsoultan/storm/schema"
+)
+
+func oraFixture() *schema.Schema {
+	orgs := &schema.Table{
+		Name:       "orgs",
+		PrimaryKey: []string{"id"},
+		Columns: []*schema.Column{
+			{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+			{Name: "name", Type: schema.Type{Name: schema.TypeVarchar, Size: 200}, NotNull: true},
+		},
+		Uniques: []*schema.Unique{{Name: "uq_orgs_name", Columns: []string{"name"}}},
+		Checks:  []*schema.Check{{Name: "ck_orgs_name", Expr: `LENGTH("name") > 0`}},
+		Indexes: []*schema.Index{{Name: "ix_orgs_name",
+			Columns: []schema.IndexColumn{{Name: "name"}}}},
+	}
+	members := &schema.Table{
+		Name:       "members",
+		PrimaryKey: []string{"id"},
+		Columns: []*schema.Column{
+			{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+			{Name: "org_id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+		},
+		ForeignKeys: []*schema.ForeignKey{{
+			Name: "fk_members_org_id", Columns: []string{"org_id"},
+			RefTable: "orgs", RefColumns: []string{"id"},
+		}},
+	}
+	return &schema.Schema{Tables: []*schema.Table{orgs, members}}
+}
+
+// EVERY name, not just the table's. A constraint and an index are
+// schema-scoped here, not table-scoped — so a scratch table called
+// sn_1_orgs still carrying a unique called uq_orgs_name collides with the live
+// table's, which is ORA-02264. PostgreSQL and SQL Server both scope these to
+// the table, so this is the first target where prefixing a table is not enough.
+func TestPrefixRewritesEverySchemaScopedName(t *testing.T) {
+	got, names, err := prefixed(oraFixture(), "sn_1_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != "sn_1_orgs" {
+		t.Errorf("dropped names came back as %v", names)
+	}
+	orgs := got.Tables[0]
+	for what, name := range map[string]string{
+		"table":       orgs.Name,
+		"unique":      orgs.Uniques[0].Name,
+		"check":       orgs.Checks[0].Name,
+		"index":       orgs.Indexes[0].Name,
+		"foreign key": got.Tables[1].ForeignKeys[0].Name,
+		"fk target":   got.Tables[1].ForeignKeys[0].RefTable,
+	} {
+		if !strings.HasPrefix(name, "sn_1_") {
+			t.Errorf("the %s name %q was not prefixed; a schema-scoped name that is not "+
+				"is ORA-02264 against the live object", what, name)
+		}
+	}
+}
+
+// The original must not be touched: it is the caller's model, and normalising
+// is not supposed to be observable.
+func TestPrefixDoesNotMutateTheCallersModel(t *testing.T) {
+	in := oraFixture()
+	if _, _, err := prefixed(in, "sn_1_"); err != nil {
+		t.Fatal(err)
+	}
+	if in.Tables[0].Name != "orgs" {
+		t.Errorf("the table was renamed in place: %s", in.Tables[0].Name)
+	}
+	if in.Tables[0].Uniques[0].Name != "uq_orgs_name" {
+		t.Errorf("the unique was renamed in place: %s", in.Tables[0].Uniques[0].Name)
+	}
+	if in.Tables[1].ForeignKeys[0].RefTable != "orgs" {
+		t.Errorf("the foreign key's target was rewritten in place: %s",
+			in.Tables[1].ForeignKeys[0].RefTable)
+	}
+}
+
+// Oracle's identifier limit is 128 and a prefixed table can exceed it. A
+// refusal names the table the CALLER wrote, not the scratch one.
+func TestATableTooLongToPrefixIsRefused(t *testing.T) {
+	long := strings.Repeat("x", 126)
+	s := &schema.Schema{Tables: []*schema.Table{{Name: long}}}
+	_, _, err := prefixed(s, "sn_1_")
+	if err == nil {
+		t.Fatal("a name past 128 characters must be refused")
+	}
+	if !strings.Contains(err.Error(), "128") || strings.Contains(err.Error(), "sn_1_"+long) {
+		t.Errorf("the refusal must name the limit and the CALLER's table: %v", err)
+	}
+}
+
+// The inverse removes the prefix from ANYWHERE in a name, because the two ways
+// a name acquires it put it in different places: a declared uq_orgs_name
+// becomes sn_1_uq_orgs_name, and an enum's check — derived by oraddl from the
+// already-prefixed table — becomes ck_sn_1_orgs_status.
+func TestUnprefixHandlesBothPlacements(t *testing.T) {
+	in := &schema.Schema{Tables: []*schema.Table{{
+		Name:       "sn_1_orgs",
+		PrimaryKey: []string{"id"},
+		Columns:    []*schema.Column{{Name: "id", Type: schema.Type{Name: schema.TypeUUID}}},
+		Uniques:    []*schema.Unique{{Name: "sn_1_uq_orgs_name", Columns: []string{"name"}}},
+		Checks:     []*schema.Check{{Name: "ck_sn_1_orgs_status", Expr: "1=1"}},
+		Indexes: []*schema.Index{{Name: "ck_sn_1_ix", Columns: []schema.IndexColumn{
+			{Name: `CASE WHEN "d" IS NULL THEN "sn_1_orgs"."e" END`, Expr: true},
+		}}},
+		ForeignKeys: []*schema.ForeignKey{{
+			Name: "sn_1_fk_x", RefTable: "sn_1_orgs", Columns: []string{"a"},
+		}},
+	}}}
+	got := unprefixed(in, "sn_1_")
+	tb := got.Table("orgs")
+	if tb == nil {
+		t.Fatal("the table did not come back")
+	}
+	for what, name := range map[string]string{
+		"leading prefix":  tb.Uniques[0].Name,
+		"embedded prefix": tb.Checks[0].Name,
+		"foreign key":     tb.ForeignKeys[0].Name,
+		"fk target":       tb.ForeignKeys[0].RefTable,
+	} {
+		if strings.Contains(name, "sn_1_") {
+			t.Errorf("the %s kept its prefix: %q", what, name)
+		}
+	}
+	if strings.Contains(tb.Indexes[0].Columns[0].Name, "sn_1_") {
+		t.Errorf("an index EXPRESSION kept the prefix: %q", tb.Indexes[0].Columns[0].Name)
+	}
+}
+
+// Tables the prefix does not match are DROPPED: the connected user's own
+// schema holds the application's real tables, and normalisation must return
+// the MODEL's shape and nothing else.
+func TestUnprefixDropsTheApplicationsOwnTables(t *testing.T) {
+	in := &schema.Schema{Tables: []*schema.Table{
+		{Name: "sn_1_orgs", PrimaryKey: []string{"id"}},
+		{Name: "orgs", PrimaryKey: []string{"id"}},      // the live one
+		{Name: "audit_log", PrimaryKey: []string{"id"}}, // somebody else's
+	}}
+	got := unprefixed(in, "sn_1_")
+	if len(got.Tables) != 1 || got.Tables[0].Name != "orgs" {
+		var names []string
+		for _, t := range got.Tables {
+			names = append(names, t.Name)
+		}
+		t.Errorf("normalisation returned %v; it must return the model's shape and "+
+			"nothing else", names)
+	}
+}
