@@ -668,6 +668,37 @@ a decision, and it is better made in the workflow than by loosening a timeout
 until the flake stops reproducing — which would have removed the only signal
 that the fallback path is reachable at all.
 
+### A second flake, and why it was not one
+
+`TestAutoPool_LeavesTheBorrowedConnectionAsItFoundIt` failed twice with
+`canceling statement due to lock timeout (SQLSTATE 55P03)` on
+`CREATE INDEX CONCURRENTLY`, and the mechanism is again not a bug.
+
+CIC waits for every transaction that could see the table, and it does that by
+taking their VIRTUAL-TRANSACTION locks — so `lock_timeout` bounds the wait. The
+test sets 1500ms, and `go test -shuffle=on ./...` runs packages in PARALLEL
+against one server, so any other suite holding a transaction open for longer
+fails this one. Nothing in it is storm's behaviour.
+
+The fix was not a longer timeout. What the test is about is the RESTORE — does
+the borrowed connection go back to the pool without `lock_timeout` and
+`search_path` on it — and the concurrent build is only there to reach the code
+path that sets them. So a timeout is now accepted: the path was reached either
+way.
+
+And the flake turned out to be covering something nothing else did. A concurrent
+step sets `lock_timeout` on the SESSION, because it has no transaction to scope
+a `SET LOCAL` to — so if it FAILS, the setting still has to come off before the
+connection rejoins the pool. That is the more important case and it was being
+tested by accident, at random, about one run in twenty.
+`TestAutoPool_RestoresTheSessionEvenWhenAConcurrentStepFails` forces it: another
+session holds ACCESS EXCLUSIVE on the table, so the build cannot take its
+SHARE UPDATE EXCLUSIVE and fails in a bounded, repeatable way.
+
+**The rule this is the second instance of**: a flaky test is a test whose
+subject is not what it asserts. Both times the fix was to name the subject, not
+to widen a bound until the failure stopped.
+
 One consequence worth naming: the two runtime packages whose live half needs
 that server can no longer be measured by `scripts/check/coverage.sh`, which
 runs in the other job. Their floors moved to `scripts/check/mssql.sh` rather

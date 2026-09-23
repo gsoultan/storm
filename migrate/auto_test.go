@@ -440,20 +440,47 @@ func TestAutoPool_LeavesTheBorrowedConnectionAsItFoundIt(t *testing.T) {
 	res, err := migrate.AutoPool(ctx, pool, sch(u), migrate.AutoOptions{
 		Schema: ns, Concurrently: true, LockTimeout: 1500 * time.Millisecond,
 	})
-	if err != nil {
-		t.Fatalf("AutoPool: %v", err)
-	}
-	var alone int
-	for _, ch := range res.Applied {
-		if ch.NoTransaction {
-			alone++
+
+	// A LOCK TIMEOUT HERE IS NOT A FAILURE OF THIS TEST, and pretending it was
+	// cost two red builds before anyone read the mechanism.
+	//
+	// CREATE INDEX CONCURRENTLY waits for every transaction that could see the
+	// table, and it does that by taking their virtual-transaction locks — so
+	// lock_timeout bounds it. With 1500ms and `go test -shuffle=on ./...`
+	// running packages in PARALLEL against one server, any other suite holding
+	// a transaction open for longer than that fails this one. Nothing about
+	// that is storm's behaviour.
+	//
+	// What this test is actually about is the RESTORE, and the failure path is
+	// the one that matters more: a concurrent step sets lock_timeout on the
+	// SESSION, and if it errors the setting still has to come back off before
+	// the connection rejoins the pool. So a timeout is accepted and the
+	// assertions below run unchanged — see also
+	// TestAutoPool_RestoresTheSessionEvenWhenAConcurrentStepFails, which forces
+	// that path deterministically rather than waiting for a race to supply it.
+	switch {
+	case err == nil:
+		var alone int
+		for _, ch := range res.Applied {
+			if ch.NoTransaction {
+				alone++
+			}
 		}
-	}
-	if alone == 0 {
-		t.Fatalf("no NoTransaction step ran, so nothing could have leaked and this test proves nothing:\n%s", res.SQL())
-	}
-	if !tableExists(t, ctx, c, ns, "users") {
-		t.Fatal("AutoPool did not create the table")
+		if alone == 0 {
+			t.Fatalf("no NoTransaction step ran, so nothing could have leaked and this "+
+				"test proves nothing:\n%s", res.SQL())
+		}
+		if !tableExists(t, ctx, c, ns, "users") {
+			t.Fatal("AutoPool did not create the table")
+		}
+	case strings.Contains(err.Error(), "55P03"),
+		strings.Contains(err.Error(), "lock timeout"):
+		// The concurrent step was REACHED — bound() set the session before it
+		// ran — which is all this test needs from it.
+		t.Logf("the concurrent build timed out waiting for another suite's "+
+			"transaction, which is not this test's subject: %v", err)
+	default:
+		t.Fatalf("AutoPool: %v", err)
 	}
 
 	var lock, path string
@@ -642,4 +669,87 @@ func TestAuto_AddsAnEnumLabelAndUsesItInOneCall(t *testing.T) {
 	if !again.Empty() {
 		t.Fatalf("second Auto applied %d step(s):\n%s", len(again.Applied), again.SQL())
 	}
+}
+
+// The restore on the FAILURE path, forced rather than waited for.
+//
+// A concurrent step sets lock_timeout on the SESSION — it has no transaction to
+// scope a SET LOCAL to — so if it errors the setting still has to come back off
+// before the connection rejoins the pool. Nothing covered that until the flake
+// above turned out to be accidentally exercising it.
+//
+// The conflict is deliberate: another session holds ACCESS EXCLUSIVE on the
+// table, so CREATE INDEX CONCURRENTLY cannot take its SHARE UPDATE EXCLUSIVE
+// and times out in a bounded, repeatable way.
+func TestAutoPool_RestoresTheSessionEvenWhenAConcurrentStepFails(t *testing.T) {
+	ns := "storm_auto_pool_fail"
+	ctx, c := conn(t, ns)
+
+	cfg, err := pgxpool.ParseConfig(dsn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	if _, err := migrate.AutoPool(ctx, pool, users(), migrate.AutoOptions{Schema: ns}); err != nil {
+		t.Fatalf("setup AutoPool: %v", err)
+	}
+
+	// The blocker, on its own connection.
+	blocker, err := pgx.Connect(ctx, dsn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close(context.Background())
+	tx, err := blocker.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, "LOCK TABLE "+ns+".users IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = tx.Rollback(context.Background())
+		}
+	}()
+
+	u := tbl("users", col("id", "uuid", true), col("email", "text", true))
+	u.Indexes = []*schema.Index{{
+		Name: "users_email_idx", Columns: []schema.IndexColumn{{Name: "email"}},
+	}}
+	_, err = migrate.AutoPool(ctx, pool, sch(u), migrate.AutoOptions{
+		Schema: ns, Concurrently: true, LockTimeout: 500 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("the concurrent build succeeded against an ACCESS EXCLUSIVE lock")
+	}
+	if !strings.Contains(err.Error(), "outside a transaction") {
+		t.Errorf("the error must name the step that failed and what it leaves behind: %v", err)
+	}
+
+	_ = tx.Rollback(context.Background())
+	released = true
+
+	// THE POINT: the borrowed connection goes back clean anyway.
+	var lock, path string
+	if err := pool.QueryRow(ctx, "SHOW lock_timeout").Scan(&lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, "SHOW search_path").Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	if lock != "0" {
+		t.Errorf("a FAILED concurrent step left lock_timeout=%q on the pooled connection", lock)
+	}
+	if strings.Contains(path, ns) {
+		t.Errorf("a FAILED concurrent step left search_path=%q on the pooled connection", path)
+	}
+	_ = c
 }
