@@ -216,15 +216,27 @@ func TestUpsertIsAMerge(t *testing.T) {
 	ctx := context.Background()
 	bal, _ := runtime.ParseDecimal("5")
 
-	first := &sd.Row{ID: id(30), Email: "up@example.com", Name: "First", Rank: 1, Balance: bal}
-	if err := sd.New().OnConflictEmail().DoUpdate().Upsert(ctx, ex, first); err != nil {
-		t.Fatalf("first upsert: %v", err)
+	first := sd.Create()
+	first.SetID(id(30))
+	first.SetEmail("up@example.com")
+	first.SetName("First")
+	first.SetRank(7)
+	first.SetBalance(bal)
+	if _, err := first.OnConflictEmail().Insert(ctx, ex); err != nil {
+		t.Fatalf("the first upsert: %v", err)
 	}
-	// The same email, a different key: the MATCHED branch must fire and
-	// overwrite rather than raise ORA-00001 on the unique index.
-	second := &sd.Row{ID: id(31), Email: "up@example.com", Name: "Second", Rank: 2, Balance: bal}
-	if err := sd.New().OnConflictEmail().DoUpdate().Upsert(ctx, ex, second); err != nil {
-		t.Fatalf("second upsert: %v", err)
+
+	// The same email, a different key, and RANK LEFT UNSET. The MATCHED
+	// branch must fire and overwrite only what this insert ASSIGNED — an
+	// upsert that wrote every column would revert the rank to zero on the row
+	// that already exists, which is a silent data loss that reads as working.
+	second := sd.Create()
+	second.SetID(id(31))
+	second.SetEmail("up@example.com")
+	second.SetName("Second")
+	second.SetBalance(bal)
+	if _, err := second.OnConflictEmail().Insert(ctx, ex); err != nil {
+		t.Fatalf("the second upsert: %v", err)
 	}
 
 	rows, err := sd.New().Where(sd.Email.Eq("up@example.com")).All(ctx, ex, nil)
@@ -237,11 +249,18 @@ func TestUpsertIsAMerge(t *testing.T) {
 	if rows[0].Name != "Second" {
 		t.Errorf("the MATCHED branch did not overwrite: %q", rows[0].Name)
 	}
+	if rows[0].Rank != 7 {
+		t.Errorf("a column the second insert did not assign was reverted to %d", rows[0].Rank)
+	}
 
 	// And the idempotent form, which omits the MATCHED branch entirely.
-	third := &sd.Row{ID: id(32), Email: "up@example.com", Name: "Third", Rank: 3, Balance: bal}
-	if err := sd.New().OnConflictEmail().DoNothing().Upsert(ctx, ex, third); err != nil {
-		t.Fatalf("do-nothing upsert: %v", err)
+	third := sd.Create()
+	third.SetID(id(32))
+	third.SetEmail("up@example.com")
+	third.SetName("Third")
+	third.SetBalance(bal)
+	if _, err := third.OnConflictEmail().DoNothing().Insert(ctx, ex); err != nil {
+		t.Fatalf("the do-nothing upsert: %v", err)
 	}
 	rows, err = sd.New().Where(sd.Email.Eq("up@example.com")).All(ctx, ex, nil)
 	if err != nil {
