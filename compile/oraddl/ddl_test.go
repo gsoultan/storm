@@ -578,3 +578,36 @@ func TestSetDefaultOnDeleteIsRefused(t *testing.T) {
 		t.Errorf("CASCADE and SET NULL are the only two: %v", err)
 	}
 }
+
+// Storm's OWN live-rows predicate is respelled; a DECLARED one is not.
+//
+// The predicate storm writes for a soft-delete table's unique is a BARE column
+// name — `deleted_at IS NULL` — which folds to lowercase on PostgreSQL and
+// matches. It folds UP here, against a column storm itself created as
+// "deleted_at", and is ORA-00904. A declared Where is the model's own SQL and
+// every back end passes it through unchanged.
+func TestStormsOwnPartialPredicateIsQuotedAndTheModelsIsNot(t *testing.T) {
+	tb := tbl("users", id(), col("email", schema.TypeText, true))
+
+	// Storm's, marked by LiveCol.
+	mine := &schema.Index{
+		Name: "uq_users_email", Unique: true,
+		Columns: []schema.IndexColumn{{Name: "email"}},
+		Where:   "deleted_at IS NULL", LiveCol: "deleted_at",
+	}
+	got := oraddl.CreateIndex(tb, mine)
+	if !strings.Contains(got, `CASE WHEN "deleted_at" IS NULL`) {
+		t.Errorf("storm's own predicate must be quoted, or it is ORA-00904:\n%s", got)
+	}
+
+	// The model's, passed through.
+	theirs := &schema.Index{
+		Name: "ix_users_live", Unique: true,
+		Columns: []schema.IndexColumn{{Name: "email"}},
+		Where:   `UPPER("email") <> 'X'`,
+	}
+	got = oraddl.CreateIndex(tb, theirs)
+	if !strings.Contains(got, `CASE WHEN UPPER("email") <> 'X'`) {
+		t.Errorf("a declared predicate is the model's SQL and passes through:\n%s", got)
+	}
+}

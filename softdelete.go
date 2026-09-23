@@ -65,7 +65,8 @@ func (b *builder) scopeUniquesToLiveRows() {
 				name = t.UniqueName(u)
 			}
 			t.Indexes = append(t.Indexes, &schema.Index{
-				Name: name, Columns: cols, Unique: true, Where: pred,
+				Name: name, Columns: cols, Unique: true,
+				Where: pred, LiveCol: t.SoftDelete,
 			})
 		}
 		t.Uniques = keepAcrossDeleted(mi.tbl, t.Uniques)
@@ -75,6 +76,7 @@ func (b *builder) scopeUniquesToLiveRows() {
 		for _, ix := range t.Indexes {
 			if ix.Unique && ix.Where == "" && !mi.tbl.acrossDeletedIx[ix] {
 				ix.Where = pred
+				ix.LiveCol = t.SoftDelete
 			}
 		}
 	}
