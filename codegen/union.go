@@ -93,13 +93,13 @@ func (g *gen) emitUnion(u *schema.Union) {
 		g.p("// same value reaches every branch that names it, which is what")
 		g.p("// \"this actor's feed\" has to mean.")
 	}
-	g.p("func %s(ctx context.Context, ex runtime.Executor%s, n int64) ([]%sRow, error) {", u.Name, params, u.Name)
+	g.p("func %s(ctx context.Context, ex "+g.execType()+"%s, n int64) ([]%sRow, error) {", u.Name, params, u.Name)
 	g.p("\tvar sl runtime.Slab")
 	g.p("\treturn %sInto(ctx, ex, nil, &sl%s, n)", u.Name, args)
 	g.p("}")
 	g.p("")
 	g.p("// %sInto lets the caller own the output slice and the string arena.", u.Name)
-	g.p("func %sInto(ctx context.Context, ex runtime.Executor, dst []%sRow, sl *runtime.Slab%s, n int64) ([]%sRow, error) {",
+	g.p("func %sInto(ctx context.Context, ex "+g.execType()+", dst []%sRow, sl *runtime.Slab%s, n int64) ([]%sRow, error) {",
 		u.Name, u.Name, params, u.Name)
 	g.p("\trows, err := ex.Query(ctx, %sSQL, []any{%sn})", low, args2(u))
 	g.p("\tif err != nil {")
