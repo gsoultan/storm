@@ -6,12 +6,13 @@ package oratool
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
 
 func TestImportRefusesAnEmptyDSNWithTheFlagToPass(t *testing.T) {
-	_, err := ImportModel(context.Background(), "oracle", "", "", "example.com/m")
+	_, err := ImportModel(context.Background(), "", "", "example.com/m")
 	if err == nil {
 		t.Fatal("import without a DSN must not succeed")
 	}
@@ -23,14 +24,19 @@ func TestImportRefusesAnEmptyDSNWithTheFlagToPass(t *testing.T) {
 // The driver is the ADOPTER'S, blank-imported into the bootstrap rather than
 // linked into a prebuilt storm binary — so an unregistered one has to fail
 // with something a reader can act on.
-func TestAnUnregisteredDriverIsNamed(t *testing.T) {
-	_, err := ImportModel(context.Background(), "no-such-driver",
-		"oracle://u:p@h:1521/x", "", "example.com/m")
-	if err == nil {
-		t.Fatal("an unregistered driver must not succeed")
+// Open is what every live path goes through — ImportModel and the migration
+// commands alike — so its refusals are the ones an adopter meets.
+func TestOpenRefusesAnEmptyDSN(t *testing.T) {
+	if _, _, err := Open(""); err == nil {
+		t.Fatal("a connection with no DSN must not be handed out")
+	} else if !strings.Contains(err.Error(), "oracle://") {
+		t.Errorf("the refusal must show the flag to pass: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no-such-driver") {
-		t.Errorf("the error must name the driver: %v", err)
+}
+
+func TestOpenRejectsAMalformedDSN(t *testing.T) {
+	if _, _, err := Open("://nonsense"); err == nil {
+		t.Fatal("a DSN that does not parse must not become a connection")
 	}
 }
 
@@ -39,8 +45,7 @@ func TestAnUnregisteredDriverIsNamed(t *testing.T) {
 // is the first failure a hand-written tool.Main hits, and it has to be an
 // instruction rather than a diagnosis.
 func TestTheMissingDriverRefusalIsAnInstruction(t *testing.T) {
-	_, err := ImportModel(context.Background(), "no-such-driver",
-		"oracle://u:p@h:1521/x", "", "example.com/m")
+	err := missingDriver("oracle", errors.New(`sql: unknown driver "oracle" (forgotten import?)`))
 	if err == nil {
 		t.Fatal("an unregistered driver must not succeed")
 	}
@@ -60,11 +65,11 @@ func TestTheMissingDriverRefusalIsAnInstruction(t *testing.T) {
 // that does not parse is a different problem and must not be answered with an
 // import instruction.
 func TestOtherErrorsAreNotDressedUpAsAMissingDriver(t *testing.T) {
-	_, err := ImportModel(context.Background(), "no-such-driver", "", "", "example.com/m")
-	if err == nil {
-		t.Fatal("an empty DSN must be refused")
-	}
+	err := missingDriver("oracle", errors.New("ORA-12541: TNS:no listener"))
 	if strings.Contains(err.Error(), "go get") {
-		t.Errorf("an empty DSN is not a missing driver:\n%v", err)
+		t.Errorf("a server that is not listening is not a missing driver:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "ORA-12541") {
+		t.Errorf("the original error must survive:\n%v", err)
 	}
 }
