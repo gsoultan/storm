@@ -152,7 +152,7 @@ func (g *gen) arcLoader(arcOwnerPkg string, t *schema.Table, arc *schema.Arc, va
 	g.p("")
 	g.parentMethods(q, relPlan{Name: name, ParentPkg: arcOwnerPkg})
 
-	g.p("func (p %s) All(ctx context.Context, ex "+g.execType()+") ([]%sRow, error) {", q, name)
+	g.p("func (p %s) All(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", q, name)
 	g.p("\trows, err := p.q.All(ctx, ex, nil)")
 	g.p("\tif err != nil {")
 	g.p("\t\treturn nil, err")
