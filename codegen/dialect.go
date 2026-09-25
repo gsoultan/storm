@@ -105,6 +105,12 @@ type decoders struct {
 	rowType  string
 	accessor string
 
+	// require wraps every Query a generated read makes, or is "" for the
+	// byte families, which read Rows as the port hands them over. The value
+	// family's rows are a second interface, runtime.ValueRows, so its reads
+	// ask for it ONCE per query — see rowsFrom and batchRows.
+	require string
+
 	// uuid renders the assignment for a NOT NULL uuid column, or nil for the
 	// families whose rows are byte slices and can be copied into the array
 	// directly. A hook rather than a rename for the same reason text is: the
@@ -130,6 +136,27 @@ func (d decoders) rowsAccessor() string {
 	return "RawValues"
 }
 
+// rowsFrom is the right-hand side of a generated read's `rows, err :=`: the
+// Query call itself, or — for a family whose rows are runtime.ValueRows — the
+// call wrapped in the check that they are. Once per query, never per row.
+func (d decoders) rowsFrom(call string) string {
+	if d.require == "" {
+		return call
+	}
+	return d.require + "(" + call + ")"
+}
+
+// batchRows is rowsFrom for a Batch callback, which is handed its rows as a
+// parameter rather than taking them from a call: the parameter's name, and
+// the statement that turns it into the rows the scanner reads — "" when
+// nothing needs to.
+func (d decoders) batchRows() (param, convert string) {
+	if d.require == "" {
+		return "rs", ""
+	}
+	return "r", "rs, err := " + d.require + "(r, err)"
+}
+
 func decodersFor(d Dialect, runtimeImport string) decoders {
 	if d == DialectOracle {
 		// The FOURTH family, and the first that reads no bytes at all.
@@ -144,12 +171,17 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 			imp:      runtimeImport + "/runtime/valdec",
 			rowType:  "[]any",
 			accessor: "Values",
-			// EMPTY. The SQL Server and MySQL families rename where their
-			// bytes genuinely mean something else — DateTimeOffset is not
-			// Timestamptz — and here nothing does: the names are the same and
-			// only the ARGUMENT differs, which is the whole of what the second
-			// row shape changes.
-			fn: nil,
+			require:  "runtime.AsValueRows",
+			// One entry, and it is not a rename. The SQL Server and MySQL
+			// families rename where their bytes genuinely mean something
+			// else — DateTimeOffset is not Timestamptz — and here nothing
+			// does: the names are the same and only the ARGUMENT differs,
+			// which is the whole of what the second row shape changes.
+			//
+			// Which is exactly why Nullable is here. It is neutral for the
+			// byte families, who share runtime.Nullable; for this one the
+			// argument is the difference, so the function is valdec's own.
+			fn: map[string]string{"Nullable": "Nullable"},
 			// The temporals and the decimal are fallible, for the reason every
 			// other family's are: they read a form a wrong value would
 			// misread, and reporting it beats returning a plausible zero.
@@ -287,11 +319,16 @@ func (d Dialect) supports(c *schema.Column) bool {
 var neutralDecoders = map[string]bool{"Nullable": true}
 
 func (d decoders) q(name string) string {
-	if neutralDecoders[name] {
-		return "runtime." + name
-	}
+	// The family's own mapping first. Neutral means "the same function for
+	// every family that reads bytes", which the value family does not: its
+	// Nullable takes an `any`, and routing it to runtime.Nullable — generic
+	// over func([]byte) T — generated a package that did not build for any
+	// Oracle model with a nullable uuid, which is every optional reference.
 	if n, ok := d.fn[name]; ok {
 		return d.pkg + "." + n
+	}
+	if neutralDecoders[name] {
+		return "runtime." + name
 	}
 	return d.pkg + "." + name
 }

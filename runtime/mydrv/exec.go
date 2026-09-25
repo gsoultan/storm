@@ -516,6 +516,3 @@ func (x *Conn) Batch(ctx context.Context, ops []runtime.BatchOp,
 }
 
 func quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
-
-// Values is nil: this adapter is the BYTE shape. See runtime.Rows.
-func (*rows) Values() []any { return nil }

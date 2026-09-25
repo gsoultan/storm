@@ -79,5 +79,3 @@ func TestAggregateWarmPathAllocatesNothing(t *testing.T) {
 		t.Errorf("a warm aggregation allocates %.0f time(s) to build and bind; the budget is 0", got)
 	}
 }
-
-func (emptyRows) Values() []any { return nil } // the BYTE shape; see runtime.Rows

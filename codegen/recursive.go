@@ -128,7 +128,7 @@ func (g *gen) recursive() {
 			g.p("\t\treturn nil, ErrDepthTooDeep")
 			g.p("\t}")
 		}
-		g.p("\trows, err := ex.Query(ctx, %sSQL, []any{roots, maxDepth})", lowerFirst(dir.name))
+		g.p("\trows, err := %s", g.dec.rowsFrom(fmt.Sprintf("ex.Query(ctx, %sSQL, []any{roots, maxDepth})", lowerFirst(dir.name))))
 		g.p("\tif err != nil {")
 		g.p("\t\treturn nil, err")
 		g.p("\t}")

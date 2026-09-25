@@ -106,12 +106,14 @@ func fold2(name string) string {
 }
 
 type rowReader struct {
-	rows runtime.Rows
+	rows runtime.ValueRows
 	v    []any
 }
 
 func query(ctx context.Context, c Conn, sql string, args ...any) (*rowReader, error) {
-	rows, err := c.Query(ctx, sql, args)
+	// Values, not RawValues: this target's adapter is over database/sql and
+	// the driver decoded before storm could see the wire.
+	rows, err := runtime.AsValueRows(c.Query(ctx, sql, args))
 	if err != nil {
 		return nil, err
 	}
@@ -122,8 +124,6 @@ func (r *rowReader) next() bool {
 	if !r.rows.Next() {
 		return false
 	}
-	// Values, not RawValues: this target's adapter is over database/sql and
-	// the driver decoded before storm could see the wire.
 	r.v = r.rows.Values()
 	return true
 }

@@ -126,12 +126,24 @@ against a real server.
 
 ### The architectural change: a second row shape
 
-`runtime.Rows` gained `Values() []any` beside `RawValues() [][]byte`. A
-generated package calls exactly ONE, chosen at GENERATE time by the dialect —
-no run-time branch, the same rule every other dialect decision follows. An
-adapter implements one and returns nil from the other; that is a CONTRACT
-rather than a type, because the alternative is a second Executor interface and
-every decorator written twice.
+`runtime.ValueRows` = `runtime.Rows` + `Values() []any`. A generated package
+reads exactly ONE shape, chosen at GENERATE time by the dialect; a value-shaped
+package asks for it once per query via `runtime.AsValueRows(ex.Query(...))`
+(codegen: `decoders.require`, `rowsFrom`, `batchRows`), and gets
+`runtime.ErrByteRows` from a byte adapter instead of scanning nil.
+
+**It was first a fifth method ON Rows (bac90a1), and that was wrong.** apidiff
+v1.1.0→main flagged `runtime.Rows.Values: added` as incompatible: every
+adopter-written Rows (test fakes, decorators) stops compiling, and
+STABILITY.md makes port changes major. The "contract rather than a type"
+argument assumed the alternative was a second EXECUTOR; a second ROWS
+interface costs one type assertion per query and nothing per row. Byte
+adapters must NOT implement Values (a nil-returning stub would pass the
+assertion) — pinned by TestThisAdapterIsTheByteShape in pgxdrv, msdrv, mydrv.
+The same commit also made the context file import the decoder family
+unconditionally, which broke arc-only contexts on MySQL/MariaDB/SQL Server.
+Lesson: run apidiff against the last tag before any change to runtime/, and
+COMPILE a context with an arc per dialect (TestAContextWithAnArcCompilesOnEveryDialect).
 
 **The consequence is wider than Oracle: any `database/sql` driver satisfies the
 port now.** That was not why it was added.

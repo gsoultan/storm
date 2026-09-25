@@ -181,7 +181,11 @@ func (x *rows) Next() bool {
 // could return something would be slower than reading the values.
 func (*rows) RawValues() [][]byte { return nil }
 
+// Values is the row the driver decoded. It is what makes these rows
+// runtime.ValueRows, which a value-shaped generated package requires.
 func (x *rows) Values() []any { return x.vals }
+
+var _ runtime.ValueRows = (*rows)(nil)
 
 func (x *rows) Close() { _ = x.r.Close() }
 
