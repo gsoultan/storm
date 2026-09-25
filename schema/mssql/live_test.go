@@ -1,4 +1,4 @@
-package mssql_test
+package schemamssql_test
 
 // Introspection against a real server, which is the only way to test it: every
 // query here reads a catalogue, and a catalogue is not something a fake can be
@@ -20,7 +20,7 @@ import (
 	"github.com/gsoultan/storm/compile/msddl"
 	"github.com/gsoultan/storm/runtime/msdrv"
 	"github.com/gsoultan/storm/schema"
-	msintro "github.com/gsoultan/storm/schema/mssql"
+	"github.com/gsoultan/storm/schema/mssql"
 )
 
 type impStatus string
@@ -111,7 +111,7 @@ func TestIntrospectRoundTrip(t *testing.T) {
 		}
 	})
 
-	got, err := msintro.Introspect(ctx, c, "dbo")
+	got, err := schemamssql.Introspect(ctx, c, "dbo")
 	if err != nil {
 		t.Fatal(err)
 	}

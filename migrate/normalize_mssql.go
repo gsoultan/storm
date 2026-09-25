@@ -10,7 +10,7 @@ import (
 	"github.com/gsoultan/storm/compile/msddl"
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/schema"
-	msintro "github.com/gsoultan/storm/schema/mssql"
+	"github.com/gsoultan/storm/schema/mssql"
 )
 
 // Normalisation for SQL Server, which is the same idea as normalize.go's and a
@@ -118,7 +118,7 @@ func NormalizeMSSQL(ctx context.Context, dial MSSQLDialer, s *schema.Schema) (_ 
 			return nil, fmt.Errorf("apply model DDL to the scratch database: %w\n  statement: %s", err, stmt)
 		}
 	}
-	return msintro.Introspect(ctx, c, "dbo")
+	return schemamssql.Introspect(ctx, c, "dbo")
 }
 
 // ForMSSQL computes the plan that takes the live `namespace` of the database
@@ -149,7 +149,7 @@ func ForMSSQL(ctx context.Context, dial MSSQLDialer, namespace string, want *sch
 	}
 	defer closeC()
 
-	cur, err := msintro.Introspect(ctx, c, namespace)
+	cur, err := schemamssql.Introspect(ctx, c, namespace)
 	if err != nil {
 		return Plan{}, fmt.Errorf("introspect %s: %w", namespace, err)
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/runtime/msdrv"
 	"github.com/gsoultan/storm/schema"
-	msintro "github.com/gsoultan/storm/schema/mssql"
+	"github.com/gsoultan/storm/schema/mssql"
 )
 
 // ImportModel is `storm import` against SQL Server.
@@ -44,7 +44,7 @@ func ImportModel(dsn, ns, modulePath string) ([]byte, error) {
 		// one they named.
 		ns = "dbo"
 	}
-	s, err := msintro.Introspect(ctx, c, ns)
+	s, err := schemamssql.Introspect(ctx, c, ns)
 	if err != nil {
 		return nil, err
 	}

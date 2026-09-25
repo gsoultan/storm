@@ -1,4 +1,4 @@
-// Package mssql reads a live SQL Server database into storm's IR.
+// Package schemamssql reads a live SQL Server database into storm's IR.
 //
 // The on-ramp for an existing database: `storm import` turns what is already
 // there into a Go MODEL, because storm is model-first and adopting a database
@@ -20,7 +20,7 @@
 //   - A column's max_length is in BYTES, and an nvarchar's characters are two
 //     of them. Reading it as a character count halves every imported width,
 //     which is a model that compiles and truncates.
-package mssql
+package schemamssql
 
 import (
 	"context"

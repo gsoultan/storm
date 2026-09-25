@@ -34,7 +34,7 @@ import (
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/runtime/msdrv"
 	"github.com/gsoultan/storm/schema"
-	msintro "github.com/gsoultan/storm/schema/mssql"
+	"github.com/gsoultan/storm/schema/mssql"
 )
 
 type migStatus string
@@ -438,7 +438,7 @@ func msColumnExists(t *testing.T, ctx context.Context, dial migrate.MSSQLDialer,
 		t.Fatal(err)
 	}
 	defer closeC()
-	s, err := msintro.Introspect(ctx, c, "dbo")
+	s, err := schemamssql.Introspect(ctx, c, "dbo")
 	if err != nil {
 		t.Fatal(err)
 	}

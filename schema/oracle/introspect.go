@@ -1,4 +1,4 @@
-// Package oracle reads an Oracle schema into storm's IR.
+// Package schemaoracle reads an Oracle schema into storm's IR.
 //
 // The on-ramp: `storm import` prints the Go model an existing database implies,
 // and `storm diff` compares a model against one. Both need the catalogue in the
@@ -26,7 +26,7 @@
 // Measured before this package was written: internal/oraclespike's
 // TestUnquotedIdentifiersFoldUp, which found that `fold_probe` and
 // "fold_probe" are two different tables.
-package oracle
+package schemaoracle
 
 import (
 	"context"

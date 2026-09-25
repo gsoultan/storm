@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	toolbootstrap "github.com/gsoultan/storm/tool/bootstrap"
-	tooldiscover "github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/tool/bootstrap"
+	"github.com/gsoultan/storm/tool/discover"
 )
 
 const (

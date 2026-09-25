@@ -7,7 +7,7 @@ import (
 
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/schema"
-	pgintro "github.com/gsoultan/storm/schema/pg"
+	"github.com/gsoultan/storm/schema/pg"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -78,7 +78,7 @@ func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schem
 	if _, err := c.Exec(ctx, pgddl.Create(s)); err != nil {
 		return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
 	}
-	return pgintro.Introspect(ctx, c, scratch)
+	return schemapg.Introspect(ctx, c, scratch)
 }
 
 // For computes the plan that takes the live `target` namespace to `want`,
@@ -103,7 +103,7 @@ func ForWith(ctx context.Context, c *pgx.Conn, target string, want *schema.Schem
 	if err != nil {
 		return Plan{}, err
 	}
-	cur, err := pgintro.Introspect(ctx, c, target)
+	cur, err := schemapg.Introspect(ctx, c, target)
 	if err != nil {
 		return Plan{}, fmt.Errorf("introspect %s: %w", target, err)
 	}
