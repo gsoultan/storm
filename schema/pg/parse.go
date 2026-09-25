@@ -1,4 +1,4 @@
-package pg
+package schemapg
 
 import (
 	"strings"

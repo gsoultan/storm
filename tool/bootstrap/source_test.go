@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	tooldiscover "github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/tool/discover"
 )
 
 // This is generated code emitted into somebody else's module — the exact class

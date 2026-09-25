@@ -21,6 +21,7 @@ import (
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/sqldrv"
 	"github.com/gsoultan/storm/schema"
 )
@@ -201,8 +202,8 @@ func TestNormalisationLeavesNoScratchObjects(t *testing.T) {
 		t.Error("the normalised model lost its table")
 	}
 	// And the application's own schema is untouched by it.
-	rows, err := ex.Query(ctxBG(),
-		`SELECT table_name FROM user_tables WHERE table_name LIKE 'sn/_%' ESCAPE '/'`, nil)
+	rows, err := runtime.AsValueRows(ex.Query(ctxBG(),
+		`SELECT table_name FROM user_tables WHERE table_name LIKE 'sn/_%' ESCAPE '/'`, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -121,13 +121,13 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 		g.p("// numbered before any call-site predicate — a FILTER lives in the")
 		g.p("// statement's fixed prefix, so its placeholders are known here.")
 	}
-	g.p("func (q Query) All%s(ctx context.Context, ex "+g.execType()+"%s) ([]%sRow, error) {", name, psig, name)
+	g.p("func (q Query) All%s(ctx context.Context, ex runtime.Executor%s) ([]%sRow, error) {", name, psig, name)
 	g.p("\tvar sl runtime.Slab")
 	g.p("\treturn q.All%sInto(ctx, ex, nil, &sl%s)", name, pargs2(agg))
 	g.p("}")
 	g.p("")
 	g.p("// All%sInto lets the caller own the output slice and the arena.", name)
-	g.p("func (q Query) All%sInto(ctx context.Context, ex "+g.execType()+", dst []%sRow, sl *runtime.Slab%s) ([]%sRow, error) {", name, name, psig, name)
+	g.p("func (q Query) All%sInto(ctx context.Context, ex runtime.Executor, dst []%sRow, sl *runtime.Slab%s) ([]%sRow, error) {", name, name, psig, name)
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
@@ -156,9 +156,9 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tdefer putBinder(b)")
 	if len(agg.Params) > 0 {
 		g.p("\t// Declared values first: they are $1..$%d, ahead of the predicates.", len(agg.Params))
-		g.p("\trows, err := ex.Query(ctx, st.SQL, append([]any{%s}, q.bind(b)...))", pargs)
+		g.p("\trows, err := %s", g.dec.rowsFrom(fmt.Sprintf("ex.Query(ctx, st.SQL, append([]any{%s}, q.bind(b)...))", pargs)))
 	} else {
-		g.p("\trows, err := ex.Query(ctx, st.SQL, q.bind(b))")
+		g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, q.bind(b))"))
 	}
 	g.p("\tif err != nil {")
 	g.p("\t\treturn dst, err")
@@ -185,7 +185,7 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 
 	if len(agg.By) == 0 {
 		g.p("// One%s is the whole-table aggregate: exactly one row, always.", name)
-		g.p("func (q Query) One%s(ctx context.Context, ex "+g.execType()+"%s) (%sRow, error) {", name, psig, name)
+		g.p("func (q Query) One%s(ctx context.Context, ex runtime.Executor%s) (%sRow, error) {", name, psig, name)
 		g.p("\tout, err := q.All%s(ctx, ex%s)", name, pargs2(agg))
 		g.p("\tif err != nil || len(out) == 0 {")
 		g.p("\t\treturn %sRow{}, err", name)

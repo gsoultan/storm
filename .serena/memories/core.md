@@ -252,6 +252,8 @@ TDS client as well as a lowering. See [[m10_sqlserver]].
 - [[migrate_ddl_seam]] — the DDL seam inside `migrate/`: `storm diff`/`verify`
   for SQL Server, why the enum step is a whole step, and the new table whose
   indexes were being dropped on the floor
+- [[stability_gates]] — apicompat and archcheck: what holds the v1 promise, the
+  ratchets, and the `--depth` fetch that made a full clone shallow
 - [[m0_results]] — the spike result and the three findings that amended the plan
 - [[decisions]] — the four load-bearing ADRs and what was rejected
 - [[boundaries]] — the scope line

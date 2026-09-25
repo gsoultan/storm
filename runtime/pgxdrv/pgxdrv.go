@@ -10,26 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Pool adapts a pgxpool to runtime.Executor, and to runtime.DB: it is the one
-// thing in this package that can START a transaction, which is why Begin lives
-// here and not on the port.
+// Pool adapts a pgxpool to runtime.Executor.
 type Pool struct{ P *pgxpool.Pool }
-
-var _ runtime.DB = Pool{}
-
-// Begin starts a transaction and returns it already adapted.
-//
-// Before this existed the caller did the adapting themselves —
-// `tx, _ := pool.Begin(ctx); ex := pgxdrv.Tx{T: tx}` — which worked, and which
-// also meant the two lines naming pgx were in the adopter's request handler
-// rather than in the one package allowed to know pgx exists.
-func (e Pool) Begin(ctx context.Context) (runtime.Tx, error) {
-	t, err := e.P.Begin(ctx)
-	if err != nil {
-		return nil, classify(err)
-	}
-	return Tx{T: t}, nil
-}
 
 func (e Pool) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
 	r, err := e.P.Query(ctx, sql, args...)
@@ -180,8 +162,3 @@ func NewPoolConfig(ctx context.Context, cfg *pgxpool.Config) (*pgxpool.Pool, err
 	}
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
-
-// Values is nil: this adapter is the BYTE shape. pgx hands over the wire and
-// storm's decoders read it in place, which is the whole reason the port has a
-// raw form at all. See runtime.Rows.
-func (rows) Values() []any { return nil }

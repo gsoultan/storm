@@ -2,18 +2,22 @@ package pgxdrv
 
 // The row SHAPE contract, which is a promise a generated package relies on.
 //
-// runtime.Rows has two accessors and an adapter implements exactly one; the
-// other returns nil. A generated package calls whichever its dialect chose at
-// GENERATE time, so nothing asks at run time — which means a byte adapter that
-// started returning values here would not fail loudly, it would return rows
-// nobody reads.
+// A package generated for a value-shaped target asks its rows for
+// runtime.ValueRows once per query and refuses them when they are not. pgx
+// hands over the wire, so this adapter's rows must NOT be ValueRows: rows that
+// grew a Values method returning nil would pass that check and then scan
+// nothing — the loud failure turned back into a silent one.
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gsoultan/storm/runtime"
+)
 
 func TestThisAdapterIsTheByteShape(t *testing.T) {
-	var r rows
-	if r.Values() != nil {
-		t.Error("pgx hands over the wire; Values must be nil so a generated " +
-			"package cannot silently scan the wrong side of the port")
+	var r runtime.Rows = rows{}
+	if _, ok := r.(runtime.ValueRows); ok {
+		t.Error("pgx hands over the wire; these rows must not claim the value " +
+			"shape, or a value-shaped package would scan nil instead of refusing them")
 	}
 }

@@ -15,34 +15,60 @@ a reason attached.
 ## Architecture (mandatory)
 
 Compiler shape: **front end → IR → back end**, plus a thin runtime.
-`schema/` · `query/` · `compile/` · `codegen/` · `runtime/` · `cmd/storm/`.
+`schema/` (the model, and the IR) · `compile/` · `codegen/` · `runtime/` ·
+`migrate/` · `tool/` · `cmd/storm/`.
 
 The tool has a source-analysis front end as well: `tool/discover` parses the
 adopter's module to find their models and `tool/bootstrap` synthesizes the
 `main` that registers them (ADR-0006). It is stdlib-only, answers exactly one
-static question, and **nothing under `schema/`, `query/`, `compile/`,
-`codegen/` or `runtime/` may import it**.
+static question, and **nothing under `schema/`, `compile/`, `codegen/` or
+`runtime/` may import it**.
 
-Hard rules, all CI-enforced (`scripts/check/*.sh`):
+Hard rules. Each one names what holds it, because this list once said "all
+CI-enforced" while six of them were not, and the tree drifted from four.
+`scripts/check/boundaries.sh` runs on every push, and `internal/archcheck` is
+the part of it that reads declarations rather than text.
 
-- **`schema/`, `query/`, `compile/`, `codegen/`, `runtime/` import stdlib only.**
+- **`schema/`, `compile/`, `codegen/`, `runtime/` import stdlib only.**
   Every driver dependency lives in exactly one adapter package (`pgx/v5` in
-  `runtime/pgxdrv`) and nowhere else. No driver type crosses that boundary.
+  `runtime/pgxdrv`, which `schema/pg`'s introspection also reads through) and
+  nowhere else. No driver type crosses that boundary. *boundaries.sh; the
+  package list is derived from the tree, so a new back end cannot be left off
+  it — which is how `compile/oracle` was, while it was a list.*
+- **Nothing under those four imports `tool/` or `cmd/`.** *boundaries.sh.*
 - **No `reflect` under `runtime/`.** No exceptions, no fallback path.
-- **No dialect conditional outside `compile/`.**
+  *boundaries.sh.*
+- **No dialect branch at run time.** The dialect is chosen once, where a build
+  starts — codegen's `decodersFor` and `loweringFor`, migrate's `ddlFor`, the
+  CLI's flag — and everything downstream is handed the result. The SQL a
+  generated package runs is written under `compile/`, never in `codegen/`.
+  *boundaries.sh: `runtime/` imports nothing of storm's outside itself, so it
+  cannot reach the code that chooses; and `TestNoSQLTextInCodegen`.*
 - **≤ 10 Go files per folder** — outgrowing it means a missing concept.
-- **≤ 15 methods per interface**; the `Executor` port is five and stays five.
-- **One interface per file, one struct per file.**
-- **Folders name the layer; package clauses are prefixed and unique**
-  (`schema/pg` → `package schemapg`). No import aliases at call sites.
+  *archcheck, as a ratchet: eight folders were over when it was written, at the
+  counts recorded there, and none may grow. Splitting `runtime/` to get under
+  ten would move exported types, which is a breaking change of its own.*
+- **≤ 15 methods per interface**; the `Executor` port has four and a budget of
+  five. *archcheck.*
+- **One interface per file, one struct per file.** *archcheck, as a ratchet on
+  the total excess: new code holds to it, and the old excess may only shrink.*
+- **Package clauses are unique**, prefixed with their layer where they would
+  collide (`schema/pg` → `package schemapg`), and **storm's own packages are
+  imported without aliases**. *archcheck.*
 - **Generated output is byte-deterministic** across runs and machines.
+  *boundaries.sh regenerates the committed packages and compares them.*
+- **The public API stays compatible within v1**, for the packages
+  [[docs/STABILITY]] names. *`scripts/check/apicompat.sh`, against the last v1
+  tag.*
 - **storm emits migrations; only `migrate.Auto` applies them** (ADR-0001, as
   amended 2026-09-07). No *command* applies DDL and nothing applies it
   implicitly — automigrate is a function an adopter calls on purpose, from a
   package they import on purpose, and it refuses any plan that can lose data
-  unless explicitly allowed.
+  unless explicitly allowed. *That Auto refuses, serialises and applies all or
+  nothing is pinned by `migrate/auto_test.go`; that no command applies DDL is
+  held in review.*
 - **The IR is a logical plan, not a SQL AST** (ADR-0004) — it is what keeps the
-  SQL back ends from ossifying around Postgres.
+  SQL back ends from ossifying around Postgres. *Held in review.*
 
 ## Developer profile roster
 
@@ -57,8 +83,8 @@ task summary (`Driver: compiler · Challenger: perf`).
 | **dba** | `model/`, `schema/`, `migrate/`, introspection, EXPLAIN gates, `bench/` fixtures | storm applying DDL *implicitly*, *unserialised*, or *in part* (`migrate.Auto` is the sanctioned exception and holds all three); a destructive migration step without an explicit opt-in; a query added to a hot path without `EXPLAIN (ANALYZE, BUFFERS)`; an N+1 shipped; a relation load with unbounded round trips | `storm explain` in CI; round-trip counting decorator; model → DDL → introspect round-trip diff empty; `verify --pending` green |
 | **dx** | public API, generated-code readability, CLI, errors | an error that does not name the query and the shape mask; an API needing a comment to be understood; generated code a human cannot review; a breaking API change without a version | migration guide runs clean; example suite compiles; adopter feedback from M6 |
 | **sec** | injection surface, identifier handling, arg binding | any identifier interpolated from a runtime value; a placeholder count not statically known; bound args logged above debug level; a raw fragment that skips build-time validation | injection corpus green; placeholder arity proven at generation time; fuzz over identifiers |
-| **arch** | package boundaries, `Executor` port, scope line | a core package importing non-stdlib; pgx leaking out of `runtime/pgxdrv`; a feature outside the scope line in [[docs/CONCEPT]]; **any dialect branch on the hot path**; a capability sniffed at runtime instead of negotiated at build time | `scripts/check/import-boundary.sh`; scope line re-read in review |
-| **test** | suites, fixtures, corpora, CI gates | a bug fix without a failing-first test; a relation without a round-trip-count assertion; a skipped suite reported as done; an allocation target without an `AllocsPerRun` assertion | `go test -race -shuffle=on` green; `testdata/compilefail` suite; coverage: `compile/` 100%, `runtime/` ≥ 95% |
+| **arch** | package boundaries, `Executor` port, scope line | a core package importing non-stdlib; pgx leaking out of `runtime/pgxdrv`; a feature outside the scope line in [[docs/CONCEPT]]; **any dialect branch on the hot path**; a capability sniffed at runtime instead of negotiated at build time | `scripts/check/boundaries.sh` and `internal/archcheck`; `scripts/check/apicompat.sh`; scope line re-read in review |
+| **test** | suites, fixtures, corpora, CI gates | a bug fix without a failing-first test; a relation without a round-trip-count assertion; a skipped suite reported as done; an allocation target without an `AllocsPerRun` assertion | `go test -race -shuffle=on` green; the floors in `scripts/check/coverage.sh` — `runtime/` 95%, each `compile/` back end 80–90% |
 
 ## Standing truths (all profiles)
 

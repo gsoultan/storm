@@ -256,9 +256,12 @@ soft-delete unique through a real driver.
 ### It reads a different side of the port
 
 This is the only target whose generated package scans **decoded values** rather
-than wire bytes. `runtime.Rows` has two accessors and a generated package calls
-exactly one, chosen at GENERATE time — so there is no branch at run time, the
-same rule every other dialect decision follows.
+than wire bytes. It reads `runtime.ValueRows` — `runtime.Rows` plus `Values` —
+and asks for it once per query, through `runtime.AsValueRows`; every other
+target reads `Rows` as the port hands them over. Which one is chosen at
+GENERATE time, the same rule every other dialect decision follows, and an
+Executor that hands an Oracle package byte rows gets `runtime.ErrByteRows`
+rather than a scan of nil.
 
 The reason is that a `database/sql` driver decodes before storm can see the
 wire. `runtime/sqldrv` adapts any of them; `runtime/valdec` is the decoder

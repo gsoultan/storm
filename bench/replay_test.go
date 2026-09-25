@@ -147,5 +147,3 @@ func TestClientCeiling(t *testing.T) {
 	}
 	fmt.Println()
 }
-
-func (r *replayRows) Values() []any { return nil } // the BYTE shape; see runtime.Rows

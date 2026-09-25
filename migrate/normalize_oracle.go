@@ -10,7 +10,7 @@ import (
 
 	"github.com/gsoultan/storm/compile/oraddl"
 	"github.com/gsoultan/storm/schema"
-	oraintro "github.com/gsoultan/storm/schema/oracle"
+	"github.com/gsoultan/storm/schema/oracle"
 )
 
 // Normalisation for Oracle — the same idea as normalize.go's and a THIRD
@@ -89,7 +89,7 @@ func NormalizeOracle(ctx context.Context, c Conn, s *schema.Schema) (_ *schema.S
 		}
 	}
 
-	got, err := oraintro.Introspect(ctx, c, "")
+	got, err := schemaoracle.Introspect(ctx, c, "")
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +213,7 @@ func ForOracle(ctx context.Context, c Conn, namespace string, want *schema.Schem
 	if err != nil {
 		return Plan{}, err
 	}
-	cur, err := oraintro.Introspect(ctx, c, namespace)
+	cur, err := schemaoracle.Introspect(ctx, c, namespace)
 	if err != nil {
 		return Plan{}, fmt.Errorf("introspect %s: %w", namespace, err)
 	}

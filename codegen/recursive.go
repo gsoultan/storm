@@ -116,7 +116,7 @@ func (g *gen) recursive() {
 		g.p("// Rows come back in no guaranteed order — a tree has no total order")
 		g.p("// and inventing one would be a lie. Every row carries its %s, so the", parent)
 		g.p("// caller reassembles the shape it wanted.")
-		g.p("func %s(ctx context.Context, ex "+g.execType()+", roots []%s, maxDepth int64) ([]Row, error) {", dir.name, keyGo)
+		g.p("func %s(ctx context.Context, ex runtime.Executor, roots []%s, maxDepth int64) ([]Row, error) {", dir.name, keyGo)
 		g.p("\tif len(roots) == 0 {")
 		g.p("\t\treturn nil, nil")
 		g.p("\t}")
@@ -128,7 +128,7 @@ func (g *gen) recursive() {
 			g.p("\t\treturn nil, ErrDepthTooDeep")
 			g.p("\t}")
 		}
-		g.p("\trows, err := ex.Query(ctx, %sSQL, []any{roots, maxDepth})", lowerFirst(dir.name))
+		g.p("\trows, err := %s", g.dec.rowsFrom(fmt.Sprintf("ex.Query(ctx, %sSQL, []any{roots, maxDepth})", lowerFirst(dir.name))))
 		g.p("\tif err != nil {")
 		g.p("\t\treturn nil, err")
 		g.p("\t}")
