@@ -29,6 +29,21 @@ a release note that cannot be checked is marketing.
 - **The server table lists SQL Server 2022**, tested since v1.1.0 and missing
   from it, and **Oracle as experimental**: what an Oracle package emits,
   `runtime/sqldrv` and `runtime/valdec` may change in a minor while it is.
+- **AGENTS.md says what holds each rule.** It called six of them CI-enforced
+  and nothing enforced them; the tree had drifted from four. `internal/archcheck`
+  now holds the rules about declarations — one type per file, ten files per
+  folder, fifteen methods per interface, unique package clauses, no aliases of
+  storm's own packages — as a ratchet where the tree had drifted. The
+  stdlib-only check derives its package list from the tree, which is how
+  `compile/oracle` and `compile/oraddl` had been left off it, and two new
+  checks pin that `runtime/` reaches nothing of storm's outside itself and the
+  core reaches nothing of the tool's.
+
+**For anyone importing the introspection packages:** `schema/pg`,
+`schema/mssql` and `schema/oracle` now declare `package schemapg`,
+`schemamssql` and `schemaoracle`, so their names no longer collide with
+`compile/mssql` and `compile/oracle`. The import paths are unchanged. They are
+compiler internals that [docs/STABILITY.md](docs/STABILITY.md) does not cover.
 
 ### Three generated packages that did not build, found by compiling one
 

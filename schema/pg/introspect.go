@@ -1,9 +1,9 @@
-// Package pg reads a live PostgreSQL database into storm's schema IR.
+// Package schemapg reads a live PostgreSQL database into storm's schema IR.
 //
 // It is the front end behind `storm import` (adopting an existing database) and
 // `storm verify --drift` (catching a production schema that no longer matches
 // the model).
-package pg
+package schemapg
 
 import (
 	"context"

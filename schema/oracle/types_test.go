@@ -1,4 +1,4 @@
-package oracle
+package schemaoracle
 
 // The type map, which is the INVERSE of compile/oraddl's and has to be: a
 // model imported from a database and then applied to one must produce the same

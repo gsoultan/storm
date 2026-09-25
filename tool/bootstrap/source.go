@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	tooldiscover "github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/tool/discover"
 	"github.com/gsoultan/storm/tool/oratool"
 )
 

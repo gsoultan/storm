@@ -1,4 +1,4 @@
-package oracle
+package schemaoracle
 
 // The case rule, which no other introspector storm has needs.
 //
