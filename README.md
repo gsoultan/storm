@@ -106,6 +106,15 @@ produces, so a handler is written once. `storm generate -dialect mysql` (or
 `mariadb`) is the whole of the wiring. An adopter who targets only PostgreSQL
 links none of it.
 
+**SQL Server is a runtime target too, and Oracle an experimental one.** SQL
+Server has its own stdlib-only TDS client, `runtime/msdrv`, and as of v1.2.0
+the whole migration half: `storm diff`, `storm verify` and `migrate.AutoMSSQL`.
+Oracle generates, imports, diffs and upserts through any `database/sql` driver
+via `runtime/sqldrv`. It is experimental in the sense
+[docs/STABILITY.md](docs/STABILITY.md) defines, and
+[docs/DIALECTS.md](docs/DIALECTS.md) lists what each engine does differently
+and why.
+
 The milestone log with
 every exit gate is [docs/PLAN.md](docs/PLAN.md), what would still stop a
 team adopting this is written down, with gates, in
@@ -233,17 +242,17 @@ Measured, never quoted from memory — the methodology and every caveat live in
 
 | storm | raw pgx | sqlc | Bun | Ent | GORM |
 |---|---|---|---|---|---|
-| **6** | 5,012 | 5,022 | 13,899 | 23,016 | 23,934 |
+| **6** | 5,012 | 5,022 | 13,898 | 23,015 | 23,932 |
 
-> **Measured on Go 1.26.6.** The allocation counts above were re-checked on 1.27
-> and are unchanged — they are what this table is about. The wall-clock figures
-> have not been, and one offline benchmark did move; the note at the top of
-> [`bench/RESULTS.md`](bench/RESULTS.md) has the detail.
+> **Re-measured for v1.2.0 on Go 1.27.1 (2026-09-25).** storm's count is the
+> same as on Go 1.26.6; the rivals moved by one or two. The wall-clock figures
+> were checked rather than re-published, and
+> [`bench/RESULTS.md`](bench/RESULTS.md) says why.
 
 Wall clock is round-trip-dominated for every ORM — the honest claims are
-allocations, GC pressure (storm 21 GCs vs pgx's 102 on the 2M-row workload),
+allocations, GC pressure (storm 17 GCs vs pgx's 81 on the 2M-row workload),
 and the plans: `Exists()` is a `LIMIT 1` probe, relation loads carry no
-useless `ORDER BY`, per-parent limits lower to `LATERAL` (measured 33× over
+useless `ORDER BY`, per-parent limits lower to `LATERAL` (measured 34× over
 `row_number()` at 100 parents), and projections make index-only scans
 possible.
 
