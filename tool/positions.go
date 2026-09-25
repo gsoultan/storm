@@ -16,7 +16,7 @@ package tool
 
 import (
 	"github.com/gsoultan/storm/schema"
-	tooldiscover "github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/tool/discover"
 )
 
 // annotate fills in Table.Pos and Column.Pos from the module's source.

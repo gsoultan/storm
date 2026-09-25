@@ -23,7 +23,7 @@ import (
 	"github.com/gsoultan/storm/codegen"
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/runtime/sqldrv"
-	oraintro "github.com/gsoultan/storm/schema/oracle"
+	"github.com/gsoultan/storm/schema/oracle"
 )
 
 // OracleDriverPath is the database/sql driver storm's Oracle support is
@@ -103,7 +103,7 @@ func ImportModel(ctx context.Context, dsn, ns, modulePath string) ([]byte, error
 		// names resolve against and therefore the right default.
 		ns = ""
 	}
-	s, err := oraintro.Introspect(ctx, ex, ns)
+	s, err := schemaoracle.Introspect(ctx, ex, ns)
 	if err != nil {
 		return nil, err
 	}

@@ -100,6 +100,12 @@ func TestOracleGeneratedPackageCarriesOracleSQL(t *testing.T) {
 	if strings.Contains(src, "RawValues") {
 		t.Error("an Oracle package must not read RawValues; it would scan nil")
 	}
+	// Every read asks for the value shape, once, at its Query. One that did
+	// not would be reading Values off an interface that has no such method.
+	queries, asked := strings.Count(src, "ex.Query("), strings.Count(src, "runtime.AsValueRows(ex.Query(")
+	if queries == 0 || asked != queries {
+		t.Errorf("%d of %d reads ask for runtime.ValueRows; every one must", asked, queries)
+	}
 	if !strings.Contains(src, "valdec.") {
 		t.Error("an Oracle package must decode with runtime/valdec")
 	}

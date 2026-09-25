@@ -12,7 +12,18 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gsoultan/storm/runtime"
 )
+
+// The BYTE shape, pinned the way pgxdrv's is: rows that grew a Values method
+// would pass a value-shaped package's check and then scan nil.
+func TestThisAdapterIsTheByteShape(t *testing.T) {
+	var r runtime.Rows = (*rows)(nil)
+	if _, ok := r.(runtime.ValueRows); ok {
+		t.Error("MySQL rows are wire bytes; they must not claim the value shape")
+	}
+}
 
 func jsonOf(t *testing.T, a any) string {
 	t.Helper()

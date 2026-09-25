@@ -117,13 +117,13 @@ func (g *gen) join(j *schema.Join) {
 	g.p("// All%s runs the %q join. Call-site predicates apply to %s and compose",
 		j.Name, j.Name, g.t.Name)
 	g.p("// with whatever the declaration already filtered.")
-	g.p("func (q Query) All%s(ctx context.Context, ex "+g.execType()+") ([]%sRow, error) {", j.Name, j.Name)
+	g.p("func (q Query) All%s(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", j.Name, j.Name)
 	g.p("\tvar sl runtime.Slab")
 	g.p("\treturn q.All%sInto(ctx, ex, nil, &sl)", j.Name)
 	g.p("}")
 	g.p("")
 	g.p("// All%sInto lets the caller own the output slice and the arena.", j.Name)
-	g.p("func (q Query) All%sInto(ctx context.Context, ex "+g.execType()+", dst []%sRow, sl *runtime.Slab) ([]%sRow, error) {",
+	g.p("func (q Query) All%sInto(ctx context.Context, ex runtime.Executor, dst []%sRow, sl *runtime.Slab) ([]%sRow, error) {",
 		j.Name, j.Name, j.Name)
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn dst, err")
@@ -144,7 +144,7 @@ func (g *gen) join(j *schema.Join) {
 	g.p("\tsl.Reserve(st.SlabHint())")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
-	g.p("\trows, err := ex.Query(ctx, st.SQL, q.bind(b))")
+	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, q.bind(b))"))
 	g.p("\tif err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")

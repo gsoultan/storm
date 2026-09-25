@@ -139,7 +139,7 @@ func TestQueryHandsOverTheValueShape(t *testing.T) {
 	db, done := open(t, d)
 	defer done()
 
-	rows, err := New(db).Query(context.Background(), "SELECT a, b FROM t", nil)
+	rows, err := runtime.AsValueRows(New(db).Query(context.Background(), "SELECT a, b FROM t", nil))
 	if err != nil {
 		t.Fatal(err)
 	}

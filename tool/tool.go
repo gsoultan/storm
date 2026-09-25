@@ -50,7 +50,7 @@ import (
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/schema"
-	pgintro "github.com/gsoultan/storm/schema/pg"
+	"github.com/gsoultan/storm/schema/pg"
 	"github.com/gsoultan/storm/tool/mstool"
 	"github.com/gsoultan/storm/tool/oratool"
 	"github.com/jackc/pgx/v5"
@@ -1017,7 +1017,7 @@ func importSchema(dsn, ns string) error {
 		return err
 	}
 	defer done()
-	s, err := pgintro.Introspect(ctx, c, ns)
+	s, err := schemapg.Introspect(ctx, c, ns)
 	if err != nil {
 		return err
 	}

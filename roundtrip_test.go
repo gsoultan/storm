@@ -11,7 +11,7 @@ import (
 	"github.com/gsoultan/storm/internal/testmodel"
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/schema"
-	pgintro "github.com/gsoultan/storm/schema/pg"
+	"github.com/gsoultan/storm/schema/pg"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -48,7 +48,7 @@ func applyInto(t *testing.T, c *pgx.Conn, ns, ddl string) *schema.Schema {
 	if _, err := c.Exec(ctx, ddl); err != nil {
 		t.Fatalf("apply DDL into %s: %v\n---\n%s", ns, err, numbered(ddl))
 	}
-	got, err := pgintro.Introspect(ctx, c, ns)
+	got, err := schemapg.Introspect(ctx, c, ns)
 	if err != nil {
 		t.Fatalf("introspect %s: %v", ns, err)
 	}
@@ -220,7 +220,7 @@ func TestMigrateConverges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	empty, err := pgintro.Introspect(ctx, c, "mig")
+	empty, err := schemapg.Introspect(ctx, c, "mig")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestMigrateConverges(t *testing.T) {
 
 	// Evolve: remove a table from the model and check the drop is both
 	// generated and flagged destructive.
-	after, err := pgintro.Introspect(ctx, c, "mig")
+	after, err := schemapg.Introspect(ctx, c, "mig")
 	if err != nil {
 		t.Fatal(err)
 	}

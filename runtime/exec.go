@@ -5,44 +5,17 @@ import (
 	"sync/atomic"
 )
 
-// Rows is the slice of a driver result that generated scanners need.
+// Rows is the slice of a driver result that generated scanners need: raw wire
+// bytes, nothing decoded.
 //
-// TWO SHAPES, and a generated package calls exactly ONE of them — chosen at
-// GENERATE time by the dialect, the same way every other dialect decision is
-// made, so there is no branch at run time.
-//
-//   - RawValues is the wire bytes, nothing decoded. It is what storm's own
-//     clients hand over and the reason they cost 0.09 allocations per row:
-//     the decoders read the bytes in place and the slab holds them.
-//   - Values is the DECODED form, for an adapter over a driver that decodes
-//     before storm can see the wire. database/sql is that shape — it hands
-//     back driver.Value — and re-encoding what it just decoded so RawValues
-//     could exist would be slower than reading the values.
-//
-// An adapter implements one and returns nil from the other. That is a contract
-// rather than a type, because the alternative is a second Executor interface
-// and every decorator in the tree written twice; the cost is that a mis-wired
-// generated package would scan nil, which codegen pins with a test.
-//
-// The second shape exists because of Oracle. internal/oraclespike measured
-// go-ora at 26.3 allocations per row against a hand-written client's 0.09 —
-// and, more usefully, measured that every Oracle NUMBER arrives as an exact
-// decimal STRING, so a value path there is lossless. What it buys is wider
-// than one target: any database/sql driver can now satisfy this port.
+// This is the BYTE shape, and what storm's own clients hand over: the decoders
+// read the bytes in place and the slab holds them. A driver that decodes
+// before storm can see the wire — database/sql — has a second shape,
+// ValueRows, which is this plus Values. The port is these four methods either
+// way; see valuerows.go for why the second shape is not a fifth one here.
 type Rows interface {
 	Next() bool
-
-	// RawValues is the wire bytes. nil from a value-shaped adapter.
 	RawValues() [][]byte
-
-	// Values is the decoded form. nil from a byte-shaped adapter.
-	//
-	// The elements are driver.Value: int64, float64, bool, []byte, string,
-	// time.Time, or nil. A NULL is nil, which is what keeps "absent" and
-	// "zero" distinct — the same distinction Oracle's empty string destroys
-	// one layer up.
-	Values() []any
-
 	Close()
 	Err() error
 }
@@ -108,16 +81,10 @@ type Executor interface {
 	Batch(ctx context.Context, ops []BatchOp, each func(i int, rows Rows, affected int64, err error) error) error
 }
 
-// Transactions are deliberately absent FROM THE PORT. A transaction is an
-// Executor you were given, not a method you call on one — which keeps Unit
-// composable with whatever ownership model the caller already has, and keeps
-// Begin, Commit and Rollback out of the five-method budget.
-//
-// They are not absent from the package. Tx and DB in tx.go name the two things
-// a caller holds when they own a transaction's lifetime, so that owning one is
-// a thing you can write generically instead of a thing each adapter spells its
-// own way. See ADR-0011 for why that is not the same decision as widening the
-// port.
+// Transactions are deliberately absent. A transaction is an Executor you were
+// given, not a method you call on one — which keeps Unit composable with
+// whatever ownership model the caller already has, and keeps Begin, Commit and
+// Rollback out of the five-method budget.
 
 // CountingExecutor wraps an Executor and counts round trips. This is what
 // proves the N+1 guarantee in tests — and it is exported so it can prove it in

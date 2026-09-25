@@ -14,6 +14,56 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### The stability promise is checked, not just stated
+
+- **`scripts/check/apicompat.sh`**, on every push: `apidiff` compares the
+  packages [docs/STABILITY.md](docs/STABILITY.md) covers against the last v1
+  tag and fails on an incompatible change. STABILITY.md now names those
+  packages — `storm`, `runtime`, `runtime/pgxdrv`, `runtime/mydrv`,
+  `runtime/msdrv`, `migrate` — where before it named only the port.
+- **The Oracle gate runs on every push to main and every pull request.** It
+  used to run only when a listed package changed, and `codegen/` was not on the
+  list, so a fix to Oracle's idempotent insert sat on main unverified. Its
+  server is pinned by digest (23.26.3, 26ai Free), because `slim` floats across
+  majors.
+- **The server table lists SQL Server 2022**, tested since v1.1.0 and missing
+  from it, and **Oracle as experimental**: what an Oracle package emits,
+  `runtime/sqldrv` and `runtime/valdec` may change in a minor while it is.
+- **AGENTS.md says what holds each rule.** It called six of them CI-enforced
+  and nothing enforced them; the tree had drifted from four. `internal/archcheck`
+  now holds the rules about declarations — one type per file, ten files per
+  folder, fifteen methods per interface, unique package clauses, no aliases of
+  storm's own packages — as a ratchet where the tree had drifted. The
+  stdlib-only check derives its package list from the tree, which is how
+  `compile/oracle` and `compile/oraddl` had been left off it, and two new
+  checks pin that `runtime/` reaches nothing of storm's outside itself and the
+  core reaches nothing of the tool's.
+
+**For anyone importing the introspection packages:** `schema/pg`,
+`schema/mssql` and `schema/oracle` now declare `package schemapg`,
+`schemamssql` and `schemaoracle`, so their names no longer collide with
+`compile/mssql` and `compile/oracle`. The import paths are unchanged. They are
+compiler internals that [docs/STABILITY.md](docs/STABILITY.md) does not cover.
+
+### Three generated packages that did not build, found by compiling one
+
+Nothing had compiled a bounded context with an arc anywhere but PostgreSQL.
+Doing it for every dialect found three packages that did not build:
+
+- An arc-only context imported its decoder family and never called it, which
+  Go rejects, so it did not build on MySQL, MariaDB or SQL Server. A
+  regression since v1.1.0 that never shipped: the family import became
+  unconditional in the commit that added the second row shape. The context
+  now imports what its body turned out to call.
+- On Oracle, a nullable uuid — every optional reference, and every arc
+  column — was decoded with `runtime.Nullable`, which is generic over the byte
+  decoders. `runtime/valdec` has its own, and now gets it.
+- On Oracle, the arc loader read `RawValues` itself instead of asking the
+  dialect, and handed `[][]byte` to a scanner that takes `[]any`.
+
+`TestAContextWithAnArcCompilesOnEveryDialect` builds and vets that context for
+all five dialects. On the commit before this one it fails four of them.
+
 ### `storm diff` and `storm verify` for Oracle, and a third kind of scratch namespace
 
 migrate's Oracle half. The DDL seam was already there, so this is the renderers
@@ -56,12 +106,20 @@ Free from `internal/oraclespike` — model → generator → generated package �
 `runtime/sqldrv` → go-ora → Oracle — and the generated package inserts, selects,
 pages and enforces its soft-delete unique against a real server.
 
-**The port grew a second row shape.** `runtime.Rows` gains `Values() []any`
-beside `RawValues() [][]byte`, and a generated package calls exactly one —
-chosen at generate time by the dialect, so nothing branches at run time. A
-`database/sql` driver decodes before storm can see the wire, so an adapter over
-one cannot supply raw bytes without re-encoding what it just decoded. Oracle
-forced the question; the answer is wider than Oracle.
+**A second row shape, beside the port rather than in it.**
+`runtime.ValueRows` is `runtime.Rows` plus `Values() []any`, and a package
+generated for a value-shaped target asks for it once per query, through
+`runtime.AsValueRows` — chosen at generate time by the dialect, so nothing
+branches at run time. A `database/sql` driver decodes before storm can see the
+wire, so an adapter over one cannot supply raw bytes without re-encoding what
+it just decoded. Oracle forced the question; the answer is wider than Oracle.
+
+`runtime.Rows` itself is exactly v1.1.0's. On main it briefly carried `Values`
+as a fifth method, and `apidiff` against v1.1.0 called that what it is: every
+`Rows` an adopter wrote — a test fake, a decorator — would have stopped
+compiling, which [docs/STABILITY.md](docs/STABILITY.md) allows only in a major.
+An Executor that hands a value-shaped package byte rows now gets
+`runtime.ErrByteRows`, where it used to get a scan of nil.
 
 `runtime/valdec` is the fourth decoder family and the first that reads no bytes.
 `runtime/sqldrv` adapts any `database/sql` handle and states what it does not

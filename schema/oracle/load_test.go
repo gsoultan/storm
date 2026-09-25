@@ -1,4 +1,4 @@
-package oracle
+package schemaoracle
 
 // The loaders, against a FAKE catalogue.
 //

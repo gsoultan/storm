@@ -63,6 +63,22 @@ func TestOnlyOracleReadsTheValueShape(t *testing.T) {
 		if got := [2]string{dec.rowsType(), dec.rowsAccessor()}; got != w {
 			t.Errorf("%s reads %v, want %v", d, got, w)
 		}
+		// And asks for the shape it reads. The value side is a second
+		// interface, not a method every Rows has, so a value-shaped read that
+		// skipped the ask would not compile — and a byte-shaped one that made
+		// it would refuse storm's own clients.
+		call := dec.rowsFrom("ex.Query(x)")
+		param, convert := dec.batchRows()
+		if w[1] == "Values" {
+			if call != "runtime.AsValueRows(ex.Query(x))" || param != "r" ||
+				convert != "rs, err := runtime.AsValueRows(r, err)" {
+				t.Errorf("%s reads Values without asking for them: %q, %q, %q", d, call, param, convert)
+			}
+			continue
+		}
+		if call != "ex.Query(x)" || param != "rs" || convert != "" {
+			t.Errorf("%s reads RawValues and must take Rows as they come: %q, %q, %q", d, call, param, convert)
+		}
 	}
 }
 

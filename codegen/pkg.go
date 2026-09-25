@@ -288,11 +288,16 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 		g.p("")
 	}
 	g.p("\t%q", o.Import+"/runtime")
-	// The decoder family, when it is not `runtime` itself. This file holds the
-	// HAVING counters, which decode an int8 — and the table packages' header
-	// emitted this import while this one did not, so a family whose Int8 is
-	// not runtime's produced a package that could not compile.
-	if imp := g.dec.family(); imp != "" {
+	// The decoder family, when it is not `runtime` itself AND the body calls
+	// it. This file holds the HAVING counters, which decode an int8 — and the
+	// table packages' header emitted this import while this one did not, so a
+	// family whose Int8 is not runtime's produced a package that could not
+	// compile. Importing it unconditionally fixed that and broke the reverse:
+	// a context whose only cross-package read is an arc loader calls each
+	// variant's Scan and no decoder at all, and Go rejects the unused import
+	// on every family but PostgreSQL's. The body is already emitted, so the
+	// question is asked of what it turned out to need.
+	if imp := g.dec.family(); imp != "" && strings.Contains(body.buf.String(), g.dec.pkg+".") {
 		g.p("\t%q", imp)
 	}
 	for _, pkg := range planPackages(plans, named, arcPkgs) {

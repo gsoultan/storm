@@ -20,7 +20,7 @@ import (
 	"github.com/gsoultan/storm/compile/oraddl"
 	"github.com/gsoultan/storm/runtime/sqldrv"
 	"github.com/gsoultan/storm/schema"
-	oraintro "github.com/gsoultan/storm/schema/oracle"
+	"github.com/gsoultan/storm/schema/oracle"
 )
 
 type impOrg struct {
@@ -84,7 +84,7 @@ func TestIntrospectionRoundTrip(t *testing.T) {
 		}
 	}
 
-	got, err := oraintro.Introspect(ctx, sqldrv.New(db), "")
+	got, err := schemaoracle.Introspect(ctx, sqldrv.New(db), "")
 	if err != nil {
 		t.Fatalf("Introspect: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestAnUnquotedTableComesBackLowercased(t *testing.T) {
 	mustExec(t, db, `CREATE TABLE shouty (id NUMBER(19) PRIMARY KEY, some_name VARCHAR2(40 CHAR))`)
 	t.Cleanup(func() { drop(db, "TABLE", "shouty CASCADE CONSTRAINTS PURGE") })
 
-	got, err := oraintro.Introspect(ctx, sqldrv.New(db), "")
+	got, err := schemaoracle.Introspect(ctx, sqldrv.New(db), "")
 	if err != nil {
 		t.Fatal(err)
 	}

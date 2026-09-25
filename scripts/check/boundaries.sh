@@ -55,17 +55,54 @@ echo "== core packages are stdlib-only =="
 # rather than a host, and the gate reported the standard library as a
 # third-party dependency.
 outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/storm' | grep -E '^[^/]+\.[^/]+/'; }
-# The list is every package the rule names, not every package that had one when
-# the rule was written: compile/mysql and the two M10 packages are core by the
-# same argument, and leaving a new back end off is how the rule quietly stops
-# applying to the half of compile/ that grew after it.
-for p in ./schema ./compile/pgddl ./compile/pgsql ./compile/mysql ./compile/mariadb \
-         ./compile/myddl ./compile/mssql ./compile/msddl ./codegen; do
+# The list is DERIVED from the tree, not written down. It used to be a list,
+# with a comment warning that leaving a new back end off it is how the rule
+# quietly stops applying to the half of compile/ that grew after it — and
+# compile/oracle and compile/oraddl were then left off it. The two exemptions
+# are the pgx adapter and the introspection that reads pg_catalog through it,
+# the same two the driver check above allows.
+for p in $(go list ./schema/... ./compile/... ./codegen/... ./runtime/... 2>/dev/null); do
+  case "$p" in
+    */runtime/pgxdrv|*/schema/pg) continue ;;
+  esac
   if outsiders "$p" | grep -q .; then
     note "$p has a third-party dependency:"
     outsiders "$p" | sed 's/^/    /'
   fi
 done
+
+echo "== no dialect branch at run time =="
+# The dialect is chosen once, where a build starts — codegen's decodersFor and
+# loweringFor, migrate's ddlFor, the CLI's flag — and everything downstream is
+# handed the result. What makes that a structural fact rather than a habit is
+# that runtime/ cannot reach the code that chooses: it imports nothing of
+# storm's outside itself, so no generated read can ask which dialect it is.
+reach=$(go list -deps ./runtime/... 2>/dev/null | grep '^github.com/gsoultan/storm' \
+  | grep -vE '^github.com/gsoultan/storm/runtime(/|$)' || true)
+if [ -n "$reach" ]; then
+  note "runtime/ reaches build-time packages:"
+  printf '%s\n' "$reach" | sed 's/^/    /'
+fi
+
+echo "== the core does not reach the tool =="
+# tool/discover parses adopters' source and tool/bootstrap writes a main; both
+# are the CLI's business. Nothing a generated package links may depend on
+# either, or on cmd/.
+reach=$(go list -deps ./schema/... ./compile/... ./codegen/... ./runtime/... 2>/dev/null \
+  | grep -E '^github.com/gsoultan/storm/(tool|cmd)(/|$)' || true)
+if [ -n "$reach" ]; then
+  note "the core reaches the tool:"
+  printf '%s\n' "$reach" | sed 's/^/    /'
+fi
+
+echo "== one type per file, ten files per folder, unique clauses, no aliases =="
+# The rules about DECLARATIONS, which need the AST rather than grep. Where the
+# tree had drifted from one, internal/archcheck holds it as a ratchet: no worse
+# than the numbers recorded there, and lowered whenever it gets better.
+if ! out=$(go run ./internal/archcheck 2>&1); then
+  note "the structural rules are broken:"
+  printf '%s\n' "$out" | grep -v '^exit status' | sed 's/^/  /'
+fi
 
 echo "== no fmt.Sprintf building SQL at runtime =="
 # Formatting on a hot path, and an injection surface.
