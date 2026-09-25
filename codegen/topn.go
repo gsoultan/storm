@@ -123,7 +123,7 @@ func (g *gen) topFn(key string, kc *schema.Column, cols []string) {
 	g.p("\tif sql == \"\" {")
 	g.p("\t\treturn nil, errNoTopOrder")
 	g.p("\t}")
-	g.p("\trows, err := ex.Query(ctx, sql, []any{ids, n})")
+	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, sql, []any{ids, n})"))
 	g.p("\tif err != nil {")
 	g.p("\t\treturn nil, err")
 	g.p("\t}")

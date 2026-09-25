@@ -144,7 +144,7 @@ func (g *gen) join(j *schema.Join) {
 	g.p("\tsl.Reserve(st.SlabHint())")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
-	g.p("\trows, err := ex.Query(ctx, st.SQL, q.bind(b))")
+	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, q.bind(b))"))
 	g.p("\tif err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")

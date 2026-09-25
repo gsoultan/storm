@@ -101,7 +101,7 @@ func (g *gen) emitUnion(u *schema.Union) {
 	g.p("// %sInto lets the caller own the output slice and the string arena.", u.Name)
 	g.p("func %sInto(ctx context.Context, ex "+g.execType()+", dst []%sRow, sl *runtime.Slab%s, n int64) ([]%sRow, error) {",
 		u.Name, u.Name, params, u.Name)
-	g.p("\trows, err := ex.Query(ctx, %sSQL, []any{%sn})", low, args2(u))
+	g.p("\trows, err := %s", g.dec.rowsFrom(fmt.Sprintf("ex.Query(ctx, %sSQL, []any{%sn})", low, args2(u))))
 	g.p("\tif err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")

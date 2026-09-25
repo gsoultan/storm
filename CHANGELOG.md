@@ -14,6 +14,25 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Three generated packages that did not build, found by compiling one
+
+Nothing had compiled a bounded context with an arc anywhere but PostgreSQL.
+Doing it for every dialect found three packages that did not build:
+
+- An arc-only context imported its decoder family and never called it, which
+  Go rejects, so it did not build on MySQL, MariaDB or SQL Server. A
+  regression since v1.1.0 that never shipped: the family import became
+  unconditional in the commit that added the second row shape. The context
+  now imports what its body turned out to call.
+- On Oracle, a nullable uuid — every optional reference, and every arc
+  column — was decoded with `runtime.Nullable`, which is generic over the byte
+  decoders. `runtime/valdec` has its own, and now gets it.
+- On Oracle, the arc loader read `RawValues` itself instead of asking the
+  dialect, and handed `[][]byte` to a scanner that takes `[]any`.
+
+`TestAContextWithAnArcCompilesOnEveryDialect` builds and vets that context for
+all five dialects. On the commit before this one it fails four of them.
+
 ### `storm diff` and `storm verify` for Oracle, and a third kind of scratch namespace
 
 migrate's Oracle half. The DDL seam was already there, so this is the renderers
@@ -56,12 +75,20 @@ Free from `internal/oraclespike` — model → generator → generated package �
 `runtime/sqldrv` → go-ora → Oracle — and the generated package inserts, selects,
 pages and enforces its soft-delete unique against a real server.
 
-**The port grew a second row shape.** `runtime.Rows` gains `Values() []any`
-beside `RawValues() [][]byte`, and a generated package calls exactly one —
-chosen at generate time by the dialect, so nothing branches at run time. A
-`database/sql` driver decodes before storm can see the wire, so an adapter over
-one cannot supply raw bytes without re-encoding what it just decoded. Oracle
-forced the question; the answer is wider than Oracle.
+**A second row shape, beside the port rather than in it.**
+`runtime.ValueRows` is `runtime.Rows` plus `Values() []any`, and a package
+generated for a value-shaped target asks for it once per query, through
+`runtime.AsValueRows` — chosen at generate time by the dialect, so nothing
+branches at run time. A `database/sql` driver decodes before storm can see the
+wire, so an adapter over one cannot supply raw bytes without re-encoding what
+it just decoded. Oracle forced the question; the answer is wider than Oracle.
+
+`runtime.Rows` itself is exactly v1.1.0's. On main it briefly carried `Values`
+as a fifth method, and `apidiff` against v1.1.0 called that what it is: every
+`Rows` an adopter wrote — a test fake, a decorator — would have stopped
+compiling, which [docs/STABILITY.md](docs/STABILITY.md) allows only in a major.
+An Executor that hands a value-shaped package byte rows now gets
+`runtime.ErrByteRows`, where it used to get a scan of nil.
 
 `runtime/valdec` is the fourth decoder family and the first that reads no bytes.
 `runtime/sqldrv` adapts any `database/sql` handle and states what it does not

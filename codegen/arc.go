@@ -201,7 +201,14 @@ func (g *gen) arcLoader(arcOwnerPkg string, t *schema.Table, arc *schema.Arc, va
 		g.p("\tby%d := make(map[%s]int, len(ids%d))", i, arcKeyType(t, v), i)
 		g.p("\tvar got%d []%s.Row", i, pkg)
 	}
-	g.p("\terr = ex.Batch(ctx, ops, func(n int, rs runtime.Rows, _ int64, err error) error {")
+	// Through the seam, like every other read. This one spelled RawValues out,
+	// so an Oracle context with an arc handed [][]byte to a scanner that takes
+	// []any and did not build.
+	param, convert := g.dec.batchRows()
+	g.p("\terr = ex.Batch(ctx, ops, func(n int, %s runtime.Rows, _ int64, err error) error {", param)
+	if convert != "" {
+		g.p("\t\t%s", convert)
+	}
 	g.p("\t\tif err != nil {")
 	g.p("\t\t\treturn err")
 	g.p("\t\t}")
@@ -212,7 +219,7 @@ func (g *gen) arcLoader(arcOwnerPkg string, t *schema.Table, arc *schema.Arc, va
 		g.p("\t\t\tvar sl runtime.Slab")
 		g.p("\t\t\tfor rs.Next() {")
 		g.p("\t\t\t\tgot%d = append(got%d, %s.Row{})", i, i, pkg)
-		g.p("\t\t\t\tif err := %s.Scan(rs.RawValues(), &got%d[len(got%d)-1], &sl); err != nil {", pkg, i, i)
+		g.p("\t\t\t\tif err := %s.Scan(rs.%s(), &got%d[len(got%d)-1], &sl); err != nil {", pkg, g.dec.rowsAccessor(), i, i)
 		g.p("\t\t\t\t\treturn err")
 		g.p("\t\t\t\t}")
 		g.p("\t\t\t}")

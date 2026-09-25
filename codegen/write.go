@@ -1137,7 +1137,7 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\t\t}")
 	g.p("\t}")
 	g.p("\tvar out Row")
-	g.p("\trows, err := ex.Query(ctx, st.SQL, args)")
+	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
 	g.p("\tif err != nil {")
 	g.p("\t\treturn out, err")
 	g.p("\t}")
@@ -1182,7 +1182,7 @@ func (g *gen) insertFn(ins []colInfo) {
 	for _, c := range ins {
 		g.p("\targs = append(args, %s)", writeArg(c, "r."+exportName(c.Name())))
 	}
-	g.p("\trows, err := ex.Query(ctx, insertSQL, args)")
+	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, insertSQL, args)"))
 	g.p("\tif err != nil {")
 	g.p("\t\treturn err")
 	g.p("\t}")
@@ -1422,7 +1422,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 		g.p("// anything, and a staged row that is fresh in two fields and stale in")
 		g.p("// the rest is harder to reason about than one that is simply current.")
 		g.p("func (m *Mut) updateReturning(ctx context.Context, ex %s, st *runtime.Stmt, args []any) error {", g.execType())
-		g.p("\trows, err := ex.Query(ctx, st.SQL, args)")
+		g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
 		g.p("\tif err != nil {")
 		g.p("\t\treturn err")
 		g.p("\t}")

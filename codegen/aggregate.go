@@ -156,9 +156,9 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tdefer putBinder(b)")
 	if len(agg.Params) > 0 {
 		g.p("\t// Declared values first: they are $1..$%d, ahead of the predicates.", len(agg.Params))
-		g.p("\trows, err := ex.Query(ctx, st.SQL, append([]any{%s}, q.bind(b)...))", pargs)
+		g.p("\trows, err := %s", g.dec.rowsFrom(fmt.Sprintf("ex.Query(ctx, st.SQL, append([]any{%s}, q.bind(b)...))", pargs)))
 	} else {
-		g.p("\trows, err := ex.Query(ctx, st.SQL, q.bind(b))")
+		g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, q.bind(b))"))
 	}
 	g.p("\tif err != nil {")
 	g.p("\t\treturn dst, err")
