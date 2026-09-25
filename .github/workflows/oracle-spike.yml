@@ -2,28 +2,24 @@
 #
 # It started as a MEASUREMENT — three questions asked before M11 began. It is
 # now also where compile/oraddl's output is carried to a real server, the same
-# way internal/mssqlspike became scripts/check/mssql.sh. A workflow of its own,
-# triggered on the packages it covers rather than on every push, because Oracle
-# Free is a big image; when the back end is complete this moves into ci.yml
-# beside the sqlserver job.
+# way internal/mssqlspike became scripts/check/mssql.sh. A workflow of its own
+# until the back end leaves experimental; then it moves into ci.yml beside the
+# sqlserver job.
 #
-# Oracle Free is a big image and takes a minute or two to open. That cost is
-# worth paying when the spike changes and is worth paying never otherwise.
+# It runs on every push to main and every pull request, as ci.yml does. It
+# used to run only when a listed package changed, because Oracle Free is a big
+# image — and the list was a claim about what can change Oracle's output that
+# turned out false: codegen/ was not on it, so the fix for Oracle's idempotent
+# insert (02f1bad) sat on main unverified until the gate was started by hand.
+# Everything upstream of the SQL can change what an Oracle package does, and
+# "everything upstream" is the whole tree.
 name: oracle-spike
 
 on:
   workflow_dispatch:
   push:
-    paths:
-      - 'internal/oraclespike/**'
-      - 'compile/oraddl/**'
-      - 'compile/oracle/**'
-      - 'runtime/valdec/**'
-      - 'runtime/sqldrv/**'
-      - 'schema/oracle/**'
-      - 'tool/oratool/**'
-      - 'migrate/**'
-      - '.github/workflows/oracle-spike.yml'
+    branches: [main]
+  pull_request:
 
 jobs:
   spike:
@@ -34,7 +30,12 @@ jobs:
         # engine a developer runs on Apple silicon — unlike SQL Server, where
         # CI runs the real image and a laptop runs Azure SQL Edge at the 2019
         # level. There is nothing to caveat here.
-        image: gvenzl/oracle-free:slim
+        #
+        # Pinned by DIGEST — 23.26.3, Oracle AI Database 26ai Free — because
+        # `slim` floats across majors, and a gate whose server changes under it
+        # changes what it means without a diff here. The same reason MySQL is
+        # 8.4 and not 8 (docs/STABILITY.md).
+        image: gvenzl/oracle-free:slim@sha256:6d61d267a3b978c24c5ac1790e62e927416a0aec446bd86e4b3a1527562757bd
         env:
           ORACLE_PASSWORD: Storm1Passw0rd
           # A NORMAL user in a NORMAL tablespace, not SYSTEM. The native JSON

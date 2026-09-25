@@ -80,6 +80,12 @@ jobs:
       - name: boundaries
         run: ./scripts/check/boundaries.sh
 
+      # And docs/STABILITY.md's promise is only real if something checks it.
+      # A fifth method on runtime.Rows sat on main, unreleased and unnoticed,
+      # until apidiff was run by hand — this runs it on every push.
+      - name: api compatibility
+        run: ./scripts/check/apicompat.sh
+
       # Every other gate runs inside this repository and shares its
       # assumptions, which is how `generate` shipped emitting storm's own
       # module path into other people's modules. This one is a stranger: a
