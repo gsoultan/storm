@@ -209,9 +209,8 @@ func (r *pooledRows) Close() {
 }
 
 // Begin starts a transaction, which is an Executor rather than a set of methods
-// on one — see the note at the bottom of runtime/exec.go. It is returned as a
-// runtime.Tx so a caller holding a runtime.DB never names this package.
-func (p *Pool) Begin(ctx context.Context) (runtime.Tx, error) {
+// on one — see the note at the bottom of runtime/exec.go.
+func (p *Pool) Begin(ctx context.Context) (*Tx, error) {
 	c, err := p.acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -232,8 +231,7 @@ type Tx struct {
 
 // ErrTxDone is returned by a transaction that has already committed or rolled
 // back.
-// It IS runtime.ErrTxDone, so errors.Is against the shared one holds here too.
-var ErrTxDone = runtime.ErrTxDone
+var ErrTxDone = errors.New("msdrv: the transaction has already finished")
 
 func (t *Tx) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
 	if t.done {

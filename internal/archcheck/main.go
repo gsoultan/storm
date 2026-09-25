@@ -29,12 +29,12 @@ import (
 // maxFiles is the grandfathered file count of every folder that had more
 // than ten Go files, test files excluded, when this check was written.
 var maxFiles = map[string]int{
-	".":              19,
+	".":              17,
 	"codegen":        27,
 	"compile/mssql":  11,
 	"compile/oracle": 12,
 	"migrate":        11,
-	"runtime":        20,
+	"runtime":        19,
 	"runtime/msdrv":  12,
 	"runtime/pgxdrv": 11,
 }
@@ -44,8 +44,8 @@ var maxFiles = map[string]int{
 // structs contributes two. A single total catches a new offending file and a
 // third struct added to an old one alike.
 const (
-	maxExtraStructs    = 134
-	maxExtraInterfaces = 7
+	maxExtraStructs    = 132
+	maxExtraInterfaces = 5
 )
 
 // maxMethods is AGENTS.md's interface budget, and executorBudget the port's.

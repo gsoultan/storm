@@ -389,7 +389,7 @@ func (g *gen) emitNamedPlan(np namedPlan) {
 	g.p("")
 
 	g.p("// All runs the plan in %d round trips.", len(np.members)+1)
-	g.p("func (p %s) All(ctx context.Context, ex "+g.execType()+") ([]%sRow, error) {", q, np.Name)
+	g.p("func (p %s) All(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", q, np.Name)
 	g.p("	parents, err := p.q.All(ctx, ex, nil)")
 	g.p("	if err != nil {")
 	g.p("		return nil, err")
@@ -555,7 +555,7 @@ func (g *gen) emitMemberLoader(q, fn, rowType, parentTable string, m planMemberT
 	field := exportName(m.rel.Field)
 
 	g.p("// %s fetches %s.", fn, m.rel.Field)
-	g.p("func (p %s) %s(ctx context.Context, ex "+g.execType()+", out []%s) error {", q, fn, rowType)
+	g.p("func (p %s) %s(ctx context.Context, ex runtime.Executor, out []%s) error {", q, fn, rowType)
 
 	if m.isLink() {
 		g.emitLinkLoader(q, fn, rowType, field, m)
@@ -677,7 +677,7 @@ func (g *gen) emitNestedPass(q, fn, outerRow, outerField, innerRow string, m pla
 	field := exportName(m.rel.Field)
 
 	g.p("// %s fetches %s, through each %s.", fn, m.rel.Field, outerField)
-	g.p("func (p %s) %s(ctx context.Context, ex "+g.execType()+", out []%s) error {", q, fn, outerRow)
+	g.p("func (p %s) %s(ctx context.Context, ex runtime.Executor, out []%s) error {", q, fn, outerRow)
 	g.p("\t// Every child of every parent, flattened once so the fetch is one query.")
 	g.p("\tn := 0")
 	g.p("\tfor i := range out {")
@@ -764,7 +764,7 @@ func (g *gen) emitToManyLinkAll(q string, p relPlan) {
 	childKey := exportName(p.ChildKey)
 	field := exportName(p.rel.Field)
 
-	g.p("func (p %s) All(ctx context.Context, ex "+g.execType()+") ([]%sRow, error) {", q, p.Name)
+	g.p("func (p %s) All(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", q, p.Name)
 	g.p("\tparents, err := p.q.All(ctx, ex, nil)")
 	g.p("\tif err != nil {")
 	g.p("\t\treturn nil, err")
@@ -980,7 +980,7 @@ func (g *gen) emitToManyPlan(p relPlan) {
 		_ = parentField
 		return
 	}
-	g.p("func (p %s) All(ctx context.Context, ex "+g.execType()+") ([]%sRow, error) {", q, p.Name)
+	g.p("func (p %s) All(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", q, p.Name)
 	g.p("\tparents, err := p.q.All(ctx, ex, nil)")
 	g.p("\tif err != nil {")
 	g.p("\t\treturn nil, err")
@@ -1070,7 +1070,7 @@ func (g *gen) emitToOnePlan(p relPlan) {
 	g.p("// All runs the plan in exactly TWO round trips. Distinct parent keys are")
 	g.p("// de-duplicated before the second, so a thousand rows pointing at three")
 	g.p("// orgs fetch three orgs.")
-	g.p("func (p %s) All(ctx context.Context, ex "+g.execType()+") ([]%sRow, error) {", q, p.Name)
+	g.p("func (p %s) All(ctx context.Context, ex runtime.Executor) ([]%sRow, error) {", q, p.Name)
 	g.p("\tparents, err := p.q.All(ctx, ex, nil)")
 	g.p("\tif err != nil {")
 	g.p("\t\treturn nil, err")
