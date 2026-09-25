@@ -14,6 +14,22 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### The stability promise is checked, not just stated
+
+- **`scripts/check/apicompat.sh`**, on every push: `apidiff` compares the
+  packages [docs/STABILITY.md](docs/STABILITY.md) covers against the last v1
+  tag and fails on an incompatible change. STABILITY.md now names those
+  packages — `storm`, `runtime`, `runtime/pgxdrv`, `runtime/mydrv`,
+  `runtime/msdrv`, `migrate` — where before it named only the port.
+- **The Oracle gate runs on every push to main and every pull request.** It
+  used to run only when a listed package changed, and `codegen/` was not on the
+  list, so a fix to Oracle's idempotent insert sat on main unverified. Its
+  server is pinned by digest (23.26.3, 26ai Free), because `slim` floats across
+  majors.
+- **The server table lists SQL Server 2022**, tested since v1.1.0 and missing
+  from it, and **Oracle as experimental**: what an Oracle package emits,
+  `runtime/sqldrv` and `runtime/valdec` may change in a minor while it is.
+
 ### Three generated packages that did not build, found by compiling one
 
 Nothing had compiled a bounded context with an arc anywhere but PostgreSQL.
