@@ -32,6 +32,17 @@ turned out to call six unenforced rules "CI-enforced".
 - **oracle-spike** runs on every push to main and every PR, with its image
   pinned by digest (23.26.3, 26ai Free). It used to be path-filtered, and
   codegen/ was not on the list.
+- **CI shape, from 2026-09-26.** vet, boundaries and apicompat run in their own
+  `gates` job. Every named step in ci and oracle-spike runs
+  `if: ${{ !cancelled() }}`, so one red step no longer hides the others; a red
+  boundaries step once did, and main ran no live test for six commits. Branch
+  protection on main requires gates, test, postgres-next, sqlserver and spike
+  once the user applies `/tmp/stormapi/protection.json`. The classifier treats
+  applying it as a permission grant, so it is the user's to do.
+- **Release smoke test.** After tagging, generate from the PUBLISHED module, in
+  a fresh module with no replace, for all five dialects, then build and vet.
+  v1.2.0's run found storm prescribing `go get …/storm/tool` for a missing
+  go-ora driver; `missingToolDep` now names the package go reports.
 
 ## Traps found building them
 

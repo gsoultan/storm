@@ -99,7 +99,18 @@ func RunWith(r *tooldiscover.Result, args []string, stdout io.Writer) (code int,
 // the first run fails with go's generic "updates to go.mod needed", pointing
 // at a file the developer did not write. The fix is one command, once, and
 // saying which one is the whole difference.
+//
+// Which one depends on what go could not find. The bootstrap for a target
+// adapted over database/sql also imports that target's DRIVER, and when THAT
+// is missing the fix is to get the driver: prescribing storm/tool there told
+// an adopter who already had it to run a command that changes nothing, right
+// under go's own line naming the real package.
 func missingToolDep(stderr string) string {
+	if p := missingPackage(stderr); p != "" && p != stormPath && !strings.HasPrefix(p, stormPath+"/") {
+		return "the bootstrap imports " + p + ",\n" +
+			"       and your go.mod does not provide it. Run this once:\n\n" +
+			"           go get " + p + "\n"
+	}
 	switch {
 	case strings.Contains(stderr, "updates to go.mod needed"),
 		strings.Contains(stderr, "no required module provides package"),
@@ -107,6 +118,24 @@ func missingToolDep(stderr string) string {
 		return "the bootstrap needs storm's tool package recorded in your go.mod, and nothing in\n" +
 			"       your source imports it. Run this once:\n\n" +
 			"           go get " + stormPath + "/tool\n"
+	}
+	return ""
+}
+
+// missingPackage is the import path go reports as unresolved, or "" when its
+// message names none — "updates to go.mod needed" does not.
+func missingPackage(stderr string) string {
+	for _, marker := range []string{
+		"no required module provides package ",
+		"missing go.sum entry for module providing package ",
+	} {
+		if i := strings.Index(stderr, marker); i >= 0 {
+			p := stderr[i+len(marker):]
+			if j := strings.IndexAny(p, "; \n("); j >= 0 {
+				p = p[:j]
+			}
+			return p
+		}
 	}
 	return ""
 }
