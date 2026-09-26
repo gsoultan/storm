@@ -107,8 +107,8 @@ func SourceFor(r *tooldiscover.Result, args []string) ([]byte, error) {
 	// It goes in the BOOTSTRAP rather than in storm, and that is the point: a
 	// prebuilt `storm` binary cannot link every driver, and the adopter's
 	// module already has the one they chose, at the version they chose. If it
-	// does not, `go run` says which package is missing, which is the same
-	// answer missingToolDep gives for storm/tool itself.
+	// does not, `go run` says which package is missing, and missingToolDep
+	// repeats that package — not storm/tool — in its own hint.
 	if drv := driverFor(args); drv != "" {
 		b.WriteString("\t_ " + strconv.Quote(drv) + "\n\n")
 	}
