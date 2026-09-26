@@ -67,6 +67,7 @@ jobs:
       # Result 1 and 3, and — since M11 started — the DDL compile/oraddl emits,
       # APPLIED. P6.7: a generator that agrees with itself proves nothing.
       - name: what Oracle has, what it means, and whether storm's SQL runs
+        if: ${{ !cancelled() }}
         run: cd internal/oraclespike && go test -count=1 -v ./...
 
       # The whole stack: model → generator → generated package → runtime/sqldrv
@@ -81,6 +82,7 @@ jobs:
       # the SQL Server ones are in scripts/check/mssql.sh: measured without a
       # server, they would be measuring a suite that skipped.
       - name: the Oracle packages are above their floors
+        if: ${{ !cancelled() }}
         run: |
           fail=0
           cov() {
@@ -121,6 +123,7 @@ jobs:
           # which is what this floor protects.
 
       - name: the generated package RUNS
+        if: ${{ !cancelled() }}
         run: cd internal/oraclespike && go test -count=1 -v -timeout 300s -run TestTheGeneratedOraclePackageRuns ./...
 
       # Result 2: what a database/sql Oracle driver costs per row. The same

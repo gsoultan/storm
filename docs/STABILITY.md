@@ -94,6 +94,13 @@ impossible; mixed-version generated trees are not a supported state.
   and `runtime.AsValueRows` — lives in `runtime` and is covered like the rest
   of it.
 
+  It leaves experimental when two things are true. First, its gate has been
+  green on every push for two consecutive minor releases. Second, `storm.SQL`
+  declarations are validated against an Oracle server, the way PostgreSQL's
+  and SQL Server's are validated against theirs; today they are refused at
+  generate time, which is safe but is not support. The minor that meets both
+  says so in the CHANGELOG and removes this entry.
+
 ## Which server versions
 
 A version storm has never run against is a version storm does not support, so
