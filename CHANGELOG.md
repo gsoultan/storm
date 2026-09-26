@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-20
+updated: 2026-09-25
 ---
 
 # Changelog
@@ -12,7 +12,36 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v1.2.0 — 2026-09-25
+
+storm stops being a PostgreSQL ORM with plans for other engines, and the
+stability promise gets a check behind it.
+
+- **SQL Server gets the migration half:** `storm diff`, `storm verify`
+  (`-pending` and `-stale` included) and automigrate, `migrate.AutoMSSQL`.
+- **Oracle is a target, and experimental.** `generate`, `import`, `diff`,
+  `verify` and the upsert run against Oracle 23.26 in CI on every push. What an
+  Oracle package emits may still change in a minor; see
+  [docs/STABILITY.md](docs/STABILITY.md).
+- **Any `database/sql` driver fits the port**, through `runtime/sqldrv` and a
+  second row shape, `runtime.ValueRows`.
+- **The v1 promise is checked:** `apidiff` against the last v1 tag on every
+  push, and AGENTS.md's structural rules enforced by `internal/archcheck`.
+
+### Upgrading from v1.1.0
+
+- **Regenerate**, as on every upgrade.
+- **Nothing docs/STABILITY.md covers changed incompatibly.** `apidiff` against
+  v1.1.0 reports no incompatible change in `storm`, `runtime`, the three
+  adapters or `migrate` — which, for one stretch of main, it did not. The
+  `runtime.Rows` interface is exactly v1.1.0's.
+- **Three package names changed, not their paths:** `schema/pg`,
+  `schema/mssql` and `schema/oracle` are now `schemapg`, `schemamssql` and
+  `schemaoracle`. Only code that imports those compiler internals without an
+  alias notices. apidiff does not see a package name, so this one is stated
+  here rather than caught there.
+- **The performance numbers were re-measured** for this release, on Go 1.27.1;
+  see [bench/RESULTS.md](bench/RESULTS.md).
 
 ### The stability promise is checked, not just stated
 
@@ -155,8 +184,8 @@ It is also the only one that **folds case**: Oracle folds an unquoted identifier
 UP, so a database storm did not create says `USERS`. Expressions are not folded,
 because `'PAID'` is not `'paid'`.
 
-Still refused: `storm diff`, `verify`, `explain` and `watch`, because migrate has
-no Oracle half.
+`storm explain` and `watch` are still refused: there is no Oracle plan reader.
+`diff` and `verify` arrived with migrate's Oracle half, above.
 
 Found on the way, in code that was already shipping: the root package file
 emitted a HAVING counter's decoder call without importing the decoder family, so
@@ -167,7 +196,7 @@ too.
 
 `internal/oraclespike` asks M11's three questions before M11 starts, the rule
 `docs/PLAN.md` has applied at every target since M9. Not shipped code — a
-separate module and a workflow triggered on itself.
+separate module with a workflow of its own.
 
 The headline is a **reprieve for M12**. PLAN.md made the capability model's
 ability to carry Oracle the kill criterion for MongoDB, and measured, it carries
