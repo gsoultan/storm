@@ -31,6 +31,15 @@ a release note that cannot be checked is marketing.
   consecutive minors with its gate green on every push, and `storm.SQL`
   validated against an Oracle server rather than refused.
 
+### A missing driver gets the right `go get`
+
+`storm generate -dialect oracle`, in a module without the go-ora driver,
+printed go's correct line naming the driver. Under it came storm's own hint,
+telling the adopter to `go get github.com/gsoultan/storm/tool`, which they
+already had and which fixes nothing. The hint now names the package go could
+not find. It was found by generating from the published v1.2.0 in a module
+that was not storm, the one check no release had been given before.
+
 ## v1.2.0 — 2026-09-25
 
 storm stops being a PostgreSQL ORM with plans for other engines, and the
