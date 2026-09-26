@@ -6,6 +6,37 @@ on:
   pull_request:
 
 jobs:
+  # The gates that need no server, in a job of their own. They were the first
+  # three steps of `test`, and a failure in one SKIPPED every step after it:
+  # for six commits in September 2026 a boundaries failure meant main ran no
+  # live test, no coverage floor, no fuzzing and no govulncheck — and it looked
+  # like one red check. Jobs fail separately, and every step below runs even
+  # when one before it failed, so a report is the whole report.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: vet
+        if: ${{ !cancelled() }}
+        run: go vet ./...
+
+      # AGENTS.md's rules are only real if something enforces them.
+      - name: boundaries
+        if: ${{ !cancelled() }}
+        run: ./scripts/check/boundaries.sh
+
+      # And docs/STABILITY.md's promise is only real if something checks it.
+      # A fifth method on runtime.Rows sat on main, unreleased and unnoticed,
+      # until apidiff was run by hand — this runs it on every push.
+      - name: api compatibility
+        if: ${{ !cancelled() }}
+        run: ./scripts/check/apicompat.sh
+
   test:
     runs-on: ubuntu-latest
     services:
@@ -73,19 +104,6 @@ jobs:
           go-version: '1.27'
           cache: true
 
-      - name: vet
-        run: go vet ./...
-
-      # AGENTS.md's rules are only real if something enforces them.
-      - name: boundaries
-        run: ./scripts/check/boundaries.sh
-
-      # And docs/STABILITY.md's promise is only real if something checks it.
-      # A fifth method on runtime.Rows sat on main, unreleased and unnoticed,
-      # until apidiff was run by hand — this runs it on every push.
-      - name: api compatibility
-        run: ./scripts/check/apicompat.sh
-
       # Every other gate runs inside this repository and shares its
       # assumptions, which is how `generate` shipped emitting storm's own
       # module path into other people's modules. This one is a stranger: a
@@ -97,11 +115,13 @@ jobs:
       # riskiest thing an ORM does and had only ever been exercised from
       # inside this module.
       - name: outsider
+        if: ${{ !cancelled() }}
         run: ./scripts/check/outsider.sh
 
       # -race catches the shape cache and binder pool; -shuffle catches tests
       # that only pass in declaration order.
       - name: test
+        if: ${{ !cancelled() }}
         run: go test -race -shuffle=on ./...
 
       # Not a perf gate: it fails only if a benchmark stops compiling or
@@ -111,6 +131,7 @@ jobs:
       # full-text search, ranges and the typed constraint errors — 34 tests
       # against a real server. Left out of CI it would rot within a release.
       - name: the orders example
+        if: ${{ !cancelled() }}
         working-directory: examples/orders
         run: |
           go mod tidy
@@ -144,6 +165,7 @@ jobs:
       # relying on whatever the runner image ships would make this step's
       # outcome depend on an image update nobody here controls.
       - name: every statement plans
+        if: ${{ !cancelled() }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
@@ -154,6 +176,7 @@ jobs:
       # is valid — which is how `DEFAULT  NOT NULL` shipped past every unit
       # test and failed on MySQL's first line. This applies it.
       - name: mysql ddl and portability
+        if: ${{ !cancelled() }}
         env:
           STORM_MYSQL_DSN: "storm:storm@tcp(127.0.0.1:3306)/storm"
         # The client is installed explicitly rather than assumed: the check
@@ -170,11 +193,13 @@ jobs:
       # got LATERAL, GROUPING(), ordered WITH ROLLUP or FOR SHARE. A gate that
       # ran the shared four fifths twice would prove nothing about the fifth.
       - name: mariadb dialect
+        if: ${{ !cancelled() }}
         env:
           STORM_MARIADB_DSN: "127.0.0.1:3307"
         run: ./scripts/check/mariadb.sh
 
       - name: benchmarks compile and run
+        if: ${{ !cancelled() }}
         run: |
           go test -run XXX -bench . -benchtime=1x ./bench/
           # The MySQL adapter's allocation budget is a gate, not a doc: it
@@ -189,6 +214,7 @@ jobs:
       # clause was silently dropped while NArg still counted the dropped
       # predicates — a filter that failed OPEN.
       - name: fuzz the compiler
+        if: ${{ !cancelled() }}
         run: |
           go test ./runtime/ -run XXX -fuzz FuzzSpliceTree -fuzztime 60s
           go test ./runtime/ -run XXX -fuzz FuzzSpliceSections -fuzztime 30s
@@ -199,12 +225,14 @@ jobs:
       # executes). The first run of this found x/text's norm reachable through
       # pgx's SCRAM path on every connect — found by scanning, not by luck.
       - name: govulncheck
+        if: ${{ !cancelled() }}
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
       # Coverage floors, per profile, from AGENTS.md. A floor rather than a
       # target: it stops coverage falling silently, and says nothing about
       # whether the tests are good.
       - name: coverage floors
+        if: ${{ !cancelled() }}
         run: ./scripts/check/coverage.sh
 
   # The SECOND PostgreSQL version.
@@ -244,6 +272,7 @@ jobs:
           cache: true
 
       - name: test
+        if: ${{ !cancelled() }}
         run: go test -count=1 ./...
 
       # Introspection is the version-sensitive part, and the migration path is
@@ -251,9 +280,11 @@ jobs:
       # error. The outsider gate walks diff, apply and verify from a module
       # that is not storm.
       - name: outsider
+        if: ${{ !cancelled() }}
         run: ./scripts/check/outsider.sh
 
       - name: every statement plans
+        if: ${{ !cancelled() }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
@@ -305,19 +336,23 @@ jobs:
       # EXECUTEd, plus the coverage floors for the two packages whose live half
       # only runs here.
       - name: sql server dialect
+        if: ${{ !cancelled() }}
         run: ./scripts/check/mssql.sh
 
       # The client and the decoder family, under -race.
       - name: the tds client
+        if: ${{ !cancelled() }}
         run: go test -race -count=1 ./runtime/msdrv/ ./runtime/msdec/
 
       # And the generated package, which is the only thing that exercises the
       # lowering, the client and the decoders together.
       - name: the generated package
+        if: ${{ !cancelled() }}
         run: go test -count=1 -run TestGeneratedMSSQL ./codegen/
 
       # Introspection: model → DDL → server → model. A round trip rather than a
       # field-by-field assertion, because a field-by-field one passes while the
       # import silently halves every string width.
       - name: the on-ramp
+        if: ${{ !cancelled() }}
         run: go test -race -count=1 ./schema/mssql/

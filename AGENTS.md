@@ -94,3 +94,19 @@ keyed by attacker-supplied input needs a bound and an eviction. Every bug fix
 ships a test that fails before and passes after, with the root cause named in
 one sentence. **Never quote a performance number from memory — re-run the
 bench.**
+
+## Working in this repository
+
+Several sessions work on storm at once, and that is how main went red for six
+commits in September 2026: one session's `git add -A` in a SHARED checkout
+swept another session's unfinished work into five commits it did not write.
+So:
+
+- **One worktree per session, on its own branch** (`git worktree add`). A
+  checkout another session is using is not yours to stage from, stash in, or
+  pull into.
+- **Stage by explicit path.** Never `git add -A` or `git add .`.
+- **Nothing reaches main except through a pull request whose checks are green.**
+  Branch protection on `main` requires `gates`, `test`, `postgres-next`,
+  `sqlserver` and `spike`, and every CI step reports even when an earlier one
+  failed, so one red step can no longer hide a broken test behind it.
