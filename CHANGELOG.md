@@ -12,6 +12,34 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### CI reports every failure, not the first one
+
+- **`vet`, `boundaries` and `api compatibility` run in a job of their own,
+  `gates`.** They were the first steps of `test`, and a failure in one skipped
+  every step after it: for six commits a boundaries failure meant main ran no
+  live test, no coverage floor, no fuzzing and no govulncheck, and it looked
+  like one red check.
+- **Every step runs even when an earlier one failed**, in `ci` and in the
+  Oracle gate. The steps are independent scripts, and a step that never ran
+  reports nothing.
+- **AGENTS.md says how to work here:** one worktree per session, stage by
+  explicit path, and nothing on main except through a pull request whose
+  checks are green.
+- **docs/STABILITY.md says when Oracle stops being experimental:** two
+  consecutive minors with its gate green on every push, and `storm.SQL`
+  validated against an Oracle server rather than refused.
+
+### A missing driver gets the right `go get`
+
+`storm generate -dialect oracle`, in a module without the go-ora driver,
+printed go's correct line naming the driver. Under it came storm's own hint,
+telling the adopter to `go get github.com/gsoultan/storm/tool`, which they
+already had and which fixes nothing. The hint now names the package go could
+not find. It was found by generating from the published v1.2.0 in a module
+that was not storm, the one check no release had been given before.
+
 ## v1.2.0 — 2026-09-25
 
 storm stops being a PostgreSQL ORM with plans for other engines, and the
