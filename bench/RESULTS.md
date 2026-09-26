@@ -1,6 +1,7 @@
 ---
 tags: [storm, bench, results, m0]
 generated: 2026-08-23
+remeasured: 2026-09-25
 ---
 
 # M0 results — the thesis spike
@@ -13,20 +14,77 @@ generated: 2026-08-23
 min=max=8, shared by every implementation under test · 50,000 users across 100
 orgs, ~14% of `age` NULL · median of `-count=10`.
 
-> **Stale on Go 1.27 — re-run before tagging (2026-08-28).** Every number below
-> was measured on **Go 1.26.6**; the module now builds on 1.27. Spot-checking
-> found the allocation counts unchanged — `Get_Pgx` 18, `Dynamic6_Pgx` 23,
-> `Floor_Ping` 5, `Prepare_Warm` 0 — which are the claims this file says are the
-> honest ones. But `DecodeRow_Offline`, which needs no database and touches no
-> code changed in v0.3.0, moved from **31 ns / 48 B / 3 allocs** to
-> **~48 ns / 128 B / 1 alloc**: fewer allocations, more bytes, slower. That is a
-> toolchain difference in `internal/spike`, not a regression in storm, and it is
-> exactly the kind of drift a re-run exists to catch.
->
-> The wall-clock figures were NOT re-measured here, deliberately: the spot check
-> ran against a different container and every number including the floor was
-> ~1.7× higher, so publishing a mixed-environment table would be worse than
-> publishing a stale one. Run `make results` on the environment named below.
+> **Re-measured for v1.2.0 on 2026-09-25 — the allocations, not the wall
+> clock.** The allocation and GC figures were re-run on Go 1.27.1, in the
+> section directly below; they are the ones the README quotes. The wall-clock
+> figures in *Numbers*, and in every section after it, are still the Go 1.26.6
+> measurements from the environment named above, and they stay labelled as
+> history rather than re-published. The machine available for this run was
+> shared with other workloads (load average 6 before it, 9–14 during it), and
+> its `SELECT 1` floor measured **1.47 ms ±47%** against 63.7 µs here.
+> Publishing those numbers beside these would be the mixed-environment table
+> this file refuses to print.
+
+## v1.2.0 re-measurement — 2026-09-25
+
+**Environment.** Apple M5 Pro (15 procs) · Go 1.27.1 darwin/arm64 · PostgreSQL
+17.11 in an Apple `container` VM, published on 127.0.0.1 (`make db
+PGPORT=5435`, because another project held 5433) · pgx/v5 v5.11.0 · median of
+`-count=10` from `make bench`, and `TestGCPressure` run on its own because
+`-run XXX` skips it. Other workloads shared the machine; see the note above
+for what that did to wall clock.
+
+### Allocations per query
+
+| | 1 row by primary key | 1,000 rows |
+|---|---:|---:|
+| **storm, generated** | **6** · 441 B | **6** · 41,366 B |
+| storm, hand-written spike | 6 · 532 B | 7 · 41,374 B |
+| raw pgx | 18 · 926 B | 5,012 · 184,741 B |
+| sqlc | 13 · 1,006 B | 5,022 · 912,460 B |
+| Bun | 73 · 7,704 B | 13,898 · 447,408 B |
+| Ent | 158 · 5,931 B | 23,015 · 805,106 B |
+| GORM | 109 · 5,709 B | 23,932 · 750,862 B |
+
+storm's single-row and 1,000-row counts did not move from Go 1.26.6, and the
+rivals moved by one to five allocations. `Dynamic6` is 13 allocations,
+generated and hand-written alike, against 23 for pgx; the *Numbers* table's 15
+for the spike is Go 1.26.6's. Three offline micro-benchmarks moved, all with
+the toolchain rather than the code: `DecodeRow_Offline` is 1 allocation and
+128 B where it was 3 and 48 B, `Compile_Cold` gained 8 B, and
+`Compile_AllShapes` gained 512 B. A parallel scan of 100 rows is 9 allocations
+against pgx's 514.
+
+The warm builder path is still **0 allocations**: `Prepare_Warm`,
+`BuildAndPrepare_Warm` and `Aggregate_BuildAndBind_Warm`.
+
+### GC pressure
+
+`TestGCPressure`: 4,000 queries × 500 rows, 16 workers.
+
+| | wall | GCs | GC pause | mallocs | alloc MiB |
+|---|---:|---:|---:|---:|---:|
+| pgx `Query` + `Scan` | 6.221 s | 81 | 51.6 ms | 10,060,447 | 355.6 |
+| **storm** | **6.232 s** | **17** | **15.2 ms** | **40,395** | **73.9** |
+
+**249× fewer mallocs, 4.8× less allocated, 4.8× fewer GC cycles.** The mallocs
+and bytes match the Go 1.26.6 run to within 0.1%. The GC counts are lower on
+both sides (102 → 81 and 21 → 17), because the collector's pacing changed with
+the toolchain, but the ratio did not.
+
+### Top-N per parent, at 100 parents
+
+`LATERAL` against `row_number()`, with each pair of sub-benchmarks run back to
+back: **34×** at 1 row per parent, 20× at 5, and 5.1× at 50.
+
+### Wall clock, checked rather than published
+
+The long run put storm's generated 1,000-row scan at 9.8 ms and raw pgx at
+2.35 ms, a 4× gap that no allocation figure explains. Those two benchmarks run
+minutes apart, alphabetically, and the load changed between them. Run
+interleaved, six times, they are **3.328 ms ±22% and 3.328 ms ±27%**: the same
+number, as they have been in every measurement in this file. The gap was the
+machine.
 
 ## Numbers
 
