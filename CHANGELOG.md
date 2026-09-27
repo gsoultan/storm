@@ -14,6 +14,37 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Transactions you write once, for every database
+
+`runtime.Tx` and `runtime.DB` name the two things a caller holds when they own
+a transaction, and `storm.InTx` runs one:
+
+```go
+err := storm.InTx(ctx, pool, func(ex storm.Executor) error {
+    // every generated call takes ex
+})
+```
+
+It commits when `fn` returns nil and rolls back when it returns an error or
+panics; `fn`'s error wins over the rollback's. Every adapter starts one the same
+way, `pool.StartTx(ctx)`, so a repository method that takes a `storm.DB` runs on
+PostgreSQL, MySQL, MariaDB, SQL Server and anything behind database/sql. The
+`Executor` port is untouched: still four methods, and a decorator still
+implements four. [ADR-0011](docs/adr/0011-a-transaction-contract-beside-the-port.md)
+has the reasoning.
+
+- **`runtime/sqldrv`** gains `Pool` (`NewPool(db)`), a database/sql pool that
+  can start transactions, and `Tx` (`NewTx(tx)`) for a caller who began one
+  with their own `*sql.TxOptions`.
+- **A second commit is `runtime.ErrTxDone`** on every adapter, and a rollback
+  after a commit is nil, so `defer tx.Rollback(ctx)` beside a commit is safe.
+
+**For anyone upgrading:** mydrv's and msdrv's `Begin` are unchanged and still
+return their own `*Tx`; `StartTx` is new beside them. Their `ErrTxDone` is now
+`runtime.ErrTxDone`, so comparing against it and `errors.Is` work as before, but
+its message reads "storm: the transaction has already finished" instead of
+naming the adapter.
+
 ### CI reports every failure, not the first one
 
 - **`vet`, `boundaries` and `api compatibility` run in a job of their own,
