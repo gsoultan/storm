@@ -528,6 +528,25 @@ const (
 // is that a real server typed the statement, and a server of the wrong kind
 // accepts text the real one refuses. That is why this is a switch and not a
 // parameter to one function.
+// plainRawStatements is every raw declaration that carries NO shard: the ones
+// declared with storm.SQL or storm.SQLExec rather than their Sharded forms.
+//
+// Read off the declarations rather than off prepareRawFor's output, because
+// the refusal it feeds must not depend on whether a database was reachable.
+// A statement that would read a sharded table through a pool is wrong whether
+// or not it PREPAREd.
+func plainRawStatements() []string {
+	var out []string
+	for _, q := range RawQueries {
+		if storm.ShardedOf(q) {
+			continue
+		}
+		_, sql := storm.DeclOf(q)
+		out = append(out, sql)
+	}
+	return out
+}
+
 func prepareRawFor(d codegen.Dialect, dsn string, model *schema.Schema,
 	against RawSchema) ([]codegen.RawScanner, []string, error) {
 	if len(RawQueries) == 0 {
@@ -707,13 +726,14 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema, d
 		return err
 	}
 	files, err := codegen.Package(model, codegen.PackageOptions{
-		Dir:           dir,
-		Import:        modulePath,
-		Package:       filepath.Base(dir),
-		PackageImport: hostMod + "/" + filepath.ToSlash(rel),
-		RawScanners:   scanners,
-		RawStatements: statements,
-		Dialect:       d,
+		Dir:                dir,
+		Import:             modulePath,
+		Package:            filepath.Base(dir),
+		PackageImport:      hostMod + "/" + filepath.ToSlash(rel),
+		RawScanners:        scanners,
+		RawStatements:      statements,
+		PlainRawStatements: plainRawStatements(),
+		Dialect:            d,
 		// The models as Go types, not as schema: the staleness check asserts
 		// the STRUCT, which the schema no longer describes once relations have
 		// become foreign keys and mixins have been flattened.
@@ -851,13 +871,14 @@ func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema, d cod
 		return err
 	}
 	want, err := codegen.Package(model, codegen.PackageOptions{
-		Dir:           dir,
-		Import:        modulePath,
-		Package:       filepath.Base(dir),
-		PackageImport: hostMod + "/" + filepath.ToSlash(rel),
-		RawScanners:   scanners,
-		RawStatements: statements,
-		Dialect:       d,
+		Dir:                dir,
+		Import:             modulePath,
+		Package:            filepath.Base(dir),
+		PackageImport:      hostMod + "/" + filepath.ToSlash(rel),
+		RawScanners:        scanners,
+		RawStatements:      statements,
+		PlainRawStatements: plainRawStatements(),
+		Dialect:            d,
 	})
 	if err != nil {
 		return err

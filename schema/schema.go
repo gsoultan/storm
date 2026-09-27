@@ -91,6 +91,19 @@ type Table struct {
 	// rows live in its partitions, never in it.
 	Partition *Partition
 
+	// ShardKey names the column whose value decides WHICH DATABASE a row
+	// lives in. Empty for the ordinary table, which lives in all of one.
+	//
+	// It is not a Partition and the two are unrelated. A partition key splits
+	// a table across files inside one server, and the server resolves it: a
+	// query that does not name the key still returns the right rows, more
+	// slowly. A shard key splits a table across SERVERS, and nothing resolves
+	// it but the caller — a query sent to the wrong shard does not return the
+	// right rows slowly, it returns the wrong rows quickly. That difference is
+	// why this is one string on the table rather than a mode on Partition,
+	// and why codegen turns it into a parameter type instead of SQL.
+	ShardKey string
+
 	// PartitionOf names the parent when this table IS a partition, and Bound
 	// is the FOR VALUES clause that says which rows it takes.
 	//
@@ -158,6 +171,11 @@ type Table struct {
 
 // SoftDeletes reports whether rows of this table are deleted by marking.
 func (t *Table) SoftDeletes() bool { return t.SoftDelete != "" }
+
+// Sharded reports whether this table's rows are split across databases, which
+// is what makes its generated calls take a shard.Bound instead of a
+// runtime.Executor.
+func (t *Table) Sharded() bool { return t.ShardKey != "" }
 
 // Arc is one polymorphic field: a reference to a row in exactly one of several
 // tables, expressed as one nullable foreign key per variant.
