@@ -528,3 +528,98 @@ func sortedUnique(in []string) []string {
 	}
 	return out[:n]
 }
+
+// The escape hatch, checked against the shard map.
+//
+// Every other query against a sharded model is checked by its PARAMETER TYPE:
+// the generated call takes a shard.Bound and a pool is not one. A raw
+// statement has no generated call, so there is no parameter to type — which
+// made `storm.SQL` the one door out of the guarantee, and a door out of a
+// compile-time guarantee is the only part of it anybody has to get right.
+//
+// `storm.ShardedSQL` is the same declaration with a Bound at the call. This
+// pass is what makes choosing it not optional: a plain statement whose text
+// names a sharded table is refused, and the refusal names the statement, the
+// table and the fix.
+
+// refuseUnshardedRawSQL fails generation for a plain storm.SQL declaration
+// that reads or writes a sharded table.
+//
+// The match is on the table's name as a whole SQL identifier. It is a scan of
+// the text rather than a parse, and that is a deliberate trade: storm would
+// have to carry a SQL parser per dialect to know for certain which tables a
+// statement touches, and the failure modes are not symmetric. A FALSE POSITIVE
+// is a build error with a message naming the fix, and the fix — declaring it
+// with ShardedSQL — is correct anyway for a statement that mentions the table
+// at all. A FALSE NEGATIVE is a raw query running on whichever database was
+// passed, returning one shard's rows as though they were all of them, with
+// nothing to catch it afterwards.
+func refuseUnshardedRawSQL(s *schema.Schema, plain []string) error {
+	var sharded []string
+	for _, t := range s.Tables {
+		if t.Sharded() {
+			sharded = append(sharded, t.Name)
+		}
+	}
+	if len(sharded) == 0 || len(plain) == 0 {
+		return nil
+	}
+	sort.Strings(sharded) // determinism: the first refusal must not depend on map order
+
+	for _, stmt := range plain {
+		for _, name := range sharded {
+			if !namesIdentifier(stmt, name) {
+				continue
+			}
+			return fmt.Errorf(
+				"a storm.SQL statement names %s, which is sharded by %s, and a plain raw "+
+					"statement carries no shard — it would run on whichever executor the "+
+					"caller passed and report one database's rows as all of them. Declare it "+
+					"with storm.ShardedSQL (or storm.ShardedSQLExec), whose Query takes a "+
+					"shard.Bound:\n\n\t%s",
+				name, s.Table(name).ShardKey, firstLines(stmt, 4))
+		}
+	}
+	return nil
+}
+
+// namesIdentifier reports whether sql contains name as a whole identifier,
+// case-insensitively.
+//
+// Whole-identifier because `orders` must not match inside `work_orders`, and
+// case-insensitive because SQL is — `FROM ORDERS` is the same table.
+func namesIdentifier(sql, name string) bool {
+	if name == "" {
+		return false
+	}
+	hay, needle := strings.ToLower(sql), strings.ToLower(name)
+	for i := 0; ; {
+		j := strings.Index(hay[i:], needle)
+		if j < 0 {
+			return false
+		}
+		start := i + j
+		end := start + len(needle)
+		if !identAt(hay, start-1) && !identAt(hay, end) {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+// identAt reports whether the byte at i is part of a SQL identifier. Out of
+// range is not, which is what makes a match at either end of the text count.
+// The byte test itself is codegen's existing identByte.
+func identAt(s string, i int) bool {
+	return i >= 0 && i < len(s) && identByte(s[i])
+}
+
+// firstLines quotes the head of a statement, so the refusal identifies WHICH
+// declaration without printing a hundred-line query into a build log.
+func firstLines(sql string, n int) string {
+	lines := strings.Split(strings.TrimSpace(sql), "\n")
+	if len(lines) > n {
+		lines = append(lines[:n:n], "\t...")
+	}
+	return strings.Join(lines, "\n\t")
+}

@@ -288,9 +288,8 @@ column, so the common single-predicate read is one call.
 generated code runs inside one and there are no `XxxTx` duplicates:
 
 ```go
-tx, _ := pool.Begin(ctx)
-txe := pgxdrv.Tx{T: tx}
-_, err := na.Insert(ctx, txe)      // same call, inside the transaction
+tx, _ := pgxdrv.Pool{P: pool}.StartTx(ctx)
+_, err := na.Insert(ctx, tx)       // same call, inside the transaction
 tx.Rollback(ctx)
 ```
 
@@ -698,6 +697,212 @@ batch form (`UpdateOp`) does not, because a batch reports counts, not rows.
 lock needs the version that was read, and an address alone carries zero and
 matches nothing.
 
+## 8b. Transactions — one contract, every target
+
+`Executor` is the four-method port and stays that way. Beside it are the two
+names a *caller* holds:
+
+```go
+type Tx interface { Executor; Commit(ctx) error; Rollback(ctx) error }
+type DB interface { Executor; StartTx(ctx) (Tx, error) }
+```
+
+Every adapter's pool satisfies `storm.DB` and every adapter's transaction
+satisfies `storm.Tx`, so a repository method is written once and runs on all of
+them:
+
+```go
+func (r *Repo) Transfer(ctx context.Context, db storm.DB, from, to storm.UUID, n storm.Decimal) error {
+    return storm.InTx(ctx, db, func(ex storm.Executor) error {
+        if _, err := account.Mutate(from, account.BalanceSub(n)).Exec(ctx, ex); err != nil {
+            return err
+        }
+        _, err := account.Mutate(to, account.BalanceAdd(n)).Exec(ctx, ex)
+        return err
+    })
+}
+```
+
+`InTx` handles the three ways out, and the third is the one hand-written
+helpers forget: fn returns an error → rollback and return **fn's** error, not
+the rollback's; fn **panics** → rollback, then re-panic with the original
+value; fn returns nil → commit.
+
+Taking the transaction yourself is still the other door, and `defer
+tx.Rollback(ctx)` beside a commit is the idiom — a rollback on a finished
+transaction returns nil, on every adapter. A second *commit* returns
+`storm.ErrTxDone`, because committing twice is a bug in every shape.
+
+```go
+db := pgxdrv.Pool{P: pool}          // mydrv.Pool, msdrv.Pool, sqldrv.NewPool(sqlDB)
+tx, err := db.StartTx(ctx)
+defer tx.Rollback(ctx)
+// ... generated calls against tx ...
+return tx.Commit(ctx)
+```
+
+There is no retry loop in `InTx` and no attempt budget. `storm.Retryable(err)`
+is true for a serialization failure and a deadlock — both mean "run the whole
+transaction again" — but how many times, how long to wait, and whether the work
+is safe to repeat are yours to answer:
+
+```go
+for range 3 {
+    err = storm.InTx(ctx, db, func(ex storm.Executor) error { ... })
+    if !storm.Retryable(err) { break }
+}
+```
+
+Isolation levels are the driver's. `sqldrv` gives you `BeginTx` with
+`*sql.TxOptions` and `sqldrv.NewTx` to wrap the result; pgx gives you
+`BeginTx` and `pgxdrv.Tx{T: tx}`.
+
+## 8c. Sharding — the shard key is a type, not a convention
+
+Declare which column decides the **database** a row lives in:
+
+```go
+func (o *Order) Schema(t *storm.Table) { t.ShardKey(&o.TenantID) }
+```
+
+Then route:
+
+```go
+shards, err := shard.New(shard.Jump(4), db0, db1, db2, db3)
+ex, err := shards.For(shard.UUIDKey(tenantID))
+os, err := order.New().StatusEq("open").All(ctx, ex, nil)
+```
+
+Each sharded package also generates `ShardKeyOf`, so the shard key's name is
+written once — in the model — rather than at every call site, where naming the
+wrong column routes every row consistently to the wrong shard:
+
+```go
+ex, err := shards.For(order.ShardKeyOf(row))
+```
+
+And a context holding a sharded table gets the checking unit of work:
+`NewUnit()` returns a `*shard.Unit` whose `Add` takes the `shard.Bound` the
+write belongs to.
+
+**The query that does not say which tenant it is for does not compile.** A
+sharded model's generated calls take `shard.Bound` — an executor already
+resolved to one shard — so `All(ctx, pool, nil)` is a type error, not a wrong
+answer. This is the only place the check can live: each shard holds an ordinary
+table whose constraints are all satisfied, so a misrouted read returns rows and
+a misrouted write lands somewhere the row will never be found again. Nothing
+fails.
+
+Three locators:
+
+| | what it does | when |
+|---|---|---|
+| `shard.Jump(n)` | jump consistent hash | the default. Growing 4 → 5 moves ~1/5 of keys; modulo moves ~4/5 |
+| `shard.Modulo(n)` | `hash % n` | a fixed shard count and a migration plan already written |
+| `shard.NewTable(n, map[Key]ID{…})` | explicit lookup | multi-tenant. Put the noisy tenant on its own shard, move one without touching any other, and get `ErrNoShard` for a typo instead of a silently empty result |
+
+A transaction is one shard:
+
+```go
+err := shards.InTx(ctx, shard.UUIDKey(tenantID), func(ex shard.Bound) error { ... })
+```
+
+**A cross-shard write is refused, by name.** `shard.Unit` notices at the moment
+the second shard is staged — while the code that chose the keys is still on the
+stack and nothing has been sent:
+
+```
+storm/shard: one unit of work, two shards: "orders" is staged on shard 0 and
+"orders" on shard 3; a unit of work is one shard, because a transaction is.
+Split it into one unit per shard, or route both keys to the same shard.
+```
+
+There are only two remedies and the message names both, because storm cannot
+make a write atomic across databases: two-phase commit needs a durable
+coordinator and a recovery process, and storm is imported, not deployed.
+
+**There is no fan-out.** `Set.Each` hands you each shard in turn and lets you
+decide what combining means — a correct merge has to re-apply `ORDER BY`,
+`LIMIT` and keyset pagination across streams, and has no correct answer at all
+for `AVG`, a window function or `COUNT DISTINCT`. Summing per-shard counts is
+sound; averaging per-shard averages is not, and writing it out is where you
+notice.
+
+### The escape hatch carries a shard too
+
+`storm.SQL` takes a `runtime.Executor`, and a `shard.Bound` satisfies one — so
+routing a raw statement always *worked*. What did not work is the guarantee: a
+pool satisfies `runtime.Executor` as well, so the one mistake sharding exists
+to prevent was expressible again the moment anybody dropped to raw SQL.
+
+Declare it with `storm.ShardedSQL`, whose `Query` takes a `shard.Bound`:
+
+```go
+var TenantAging = storm.ShardedSQL[AgingRow](`
+    SELECT bucket, sum(total) FROM invoices
+    WHERE tenant_id = $1 GROUP BY bucket`)
+
+ex, err := shards.For(invoice.ShardKeyOf(row))
+rows, err := TenantAging.Query(ctx, ex, tenantID)
+```
+
+A plain `storm.SQL` whose text names a sharded table is **refused at generate
+time**, naming the table and the fix. The check is a whole-identifier scan of
+the statement rather than a parse — `orders` does not match inside
+`work_orders` — and it errs toward refusing, because a false positive is a
+build error whose fix is correct anyway and a false negative is a raw query
+reporting one shard's rows as all of them.
+
+**storm routes the statement; it does not read your `WHERE` clause.** A raw
+query that omits the tenant predicate returns that shard's *other* tenants.
+That is the half the escape hatch cannot check, and the reason the typed query
+API is the better answer wherever it reaches.
+
+### Migrating a shard set
+
+There is no `Set.Migrate`. `migrate.AutoPool` takes a `*pgxpool.Pool` and a
+`Set` holds `runtime.DB`, so migration happens *before* a `Set` exists — while
+you still hold the pools you are about to hand over:
+
+```go
+for i, p := range pools {
+    if _, err := migrate.AutoPool(ctx, p, model, migrate.AutoOptions{}); err != nil {
+        return fmt.Errorf("migrate shard %d: %w", i, err)
+    }
+}
+shards, err := shard.New(shard.Jump(len(pools)), dbs...)
+```
+
+`Auto` takes an advisory lock per **database**, so several instances racing to
+migrate one shard is safe, and a second pass applies nothing. **Nothing makes
+four shards atomic with each other**: a rollout that dies after shard 1 leaves
+shards 2 and 3 on the old schema, serving reads that succeed. That is an
+operator's problem, and storm names it rather than pretending to solve it.
+
+`storm diff` and `storm verify` are per-DSN, so they are also per shard — run
+them once against each.
+
+Rules enforced at **generate** time, where the model can be named:
+
+- An **unsharded** table may not declare a relation into a sharded one. The
+  read from there carries no shard.
+- Two **sharded** tables in a relation must share a shard key. Two keys is two
+  answers for where the joined row lives.
+- A declared **join** obeys both of those — it reaches tables the relation
+  graph does not.
+- An implicit **many-to-many** may not touch a sharded table. The join table
+  storm synthesizes holds only the two foreign keys, so it has no column to
+  carry a shard key, and its rows could land on any database while the rows
+  they join live on one. Declare it with `t.Through` and give it the column.
+- A **union** may not read a sharded table at all. A union has no driving
+  table, so there is no shard to run it on.
+
+A sharded table pointing at an *unsharded* one is allowed: that is the
+reference table — `currencies`, `plans`, `countries` — copied to every shard.
+The child read runs on the parent's own `Bound`, so it reads the copy that is
+there, and making sure it IS there is yours (`storm verify` against each
+shard).
+
 ## 9. Unit of work — explicit, batched, FK-ordered
 
 Only for graph writes. Everything above works without it.
@@ -800,9 +1005,9 @@ code a transaction, roll it back, and the generated code is the code that ran in
 production.
 
 ```go
-tx, _ := pool.Begin(ctx)
+tx, _ := pgxdrv.Pool{P: pool}.StartTx(ctx)
 defer tx.Rollback(ctx)
-svc := NewService(pgxdrv.Tx{T: tx})
+svc := NewService(tx)
 ```
 
 `examples/blog` and `examples/orders` are both structured this way — a real

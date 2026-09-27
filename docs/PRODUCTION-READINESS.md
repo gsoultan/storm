@@ -749,9 +749,68 @@ is broken. Both of those were already written down here. What is new is how
 cheap the audit was that found them: running the tool the way a reader of the
 README would.
 
+## P10 — Sharding has one failure mode and it is silent (2026-09-23)
+
+Every other risk in this document is caught by something. A bad index fails at
+`CREATE`, a bad predicate at `PREPARE`, a violated constraint at `INSERT`, a
+drifted schema at `verify`. **A query sent to the wrong shard is caught by
+nothing.** Each shard holds an ordinary table whose every constraint is
+satisfied; the read returns rows — just not all of them — and the write lands
+somewhere the row will never be found again. There is no error, no SQLSTATE,
+no log line, and no metric that moves.
+
+That is asserted rather than asserted-about: `TestLiveTheWrongShardAnswersWithSilence`
+writes a tenant to its shard, reads it from the other, and fails if the
+database *errors*, because an error is what would make this findable.
+
+**So the check is the type system.** A sharded model's generated calls take
+`shard.Bound`, which only `shard.Set` and `shard.Pin` can produce, so the
+query that does not say which tenant it is for does not compile. See ADR-0012.
+
+### What was reviewed after the feature landed, and what it found
+
+The headline claim was true for the typed query path and false in five other
+places — every one of them a door out of the guarantee, and a door out of a
+compile-time guarantee is the only part of it anybody has to get right:
+
+| leak | what it allowed |
+|---|---|
+| `storm.SQL` took a plain `Executor` | any raw statement on a sharded table, routed by whatever was passed |
+| generated `NewUnit()` returned `runtime.Unit` | a cross-shard write staged where storm could see it and did not look |
+| declared **joins** unvalidated | a join across two shard keys, generating SQL that reads one shard |
+| **unions** claimed to be refused, and were not | a reader answering for one database as if it were all of them |
+| implicit **many-to-many** | a link row on any shard while both rows it joins are on one |
+
+The last one is the sharpest: the join table storm synthesizes holds only the
+two foreign keys, so there is no column a shard key could live in. It is
+refused now, pointing at `t.Through`.
+
+### Evidence
+
+- **Two real databases**, not stubs: rows land on the shard the locator names
+  and nowhere else, and `For` agrees with the locator computed independently.
+  Mutation-checked twice — an everything-to-shard-0 mutant, and a
+  shift-by-one that the first version of the test did *not* catch.
+- **Two dialects.** The same suite runs on PostgreSQL (pgxdrv) and MySQL
+  (mydrv), because "routing is dialect-independent" is a claim about executors
+  and needed a second adapter to stop being an argument.
+- **All four back ends** emit the `Bound` signature, asserted in codegen.
+- **Routing allocates nothing**, and costs about 16 ns on a uuid key
+  (re-measured 2026-09-27) — after the benchmark found
+  it allocating 24 B per call on the path of every query, while the package
+  documentation already said otherwise.
+
+### Open, and an operator's rather than storm's
+
+Nothing makes N shards atomic with each other. A rollout that dies partway
+leaves later shards on the old schema, serving successful reads. `storm
+verify` is per-DSN, so drift detection is per shard and has to be run that
+way. See `docs/DEPLOYMENT.md`.
+
 ## What is already load-bearing (do not re-litigate)
 
-Injection is structural and fuzzed (~80M executions, one real fail-open found
+Sharding's guarantee is the parameter type, and the five leaks found after it
+landed are closed with tests (P10). Injection is structural and fuzzed (~80M executions, one real fail-open found
 and fixed). The structural argument now covers the escape hatch too: `storm.SQL`
 statements are pinned to the text `storm generate` PREPAREd, so a statement
 assembled at run time is refused before the executor is reached, and a

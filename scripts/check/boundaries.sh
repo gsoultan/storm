@@ -135,6 +135,14 @@ before=$(cat examples/blog/store/*.gen.go examples/blog/store/*/*.gen.go 2>/dev/
 go run ./examples/blog/gen >/dev/null 2>&1
 stale "$before" "$(cat examples/blog/store/*.gen.go examples/blog/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./examples/blog/gen"
 
+# The sharded example. In this list for the same reason blog is — it
+# regenerates without a server — and worth its own entry because it is the
+# only in-tree model with a shard key, so it is what catches a change that
+# stops emitting shard.Bound.
+before=$(cat examples/tenants/store/*.gen.go examples/tenants/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+go run ./examples/tenants/gen >/dev/null 2>&1
+stale "$before" "$(cat examples/tenants/store/*.gen.go examples/tenants/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./examples/tenants/gen"
+
 # examples/orders is NOT in the list above, because regenerating it needs a
 # server and this script needs none. What it does not need a server for is the
 # question that matters: does the code checked in still COMPILE against the

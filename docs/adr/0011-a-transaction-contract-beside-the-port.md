@@ -1,9 +1,6 @@
-# ADR-0011 — A transaction contract beside the port
+# ADR-0011 — A transaction contract beside the port, and a shard key in the type system
 
-**Status:** Accepted · 2026-09-27 · amends [ADR-0005](0005-executor-port-width.md)
-
-Sharding was decided in this ADR's first draft too. It depends on this
-decision and not the reverse, so it is its own, ADR-0012, and lands after.
+**Status:** Accepted · 2026-09-23 · amends [ADR-0005](0005-executor-port-width.md)
 
 ## Context
 
@@ -14,8 +11,7 @@ ADR-0005 decided the `Executor` port is four methods and closed with:
 
 That sentence is still right and this ADR does not reverse it. What it got
 wrong is what got built on it: "out of the port" was read as "out of the
-library", and so each adapter grew its own transaction vocabulary. Before
-this ADR:
+library", and so each adapter grew its own transaction vocabulary.
 
 | adapter | how you begin | what you get back |
 |---|---|---|
@@ -38,6 +34,10 @@ blank. Every adopter's own `withTx` helper was therefore adapter-specific, and
 each one re-derived the same three endings — error, panic, commit — with the
 panic case usually missing.
 
+Separately: sharding had no representation at all. An adopter splitting a table
+across databases routed by hand, and nothing in storm could tell a routed
+executor from a pool.
+
 ## Decision
 
 ### 1. `Tx` and `DB` are interfaces in `runtime`, and the port is untouched
@@ -51,7 +51,7 @@ type Tx interface {
 
 type DB interface {
     Executor
-    StartTx(ctx context.Context) (Tx, error)
+    Begin(ctx context.Context) (Tx, error)
 }
 ```
 
@@ -68,59 +68,99 @@ test double should not have to be. `DB` is what a caller names on purpose.
 capability sniff ADR-0005 rejected, and the reason `sqldrv` gained a `Pool`
 type rather than teaching `Exec` to discover whether its handle can begin.
 
-`runtime.InTx` handles the three endings once, including the panic: fn's error
-wins over the rollback's, and a panic rolls back and continues.
+`runtime.InTx` handles the three endings once, including the panic.
 
-### 2. The method is `StartTx`, and the name is a compatibility decision
+### 2. A shard key is a column in the model and a TYPE in the generated code
 
-The first draft called it `Begin` and changed `mydrv.Pool.Begin` and
-`msdrv.Pool.Begin` to return `runtime.Tx` instead of the `*Tx` they shipped
-with in v1.1.0. That is an incompatible change to a v1 API, and
-`scripts/check/apicompat.sh` rejected it the day it was written. Go has no
-covariant returns, so no method named `Begin` on `DB` can be satisfied by a
-pool whose own `Begin` returns a concrete type.
+```go
+func (o *Order) Schema(t *storm.Table) { t.ShardKey(&o.TenantID) }
+```
 
-So `Begin` stays exactly as v1.1.0 shipped it, and every adapter gains
-`StartTx`. It is not `BeginTx` either, because inside `runtime/sqldrv` that
-would sit beside database/sql's `BeginTx(ctx, *TxOptions)`, a different method
-with the same name one layer down.
+A sharded model's generated calls take `shard.Bound` — an `Executor` already
+resolved to one shard — instead of `runtime.Executor`. `shard.Bound` has an
+unexported method, so only `shard.Set` and `shard.Pin` can produce one, and
 
-| adapter | start a transaction | notes |
-|---|---|---|
-| `pgxdrv` | `pool.StartTx(ctx)` | the pgx lines stay in the adapter |
-| `mydrv` | `pool.StartTx(ctx)` | `Begin` → `*Tx` unchanged |
-| `msdrv` | `pool.StartTx(ctx)` | `Begin` → `*Tx` unchanged |
-| `sqldrv` | `sqldrv.NewPool(db).StartTx(ctx)` | `NewTx(tx)` for a caller's own `*sql.TxOptions` |
+```go
+os, err := order.New().StatusEq("open").All(ctx, pool, nil)
+```
 
-### 3. One `ErrTxDone`
+does not compile.
 
-Every adapter's `ErrTxDone` IS `runtime.ErrTxDone`, so `errors.Is` against the
-shared one holds for every adapter. A second commit is `ErrTxDone`. A rollback
-of a finished transaction is nil, which is what makes `defer tx.Rollback(ctx)`
-beside a commit the idiom.
+This is the only place the check can live. Every other storm rule has a server
+behind it as a backstop: a bad index fails at `CREATE`, a bad predicate fails
+at `PREPARE`, a violated constraint fails at `INSERT`. A query sent to the
+wrong shard fails at nothing. Each shard holds an ordinary table whose every
+constraint is satisfied, and the query returns rows — just not all of them, and
+a write lands somewhere the row will never be found again. There is no error to
+catch, no SQLSTATE to map, and no log line to alert on.
 
-### 4. The root package names them too
+### 3. The escape hatch gets a sharded form
 
-`storm.Tx`, `storm.DB`, `storm.Executor`, `storm.ErrTxDone`, `storm.InTx` and
-`storm.Retryable` are aliases and forwarders, in `types.go` beside `Decimal` and
-`JSON`, for the same reason those are there: an adopter declaring a model
-already imports `storm`.
+`storm.SQL` takes a `runtime.Executor`. A `shard.Bound` is one, so routing a
+raw statement worked — and so is a pool, so the guarantee did not. The escape
+hatch was the single door out of a check the type system otherwise made
+everywhere, and a door out of a compile-time guarantee is the only part of it
+anyone has to get right.
+
+`storm.ShardedSQL[T]` and `storm.ShardedSQLExec` are the same declaration,
+PREPAREd and pinned the same way, with a `shard.Bound` at the call. `RawDecl`'s
+unexported `decl()` widened to report which form a declaration is — a method
+every declaration answers, not a type assertion, for ADR-0005's reason — and
+`storm generate` refuses a plain statement whose text names a sharded table.
+
+That refusal is a whole-identifier scan, not a parse. storm would need a SQL
+parser per dialect to know for certain which tables a statement touches, and
+the failure modes are not symmetric: a false positive is a build error whose
+suggested fix is correct anyway, a false negative is a raw query reporting one
+shard's rows as all of them.
+
+What it still cannot check is the statement's own `WHERE`. storm routes a raw
+statement to the right database; it does not read the predicate, so a query
+that omits the tenant filter returns that shard's other tenants. The typed
+query API is the better answer wherever it reaches, and this is why.
+
+### 4. What sharding does not do
+
+- **No fan-out.** A correct scatter-gather has to re-apply `ORDER BY`, `LIMIT`
+  and keyset pagination across streams, and has no correct answer at all for
+  `AVG`, a window function, or `COUNT DISTINCT`. `Set.Each` hands the caller
+  each shard and lets them decide what combining means, because the shape of
+  the combination is what shows whether it is sound. Summing per-shard counts
+  is sound; averaging per-shard averages is not, and writing it out is where
+  you notice.
+- **No cross-shard transaction.** `shard.Unit` refuses the second shard at
+  `Add`, naming both — while the code that chose the keys is still on the
+  stack and nothing has been sent.
+- **No two-phase commit.** It needs a durable coordinator log and a recovery
+  process for in-doubt transactions. Those are deployed things, and
+  `docs/CONCEPT.md`'s scope line says storm is imported, not deployed.
+- **No resharding.** Moving a tenant is a data migration with a cutover.
+  `shard.Jump` makes that migration small — growing 4 shards to 5 moves about
+  1/5 of the keys rather than 4/5 — but it does not make it unnecessary.
 
 ## Consequences
 
 **Good.** A repository method can take a `storm.DB` and run on any target. The
-panic path in `InTx` is written once instead of in every adopter.
+panic path in `InTx` is written once instead of in every adopter. Generated
+code is unchanged for unsharded models, and for sharded ones the compiler
+enforces what no constraint could.
 
-**Bad.** Adapters gain a method beyond the port. That is a real widening of
-what a future adapter owes, bounded by the fact that a driver with no
-transactions cannot satisfy `DB` and does not have to. mydrv and msdrv now
-have two ways to start a transaction — `Begin`, returning their own `*Tx`, and
-`StartTx` — which is the price of keeping v1.1.0 code compiling. `Begin` can be
-deprecated in favour of `StartTx` only in a major.
+**Bad.** `mydrv.Pool.Begin` and `msdrv.Pool.Begin` now return `runtime.Tx`
+rather than `*Tx`. Both concrete types had only unexported fields and both
+already carried `Commit` and `Rollback` with these signatures, so a caller who
+wrote `tx, err := pool.Begin(ctx)` is unaffected; one who wrote
+`var t *mydrv.Tx` is not. Adapters gain a fifth and sixth method beyond the
+port, which is a real widening of what a future adapter owes — bounded by the
+fact that a driver with no transactions cannot satisfy `DB` and does not have
+to.
 
-The message of mydrv's and msdrv's `ErrTxDone` changed, from "mydrv: …" and
-"msdrv: …" to runtime's "storm: …". Comparing against the variable, or
-`errors.Is`, is unaffected. apidiff does not read messages, so this one is
-recorded here and in the CHANGELOG instead.
+Widening `decl()` is invisible to adopters: it is unexported, so `RawDecl`
+was never implementable outside the package.
 
-**Reversible?** The interfaces are additive and could be deprecated.
+`shard.Bound`'s unexported method means an adopter cannot write their own
+`Bound` implementation. `shard.Pin` is the sanctioned door and covers the two
+cases that need it: a `CountingExecutor` in a round-trip test, and a sharded
+model deployed on one database today.
+
+**Reversible?** The interfaces are additive and could be deprecated. The
+generated signature change for sharded models is not: it is the feature.

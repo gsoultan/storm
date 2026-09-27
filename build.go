@@ -191,6 +191,13 @@ func Build(models ...any) (*schema.Schema, error) {
 	// the reader to declare one.
 	b.validateSoftDelete()
 
+	// Pass 8: shard keys. Last, because it is the only pass with no backstop
+	// — every other rule here is also enforced by a server somewhere, and a
+	// row on the wrong shard violates nothing. It runs over the FINAL schema
+	// so that a column made nullable after ShardKey was called is still
+	// caught.
+	b.validateShardKeys()
+
 	if err := b.errs.err(); err != nil {
 		return nil, err
 	}

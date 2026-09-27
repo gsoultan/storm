@@ -171,6 +171,29 @@ feature, the target, and the source line. It never fails on a customer's install
 | Unique NULLs | distinct, or `NULLS NOT DISTINCT` (15+) | distinct | distinct | one NULL | distinct | `sparse` |
 | Concurrent build | ✓ `CONCURRENTLY` | ✓ online DDL | ✓ | ✓ `ONLINE` | ✓ `ONLINE` | ✓ background |
 
+## Sharding is not a dialect concern
+
+There is no row in the table above for it, and that is the point. `shard.Set`
+routes **executors**; it never looks at SQL, never rewrites a statement and
+never asks which target it is talking to. A shard key becomes a parameter type
+in generated code (`shard.Bound`) and nothing else — no DDL, no predicate, no
+lowering pass.
+
+So every back end supports it on the same terms, and the only per-dialect
+requirement is the one ADR-0011 already makes: the adapter's pool must satisfy
+`runtime.DB`, which means `StartTx` returning a `runtime.Tx`. `pgxdrv`, `mydrv`,
+`msdrv` and `sqldrv` all do, asserted at compile time in each.
+
+**Tested on two.** The routing suite runs against two real PostgreSQL
+databases and two real MySQL databases, because "dialect-independent" is a
+claim about executors and one adapter cannot evidence it. Generation is
+asserted for all four back ends.
+
+The one thing a dialect *does* change is what a shard key column may be. A
+shard key is `uuid`, text or an integer — the three shapes `shard.Key` holds —
+so a target whose uuid is a `BINARY(16)` or a `RAW(16)` still works, because
+storm routes on the Go value and never on the stored form.
+
 ## Lowering passes worth naming
 
 **Array bind → arity bucketing.** Postgres binds a whole list to one placeholder

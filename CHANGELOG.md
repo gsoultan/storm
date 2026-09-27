@@ -45,6 +45,141 @@ return their own `*Tx`; `StartTx` is new beside them. Their `ErrTxDone` is now
 its message reads "storm: the transaction has already finished" instead of
 naming the adapter.
 
+### Sharding, with the key in the type system
+
+`t.ShardKey(&o.TenantID)`, and `runtime/shard`. A sharded
+model's generated calls take `shard.Bound`, an executor already resolved to one
+shard, so
+
+```go
+os, err := order.New().StatusEq("open").All(ctx, pool, nil)
+```
+
+**does not compile**. That is the only place the check can live. Every other
+storm rule has a server behind it as a backstop — a bad index fails at
+`CREATE`, a bad predicate at `PREPARE`, a violated constraint at `INSERT`. A
+query sent to the wrong shard fails at nothing: each shard holds an ordinary
+table whose constraints are all satisfied, the read returns rows, and the write
+lands somewhere the row will never be found again.
+
+Three locators: `Jump` (jump consistent hash — growing 4 shards to 5 moves
+about 1/5 of the keys, asserted over 20,000 of them, where modulo moves 4/5),
+`Modulo`, and `NewTable` for multi-tenant lookup, where a typo is `ErrNoShard`
+rather than a real shard and a silently empty result.
+
+**Routing costs about 16 ns and allocates nothing** — `Set.For` on a uuid key,
+median of six runs re-measured on 2026-09-27, against a query that costs
+hundreds of microseconds. It
+did not start that way. The benchmark found 24 B and 1 alloc per call, on a
+path taken by every query against every sharded table, *after* the package
+documentation had already claimed routing allocated nothing: returning a
+`Bound` boxes a struct, and a struct wider than a word cannot live in an
+interface without escaping. A `Set` now builds one `Bound` per shard at `New`
+— a bound is immutable once the Set holds the executor — which took `For` from
+48.9 ns to 25.7 ns as measured then, and `TestRoutingDoesNotAllocate` keeps
+it there. The key
+itself never allocated: it is a comparable struct rather than an `any`, and
+the FNV-1a is written out rather than taken from `hash/fnv`, whose
+`Write([]byte)` would make hashing a string allocate.
+
+**Migrating a shard set is a loop you write, and there is no `Set.Migrate`.**
+`migrate.AutoPool` takes a `*pgxpool.Pool` and a `Set` holds `runtime.DB`, so
+migration happens before a `Set` exists, while the caller still holds the
+pools they are about to hand over. `Auto` takes an advisory lock per
+*database*, so several instances racing to migrate one shard is safe; nothing
+makes four shards atomic with each other, and a rollout that dies after shard
+1 leaves shards 2 and 3 on the old schema serving reads that succeed. Proven
+against two real databases, including that a second pass applies nothing.
+
+**A sharded example, and the codegen bug it found immediately.**
+`examples/tenants` is the first in-tree model with a shard key AND a relation
+— and a relation is what makes the context package emit a plan type. Plans
+took a plain `runtime.Executor` while calling into methods that require a
+`shard.Bound`, so the generated package **did not compile**. The cause: the
+context file has no single driving table, so `execType` had nothing to read
+there. It now scopes to the plan's parent for the whole emission, including
+every member loader it recurses into — one executor is threaded through the
+chain, and a sharded parent's `Bound` satisfies an unsharded child's
+`Executor` while the reverse is already refused at build time. The codegen
+fixture gained a relation so it can see this class at all.
+
+The example is also the only place the **generated** sharded API is exercised
+against real databases: everything else tests routing through raw SQL on a
+`Bound`. It covers the query builder, the writes, `ShardKeyOf` agreeing with a
+hand-built key, a reference table read from the parent's shard, and the
+generated unit refusing a second one.
+
+The sharding suite now runs against **two real PostgreSQL databases** as well
+as stubs, because a stub can only catch a wrong call and the failure sharding
+exists to prevent is a wrong answer. It asserts that a row written through
+`For(key)` is in the database the locator names and in no other, that `For`
+agrees with the locator computed independently, and — stated directly, because
+it is the whole argument for `shard.Bound` being a compile-time requirement —
+that reading a tenant from the wrong shard returns no rows and no error.
+It runs on **MySQL** as well, because "routing is dialect-independent" is a
+claim about executors that one adapter cannot evidence; `mydrv` and `msdrv`
+now assert they satisfy `runtime.DB` and `runtime.Tx` at compile time, as
+`pgxdrv` and `sqldrv` already did.
+
+What it deliberately refuses: **a cross-shard write**, named at `Add` while the
+code that chose the keys is still on the stack (`shard.Unit`); **fan-out**,
+because a correct merge has to re-apply `ORDER BY`, `LIMIT` and keyset
+pagination across streams and has no correct answer at all for `AVG` or a
+window function — `Set.Each` hands you each shard instead; **two-phase
+commit**, which needs a durable coordinator and a recovery process, and storm
+is imported, not deployed.
+
+**The escape hatch carries a shard too.** `storm.SQL` takes a
+`runtime.Executor`; a `shard.Bound` is one, and so is a pool — so raw SQL was
+the single door out of a check the type system made everywhere else.
+`storm.ShardedSQL[T]` and `storm.ShardedSQLExec` are the same declaration,
+PREPAREd and pinned identically, with a `Bound` at the call, and a plain
+statement whose text names a sharded table is refused at generate time. The
+check is a whole-identifier scan rather than a parse — `orders` does not match
+inside `work_orders` — and errs toward refusing, because a false positive is a
+build error whose fix is right anyway and a false negative is a raw query
+reporting one shard's rows as all of them. What it still cannot check is your
+own `WHERE`: storm routes the statement, it does not read the predicate.
+
+**An implicit many-to-many that touches a sharded table is refused.** The join
+table storm synthesizes for `Books []Book` holds exactly two columns —
+`author_id` and `book_id` — so there is no third one to carry a shard key. It
+was therefore unsharded, its generated package took a `runtime.Executor`, and
+a link row could be written to any database in the set while both of the rows
+it joins lived on one: the feature's own failure mode, on the table whose only
+job is to join two sharded tables. storm will not invent the column, because a
+shard key is a statement about which value decides where a row lives and
+synthesizing one would mean choosing that value from a row nobody declared.
+Declare the join table with `t.Through` and it gets the ordinary checks.
+
+Five rules are enforced at generate time: an unsharded table may not declare a
+relation into a sharded one, two sharded tables in a relation must share a
+shard key, a declared **join** obeys both of those (it reaches tables the
+relation graph does not), an implicit **many-to-many** may not touch a sharded
+table, and a **union** may not read a sharded table at all
+— a union has no driving table, so there is no shard to run it on and its
+reader would answer for one database as if it were all of them.
+
+A context holding a sharded table now generates `NewUnit() *shard.Unit`, so
+the cross-shard refusal fires where the writes actually are, and every sharded
+package generates `ShardKeyOf(Row) shard.Key`, so the shard key's name is
+written once — in the model — rather than at every call site, where naming the
+wrong column routes every row consistently to the wrong shard. A sharded table pointing at an *unsharded* one is allowed — that is
+the replicated reference table, and keeping it on every shard is the adopter's
+half of the arrangement.
+
+**Landed with more evidence than it was written with.** A compile-fail suite
+proves the headline: `examples/tenants/testdata/compilefail` holds a query on a
+pool and a hand-made `Bound`, and neither builds. Routing now runs live on SQL
+Server as well as PostgreSQL and MySQL, in CI's `sqlserver` job. There is a
+live `Unit` flush that succeeds, not just the refusals. Discovery is tested for
+every declaration form of `storm.ShardedSQL`, and `storm generate` is tested end
+to end refusing a plain statement on a sharded table. `Set.Begin` is
+`Set.StartTx`, to match `runtime.DB`. The design is in
+[ADR-0012](docs/adr/0012-a-shard-key-in-the-type-system.md). Sharding is
+**experimental** in v1.3, except that a sharded model's calls will never widen
+back to `runtime.Executor`.
+
 ### CI reports every failure, not the first one
 
 - **`vet`, `boundaries` and `api compatibility` run in a job of their own,

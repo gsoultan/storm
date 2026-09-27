@@ -350,6 +350,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: go test -count=1 -run TestGeneratedMSSQL ./codegen/
 
+      # Sharding, executed on SQL Server: routing, one transaction per shard,
+      # and the wrong shard answering with silence. It had been generated for
+      # every dialect and run only on PostgreSQL and MySQL.
+      - name: sharding on sql server
+        if: ${{ !cancelled() }}
+        run: go test -race -count=1 -run MSSQL ./runtime/shard/
+
       # Introspection: model → DDL → server → model. A round trip rather than a
       # field-by-field assertion, because a field-by-field one passes while the
       # import silently halves every string width.

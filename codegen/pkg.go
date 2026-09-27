@@ -67,6 +67,15 @@ type PackageOptions struct {
 	// a run-time-assembled string from riding on a scanner keyed by row type.
 	RawStatements []string
 
+	// PlainRawStatements is the subset of RawStatements declared with
+	// storm.SQL or storm.SQLExec rather than their Sharded forms — the ones
+	// whose call takes a runtime.Executor and so carries no shard.
+	//
+	// A separate list rather than a flag on RawStatements because that field
+	// feeds RegisterStatement, which is a security boundary keyed on TEXT and
+	// has no business knowing about shards. This one feeds a refusal.
+	PlainRawStatements []string
+
 	// Package is the parent package that holds the context file: the flush
 	// order and the Unit constructor. Empty skips it, which is what a
 	// single-table generation wants.
@@ -91,6 +100,12 @@ type PackageOptions struct {
 func Package(s *schema.Schema, o PackageOptions) (map[string][]byte, error) {
 	if o.Import == "" {
 		return nil, fmt.Errorf("codegen: PackageOptions.Import is required")
+	}
+	// Before anything is emitted: a raw statement that cannot carry a shard
+	// must not reach a sharded table. Generating first and refusing later
+	// would leave a package on disk that compiles and is wrong.
+	if err := refuseUnshardedRawSQL(s, o.PlainRawStatements); err != nil {
+		return nil, err
 	}
 
 	names := o.Only
@@ -288,6 +303,9 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 		g.p("")
 	}
 	g.p("\t%q", o.Import+"/runtime")
+	if anySharded(s) {
+		g.p("\t%q", o.Import+"/runtime/shard")
+	}
 	// The decoder family, when it is not `runtime` itself AND the body calls
 	// it. This file holds the HAVING counters, which decode an int8 — and the
 	// table packages' header emitted this import while this one did not, so a
@@ -323,6 +341,14 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	}
 	g.p(")")
 	g.p("")
+	if anySharded(s) {
+		// In a sharded context NewUnit returns a *shard.Unit, so this file can
+		// name `runtime` nowhere else — a context of one sharded table and no
+		// plans or HAVING counters imported it and did not use it, which does
+		// not compile. The same keepalive the table packages' header uses.
+		g.p("var _ = runtime.BatchOp{}")
+		g.p("")
+	}
 	g.p("// FlushOrder ranks tables so that every table's foreign-key targets rank")
 	g.p("// strictly lower. It is computed at generate time from the model, so no")
 	g.p("// runtime code inspects a schema and no constraint has to be deferred for")
@@ -342,7 +368,24 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	g.p("")
 	g.p("// NewUnit stages writes across this context and flushes them in foreign-key")
 	g.p("// order as one round trip.")
-	g.p("func NewUnit() *runtime.Unit { return runtime.NewUnit(FlushOrder) }")
+	if anySharded(s) {
+		// A context holding even ONE sharded table gets the shard-checking
+		// unit, and its Add takes the Bound the write is for.
+		//
+		// Not "the sharded tables get one and the rest keep the plain one":
+		// a unit spans the context, the ops it stages are plain BatchOps that
+		// carry no shard, and a runtime.Unit handed a sharded table's op
+		// would flush it to whichever executor Flush was called with. The
+		// cost is that an all-unsharded write in a sharded context also names
+		// a shard; the alternative is a unit that silently does not check.
+		g.p("//")
+		g.p("// This context contains a sharded table, so Add takes the shard.Bound the")
+		g.p("// write belongs to and refuses a second one — a unit of work is one shard,")
+		g.p("// because a transaction is.")
+		g.p("func NewUnit() *shard.Unit { return shard.NewUnit(FlushOrder) }")
+	} else {
+		g.p("func NewUnit() *runtime.Unit { return runtime.NewUnit(FlushOrder) }")
+	}
 	g.p("")
 	if len(plans) > 0 || len(named) > 0 {
 		g.p("// defaultChildLimit caps a relation load. Any constant is arbitrary — too")

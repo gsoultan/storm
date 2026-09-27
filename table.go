@@ -1016,3 +1016,71 @@ func (t *Table) PartitionBy(strategy string, fields ...any) *Table {
 	t.out.Partition = &schema.Partition{Strategy: strategy, Columns: cols}
 	return t
 }
+
+// ShardKey declares the column whose value decides which DATABASE a row lives
+// in, and makes this model a sharded one.
+//
+//	func (o *Order) Schema(t *storm.Table) {
+//	    t.ShardKey(&o.TenantID)
+//	}
+//
+// What it changes is the generated signature. Every read and write on a
+// sharded model takes a shard.Bound — an executor already resolved to one
+// shard — where an unsharded model takes a runtime.Executor. So the query
+// that has no answer,
+//
+//	os, err := order.New().StatusEq("open").All(ctx, pool, nil)
+//
+// does not compile, because a pool is not bound to a shard and "open orders"
+// across four databases is four answers. The routed version is one line
+// longer and is the only one the compiler accepts:
+//
+//	ex, err := shards.For(shard.UUIDKey(tenantID))
+//	os, err := order.New().StatusEq("open").All(ctx, ex, nil)
+//
+// storm emits no SQL for this and no DDL. A shard key is invisible to the
+// database — each shard holds an ordinary table, and nothing in it records
+// that three other servers hold the rest. That is exactly why the key is
+// enforced in the type system: there is no constraint that could catch it
+// later, and a row written to the wrong shard is not corrupt, it is missing.
+//
+// # One column
+//
+// A composite shard key is refused. Two columns give two ways to route the
+// same row and no way to choose between them at a query that names only one,
+// and the failure is silent: rows written under one reading are unfindable
+// under the other. Adopters who want a composite key want a computed one —
+// derive it in your own code and store it in a column, which is a decision
+// with a name and a backfill rather than an inference.
+//
+// # The type
+//
+// uuid, text/varchar, or an integer. These are the three shapes shard.Key
+// takes, and they are what real shard keys are: a tenant id, a tenant slug, a
+// legacy account number. A timestamp is refused because sharding by time puts
+// every write on one shard; a bool because two shards is not sharding.
+func (t *Table) ShardKey(fieldPtr any) *Table {
+	c, err := t.resolve(fieldPtr)
+	if err != nil {
+		t.errs.add(err)
+		return t
+	}
+	name := c.sc.Name
+
+	if t.out.ShardKey != "" && t.out.ShardKey != name {
+		t.errs.add(fmt.Errorf("%s: ShardKey is already %q and cannot also be %q — a row has one "+
+			"home, and two keys give two answers for where it is. Derive one column from both "+
+			"and shard on that",
+			t.out.Name, t.out.ShardKey, name))
+		return t
+	}
+
+	// The column's TYPE and nullability are checked in shardvalidate.go
+	// rather than here. `t.ShardKey(&o.TenantID)` followed by
+	// `t.Col(&o.TenantID).Null()` would pass a check made at this point and be
+	// wrong by the end of the same Schema method, so the check that counts is
+	// the one made against the finished schema.
+
+	t.out.ShardKey = name
+	return t
+}

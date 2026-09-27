@@ -212,3 +212,53 @@ requires treating the ORM as a **compiler** rather than a library.
    failure modes is a consequence of a field access that might be a query.
 5. **sqlc**: build-time is not a compromise on power — it is a compromise on
    *dynamism*. Remove that one limitation and the tradeoff disappears.
+6. **The field's sharding**: it routes at run time or not at all. A misrouted
+   query violates no constraint and returns no error, so run time is the one
+   place that check cannot be made — see §9.
+
+## 9. Sharding — what the field does, and what storm took
+
+Added 2026-09-23, so it postdates the five properties above and does not
+belong in that table: nothing in the field competes on it, because for most of
+these sharding is not a feature at all.
+
+| | what it offers |
+|---|---|
+| GORM | `sharding` plugin: rewrites SQL at run time to point at a suffixed table. Same-database table splitting, not multi-database |
+| Ent | nothing. Multiple clients, routed by hand |
+| Bun | nothing. Multiple `bun.DB` values, routed by hand |
+| Hibernate | Shards existed, was abandoned; the modern answer is a multi-tenant `CurrentTenantIdentifierResolver` picking a `DataSource` per request |
+| sqlc | nothing, and correctly — it generates functions that take a `DBTX`, and which one is yours |
+| Vitess | a whole proxy: query splitting, scatter-gather, 2PC. A deployed system |
+
+**Steal:** Hibernate's resolver — the shard key is a property of the request,
+resolved once at the edge, and everything below takes what it resolved to.
+sqlc's refusal to guess: the executor is a parameter, so routing is expressible
+without the library knowing anything.
+
+**Reject: SQL rewriting at run time** (GORM's plugin). It is the reflection
+interpreter's mistake in a new place — the statement you wrote is not the
+statement that ran, and the difference is decided by a plugin reading a value
+at execution time. A misrouted query is exactly the failure that cannot be
+detected afterwards, so deciding it at run time forfeits the only chance to
+catch it.
+
+**Reject: scatter-gather** (Vitess's). Not because it is wrong — it is the
+right answer *for a proxy*, which can hold state, keep per-shard cursors and
+merge streams. In a library it would have to re-apply `ORDER BY`, `LIMIT` and
+keyset pagination across result sets, and there is no correct answer at all for
+`AVG`, a window function or `COUNT DISTINCT`. An ORM that returned one anyway
+would return a wrong number shaped exactly like a right one. `shard.Set.Each`
+is the honest form: it hands you each shard and makes you say what combining
+means.
+
+**Reject: two-phase commit.** Vitess has it because Vitess is deployed and can
+run a coordinator with a durable log and a recovery process for in-doubt
+transactions. `docs/CONCEPT.md`'s scope line says storm is imported, not
+deployed, and a library that opened a prepared transaction it could not
+guarantee to resolve would be worse than one that refuses.
+
+**What storm does that none of them do:** put the shard key in the *type*. A
+sharded model's generated calls take a `shard.Bound`, so the query that does
+not say which tenant it is for does not compile. Every other entry in this
+table can express that query, and every one of them answers it with rows.
