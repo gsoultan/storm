@@ -169,3 +169,11 @@ sharding depends on runtime.DB and not the reverse.
   passed.
 - **Sharding is experimental in v1.3** (STABILITY.md), except that sharded
   calls will never widen back to runtime.Executor.
+- **Still unexplained (reported by storm-2e): one `make check` failure on
+  2026-09-23.** It happened BEFORE the Currency change that made the ShardKeyOf
+  test flaky, so that fix does not explain it. It did not reproduce in 8 later
+  runs. Capping the live-test pools at MaxConns=2 was a guessed mitigation, not
+  a diagnosis. The best unverified guess is a concurrent edit in the shared
+  checkout during the run, the hazard [[shared-working-tree]] names. If a
+  live sharding test fails intermittently again, start here, and do not file
+  it under the ShardKeyOf fix.
