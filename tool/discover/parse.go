@@ -300,7 +300,8 @@ func scanQueryVar(fset *token.FileSet, s *ast.ValueSpec, scan *pkgScan, is func(
 		scan.unions[name.Name] = fset.Position(name.Pos())
 	}
 
-	typed := isPtrTo(s.Type, is, "SQLQuery") || isPtrTo(s.Type, is, "SQLStmt")
+	typed := isPtrTo(s.Type, is, "SQLQuery") || isPtrTo(s.Type, is, "SQLStmt") ||
+		isPtrTo(s.Type, is, "ShardedSQLQuery") || isPtrTo(s.Type, is, "ShardedSQLStmt")
 	for i, name := range s.Names {
 		hit := typed
 		if !hit && i < len(s.Values) {
@@ -333,10 +334,11 @@ func isStormCall(e ast.Expr, is func(ast.Expr, string) bool) bool {
 		return false
 	}
 	switch fn := call.Fun.(type) {
-	case *ast.IndexExpr: // storm.SQL[Row](...)
-		return is(fn.X, "SQL")
+	case *ast.IndexExpr: // storm.SQL[Row](...), storm.ShardedSQL[Row](...)
+		return is(fn.X, "SQL") || is(fn.X, "ShardedSQL")
 	case *ast.SelectorExpr, *ast.Ident: // storm.SQLExec(...)
-		return is(fn, "SQLExec") || is(fn, "SQL")
+		return is(fn, "SQLExec") || is(fn, "SQL") ||
+			is(fn, "ShardedSQLExec") || is(fn, "ShardedSQL")
 	}
 	return false
 }

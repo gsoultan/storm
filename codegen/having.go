@@ -194,7 +194,7 @@ func (g *gen) emitHaving(np havingSpec) {
 	g.p("")
 
 	g.p("// All runs the composed statement.")
-	g.p("func (h %s) All(ctx context.Context, ex runtime.Executor) ([]%s.Row, error) {", q, np.ParentPkg)
+	g.p("func (h %s) All(ctx context.Context, ex "+g.execType()+") ([]%s.Row, error) {", q, np.ParentPkg)
 	g.p("	if err := h.err(); err != nil {")
 	g.p("		return nil, err")
 	g.p("	}")
@@ -228,7 +228,7 @@ func (g *gen) emitHaving(np havingSpec) {
 	g.p("")
 
 	g.p("// Count runs the composed count: no ordering, no paging.")
-	g.p("func (h %s) Count(ctx context.Context, ex runtime.Executor) (int64, error) {", q)
+	g.p("func (h %s) Count(ctx context.Context, ex "+g.execType()+") (int64, error) {", q)
 	g.p("	if err := h.err(); err != nil {")
 	g.p("		return 0, err")
 	g.p("	}")
