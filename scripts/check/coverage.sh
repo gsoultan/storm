@@ -17,6 +17,11 @@ declare -a FLOORS=(
   # Lower than the others because a driver adapter's remaining statements are
   # error plumbing that needs a broken server to reach.
   "github.com/gsoultan/storm/runtime/pgxdrv 85"
+  # The shard router. No server is needed to reach any of it — routing is
+  # arithmetic and a lookup — so the floor is high, and it should be: a
+  # mistake here sends a query to the wrong database, which returns rows
+  # rather than an error.
+  "github.com/gsoultan/storm/runtime/shard 95"
   # The MySQL/MariaDB adapter, which is a wire protocol written by hand: an
   # off-by-one in a packet offset produces a plausible value, not an error.
   # Needs STORM_MYSQL_ADDR to reach anything, which is the same bargain pgxdrv

@@ -103,6 +103,52 @@ func (u *User) Schema(t *storm.Table) {
 | `t.Name(s)` | override the derived table name |
 | `t.Comment(s)` | a `COMMENT ON TABLE` |
 
+### Sharding — `t.ShardKey(&f)`
+
+Declares the column whose value decides which **database** a row lives in.
+
+```go
+func (o *Order) Schema(t *storm.Table) {
+    t.ShardKey(&o.TenantID)
+}
+```
+
+| rule | why |
+|---|---|
+| exactly one column | two keys are two answers for where a row lives, and a query naming one is unfindable under the other |
+| `NOT NULL` | NULL names no shard, so the row could not be written anywhere or found again |
+| `uuid`, text or an integer | the three shapes `shard.Key` holds. A timestamp would put every write on one shard; a bool is not sharding |
+
+It emits **no DDL**. Each shard holds an ordinary table, and nothing in it
+records that other servers hold the rest — which is exactly why the key is
+enforced in the type system instead: a sharded model's generated calls take a
+`shard.Bound`, so a query that does not name a tenant does not compile.
+
+Generated alongside it, per sharded package:
+
+```go
+func ShardKeyOf(r Row) shard.Key      // the key, read from a row
+```
+
+and in the context package, `NewUnit()` returns a `*shard.Unit` whose `Add`
+takes the `Bound` a write belongs to.
+
+**Refused at generate time** — each names the model and the fix:
+
+- an unsharded table declaring a relation into a sharded one
+- two sharded tables related on different shard keys
+- a declared join reaching either of those
+- an implicit many-to-many touching a sharded table (the synthesized join
+  table has only two FK columns, so no shard key fits — declare it with
+  `t.Through`)
+- a union reading a sharded table (a union has no driving table, so there is
+  no shard to run it on)
+- a plain `storm.SQL` naming a sharded table — use `storm.ShardedSQL`
+
+See [API](API.md) §8c for the runtime side and
+[ADR-0012](adr/0012-a-shard-key-in-the-type-system.md) for why it is a
+type rather than a check.
+
 ### 2a. Indexes — every clause PostgreSQL has, and MySQL's own
 
 An index is declared once and carries every fact the database can hold about

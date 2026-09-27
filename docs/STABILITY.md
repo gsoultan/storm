@@ -105,6 +105,18 @@ impossible; mixed-version generated trees are not a supported state.
   generate time, which is safe but is not support. The minor that meets both
   says so in the CHANGELOG and removes this entry.
 
+- **Sharding, while it is experimental.** `t.ShardKey`, `runtime/shard` and
+  the generated surface of a sharded model may change in a minor during v1.3.
+  It is new, and SQL Server routing was first executed the week it shipped.
+  One thing will not change even while it is experimental: a sharded model's
+  generated calls take a `shard.Bound`. Widening them back to
+  `runtime.Executor` would silently un-check every routed query, so that is
+  held as firmly as anything covered above.
+
+  It leaves experimental when a minor ships without needing to change
+  `runtime/shard` or the sharded generated surface, with its gates green on
+  PostgreSQL, MySQL and SQL Server.
+
 ## Which server versions
 
 A version storm has never run against is a version storm does not support, so

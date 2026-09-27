@@ -108,10 +108,13 @@ func (q *SQLQuery[T]) One(ctx context.Context, ex runtime.Executor, args ...any)
 	return rows[0], true, nil
 }
 
-// decl is what the generator reads off a registered query.
-func (q *SQLQuery[T]) decl() (reflect.Type, string, int) {
+// decl is what the generator reads off a registered query. The last result
+// is whether the declaration is SHARDED — false here, true for
+// ShardedSQLQuery — which is what lets generate refuse a plain statement
+// whose text names a sharded table.
+func (q *SQLQuery[T]) decl() (reflect.Type, string, int, bool) {
 	var zero T
-	return reflect.TypeOf(zero), q.sql, q.nArg
+	return reflect.TypeOf(zero), q.sql, q.nArg, false
 }
 
 // SQLStmt is the no-rows half of the escape hatch: DELETEs, junction-table
@@ -145,17 +148,17 @@ func (q *SQLStmt) Exec(ctx context.Context, ex runtime.Executor, args ...any) (i
 
 // decl reports a nil row type: the generator PREPAREs and validates the
 // statement like any other declaration, but resolves no scanner for it.
-func (q *SQLStmt) decl() (reflect.Type, string, int) { return nil, q.sql, q.nArg }
+func (q *SQLStmt) decl() (reflect.Type, string, int, bool) { return nil, q.sql, q.nArg, false }
 
 // RawDecl is implemented by every SQLQuery, so a bootstrap can register them
 // as a plain []any the way it registers models.
 type RawDecl interface {
-	decl() (reflect.Type, string, int)
+	decl() (reflect.Type, string, int, bool)
 }
 
 // DeclOf reads a registered query's row type and SQL; the generate command
 // uses it and nothing else should.
-func DeclOf(d RawDecl) (reflect.Type, string) { rt, s, _ := d.decl(); return rt, s }
+func DeclOf(d RawDecl) (reflect.Type, string) { rt, s, _, _ := d.decl(); return rt, s }
 
 // ArgsOf reports how many arguments a declaration will demand at the call.
 //
@@ -165,7 +168,7 @@ func DeclOf(d RawDecl) (reflect.Type, string) { rt, s, _ := d.decl(); return rt,
 // declaration and the server reports the real number, so the two are compared
 // at generate time and a disagreement fails the build — which is the whole
 // reason this is reachable from outside the package.
-func ArgsOf(d RawDecl) int { _, _, n := d.decl(); return n }
+func ArgsOf(d RawDecl) int { _, _, n, _ := d.decl(); return n }
 
 func (q *SQLQuery[T]) scanner() func([][]byte, *T, *runtime.Slab) error {
 	if p := q.scan.Load(); p != nil {

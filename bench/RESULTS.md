@@ -1009,3 +1009,51 @@ quotes, backslashes, newlines and tabs, unicode and emoji, the literal strings
 "NULL" and `\N`, and `= ANY` matching the right rows. The binary format
 carries lengths rather than delimiters, which is *why* those inputs are safe —
 proven rather than assumed.
+
+## Shard routing (2026-09-23)
+
+**Environment.** Apple M5 Pro (15 procs) · Go 1.27.1 darwin/arm64 · no database
+involved — routing is arithmetic and a slice index · `-benchtime 2000000x
+-count=6`, median reported.
+
+| | median | min | max | allocs |
+|---|---|---|---|---|
+| `Jump.Locate` (uuid) | 15.6 ns | 13.5 | 16.1 | 0 |
+| `Modulo.Locate` (uuid) | 9.5 ns | 8.0 | 18.9 | 0 |
+| `Table.Locate` (int64, 1000 keys) | 11.6 ns | 11.1 | 14.2 | 0 |
+| `Set.For` (uuid) | 25.7 ns | 21.8 | 99.6 | 0 |
+| `Set.For` (36-byte slug) | 44.6 ns | 37.1 | 80.7 | 0 |
+
+Ranges are wide because this is a laptop under a browser; the medians are
+stable across runs and the max is not.
+
+**Re-measured 2026-09-27**, on the code as it landed: default benchtime,
+`-count=6`, load average 4–9 from other work on the machine. `Jump.Locate`
+9.7 ns, `Modulo.Locate` 6.7, `Table.Locate` 9.8, `Set.For` 15.9 on a uuid and
+24.0 on a slug, and **0 allocations** in every one. The medians moved with the
+machine; the zeros did not, and the zeros are the claim. What matters is the shape: routing
+costs tens of nanoseconds against a query that costs hundreds of microseconds,
+so the shard lookup is not on any budget worth defending.
+
+**Jump costs ~6 ns more than Modulo** and is the default anyway. The loop it
+runs is the price of moving 1/5 of the keys when a fifth shard is added rather
+than 4/5 — a one-off migration cost traded against a per-query one, in the
+direction that favours the migration, because the migration is the part that
+can go wrong.
+
+### The allocation this benchmark found
+
+`Set.For` allocated **24 B and 1 alloc per call** when it was written, and the
+package documentation already claimed routing allocated nothing. Returning a
+`Bound` boxes the struct, and a struct wider than a word cannot live in an
+interface without escaping — so every routed query on every sharded table paid
+a heap allocation that a hand-written `map[ID]*pgxpool.Pool` would not have.
+
+The fix is that a `Set` builds one `Bound` per shard at `New` and hands back
+the same value: a bound is immutable once the Set holds the executor, so there
+was never a reason to build one per call. `Set.For` went from 48.9 ns to
+25.7 ns and from 1 alloc to 0, and `TestRoutingDoesNotAllocate` now asserts it.
+
+The lesson is the one `AGENTS.md` already states as a veto — *an allocation
+target without an `AllocsPerRun` assertion* — and the sharp edge of it is that
+the claim was in a doc comment before it was ever measured.
