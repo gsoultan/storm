@@ -168,7 +168,57 @@ that builds its own `pgxpool.Config` should call `RegisterFastArrays` from
 
 Sizing, timeouts, health checks and TLS are pgx's and your platform's
 business: storm holds no connection state of its own, and a transaction is
-just an `Executor` you were handed (`pgxdrv.Tx{T: tx}`).
+just an `Executor` you were handed.
+
+`pgxdrv.Pool` satisfies `storm.DB` — the four port methods plus `Begin` — so a
+repository method can take `storm.DB` and run against any adapter. `Begin`
+hands back a `storm.Tx`, which keeps the two lines that name pgx out of your
+request handlers.
+
+## Running a shard set
+
+**Migrate every shard before any of them serves a query, and do it in a loop
+you wrote.** There is no `Set.Migrate`: `migrate.AutoPool` takes a
+`*pgxpool.Pool` while a `shard.Set` holds `runtime.DB`, so migration happens
+while you still hold the pools you are about to hand over.
+
+```go
+for i, p := range pools {
+    if _, err := migrate.AutoPool(ctx, p, model, migrate.AutoOptions{}); err != nil {
+        return fmt.Errorf("migrate shard %d: %w", i, err)
+    }
+}
+shards, err := shard.New(shard.Jump(len(pools)), dbs...)
+```
+
+**What is safe:** several instances starting at once and racing to migrate the
+same shard. `Auto` takes an advisory lock per *database*, computes the plan
+after taking it, and applies it in one transaction. A second pass applies
+nothing.
+
+**What is not, and is yours:** nothing makes N shards atomic with each other.
+A rollout that dies after shard 1 leaves shards 2 and 3 on the old schema —
+and they will keep serving reads that *succeed*, because each shard's own
+constraints are all satisfied. Treat a partial migration as an outage even
+though nothing is erroring: the alert has to come from your rollout, because
+storm has nothing to report.
+
+**Verifying drift is per shard.** `storm verify` takes one DSN, so run it once
+per shard DSN in CI and at deploy. A shard that drifted alone is the failure
+this catches, and it is invisible to a check that only looks at shard 0.
+
+**Pool sizing is per shard, and the total is what your server sees.** Four
+shards at the pgx default of `max(4, NumCPU)` is four times that many
+connections from one process. If the shards are databases on one server —
+which is how most deployments start — size them against that server's
+`max_connections`, not against each other.
+
+**Adding a shard moves rows.** `shard.Jump` is a consistent hash, so growing
+from four shards to five moves about 1/5 of the keys rather than 4/5; it does
+not move them *for* you. That is a data migration with a cutover, and the
+window where a key's rows are on the old shard and its routing says the new
+one is the window that loses writes. `shard.NewTable` exists partly for this:
+moving one tenant is a map edit plus a copy, with no other tenant touched.
 
 ## Observability
 

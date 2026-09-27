@@ -267,3 +267,10 @@ TDS client as well as a lowering. See [[m10_sqlserver]].
 
 ## Standing rule
 Never quote a performance number from memory. `bench/RESULTS.md` or nothing.
+
+**Sharding and the transaction contract (2026-09-23)** — `runtime.Tx`/`DB`
+beside the port (not in it), `storm.InTx`, and sharding with the shard key in
+the TYPE: a sharded model's generated calls take `shard.Bound`, so a misrouted
+query does not compile. ADR-0011. See [[sharding_and_tx]] — especially the four
+places the guarantee leaked and the allocation the benchmark caught after the
+doc comment had already claimed otherwise.

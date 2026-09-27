@@ -248,13 +248,12 @@ four-method port, a transaction satisfies it, and the same generated code runs
 inside one:
 
 ```go
-tx, _ := pool.Begin(ctx)
-txe := pgxdrv.Tx{T: tx}
+tx, _ := pgxdrv.Pool{P: pool}.StartTx(ctx)
 
 nb := author.Create()
 nb.SetName("Ephemeral")
 nb.SetEmail("gone@example.com")
-_, err := nb.Insert(ctx, txe)
+_, err := nb.Insert(ctx, tx)
 
 tx.Rollback(ctx)        // and the row is gone
 ```

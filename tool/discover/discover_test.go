@@ -317,3 +317,19 @@ func TestDiscoverLocatesFields(t *testing.T) {
 		t.Error("an embedded field was recorded as a named one")
 	}
 }
+
+// Sharded declarations are raw queries too, in every form a plain one takes.
+// A declaration discovery misses is never registered or PREPAREd, so it is
+// refused at run time as undeclared: the sharded escape hatch would exist and
+// not work.
+func TestShardedRawQueries(t *testing.T) {
+	r := discover(t, "sharded")
+	var got []string
+	for _, q := range r.Queries {
+		got = append(got, q.VarName)
+	}
+	want := "CloseAll,OpenCount,Plain,Typed,TypedExec"
+	if strings.Join(got, ",") != want {
+		t.Errorf("queries = %v, want %s", got, want)
+	}
+}
