@@ -116,7 +116,7 @@ func (g *gen) recursive() {
 		g.p("// Rows come back in no guaranteed order — a tree has no total order")
 		g.p("// and inventing one would be a lie. Every row carries its %s, so the", parent)
 		g.p("// caller reassembles the shape it wanted.")
-		g.p("func %s(ctx context.Context, ex runtime.Executor, roots []%s, maxDepth int64) ([]Row, error) {", dir.name, keyGo)
+		g.p("func %s(ctx context.Context, ex "+g.execType()+", roots []%s, maxDepth int64) ([]Row, error) {", dir.name, keyGo)
 		g.p("\tif len(roots) == 0 {")
 		g.p("\t\treturn nil, nil")
 		g.p("\t}")

@@ -122,8 +122,14 @@ func containsCall(e ast.Expr) bool {
 // stormCallName reports which half of the escape hatch was called, for the
 // error. The two have different fixes — one has a row type to move with it.
 func stormCallName(call *ast.CallExpr, is func(ast.Expr, string) bool) string {
-	if _, ok := call.Fun.(*ast.IndexExpr); ok {
+	if ix, ok := call.Fun.(*ast.IndexExpr); ok {
+		if is(ix.X, "ShardedSQL") {
+			return "storm.ShardedSQL"
+		}
 		return "storm.SQL"
+	}
+	if is(call.Fun, "ShardedSQLExec") {
+		return "storm.ShardedSQLExec"
 	}
 	if is(call.Fun, "SQLExec") {
 		return "storm.SQLExec"
