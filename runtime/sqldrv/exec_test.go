@@ -31,6 +31,11 @@ type fakeDriver struct {
 	stmts    []string // every statement it was given, in order
 	args     [][]driver.Value
 	failOn   string
+
+	// Transactions: how each ended, and whether starting one is refused.
+	commits, rollbacks int
+	beginErr           error
+	txOpts             driver.TxOptions // what the last BeginTx was asked for
 }
 
 func (d *fakeDriver) Open(string) (driver.Conn, error) { return &fakeConn{d: d}, nil }
@@ -39,7 +44,26 @@ type fakeConn struct{ d *fakeDriver }
 
 func (c *fakeConn) Prepare(q string) (driver.Stmt, error) { return &fakeStmt{d: c.d, q: q}, nil }
 func (c *fakeConn) Close() error                          { return nil }
-func (c *fakeConn) Begin() (driver.Tx, error)             { return nil, errors.New("no tx") }
+func (c *fakeConn) Begin() (driver.Tx, error) {
+	if c.d.beginErr != nil {
+		return nil, c.d.beginErr
+	}
+	return fakeTx{d: c.d}, nil
+}
+
+// BeginTx records the options, so a test can see that a caller's own
+// isolation level and read-only flag reach the driver.
+func (c *fakeConn) BeginTx(_ context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	c.d.mu.Lock()
+	c.d.txOpts = opts
+	c.d.mu.Unlock()
+	return c.Begin()
+}
+
+type fakeTx struct{ d *fakeDriver }
+
+func (t fakeTx) Commit() error   { t.d.mu.Lock(); t.d.commits++; t.d.mu.Unlock(); return nil }
+func (t fakeTx) Rollback() error { t.d.mu.Lock(); t.d.rollbacks++; t.d.mu.Unlock(); return nil }
 
 type fakeStmt struct {
 	d *fakeDriver

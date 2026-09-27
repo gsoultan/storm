@@ -262,3 +262,166 @@ func TestJSONKeepsItsFirstByte(t *testing.T) {
 		t.Errorf("an empty document decoded to %v, want nil", got)
 	}
 }
+
+// The scalar and nullable decoders that no test reached.
+//
+// They are one-liners, which is exactly why they were missed and exactly why
+// they are worth pinning: a decoder that returns a plausible value for the
+// wrong bytes produces wrong ROWS, not an error, and this family already shipped
+// one of those — the nullable temporals were absent for months because no
+// fixture had a nullable timestamp column and the generated package named a
+// function from the PostgreSQL family instead.
+
+func TestBoolReadsTheFirstByte(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []byte
+		want bool
+	}{
+		{"zero", []byte{0}, false},
+		{"one", []byte{1}, true},
+		{"any non-zero", []byte{0x7f}, true},
+		{"empty is false, not a panic", nil, false},
+		// MySQL sends BOOLEAN as TINYINT, so -1 is true like any other
+		// non-zero. A decoder testing `== 1` would call this false.
+		{"minus one", []byte{0xff}, true},
+	} {
+		if got := mydec.Bool(tc.in); got != tc.want {
+			t.Errorf("%s: Bool(%v) = %v, want %v", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestInt1IsSigned(t *testing.T) {
+	// The bug this catches: reading a TINYINT as a byte makes -1 into 255.
+	if got := mydec.Int1([]byte{0xff}); got != -1 {
+		t.Errorf("Int1(0xff) = %d, want -1", got)
+	}
+	if got := mydec.Int1([]byte{0x80}); got != -128 {
+		t.Errorf("Int1(0x80) = %d, want -128", got)
+	}
+	if got := mydec.Int1(nil); got != 0 {
+		t.Errorf("Int1(nil) = %d, want 0", got)
+	}
+}
+
+// Text and Bytes must COPY: the wire buffer is reused on the next row, so a
+// decoder that aliased it would return the following row's bytes from a value
+// the caller already holds.
+func TestTextAndBytesCopyTheWireBuffer(t *testing.T) {
+	buf := []byte("hello")
+	s := mydec.Text(buf)
+	b := mydec.Bytes(buf)
+
+	copy(buf, "world") // the driver reusing the buffer for the next row
+
+	if s != "hello" {
+		t.Errorf("Text aliased the wire buffer: %q", s)
+	}
+	if string(b) != "hello" {
+		t.Errorf("Bytes aliased the wire buffer: %q", b)
+	}
+	if mydec.Bytes(nil) != nil {
+		t.Error("Bytes(nil) should stay nil, not become an empty slice")
+	}
+	if mydec.Text(nil) != "" {
+		t.Error(`Text(nil) should be ""`)
+	}
+}
+
+func TestDateReadsMidnight(t *testing.T) {
+	// MySQL sends a DATE as the same structure as a DATETIME, truncated: a
+	// length byte then year(2), month, day.
+	got, err := mydec.Date([]byte{4, 0xe9, 0x07, 3, 14})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2025, 3, 14, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("Date = %v, want %v", got, want)
+	}
+	// A zero-length DATE is MySQL's all-zero date, not an error.
+	if _, err := mydec.Date(nil); err != nil {
+		t.Errorf("Date(nil) = %v, want no error", err)
+	}
+}
+
+// Every nullable decoder has the same two jobs: nil is NULL and not an error,
+// and a present value decodes to exactly what the non-null decoder returns.
+// Tested together because a family where one of them forgets is the failure
+// that actually happened here.
+func TestNullDecodersTreatNilAsNull(t *testing.T) {
+	var s runtime.Slab
+
+	if v := mydec.NullText(nil, &s); v.Valid {
+		t.Error("NullText(nil) is valid")
+	}
+	if v := mydec.NullText([]byte("hi"), &s); !v.Valid || v.V != "hi" {
+		t.Errorf("NullText = %+v, want hi", v)
+	}
+
+	if v := mydec.NullJSON(nil, &s); v.Valid {
+		t.Error("NullJSON(nil) is valid")
+	}
+	if v := mydec.NullJSON([]byte(`{"a":1}`), &s); !v.Valid || string(v.V) != `{"a":1}` {
+		t.Errorf("NullJSON = %+v", v)
+	}
+
+	nn, err := mydec.NullNumeric(nil)
+	if err != nil || nn.Valid {
+		t.Errorf("NullNumeric(nil) = %+v, %v", nn, err)
+	}
+	nn, err = mydec.NullNumeric([]byte("12.34"))
+	if err != nil || !nn.Valid {
+		t.Fatalf("NullNumeric = %+v, %v", nn, err)
+	}
+	if nn.V.String() != "12.34" {
+		t.Errorf("NullNumeric value = %s, want 12.34", nn.V.String())
+	}
+
+	nd, err := mydec.NullDateTime(nil)
+	if err != nil || nd.Valid {
+		t.Errorf("NullDateTime(nil) = %+v, %v", nd, err)
+	}
+	nd, err = mydec.NullDateTime([]byte{4, 0xe9, 0x07, 3, 14})
+	if err != nil || !nd.Valid {
+		t.Fatalf("NullDateTime = %+v, %v", nd, err)
+	}
+	if want := time.Date(2025, 3, 14, 0, 0, 0, 0, time.UTC); !nd.V.Equal(want) {
+		t.Errorf("NullDateTime value = %v, want %v", nd.V, want)
+	}
+
+	nda, err := mydec.NullDate(nil)
+	if err != nil || nda.Valid {
+		t.Errorf("NullDate(nil) = %+v, %v", nda, err)
+	}
+	nda, err = mydec.NullDate([]byte{4, 0xe9, 0x07, 3, 14})
+	if err != nil || !nda.Valid {
+		t.Fatalf("NullDate = %+v, %v", nda, err)
+	}
+
+	ndu, err := mydec.NullDuration(nil)
+	if err != nil || ndu.Valid {
+		t.Errorf("NullDuration(nil) = %+v, %v", ndu, err)
+	}
+	// 8 bytes: negative flag, days(4), h, m, s — MySQL's TIME goes past 24h
+	// and past zero, which is why it decodes to a Duration and not a clock.
+	ndu, err = mydec.NullDuration([]byte{8, 1, 0, 0, 0, 0, 1, 2, 3})
+	if err != nil || !ndu.Valid {
+		t.Fatalf("NullDuration = %+v, %v", ndu, err)
+	}
+	if ndu.V >= 0 {
+		t.Errorf("NullDuration = %v, want a negative duration", ndu.V)
+	}
+}
+
+// A malformed value must be an ERROR, not a plausible decode — the nullable
+// wrappers must not swallow what the inner decoder reports.
+func TestNullDecodersPropagateAFormatError(t *testing.T) {
+	if _, err := mydec.NullDuration([]byte{8, 1}); err == nil {
+		t.Error("NullDuration accepted a truncated TIME")
+	}
+	if _, err := mydec.NullDateTime([]byte{11, 0xe9}); err == nil {
+		t.Error("NullDateTime accepted a truncated DATETIME")
+	}
+}

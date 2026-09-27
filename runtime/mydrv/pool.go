@@ -262,6 +262,35 @@ func (p *Pool) Begin(ctx context.Context) (*Tx, error) {
 	return &Tx{p: p, c: c}, nil
 }
 
+// StartTx is Begin as runtime.DB spells it, so that a caller holding a
+// runtime.DB can start a transaction without knowing which database is behind
+// it.
+//
+// A second method rather than a changed one: Begin shipped in v1.1.0 returning
+// *Tx, and changing its return type would break every caller who named that
+// type, in a minor. See runtime/db.go for why the name is not Begin.
+//
+// The nil check is not ceremony. Returning Begin's (*Tx)(nil) through the
+// interface would hand an erroring caller a NON-nil runtime.Tx holding a nil
+// pointer, and the first thing they did with it would panic.
+func (p *Pool) StartTx(ctx context.Context) (runtime.Tx, error) {
+	t, err := p.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// The transaction contract, satisfied at compile time. A Pool that lost
+// StartTx, or a Tx that lost an ending, would still build — and would fail only
+// where an adopter handed it to a helper written over runtime.DB. The compiler
+// is the cheapest place to learn it, the same argument as the Executor
+// assertion.
+var (
+	_ runtime.DB = (*Pool)(nil)
+	_ runtime.Tx = (*Tx)(nil)
+)
+
 func (t *Tx) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
 	if t.done {
 		return nil, ErrTxDone
@@ -322,7 +351,13 @@ func (t *Tx) end(ctx context.Context, verb string) error {
 }
 
 // ErrTxDone is returned by a transaction used after it committed or rolled back.
-var ErrTxDone = errors.New("mydrv: the transaction has already finished")
+//
+// It IS runtime.ErrTxDone rather than a second error with the same meaning, so
+// that errors.Is against the shared one holds for every adapter, which is what
+// makes a helper written over runtime.Tx portable. Comparing against this
+// variable still works exactly as before. Only the message changed, from
+// "mydrv: the transaction has already finished" to runtime's.
+var ErrTxDone = runtime.ErrTxDone
 
 var (
 	_ runtime.Executor = (*Pool)(nil)

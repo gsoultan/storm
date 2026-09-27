@@ -61,7 +61,11 @@ impossible; mixed-version generated trees are not a supported state.
    anti-join composers (`<Parent>Having<Rel>`, `<Parent>NotHaving<Rel>`,
    `AndHaving`, `AndNotHaving`), the union readers (`<Name>`, `<Name>Into`),
    and the self-reference traversals `Descend`/`Ascend`.
-3. The **Executor port** — four methods, budget five, changes are major.
+3. The **Executor port** — four methods, budget five, changes are major — and
+   the two interfaces beside it, `Tx` and `DB`, with `InTx`, `Retryable` and
+   `ErrTxDone` ([ADR-0011](adr/0011-a-transaction-contract-beside-the-port.md)).
+   Every adapter's pool satisfies `DB` and its transaction satisfies `Tx`; a
+   new adapter owes both.
 4. **Emitted SQL semantics** (not bytes): statement *shapes* may improve in
    minors; what a query MEANS may not.
 5. The **CLI verbs and their exit semantics**.

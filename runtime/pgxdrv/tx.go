@@ -2,6 +2,7 @@ package pgxdrv
 
 import (
 	"context"
+	"errors"
 
 	"github.com/gsoultan/storm/runtime"
 	"github.com/jackc/pgx/v5"
@@ -57,4 +58,34 @@ func (e Tx) Batch(ctx context.Context, ops []runtime.BatchOp, each func(int, run
 	return drainBatch(e.T.SendBatch(ctx, b), ops, each)
 }
 
-var _ runtime.Executor = Tx{}
+// Commit ends the transaction.
+//
+// pgx reports a second end as ErrTxClosed; this returns runtime.ErrTxDone
+// instead, because a caller holding a runtime.Tx is testing for the shared
+// error and has no way to name pgx's.
+func (e Tx) Commit(ctx context.Context) error {
+	err := e.T.Commit(ctx)
+	if errors.Is(err, pgx.ErrTxClosed) {
+		return runtime.ErrTxDone
+	}
+	return classify(err)
+}
+
+// Rollback ends the transaction, and returns nil if it has already ended.
+//
+// The nil is the contract in runtime.Tx and it is the whole reason
+// `defer tx.Rollback(ctx)` beside a commit is an idiom rather than a bug: pgx
+// answers the rollback that follows a successful commit with ErrTxClosed, and
+// a deferred call has nowhere to put an error it was always going to get.
+func (e Tx) Rollback(ctx context.Context) error {
+	err := e.T.Rollback(ctx)
+	if errors.Is(err, pgx.ErrTxClosed) {
+		return nil
+	}
+	return classify(err)
+}
+
+var (
+	_ runtime.Executor = Tx{}
+	_ runtime.Tx       = Tx{}
+)
