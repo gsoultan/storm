@@ -49,3 +49,36 @@ func Singular(s string) string {
 	}
 	return s
 }
+
+// ColumnName is the column a model field maps to: CamelCase to snake_case,
+// keeping acronyms intact — OrgID → org_id, HTTPServer → http_server,
+// CPUPercent → cpu_percent, ID → id.
+//
+// The ONE implementation, for the reason GoName is: two things must agree on
+// it exactly. A model field is mapped to its column here, and a storm.SQL[T]
+// row type's fields are matched to result columns by the same rule — so a
+// field named CPUPercent that a model maps to cpu_percent also receives a raw
+// query's cpu_percent. When the two were spelled separately, the raw side
+// only knew GoName's direction (cpu_percent → CpuPercent) and refused the
+// acronym spelling a model accepts.
+func ColumnName(field string) string {
+	var b strings.Builder
+	b.Grow(len(field) + 4)
+	rs := []rune(field)
+	for i, r := range rs {
+		isUpper := r >= 'A' && r <= 'Z'
+		if isUpper && i > 0 {
+			prevLower := rs[i-1] >= 'a' && rs[i-1] <= 'z' || rs[i-1] >= '0' && rs[i-1] <= '9'
+			nextLower := i+1 < len(rs) && rs[i+1] >= 'a' && rs[i+1] <= 'z'
+			if prevLower || nextLower {
+				b.WriteByte('_')
+			}
+		}
+		if isUpper {
+			b.WriteRune(r - 'A' + 'a')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
