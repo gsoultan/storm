@@ -14,11 +14,6 @@ type rnPerson struct {
 
 func (p *rnPerson) Schema(t *storm.Table) { t.Name("people") }
 
-type rnVisit struct {
-	storm.Model
-	Person rnPerson
-}
-
 // A foreign key is built before the Schema methods run, so it used to point
 // at the target's DERIVED name: rn_people's t.Name("people") left the visit's
 // key referencing a table that does not exist, and the has-many back from the

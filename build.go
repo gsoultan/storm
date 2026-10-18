@@ -220,9 +220,9 @@ type builder struct {
 	// did: a reference to a table keyed on `code` reported a "0-column primary
 	// key" for a table whose key was one column.
 	deferredFKs []*deferredFK
-	// toOne is every foreign key built in pass 3, with the table it points
-	// at, so a t.Name rename in that table's Schema can reach it.
-	toOne []toOneRef
+	// repoint re-targets each foreign key built in pass 3, and its relation,
+	// at the name its target's Schema settled on (see repointRenamed).
+	repoint []func()
 }
 
 // deferredFK is a foreign key whose referenced column is not known yet.
@@ -585,16 +585,12 @@ func (b *builder) resolveRelations(mi *modelInfo) {
 			Nullable: rel.nullable,
 		}
 		mi.tbl.out.Relations = append(mi.tbl.out.Relations, r)
-		b.toOne = append(b.toOne, toOneRef{fk: fk, rel: r, tgt: tgt})
+		b.repoint = append(b.repoint, func() {
+			fk.RefTable = tgt.tbl.out.Name
+			r.Target = tgt.tbl.out.Name
+		})
 	}
 	b.resolveArcs(mi)
-}
-
-// toOneRef is a foreign key and its relation, and the model they point at.
-type toOneRef struct {
-	fk  *schema.ForeignKey
-	rel *schema.Relation
-	tgt *modelInfo
 }
 
 // repointRenamed carries each t.Name into the foreign keys that point at it.
@@ -607,9 +603,8 @@ type toOneRef struct {
 // the target model rather than by the old name, because a derived name can
 // be another model's real one.
 func (b *builder) repointRenamed() {
-	for _, r := range b.toOne {
-		r.fk.RefTable = r.tgt.tbl.out.Name
-		r.rel.Target = r.tgt.tbl.out.Name
+	for _, f := range b.repoint {
+		f()
 	}
 }
 
