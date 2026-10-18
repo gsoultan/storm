@@ -37,7 +37,11 @@ and `Row` always had it and failed as a compile error against generated code.
 ## Still not declarable, and why (all cost a declaration, not type safety —
 ## `storm.SQL[T]`/`SQLExec` stay PREPARE-verified at generate time)
 
-- **set-based `UPDATE`/`DELETE … WHERE`** — writes are per row or batched per row
+- ~~set-based `UPDATE`/`DELETE … WHERE`~~ **BUILT 2026-10-18**: `Query.UpdateAll(ctx,
+  ex, Mut)` / `Query.DeleteAll(ctx, ex)`. Refuse no predicate
+  (`runtime.ErrUnfilteredWrite`) and Limit/Offset/lock (`runtime.ErrPagedWrite`);
+  soft-delete: UpdateAll live rows only, DeleteAll MARKS. Caches updAllCache
+  (key = 4 mask toks + preds) and delAllCache, counted in ShapeFlushes.
 - ~~row locking~~ **BUILT 2026-09-05**: `ForUpdate/NoWait/SkipLocked` and the
   three `ForShare` forms, keyed into the statement cache. Refused on Count,
   Exists, aggregates and joins (server rejects each — probed). 55P03 →
