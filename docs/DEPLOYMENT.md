@@ -170,10 +170,12 @@ Sizing, timeouts, health checks and TLS are pgx's and your platform's
 business: storm holds no connection state of its own, and a transaction is
 just an `Executor` you were handed.
 
-`pgxdrv.Pool` satisfies `storm.DB` — the four port methods plus `Begin` — so a
-repository method can take `storm.DB` and run against any adapter. `Begin`
+`pgxdrv.Pool` satisfies `storm.DB` — the four port methods plus `StartTx` — so
+a repository method can take `storm.DB` and run against any adapter. `StartTx`
 hands back a `storm.Tx`, which keeps the two lines that name pgx out of your
-request handlers.
+request handlers. (`storm.DB`, `storm.Tx`, `storm.InTx` and `StartTx` are new
+after v1.2.0; on v1.2.0 a transaction is `pgxdrv.Tx{T: tx}` over
+`pool.Begin(ctx)`.)
 
 ## Running a shard set
 

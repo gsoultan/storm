@@ -254,6 +254,13 @@ There is no `Between`, no `HasPrefix`/`HasSuffix`, and no jsonb `Path` — the
 list above is the whole vocabulary, and it is generated from the column's type
 rather than written by hand.
 
+**A column named after something the package already declares** — `query`,
+`row`, `and`, `table` — gets its handle with `Col` appended: `QueryCol`. Only
+that one identifier moves; the `Row` field is still `Query`, the setter still
+`SetQuery`, the shorthand still `QueryEq`. Every generated identifier comes
+from the column name, not the Go field name, so pinning a column with
+`t.Col(&m.Field).Named("...")` is how you choose a different one.
+
 `EqLower` is case-insensitive equality lowered as `lower(col) = lower($1)`,
 which is the shape that matches an index declared with `storm.Lower`. It is a
 separate operator rather than a flag on `Eq` because the two produce different
@@ -657,6 +664,26 @@ too.
 A `COPY` bulk load (`InsertAll`) cannot upsert: PostgreSQL's `COPY` has no
 `ON CONFLICT`. Load into a staging table and upsert from it, or use a batch.
 
+**Accumulating instead of overwriting.** A counter that several writers upsert
+into wants the existing value *plus* the new one. NOT NULL numeric columns get
+an `Add…OnConflict` setter beside `Set…`:
+
+```go
+n := sample.Create()
+n.SetHost(host)
+n.AddHitsOnConflict(1)       // insert 1, or on conflict: "hits" = "samples"."hits" + EXCLUDED."hits"
+n.AddCpuSecondsOnConflict(dt)
+row, err := n.OnConflictHost().Insert(ctx, ex)   // row is the row that now exists
+```
+
+The sum is computed by the database in the same statement, so concurrent
+upserts all land — reading the row, adding in Go and upserting the total loses
+one of them. Without an `OnConflict…` target, or with `DoNothing`, it is an
+ordinary insert of the value. `Set…` and `Add…OnConflict` clear each other, so
+the last call decides. It works in `Op()` batches too. Nullable columns get no
+`Add` method (NULL + n is NULL), and the SQL Server target, whose upsert is a
+`MERGE`, does not have it yet.
+
 Update is the same idea: only what you assigned is written.
 
 ```go
@@ -697,7 +724,46 @@ batch form (`UpdateOp`) does not, because a batch reports counts, not rows.
 lock needs the version that was read, and an address alone carries zero and
 matches nothing.
 
+### Set-based `UPDATE … WHERE` and `DELETE … WHERE`
+
+A query's predicates can be the `WHERE` of one write. The assignments are a
+`Mut`, the same one `Update` takes, so the setters and server-side forms are the
+ones you already know:
+
+```go
+var m session.Mut
+m.SetRevokedAtNow()
+n, err := session.New().
+        Where(session.UserID.Eq(uid), session.RevokedAt.IsNull()).
+        UpdateAll(ctx, ex, m)          // UPDATE … SET revoked_at = now() WHERE … — n rows
+
+n, err = session.New().Where(session.ExpiresAt.Lt(cutoff)).DeleteAll(ctx, ex)
+```
+
+Each compiles once per shape and is cached like a read. Three things are
+refused rather than guessed at:
+
+- **No predicate** is `runtime.ErrUnfilteredWrite`. A deliberate whole-table
+  write is rare and a forgotten `Where` is common, and they look the same; the
+  former is `storm.SQLExec`.
+- **`Limit`, `Offset` or a row lock** is `runtime.ErrPagedWrite`. They shape a
+  read, and an `UPDATE`/`DELETE` has no clause for them — honouring the call
+  would write every match while the line says a hundred. Read the keys and
+  write those instead. An `Order` is ignored, as `Count` ignores it.
+- **A soft-delete table** behaves as its per-row functions do: `UpdateAll`
+  writes only live rows, and `DeleteAll` *marks* matching live rows and removes
+  nothing. A set-based purge is `storm.SQLExec`.
+
+A versioned table's version is bumped on every row written and checked on
+none — a set-based write has no version it read. A `Mut` with nothing assigned
+issues no statement and reports 0.
+
 ## 8b. Transactions — one contract, every target
+
+*New after v1.2.0* — `storm.Tx`, `storm.DB`, `storm.InTx`, the `storm.Executor`
+alias and every adapter's `StartTx` are on main and ship in the next minor. On
+v1.2.0 the port is `runtime.Executor` and a pgx transaction is
+`pgxdrv.Tx{T: tx}` over `pool.Begin(ctx)`.
 
 `Executor` is the four-method port and stays that way. Beside it are the two
 names a *caller* holds:
@@ -945,7 +1011,13 @@ rows, err := TopAuthors.Query(ctx, ex, orgID, 10)   // []AuthorRow, generated sc
 
 `storm generate` PREPAREs it against the model in a scratch schema, matches the
 result descriptor to `AuthorRow`, and emits the scanner. A column with no field
-fails the build naming the column. The placeholder count is checked against the
+fails the build naming the column.
+
+Columns match fields by the same rule that maps a model's fields to columns,
+in both directions: `org_name` lands in `OrgName`, and `cpu_percent` lands in
+`CPUPercent` as well as `CpuPercent` — a row type spelled the way Go spells
+acronyms works here exactly as it does in a model. Two fields that both map to
+one column is an error naming both. The placeholder count is checked against the
 server's, so a `$1` inside a `$tag$` body cannot become a phantom argument.
 
 The no-rows half is `storm.SQLExec`, with one extra rule: the statement must
