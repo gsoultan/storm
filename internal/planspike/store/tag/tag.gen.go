@@ -921,7 +921,8 @@ func Shapes() int { return cache.Shapes() }
 // filter screen turned into 2^n statements.
 func ShapeFlushes() int {
 	return cache.Flushes() + offsetCache.Flushes() +
-		countCache.Flushes() + existsCache.Flushes()
+		countCache.Flushes() + existsCache.Flushes() +
+		updAllCache.Flushes() + delAllCache.Flushes()
 }
 
 // stmtFor compiles a read. LIMIT and LIMIT/OFFSET are different
@@ -2000,4 +2001,122 @@ func Delete(ctx context.Context, ex runtime.Executor, iD [16]byte) error {
 		return runtime.ErrNoRow
 	}
 	return nil
+}
+
+// Set-based writes. Two caches of their own, keyed like the read
+// caches by the predicate stream — UpdateAll's prefixed with the
+// assignment masks, which are as much its identity as the predicates.
+var (
+	updAllCache = runtime.NewTreeCache()
+	delAllCache = runtime.NewTreeCache()
+)
+
+// writeAllErr is what UpdateAll and DeleteAll refuse.
+func (q Query) writeAllErr() error {
+	if err := q.Err(); err != nil {
+		return err
+	}
+	if q.nt == 0 {
+		return runtime.ErrUnfilteredWrite
+	}
+	if q.limit != 1000 || q.offset != 0 || q.lock != 0 {
+		return runtime.ErrPagedWrite
+	}
+	return nil
+}
+
+// updAllStmtFor compiles one (assignments, predicates) pair, once.
+func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
+	var key [25]runtime.Tok
+	key[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)
+	key[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)
+	n := 4 + copy(key[4:], preds)
+	if st := updAllCache.Get(key[:n]); st != nil {
+		return st
+	}
+	set := make([]runtime.Frag, 0, nUpdatable+1)
+	for i := 0; i < nUpdatable; i++ {
+		switch {
+		case k.Expr&(1<<uint(i)) != 0:
+			set = append(set, exprFrags[i])
+		case k.Dirty&(1<<uint(i)) != 0:
+			set = append(set, setFrags[i])
+		}
+	}
+	head := runtime.SpliceSections(updatePrefix, []runtime.Section{
+		{Lead: "", Sep: ", ", Frags: set},
+	}, "")
+	if head.Err != nil {
+		return head
+	}
+	return updAllCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, "", head.NArg))
+}
+
+// UpdateAll writes m's assigned columns to every row the query
+// matches, in ONE statement, and reports how many it wrote:
+//
+//	var m Mut
+//	m.Set…(v)            // bound values and server-side forms alike
+//	n, err := New().Where(…).UpdateAll(ctx, ex, m)
+//
+// Only assigned columns are written, as for Update; nothing assigned
+// issues no statement and reports 0. The query must have a predicate —
+// runtime.ErrUnfilteredWrite otherwise — and must not carry Limit,
+// Offset or a row lock, which a set-based UPDATE has no clause for:
+// runtime.ErrPagedWrite. Order is ignored, as it is by Count.
+func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64, error) {
+	if err := q.writeAllErr(); err != nil {
+		return 0, err
+	}
+	if m.dirty == 0 && m.expr == 0 {
+		return 0, nil
+	}
+	var buf [21]runtime.Tok
+	st := updAllStmtFor(m.key(), q.preds(&buf))
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+	args := make([]any, 0, st.NArg)
+	for i := 0; i < nUpdatable; i++ {
+		if m.dirty&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, m.row.UpdatedAt)
+		case 1:
+			args = append(args, m.row.Name)
+		}
+	}
+	args = append(args, q.bindPreds(b)...)
+	return ex.Exec(ctx, st.SQL, args)
+}
+
+func delAllStmtFor(toks []runtime.Tok) *runtime.Stmt {
+	if st := delAllCache.Get(toks); st != nil {
+		return st
+	}
+	return delAllCache.Put(toks, runtime.SpliceTree(deletePrefix, toks, lowering, ""))
+}
+
+// DeleteAll removes every row the query matches, in ONE statement,
+// and reports how many it removed.
+//
+// The query must have a predicate — runtime.ErrUnfilteredWrite
+// otherwise — and must not carry Limit, Offset or a row lock:
+// runtime.ErrPagedWrite. Order is ignored, as it is by Count.
+func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := q.writeAllErr(); err != nil {
+		return 0, err
+	}
+	var buf [21]runtime.Tok
+	st := delAllStmtFor(q.preds(&buf))
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+	return ex.Exec(ctx, st.SQL, q.bindPreds(b))
 }
