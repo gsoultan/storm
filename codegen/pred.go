@@ -125,7 +125,7 @@ func (g *gen) colHandles() {
 	g.p("// Age.Like(...) fail to compile.")
 	g.p("var (")
 	for i, c := range g.cols {
-		g.p("\t%s = %s{%d}", exportName(c.Name()), handleType(c), i)
+		g.p("\t%s = %s{%d}", handleName(g.t, c.Name()), handleType(c), i)
 	}
 	g.p(")")
 	g.p("")

@@ -1,7 +1,11 @@
 package codegen_test
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -113,20 +117,108 @@ func TestBudgets_OverflowErrorNamesTheOption(t *testing.T) {
 	}
 }
 
-func TestReservedColumnNameIsRefused(t *testing.T) {
-	s, err := storm.Build(&bgClash{})
+// A column whose handle would redeclare a name the package already declares
+// gets the handle under a suffixed name instead. It used to be refused, and the
+// refusal suggested renaming the Go field — which changes nothing, because
+// generated names come from the column — or an API that does not exist.
+func TestReservedColumnNameGetsASuffixedHandle(t *testing.T) {
+	src := find(t, gen(t, codegen.PackageOptions{}, &bgClash{}), "bgclash")
+	if !regexp.MustCompile(`AndCol += TextCol\{\d+\}`).MatchString(src) {
+		t.Fatalf("column and did not get the handle AndCol:\n%s", src)
+	}
+	// Only the colliding identifier moves: the shorthands and the Row field
+	// keep the column's own name.
+	if !regexp.MustCompile(`\tAnd +string`).MatchString(src) {
+		t.Error("the Row field is no longer And")
+	}
+	for _, want := range []string{"func (q Query) AndEq(", "q.Where(AndCol.Eq(v))"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated package lacks %q", want)
+		}
+	}
+}
+
+type bgSearch struct {
+	storm.Model
+	Query string
+	Table string
+	Scan  int32
+}
+
+type bgSearchTwin struct {
+	storm.Model
+	Query    string
+	QueryCol string
+}
+
+// The adopter's case: a column named query, which every package's Query type
+// collided with. It has to COMPILE, which is the claim — a test that only
+// reads the source would have passed the old output too, since the old
+// output was refused before it existed.
+func TestColumnNamedQueryCompiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a generated package; -short skips it")
+	}
+	s, err := storm.Build(&bgSearch{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = codegen.Package(s, codegen.PackageOptions{
-		Dir: "gen", Import: "github.com/gsoultan/storm",
-	})
-	if err == nil {
-		t.Fatal("accepted a column named And; the package redeclares the function")
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, want := range []string{"bg_clashes", "and", "And"} {
+	rel := filepath.Join("internal", "querycol"+strconv.Itoa(os.Getpid()))
+	dir := filepath.Join(root, rel)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	files, err := codegen.Package(s, codegen.PackageOptions{
+		Dir: dir, Import: "github.com/gsoultan/storm", Package: "store",
+		PackageImport: "github.com/gsoultan/storm/" + filepath.ToSlash(rel),
+	})
+	if err != nil {
+		t.Fatalf("a column named query was refused: %v", err)
+	}
+	var pkg string
+	for p, src := range files {
+		full := filepath.Join(dir, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, src, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(p, "bgsearch") {
+			pkg = string(src)
+		}
+	}
+	for _, want := range []string{"QueryCol ", "TableCol ", "ScanCol "} {
+		if !strings.Contains(pkg, want) {
+			t.Errorf("no %s handle", strings.TrimSpace(want))
+		}
+	}
+	cmd := exec.Command("go", "vet", "./"+filepath.ToSlash(rel)+"/...")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("a package with query, table and scan columns does not build:\n%s", out)
+	}
+}
+
+// What the suffix cannot settle is still refused, and the hint names an API
+// that exists.
+func TestHandleCollisionNamesARealAPI(t *testing.T) {
+	s, err := storm.Build(&bgSearchTwin{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = codegen.Package(s, codegen.PackageOptions{Dir: "gen", Import: "github.com/gsoultan/storm"})
+	if err == nil {
+		t.Fatal("query and query_col both became QueryCol and nothing said so")
+	}
+	for _, want := range []string{"query", "query_col", "QueryCol", "t.Col(&m.Field).Named("} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %q: %v", want, err)
 		}
+	}
+	if strings.Contains(err.Error(), ".As(") {
+		t.Errorf("error suggests .As, which ColBuilder does not have: %v", err)
 	}
 }
