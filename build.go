@@ -85,6 +85,7 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.callSchemas(mi)
 	}
+	b.repointRenamed()
 	// Pass 4a0: the foreign keys whose target key was not known in pass 3.
 	// Immediately after callSchemas, because that is what declared it.
 	b.resolveDeferredFKs()
@@ -219,6 +220,9 @@ type builder struct {
 	// did: a reference to a table keyed on `code` reported a "0-column primary
 	// key" for a table whose key was one column.
 	deferredFKs []*deferredFK
+	// toOne is every foreign key built in pass 3, with the table it points
+	// at, so a t.Name rename in that table's Schema can reach it.
+	toOne []toOneRef
 }
 
 // deferredFK is a foreign key whose referenced column is not known yet.
@@ -572,16 +576,41 @@ func (b *builder) resolveRelations(mi *modelInfo) {
 			})
 		}
 		mi.tbl.out.ForeignKeys = append(mi.tbl.out.ForeignKeys, fk)
-		mi.tbl.out.Relations = append(mi.tbl.out.Relations, &schema.Relation{
+		r := &schema.Relation{
 			Field:    rel.fieldName,
 			Target:   tgt.tbl.out.Name,
 			TargetGo: rel.target.Name(),
 			Column:   rel.colName,
 			Owner:    true,
 			Nullable: rel.nullable,
-		})
+		}
+		mi.tbl.out.Relations = append(mi.tbl.out.Relations, r)
+		b.toOne = append(b.toOne, toOneRef{fk: fk, rel: r, tgt: tgt})
 	}
 	b.resolveArcs(mi)
+}
+
+// toOneRef is a foreign key and its relation, and the model they point at.
+type toOneRef struct {
+	fk  *schema.ForeignKey
+	rel *schema.Relation
+	tgt *modelInfo
+}
+
+// repointRenamed carries each t.Name into the foreign keys that point at it.
+//
+// Pass 3 builds a foreign key with its target's table name as it stood then,
+// which is the DERIVED name: Schema methods, where t.Name lives, run in pass
+// 4. A model named Person whose Schema says t.Name("people") left every key
+// pointing at "persons" — a constraint against a table that does not exist,
+// and a has-many from Person that found no key and failed the build. Keyed by
+// the target model rather than by the old name, because a derived name can
+// be another model's real one.
+func (b *builder) repointRenamed() {
+	for _, r := range b.toOne {
+		r.fk.RefTable = r.tgt.tbl.out.Name
+		r.rel.Target = r.tgt.tbl.out.Name
+	}
 }
 
 // checkAnyRefsAcknowledged is the whole reason AnyRef is a distinct type rather
