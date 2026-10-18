@@ -8,9 +8,39 @@ import (
 )
 
 func (g *gen) joins() {
+	if len(g.t.Joins) == 0 {
+		return
+	}
+	g.joinLowering()
 	for _, j := range g.t.Joins {
 		g.join(j)
 	}
+}
+
+// joinLowering emits the predicates a join's call site adds, with every
+// column qualified by its table. Joined tables share column names — every
+// one of them has an id — so the bare name the single-table read uses is
+// ambiguous there, and the server refuses the statement.
+func (g *gen) joinLowering() {
+	table := g.lw.Ident(g.t.Name)
+	g.p("// joinFragTable is fragTable for a join: every column named with its table.")
+	g.fragTable("joinFragTable", func(col string) string { return table + "." + g.lw.Ident(col) })
+	g.p("func joinFragOf(op, col uint32) runtime.Frag {")
+	g.p("\tif int(col) >= len(joinFragTable) || int(op) >= len(joinFragTable[0]) {")
+	g.p("\t\treturn runtime.Frag{}")
+	g.p("\t}")
+	g.p("\treturn joinFragTable[col][op]")
+	g.p("}")
+	g.p("")
+	g.p("// joinLowering is lowering with qualified predicates. A join takes no")
+	g.p("// call-site order and no cursor, so qualifying the predicates is all")
+	g.p("// it needs.")
+	g.p("var joinLowering = func() runtime.Lowering {")
+	g.p("\tl := lowering")
+	g.p("\tl.Frag = joinFragOf")
+	g.p("\treturn l")
+	g.p("}()")
+	g.p("")
 }
 
 // join emits one declared cross-table read.
@@ -85,9 +115,9 @@ func (g *gen) join(j *schema.Join) {
 	g.p("\t\treturn st")
 	g.p("\t}")
 	if declared != "" {
-		g.p("\treturn c.Put(toks, runtime.SpliceTreeWhere(%sPrefix, %sWhere, toks, lowering, suffix))", low, low)
+		g.p("\treturn c.Put(toks, runtime.SpliceTreeWhere(%sPrefix, %sWhere, toks, joinLowering, suffix))", low, low)
 	} else {
-		g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)
+		g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, joinLowering, suffix))", low)
 	}
 	g.p("}")
 	g.p("")
