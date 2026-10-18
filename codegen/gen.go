@@ -768,7 +768,12 @@ func (g *gen) compile() {
 	g.p("// filter screen turned into 2^n statements.")
 	g.p("func ShapeFlushes() int {")
 	g.p("\treturn cache.Flushes() + offsetCache.Flushes() +")
-	g.p("\t\tcountCache.Flushes() + existsCache.Flushes()")
+	if g.hasWriteAll() {
+		g.p("\t\tcountCache.Flushes() + existsCache.Flushes() +")
+		g.p("\t\tupdAllCache.Flushes() + delAllCache.Flushes()")
+	} else {
+		g.p("\t\tcountCache.Flushes() + existsCache.Flushes()")
+	}
 	g.p("}")
 	g.p("")
 	g.p("// stmtFor compiles a read. LIMIT and LIMIT/OFFSET are different")

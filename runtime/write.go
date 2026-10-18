@@ -237,6 +237,20 @@ func SpliceInsertWith(prefix string, p InsertParts, cols []string, ph Placeholde
 // caller meant and is never what they said.
 var ErrNothingAssigned = errors.New("storm: insert with no columns assigned")
 
+// ErrUnfilteredWrite is returned by a generated UpdateAll or DeleteAll whose
+// query has no predicate. Writing every row of a table is legitimate and rare,
+// and a missing Where is common and catastrophic; the two look identical at
+// the call site, so the one that is a single forgotten line is refused.
+var ErrUnfilteredWrite = errors.New(
+	"storm: UpdateAll/DeleteAll with no predicate would write every row — add a Where; a deliberate whole-table write is storm.SQLExec")
+
+// ErrPagedWrite is returned by a generated UpdateAll or DeleteAll whose query
+// carries Limit, Offset or a row lock. They shape what a READ returns, and a
+// set-based UPDATE or DELETE has no clause for them: running it anyway would
+// write every matching row while the call site said a hundred.
+var ErrPagedWrite = errors.New(
+	"storm: Limit, Offset and row locks shape a read; UpdateAll/DeleteAll would write every matching row regardless — drop them, or read the keys and write those")
+
 // ErrConflict is returned by an insert that asked for DoNothing and found the
 // row already there.
 //
