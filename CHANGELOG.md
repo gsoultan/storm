@@ -180,6 +180,16 @@ to end refusing a plain statement on a sharded table. `Set.Begin` is
 **experimental** in v1.3, except that a sharded model's calls will never widen
 back to `runtime.Executor`.
 
+### A foreign key follows its target's `t.Name`
+
+Foreign keys are built before any `Schema` method runs, so a key pointing at a
+model that renames its table — `Person` with `t.Name("people")` — referenced
+the derived name, `persons`. The DDL named a table that does not exist, and a
+has-many back from the renamed model found no key and failed the build with
+"has no field of type Person to carry the foreign key". The key and its
+relation now take the name the target's `Schema` settled on. Found by the
+first adopter whose imported model was then given singular type names.
+
 ### CI reports every failure, not the first one
 
 - **`vet`, `boundaries` and `api compatibility` run in a job of their own,
