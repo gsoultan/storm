@@ -190,6 +190,16 @@ has-many back from the renamed model found no key and failed the build with
 relation now take the name the target's `Schema` settled on. Found by the
 first adopter whose imported model was then given singular type names.
 
+### A join's call-site predicates name their table
+
+A predicate added at a join's call site — `staff.New().IDEq(id).AllWithTenant`
+— was lowered exactly as for a single-table read, as a bare `"id"`. Every
+joined table has an id, so the server refused the statement as ambiguous, and
+any column the joined tables share failed the same way. A join now lowers its
+call-site predicates through a table of fragments qualified with the declaring
+table, `"staff"."id"`; single-table reads are unchanged.
+`TestJoinPredicateOnSharedColumnName` in the orders example covers it.
+
 ### CI reports every failure, not the first one
 
 - **`vet`, `boundaries` and `api compatibility` run in a job of their own,
