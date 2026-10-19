@@ -703,31 +703,10 @@ func (g *gen) compile() {
 	g.p("")
 	g.p("// fragTable is every predicate this table can produce, lowered at build")
 	g.p("// time. Runtime splices; it never formats.")
-	nRels := len(existsRelations(g.t))
-	g.p("var fragTable = [%d][%d]runtime.Frag{", len(g.cols)+nRels, len(ops)+3)
-	for _, c := range g.cols {
-		g.p("\t{ // %s", c.Name())
-		g.p("\t\t{}, // opNone")
-		for _, op := range ops {
-			if !opApplies(op.name, c.kind, c.col) {
-				g.p("\t\t{},")
-				continue
-			}
-			a, b, ok := g.lw.Frag(op.name, g.lw.Ident(c.Name()), c.col)
-			if !ok {
-				g.err = fmt.Errorf("codegen: table %s column %s: target %s has no lowering for operator %s",
-					g.t.Name, c.Name(), g.lw.name, op.name)
-				return
-			}
-			g.p("\t\t{A: %q, B: %q},", a, b)
-		}
-		g.p("\t\t{},")
-		g.p("\t\t{},")
-		g.p("\t},")
+	g.fragTable("fragTable", g.lw.Ident)
+	if g.err != nil {
+		return
 	}
-	g.existsFragRows()
-	g.p("}")
-	g.p("")
 	g.p("func fragOf(op, col uint32) runtime.Frag {")
 	g.p("\t// Bounded by the table, not nCols: existence pseudo-columns live past")
 	g.p("\t// the real ones. Order, ident and arena lookups stay nCols-bounded,")
@@ -1194,4 +1173,34 @@ func (g *gen) inheritDialect(from *gen) {
 	g.dec = from.dec
 	g.lw = from.lw
 	g.s = from.s
+}
+
+// fragTable emits every predicate this table can produce, lowered at build
+// time, naming each column as ident spells it.
+func (g *gen) fragTable(name string, ident func(string) string) {
+	nRels := len(existsRelations(g.t))
+	g.p("var %s = [%d][%d]runtime.Frag{", name, len(g.cols)+nRels, len(ops)+3)
+	for _, c := range g.cols {
+		g.p("\t{ // %s", c.Name())
+		g.p("\t\t{}, // opNone")
+		for _, op := range ops {
+			if !opApplies(op.name, c.kind, c.col) {
+				g.p("\t\t{},")
+				continue
+			}
+			a, b, ok := g.lw.Frag(op.name, ident(c.Name()), c.col)
+			if !ok {
+				g.err = fmt.Errorf("codegen: table %s column %s: target %s has no lowering for operator %s",
+					g.t.Name, c.Name(), g.lw.name, op.name)
+				return
+			}
+			g.p("\t\t{A: %q, B: %q},", a, b)
+		}
+		g.p("\t\t{},")
+		g.p("\t\t{},")
+		g.p("\t},")
+	}
+	g.existsFragRows()
+	g.p("}")
+	g.p("")
 }
