@@ -277,6 +277,8 @@ func TestSoftDeleteBehaviourAgainstPostgres(t *testing.T) {
 		"TestUpsertMatchesThePartialUniqueIndex",
 		"TestUpsertDoesNotResurrectADeletedRow",
 		"TestHardDeleteActuallyRemoves",
+		"TestDeleteAllMarksMatchingLiveRows",
+		"TestUpdateAllSkipsDeletedRows",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)

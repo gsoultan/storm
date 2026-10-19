@@ -180,6 +180,87 @@ to end refusing a plain statement on a sharded table. `Set.Begin` is
 **experimental** in v1.3, except that a sharded model's calls will never widen
 back to `runtime.Executor`.
 
+### Set-based `UPDATE … WHERE` and `DELETE … WHERE`
+
+A query's predicates can now be the `WHERE` of one write:
+
+```go
+var m session.Mut
+m.SetRevokedAtNow()
+n, err := session.New().Where(session.UserID.Eq(uid)).UpdateAll(ctx, ex, m)
+n, err  = session.New().Where(session.ExpiresAt.Lt(cutoff)).DeleteAll(ctx, ex)
+```
+
+`UpdateAll` takes the `Mut` `Update` already takes, so bound values and the
+server-side forms (`Set…Now`, `Inc…`) both work; both return the rows affected.
+Each statement compiles once per shape and is cached like a read. Refused
+rather than guessed at: a query with **no predicate**
+(`runtime.ErrUnfilteredWrite`), and one carrying **`Limit`, `Offset` or a row
+lock** (`runtime.ErrPagedWrite`), which an `UPDATE`/`DELETE` has no clause for —
+honouring the call would write every match while the line said a hundred. On a
+soft-delete table they behave as the per-row functions do: `UpdateAll` writes
+only live rows, `DeleteAll` *marks* them. A versioned table's version is bumped
+on every row written. Generated for every target with a write API; the live
+test is PostgreSQL's.
+
+This was listed under "not built" with no reason beyond "writes are per row",
+and an adopter's bulk state transitions were all `storm.SQLExec` — untyped
+predicates for the one statement where a wrong predicate destroys data.
+
+### Upserts that accumulate: `Add…OnConflict`
+
+NOT NULL numeric columns get a setter beside `Set…` that, on conflict, adds to
+the row already there instead of overwriting it:
+
+```go
+n.AddHitsOnConflict(1)   // "hits" = "samples"."hits" + EXCLUDED."hits"
+row, err := n.OnConflictHost().Insert(ctx, ex)
+```
+
+The sum is the database's, in the same statement, so concurrent upserts all
+land (the live test runs 32 at once and counts 32). It rides `Op()` batches too,
+and joins the insert's statement key, so the plain and accumulating forms are
+two cached statements, not one wrong one. PostgreSQL's `ON CONFLICT` only:
+SQL Server's upsert is a `MERGE` spliced at run time and does not have it yet,
+and MySQL has no targeted upsert at all — on both the method is absent, a
+compile error naming what is missing. Nullable columns get none, since
+`NULL + n` is `NULL`.
+
+### Raw row types match acronym fields
+
+A `storm.SQL[T]` row type with a field `CPUPercent` was refused for a
+`cpu_percent` column — "add `CpuPercent float64`" — while a model maps
+`CPUPercent` to `cpu_percent` without complaint. The two sides had two name
+rules. Both are now `schema.ColumnName`, so a raw row matches the field the
+model would: GoName's spelling first, as before, then the field whose column
+name is the column. Two fields mapping to one column is an error naming both,
+and the hint for an unfed field now names the alias the model would use
+(`cpu_percent`, not `c_p_u_percent`).
+
+### A column named `query` works
+
+A column whose exported name the generated package already declares — `query`
+against the `Query` type; also `table`, `scan`, `lowering` and the other
+composition seams, which the reserved list had missed and which produced
+packages that did not compile — was refused, and the refusal told the adopter
+to rename the Go field (generated names come from the column, so that changes
+nothing) or to call `t.Col(&m.X).As(...)`, which does not exist.
+
+The handle is now `QueryCol`; nothing else moves — the `Row` field is still
+`Query`, the setter `SetQuery`, the shorthand `QueryEq`. Names a package
+declares only for some table shapes (`Table`, `MutateKey`, `Restore`,
+`ShardKeyOf`, `Descend`) are reserved only where they are declared, so no
+handle that compiled before is renamed. What a suffix cannot settle — two
+columns landing on one handle — is refused naming `t.Col(&m.Field).Named(...)`.
+
+### Docs that described what v1.2.0 does not have
+
+`docs/DEPLOYMENT.md` said `pgxdrv.Pool` satisfies `storm.DB` through a `Begin`
+method; the method is `StartTx`. And `storm.InTx`, `storm.Executor`,
+`storm.DB` and `storm.Tx` are on main but not in v1.2.0 — an adopter on the
+release reading main's docs found API their storm did not have. Both pages now
+say what is new after v1.2.0 and what to write on it instead.
+
 ### A foreign key follows its target's `t.Name`
 
 Foreign keys are built before any `Schema` method runs, so a key pointing at a

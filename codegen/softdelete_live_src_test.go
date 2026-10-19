@@ -333,4 +333,70 @@ func TestHardDeleteActuallyRemoves(t *testing.T) {
 		t.Error("HardDelete left the row behind")
 	}
 }
+
+// The set-based delete makes the per-row one's choice: it MARKS. A row it
+// matched is still in the table and gone from every read; a row it did not
+// match is untouched; a row already marked is not stamped again.
+func TestDeleteAllMarksMatchingLiveRows(t *testing.T) {
+	ctx := context.Background()
+	a := insert(t, "bulk-a@example.com", "BulkGone")
+	b := insert(t, "bulk-b@example.com", "BulkGone")
+	keep := insert(t, "bulk-keep@example.com", "BulkKept")
+	if err := sd.Delete(ctx, ex, b); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := sd.New().Where(sd.Name.Eq("BulkGone")).DeleteAll(ctx, ex)
+	if err != nil {
+		t.Fatalf("DeleteAll: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("DeleteAll marked %d rows; one live row matched", n)
+	}
+	for _, id := range [][16]byte{a, b} {
+		if ok, err := sd.New().Where(sd.ID.Eq(id)).Exists(ctx, ex); err != nil || ok {
+			t.Errorf("a marked row is still readable (%v)", err)
+		}
+	}
+	var stored int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM sd_users WHERE id = $1", a).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 1 {
+		t.Error("DeleteAll on a soft-delete table REMOVED the row instead of marking it")
+	}
+	if ok, err := sd.New().Where(sd.ID.Eq(keep)).Exists(ctx, ex); err != nil || !ok {
+		t.Errorf("a row DeleteAll did not match was deleted (%v)", err)
+	}
+}
+
+// A set-based update must not write through a row every read says is gone.
+func TestUpdateAllSkipsDeletedRows(t *testing.T) {
+	ctx := context.Background()
+	live := insert(t, "upd-live@example.com", "UpdAll")
+	dead := insert(t, "upd-dead@example.com", "UpdAll")
+	if err := sd.Delete(ctx, ex, dead); err != nil {
+		t.Fatal(err)
+	}
+	var m sd.Mut
+	m.SetName("UpdAllDone")
+	n, err := sd.New().Where(sd.Name.Eq("UpdAll")).UpdateAll(ctx, ex, m)
+	if err != nil {
+		t.Fatalf("UpdateAll: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("UpdateAll wrote %d rows; one live row matched", n)
+	}
+	var name string
+	if err := pool.QueryRow(ctx, "SELECT name FROM sd_users WHERE id = $1", dead).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "UpdAll" {
+		t.Error("UpdateAll wrote to a deleted row")
+	}
+	r, ok, err := sd.New().Where(sd.ID.Eq(live)).One(ctx, ex)
+	if err != nil || !ok || r.Name != "UpdAllDone" {
+		t.Errorf("the live row was not updated: %+v %v", r, err)
+	}
+}
 `

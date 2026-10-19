@@ -1231,28 +1231,9 @@ func singular(s string) string { return schema.Singular(s) }
 func goNameOf(t *schema.Table) string { return t.GoName }
 
 // snake converts CamelCase to snake_case, keeping acronyms intact:
-// OrgID -> org_id, HTTPServer -> http_server, ID -> id.
-func snake(s string) string {
-	var b strings.Builder
-	b.Grow(len(s) + 4)
-	rs := []rune(s)
-	for i, r := range rs {
-		isUpper := r >= 'A' && r <= 'Z'
-		if isUpper && i > 0 {
-			prevLower := rs[i-1] >= 'a' && rs[i-1] <= 'z' || rs[i-1] >= '0' && rs[i-1] <= '9'
-			nextLower := i+1 < len(rs) && rs[i+1] >= 'a' && rs[i+1] <= 'z'
-			if prevLower || nextLower {
-				b.WriteByte('_')
-			}
-		}
-		if isUpper {
-			b.WriteRune(r - 'A' + 'a')
-		} else {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+// OrgID -> org_id, HTTPServer -> http_server, ID -> id. It delegates to
+// schema.ColumnName, which raw-query scanning matches against too.
+func snake(s string) string { return schema.ColumnName(s) }
 
 // arcVariants reports whether t is a storm.OneOfN and returns its variants.
 //
