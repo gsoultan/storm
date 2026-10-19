@@ -261,6 +261,26 @@ method; the method is `StartTx`. And `storm.InTx`, `storm.Executor`,
 release reading main's docs found API their storm did not have. Both pages now
 say what is new after v1.2.0 and what to write on it instead.
 
+### A foreign key follows its target's `t.Name`
+
+Foreign keys are built before any `Schema` method runs, so a key pointing at a
+model that renames its table — `Person` with `t.Name("people")` — referenced
+the derived name, `persons`. The DDL named a table that does not exist, and a
+has-many back from the renamed model found no key and failed the build with
+"has no field of type Person to carry the foreign key". The key and its
+relation now take the name the target's `Schema` settled on. Found by the
+first adopter whose imported model was then given singular type names.
+
+### A join's call-site predicates name their table
+
+A predicate added at a join's call site — `staff.New().IDEq(id).AllWithTenant`
+— was lowered exactly as for a single-table read, as a bare `"id"`. Every
+joined table has an id, so the server refused the statement as ambiguous, and
+any column the joined tables share failed the same way. A join now lowers its
+call-site predicates through a table of fragments qualified with the declaring
+table, `"staff"."id"`; single-table reads are unchanged.
+`TestJoinPredicateOnSharedColumnName` in the orders example covers it.
+
 ### CI reports every failure, not the first one
 
 - **`vet`, `boundaries` and `api compatibility` run in a job of their own,

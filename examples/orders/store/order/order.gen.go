@@ -2500,6 +2500,296 @@ func (q Query) OneTotals(ctx context.Context, ex runtime.Executor) (TotalsRow, e
 	return out[0], nil
 }
 
+// joinFragTable is fragTable for a join: every column named with its table.
+var joinFragTable = [9][28]runtime.Frag{
+	{ // id
+		{}, // opNone
+		{A: "\"orders\".\"id\" = $", B: ""},
+		{A: "\"orders\".\"id\" <> $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "\"orders\".\"id\" = ANY($", B: ")"},
+		{A: "\"orders\".\"id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // created_at
+		{}, // opNone
+		{A: "\"orders\".\"created_at\" = $", B: ""},
+		{A: "\"orders\".\"created_at\" <> $", B: ""},
+		{A: "\"orders\".\"created_at\" > $", B: ""},
+		{A: "\"orders\".\"created_at\" >= $", B: ""},
+		{A: "\"orders\".\"created_at\" < $", B: ""},
+		{A: "\"orders\".\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // updated_at
+		{}, // opNone
+		{A: "\"orders\".\"updated_at\" = $", B: ""},
+		{A: "\"orders\".\"updated_at\" <> $", B: ""},
+		{A: "\"orders\".\"updated_at\" > $", B: ""},
+		{A: "\"orders\".\"updated_at\" >= $", B: ""},
+		{A: "\"orders\".\"updated_at\" < $", B: ""},
+		{A: "\"orders\".\"updated_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // updated_by
+		{}, // opNone
+		{A: "\"orders\".\"updated_by\" = $", B: ""},
+		{A: "\"orders\".\"updated_by\" <> $", B: ""},
+		{A: "\"orders\".\"updated_by\" > $", B: ""},
+		{A: "\"orders\".\"updated_by\" >= $", B: ""},
+		{A: "\"orders\".\"updated_by\" < $", B: ""},
+		{A: "\"orders\".\"updated_by\" <= $", B: ""},
+		{A: "lower(\"orders\".\"updated_by\") = lower($", B: ")"},
+		{A: "\"orders\".\"updated_by\" LIKE $", B: ""},
+		{A: "\"orders\".\"updated_by\" ILIKE $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "\"orders\".\"updated_by\" = ANY($", B: ")"},
+		{A: "\"orders\".\"updated_by\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // customer_id
+		{}, // opNone
+		{A: "\"orders\".\"customer_id\" = $", B: ""},
+		{A: "\"orders\".\"customer_id\" <> $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "\"orders\".\"customer_id\" = ANY($", B: ")"},
+		{A: "\"orders\".\"customer_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // status
+		{}, // opNone
+		{A: "\"orders\".\"status\" = $", B: ""},
+		{A: "\"orders\".\"status\" <> $", B: ""},
+		{A: "\"orders\".\"status\" > $", B: ""},
+		{A: "\"orders\".\"status\" >= $", B: ""},
+		{A: "\"orders\".\"status\" < $", B: ""},
+		{A: "\"orders\".\"status\" <= $", B: ""},
+		{A: "lower(\"orders\".\"status\") = lower($", B: ")"},
+		{A: "\"orders\".\"status\" LIKE $", B: ""},
+		{A: "\"orders\".\"status\" ILIKE $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "\"orders\".\"status\" = ANY($", B: ")"},
+		{A: "\"orders\".\"status\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // total
+		{}, // opNone
+		{A: "\"orders\".\"total\" = $", B: ""},
+		{A: "\"orders\".\"total\" <> $", B: ""},
+		{A: "\"orders\".\"total\" > $", B: ""},
+		{A: "\"orders\".\"total\" >= $", B: ""},
+		{A: "\"orders\".\"total\" < $", B: ""},
+		{A: "\"orders\".\"total\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // placed_at
+		{}, // opNone
+		{A: "\"orders\".\"placed_at\" = $", B: ""},
+		{A: "\"orders\".\"placed_at\" <> $", B: ""},
+		{A: "\"orders\".\"placed_at\" > $", B: ""},
+		{A: "\"orders\".\"placed_at\" >= $", B: ""},
+		{A: "\"orders\".\"placed_at\" < $", B: ""},
+		{A: "\"orders\".\"placed_at\" <= $", B: ""},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+	},
+	{ // relation Lines (pseudo-column)
+		{}, // opNone
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{},
+		{A: "EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
+		{A: "NOT EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
+	},
+}
+
+func joinFragOf(op, col uint32) runtime.Frag {
+	if int(col) >= len(joinFragTable) || int(op) >= len(joinFragTable[0]) {
+		return runtime.Frag{}
+	}
+	return joinFragTable[col][op]
+}
+
+// joinLowering is lowering with qualified predicates. A join takes no
+// call-site order and no cursor, so qualifying the predicates is all
+// it needs.
+var joinLowering = func() runtime.Lowering {
+	l := lowering
+	l.Frag = joinFragOf
+	return l
+}()
+
 // WithCustomerRow is the "WithCustomer" join: 6 column(s) from 2 table(s).
 //
 // A flat projection, not a graph. Any column taken through a LEFT join is
@@ -2531,7 +2821,7 @@ func withCustomerStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 	if st := c.Get(toks); st != nil {
 		return st
 	}
-	return c.Put(toks, runtime.SpliceTreeWhere(withCustomerPrefix, withCustomerWhere, toks, lowering, suffix))
+	return c.Put(toks, runtime.SpliceTreeWhere(withCustomerPrefix, withCustomerWhere, toks, joinLowering, suffix))
 }
 
 func scanWithCustomer(rv [][]byte, r *WithCustomerRow, sl *runtime.Slab) error {
@@ -2624,7 +2914,7 @@ func vsLifetimeStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 	if st := c.Get(toks); st != nil {
 		return st
 	}
-	return c.Put(toks, runtime.SpliceTree(vsLifetimePrefix, toks, lowering, suffix))
+	return c.Put(toks, runtime.SpliceTree(vsLifetimePrefix, toks, joinLowering, suffix))
 }
 
 func scanVsLifetime(rv [][]byte, r *VsLifetimeRow, sl *runtime.Slab) error {

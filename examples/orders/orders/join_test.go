@@ -186,3 +186,27 @@ func TestJoinDeclaredWhereCannotBeWidened(t *testing.T) {
 		}
 	}
 }
+
+// A predicate on a column every joined table has — each has an id — names
+// the declaring table's. Left bare, the server refuses it as ambiguous.
+func TestJoinPredicateOnSharedColumnName(t *testing.T) {
+	ctx := context.Background()
+	cust, _ := seed(t, "SKU-JOIN-ID", "3.00", 50)
+	if _, err := orders.New(pool).PlaceOrder(ctx, cust, []orders.LineRequest{{SKU: "SKU-JOIN-ID", Quantity: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := order.New().AllWithCustomer(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) == 0 {
+		t.Fatal("no joined rows")
+	}
+	one, err := order.New().IDEq(all[0].OrderID).AllWithCustomer(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one) != 1 || one[0].OrderID != all[0].OrderID {
+		t.Errorf("filtering the join by the order's id returned %d row(s), want that one order", len(one))
+	}
+}
