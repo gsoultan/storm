@@ -147,6 +147,7 @@ func (g *gen) writes() {
 	g.batchOps(ins, upd, pk)
 	g.updateFn(upd, pk)
 	g.deleteFn(pk)
+	g.writeAll(upd)
 }
 
 func (g *gen) writeConsts(ins, upd, pk []colInfo) {
@@ -452,6 +453,46 @@ func mutAssign(c colInfo) string {
 	return "v"
 }
 
+// addable is the columns an upsert can ACCUMULATE into rather than overwrite:
+// `col = "t"."col" + EXCLUDED."col"`, the counter that a conflicting insert
+// adds to. Numeric, NOT NULL, writable by both the insert and the update, on a
+// back end whose upsert is the ON CONFLICT clause and a table that declares
+// something to conflict on.
+//
+// NOT NULL because NULL + n is NULL: on a nullable column the "add" would
+// erase the count it was meant to grow, and a COALESCE storm chose would be a
+// default the model never declared. A merge back end (SQL Server) is left out
+// rather than approximated — its MERGE is spliced by the runtime from column
+// NAMES, and an accumulating branch is a capability of that splice it does not
+// have yet; the method is absent there, which is an undefined-method compile
+// error naming exactly what is missing.
+func (g *gen) addable(ins []colInfo) []colInfo {
+	if g.lw.Upsert == nil || g.lw.Upsert.ExcludedAdd == nil || len(conflictTargets(g.t)) == 0 {
+		return nil
+	}
+	var out []colInfo
+	for _, c := range updatable(g.t) {
+		if !c.col.NotNull || insertIndex(ins, c.Name()) < 0 {
+			continue
+		}
+		switch c.kind {
+		case kindInt2, kindInt4, kindInt8, kindFloat4, kindFloat8, kindNumeric:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// insAddArg is the accumulate mask an insert statement is keyed by, as the
+// trailing argument of stmtForInsert — or nothing on a table that has none, so
+// those packages are byte-for-byte what they were.
+func (g *gen) insAddArg(recv string) string {
+	if len(g.addable(insertable(g.t))) == 0 {
+		return ""
+	}
+	return ", " + recv + ".add"
+}
+
 // upsertTargets emits one OnConflict method per unique key the model declares.
 //
 // One method per *declared* key, rather than a general OnConflict(cols...),
@@ -471,7 +512,7 @@ func mutAssign(c colInfo) string {
 // it. Not a re-read: recovering a server-computed value with a second SELECT
 // races every other writer, which is the same reason Insert does not.
 func (g *gen) insInsertNoReturn(ins []colInfo) {
-	g.p("\tst := stmtForInsert(n.set, n.conflict)")
+	g.p("\tst := stmtForInsert(n.set, n.conflict%s)", g.insAddArg("n"))
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn Row{}, st.Err")
 	g.p("\t}")
@@ -606,6 +647,11 @@ func (g *gen) upsertTargets(ins []colInfo) {
 	}
 
 	upd := updatable(g.t)
+	adds := g.addable(ins)
+	addParam, addArg := "", ""
+	if len(adds) > 0 {
+		addParam, addArg = ", add uint64", ", add"
+	}
 	g.p("// upsertTail builds the ON CONFLICT clause for one encoded conflict")
 	g.p("// and one insert mask.")
 	g.p("//")
@@ -613,7 +659,13 @@ func (g *gen) upsertTargets(ins []colInfo) {
 	g.p("// columns the caller ASSIGNED. Assigning every column would revert")
 	g.p("// each one the caller left out to its default, on the row that")
 	g.p("// already exists — a silent data loss that reads as an upsert working.")
-	g.p("func upsertTail(conflict uint8, mask uint64) string {")
+	if len(adds) > 0 {
+		g.p("//")
+		g.p("// add marks the assigned columns that ACCUMULATE instead: the row")
+		g.p("// that already exists keeps its value plus the one this insert")
+		g.p("// carried. See the Add…OnConflict setters.")
+	}
+	g.p("func upsertTail(conflict uint8, mask uint64%s) string {", addParam)
 	g.p("\tif conflict == conflictAny {")
 	g.p("\t\treturn %q", pgsql.ConflictAny+pgsql.ConflictDoNothing)
 	g.p("\t}")
@@ -627,7 +679,7 @@ func (g *gen) upsertTargets(ins []colInfo) {
 	g.p("\t\t// SQL, and leaving the row alone is what the caller asked for.")
 	g.p("\t\treturn spec + %q", pgsql.ConflictDoNothing)
 	g.p("\t}")
-	g.p("\treturn spec + %q + joinAssign(set)", pgsql.ConflictDoUpdate)
+	g.p("\treturn spec + %q + joinAssign(set%s)", pgsql.ConflictDoUpdate, addArg)
 	g.p("}")
 	g.p("")
 
@@ -705,17 +757,39 @@ func (g *gen) upsertTargets(ins []colInfo) {
 
 	g.p("// joinAssign renders the DO UPDATE SET list for the columns the caller")
 	g.p("// assigned. The punctuation comes from the back end, never from here.")
-	g.p("func joinAssign(set []string) string {")
+	g.p("func joinAssign(set []string%s) string {", addParam)
 	g.p("\tout := \"\"")
 	g.p("\tfor i, c := range set {")
 	g.p("\t\tif i > 0 {")
 	g.p("\t\t\tout += %q", ", ")
 	g.p("\t\t}")
+	if len(adds) > 0 {
+		g.p("\t\tif a, ok := assignAdded(c, add); ok {")
+		g.p("\t\t\tout += a")
+		g.p("\t\t\tcontinue")
+		g.p("\t\t}")
+	}
 	g.p("\t\tout += assignExcluded(c)")
 	g.p("\t}")
 	g.p("\treturn out")
 	g.p("}")
 	g.p("")
+	if len(adds) > 0 {
+		g.p("// assignAdded is the accumulating assignment for column c, when the")
+		g.p("// caller asked for one: the existing row's value plus the rejected")
+		g.p("// row's, added by the database in the same statement, so two")
+		g.p("// concurrent upserts both land rather than one overwriting the other.")
+		g.p("func assignAdded(c string, add uint64) (string, bool) {")
+		g.p("\tswitch c {")
+		for _, c := range adds {
+			g.p("\tcase %q:", c.Name())
+			g.p("\t\treturn %q, add&i%s != 0", g.lw.Upsert.ExcludedAdd(g.t.Name, c.Name()), exportName(c.Name()))
+		}
+		g.p("\t}")
+		g.p("\treturn \"\", false")
+		g.p("}")
+		g.p("")
+	}
 	g.p("var assignFor = map[string]string{")
 	for _, c := range updatable(g.t) {
 		if insertIndex(ins, c.Name()) < 0 {
@@ -1031,6 +1105,17 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\t// — which is the right default: silently updating a row you meant to")
 	g.p("\t// create is a data-loss bug that looks like success.")
 	g.p("\tconflict uint8")
+	adds := g.addable(ins)
+	isAdd := map[string]bool{}
+	for _, c := range adds {
+		isAdd[c.Name()] = true
+	}
+	if len(adds) > 0 {
+		g.p("")
+		g.p("\t// add marks the assigned columns an upsert ACCUMULATES into rather")
+		g.p("\t// than overwrites. Part of the statement key, beside the mask.")
+		g.p("\tadd uint64")
+	}
 	g.p("}")
 	g.p("")
 	g.p("// Create stages a new row.")
@@ -1044,8 +1129,28 @@ func (g *gen) insType(ins []colInfo) {
 		g.p("func (n *Ins) Set%s(v %s) {", nm, c.goBase)
 		g.p("\tn.row.%s = %s", nm, mutAssign(c))
 		g.p("\tn.set |= i%s", nm)
+		if isAdd[c.Name()] {
+			g.p("\tn.add &^= i%s", nm)
+		}
 		g.p("}")
 		g.p("")
+		if isAdd[c.Name()] {
+			g.p("// Add%sOnConflict inserts v, or — when the insert conflicts and an", nm)
+			g.p("// OnConflict… target updates the row already there — ADDS v to it:")
+			g.p("//")
+			g.p("//\t%s", g.lw.Upsert.ExcludedAdd(g.t.Name, c.Name()))
+			g.p("//")
+			g.p("// The sum is the database's, in the same statement, so two writers")
+			g.p("// counting into one row both land. Reading the row, adding in Go and")
+			g.p("// upserting the total loses one of them, with nothing to show it.")
+			g.p("// Without an OnConflict target, or with DoNothing, it is Set%s.", nm)
+			g.p("func (n *Ins) Add%sOnConflict(v %s) {", nm, c.goBase)
+			g.p("\tn.row.%s = %s", nm, mutAssign(c))
+			g.p("\tn.set |= i%s", nm)
+			g.p("\tn.add |= i%s", nm)
+			g.p("}")
+			g.p("")
+		}
 		if isNullable(c.col) {
 			g.p("// Set%sNull writes SQL NULL explicitly, which is not the same as", nm)
 			g.p("// leaving the column unset and taking its default.")
@@ -1058,13 +1163,7 @@ func (g *gen) insType(ins []colInfo) {
 	}
 
 	g.upsertTargets(ins)
-	g.p("func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {")
-	g.p("\t// The conflict clause is part of the statement, so it must be part of")
-	g.p("\t// the key. Packing it above the column bits keeps one cache for both.")
-	g.p("\tkey := mask | uint64(conflict)<<nInsertable")
-	g.p("\tif st := insCache.Get(runtime.MaskKey{Dirty: key}); st != nil {")
-	g.p("\t\treturn st")
-	g.p("\t}")
+	g.stmtForInsertHead("stmtForInsert", "insCache", len(adds) > 0)
 	g.p("\tcols := make([]string, 0, nInsertable)")
 	g.p("\tfor i := 0; i < nInsertable; i++ {")
 	g.p("\t\tif mask&(1<<uint(i)) != 0 {")
@@ -1086,14 +1185,14 @@ func (g *gen) insType(ins []colInfo) {
 		g.p("\t\tif conflict%%2 == 0 {")
 		g.p("\t\t\tset = assignable(i, mask)")
 		g.p("\t\t}")
-		g.p("\t\treturn insCache.Put(runtime.MaskKey{Dirty: key},")
+		g.p("\t\treturn insCache.Put(%s,", g.insKey(len(adds) > 0))
 		g.p("\t\t\truntime.SpliceMerge(mergeParts, cols, conflictKeys[i], set, insPlaceholder, mergeOutput))")
 		g.p("\t}")
 		g.p("\tsuffix := insReturning")
 	} else if g.lw.Upsert != nil {
 		g.p("\tsuffix := insReturning")
 		g.p("\tif conflict > 0 {")
-		g.p("\t\tsuffix = upsertTail(conflict, mask) + insReturning")
+		g.p("\t\tsuffix = upsertTail(conflict, mask%s) + insReturning", g.addArgIf(len(adds) > 0))
 		g.p("\t}")
 	} else {
 		// No conflict handling on this target, so the byte can only ever be 0
@@ -1102,7 +1201,7 @@ func (g *gen) insType(ins []colInfo) {
 		g.p("\tsuffix := insReturning")
 		g.p("\t_ = conflict // this target has no conflict handling")
 	}
-	g.p("\treturn insCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))")
+	g.p("\treturn insCache.Put(%s, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))", g.insKey(len(adds) > 0))
 	g.p("}")
 	g.p("")
 
@@ -1118,7 +1217,7 @@ func (g *gen) insType(ins []colInfo) {
 		g.insInsertNoReturn(ins)
 		return
 	}
-	g.p("\tst := stmtForInsert(n.set, n.conflict)")
+	g.p("\tst := stmtForInsert(n.set, n.conflict%s)", g.insAddArg("n"))
 	g.p("\tif st.Err != nil {")
 	g.p("\t\t// A malformed token stream is a code-generation bug. Executing it")
 	g.p("\t\t// would run a query whose filter is not the one that was asked for.")
@@ -1594,7 +1693,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	// server answer with a RESULT SET where the batch asked for a count, so
 	// every queued insert reported zero rows affected and a caller checking
 	// that believed nothing was written.
-	g.p("\tst := stmtForInsertNoReturn(mask, 0)")
+	g.p("\tst := stmtForInsertNoReturn(mask, 0%s)", g.zeroAddIf())
 	g.p("\targs := make([]any, 0, %d)", len(ins))
 	for _, c := range ins {
 		g.p("\targs = append(args, %s)", writeArg(c, "r."+exportName(c.Name())))
@@ -1623,7 +1722,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	g.p("\tif n.set == 0 {")
 	g.p("\t\treturn runtime.BatchOp{}, runtime.ErrNothingAssigned")
 	g.p("\t}")
-	g.p("\tst := stmtForInsertNoReturn(n.set, n.conflict)")
+	g.p("\tst := stmtForInsertNoReturn(n.set, n.conflict%s)", g.insAddArg("n"))
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn runtime.BatchOp{}, st.Err")
 	g.p("\t}")
@@ -1645,11 +1744,8 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	g.p("// stmtForInsertNoReturn is stmtForInsert without RETURNING, for the")
 	g.p("// batch path. Its own cache: the two differ by a suffix, and sharing")
 	g.p("// one would hand a batch the statement that asks for rows back.")
-	g.p("func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {")
-	g.p("\tkey := mask | uint64(conflict)<<nInsertable")
-	g.p("\tif st := insOpCache.Get(runtime.MaskKey{Dirty: key}); st != nil {")
-	g.p("\t\treturn st")
-	g.p("\t}")
+	hasAdd := len(g.addable(ins)) > 0
+	g.stmtForInsertHead("stmtForInsertNoReturn", "insOpCache", hasAdd)
 	g.p("\tcols := make([]string, 0, nInsertable)")
 	g.p("\tfor i := 0; i < nInsertable; i++ {")
 	g.p("\t\tif mask&(1<<uint(i)) != 0 {")
@@ -1659,13 +1755,13 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	if g.lw.Upsert != nil {
 		g.p("\tsuffix := \"\"")
 		g.p("\tif conflict > 0 {")
-		g.p("\t\tsuffix = upsertTail(conflict, mask)")
+		g.p("\t\tsuffix = upsertTail(conflict, mask%s)", g.addArgIf(hasAdd))
 		g.p("\t}")
 	} else {
 		g.p("\tsuffix := \"\"")
 		g.p("\t_ = conflict // this target has no conflict handling")
 	}
-	g.p("\treturn insOpCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))")
+	g.p("\treturn insOpCache.Put(%s, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))", g.insKey(hasAdd))
 	g.p("}")
 	g.p("")
 
@@ -1885,4 +1981,245 @@ func allReadable(t *schema.Table) []string {
 		}
 	}
 	return out
+}
+
+// stmtForInsertHead opens one of the two insert-statement constructors, up to
+// and including the cache probe. With an accumulate mask the statement key
+// gains it as Expr, beside the packed mask and conflict byte in Dirty.
+func (g *gen) stmtForInsertHead(name, cache string, hasAdd bool) {
+	if !hasAdd {
+		g.p("func %s(mask uint64, conflict uint8) *runtime.Stmt {", name)
+		if name == "stmtForInsert" {
+			g.p("\t// The conflict clause is part of the statement, so it must be part of")
+			g.p("\t// the key. Packing it above the column bits keeps one cache for both.")
+		}
+		g.p("\tkey := mask | uint64(conflict)<<nInsertable")
+		g.p("\tif st := %s.Get(runtime.MaskKey{Dirty: key}); st != nil {", cache)
+		g.p("\t\treturn st")
+		g.p("\t}")
+		return
+	}
+	g.p("func %s(mask uint64, conflict uint8, add uint64) *runtime.Stmt {", name)
+	g.p("\t// The conflict clause is part of the statement, so it must be part of")
+	g.p("\t// the key. Packing it above the column bits keeps one cache for both.")
+	g.p("\tkey := mask | uint64(conflict)<<nInsertable")
+	g.p("\t// Accumulating only means something in a DO UPDATE (an even code")
+	g.p("\t// from 2): anywhere else it is an ordinary insert of the value, and")
+	g.p("\t// keying it apart would compile the same statement twice.")
+	g.p("\tif conflict < 2 || conflict%%2 == 1 {")
+	g.p("\t\tadd = 0")
+	g.p("\t}")
+	g.p("\tadd &= mask")
+	g.p("\tif st := %s.Get(runtime.MaskKey{Dirty: key, Expr: add}); st != nil {", cache)
+	g.p("\t\treturn st")
+	g.p("\t}")
+}
+
+// insKey is the cache key expression stmtForInsertHead declared.
+func (g *gen) insKey(hasAdd bool) string {
+	if hasAdd {
+		return "runtime.MaskKey{Dirty: key, Expr: add}"
+	}
+	return "runtime.MaskKey{Dirty: key}"
+}
+
+func (g *gen) addArgIf(hasAdd bool) string {
+	if hasAdd {
+		return ", add"
+	}
+	return ""
+}
+
+// zeroAddIf is the accumulate argument for InsertOp, which writes a whole Row
+// with no conflict clause and so never accumulates.
+func (g *gen) zeroAddIf() string {
+	if len(g.addable(insertable(g.t))) > 0 {
+		return ", 0"
+	}
+	return ""
+}
+
+// defaultLimit is the LIMIT a query carries until the caller sets one.
+const defaultLimit = 1000
+
+// hasWriteAll reports whether the package declares UpdateAll and DeleteAll:
+// wherever it has a write API at all. They take a Mut for their assignments,
+// and a Mut exists only where a row can be addressed.
+func (g *gen) hasWriteAll() bool { return len(pkCols(g.t)) > 0 }
+
+// writeAll emits the set-based UPDATE and DELETE: the query's predicates as
+// the WHERE clause of one statement, rather than a read and a write per row.
+//
+// They are terminals on Query, not new package-level functions, so they cost
+// no reserved identifier and compose with everything a read composes with —
+// Where, the shorthands, AnyOf, the EXISTS probes. What a read has and a write
+// does not — Limit, Offset, a row lock — is refused rather than ignored: a
+// DELETE that silently dropped the Limit(100) its caller wrote would remove
+// every matching row, which is the opposite of what the line says.
+//
+// A soft-delete table is handled the way its reads are: both statements carry
+// the liveness predicate ahead of the caller's, so UpdateAll cannot write to a
+// row every read here says is gone, and DeleteAll MARKS rows rather than
+// removing them — the same choice Delete makes. Purging is not set-based on
+// purpose; HardDelete is per row, and a purge is storm.SQLExec.
+func (g *gen) writeAll(upd []colInfo) {
+	soft := g.t.SoftDeletes()
+	hasVersion := versionCol(g.t) != nil
+	ex := g.execType()
+	keyBuf := 4 + g.streamBuf()
+
+	g.p("// Set-based writes. Two caches of their own, keyed like the read")
+	g.p("// caches by the predicate stream — UpdateAll's prefixed with the")
+	g.p("// assignment masks, which are as much its identity as the predicates.")
+	g.p("var (")
+	g.p("\tupdAllCache = runtime.NewTreeCache()")
+	g.p("\tdelAllCache = runtime.NewTreeCache()")
+	g.p(")")
+	g.p("")
+	g.p("// writeAllErr is what UpdateAll and DeleteAll refuse.")
+	g.p("func (q Query) writeAllErr() error {")
+	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tif q.nt == 0 {")
+	g.p("\t\treturn runtime.ErrUnfilteredWrite")
+	g.p("\t}")
+	g.p("\tif q.limit != %d || q.offset != 0 || q.lock != 0 {", defaultLimit)
+	g.p("\t\treturn runtime.ErrPagedWrite")
+	g.p("\t}")
+	g.p("\treturn nil")
+	g.p("}")
+	g.p("")
+
+	// UpdateAll's statement: the SET list spliced exactly as Update splices
+	// it, then the predicate stream numbered on from where it stopped.
+	g.p("// updAllStmtFor compiles one (assignments, predicates) pair, once.")
+	g.p("func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {")
+	g.p("\tvar key [%d]runtime.Tok", keyBuf)
+	g.p("\tkey[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)")
+	g.p("\tkey[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)")
+	g.p("\tn := 4 + copy(key[4:], preds)")
+	g.p("\tif st := updAllCache.Get(key[:n]); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tswitch {")
+	g.p("\t\tcase k.Expr&(1<<uint(i)) != 0:")
+	g.p("\t\t\tset = append(set, exprFrags[i])")
+	g.p("\t\tcase k.Dirty&(1<<uint(i)) != 0:")
+	g.p("\t\t\tset = append(set, setFrags[i])")
+	g.p("\t\t}")
+	g.p("\t}")
+	if hasVersion {
+		g.p("\t// Every row written moves its version on, so a reader holding one")
+		g.p("\t// of them loses its optimistic lock — exactly as if Update had run.")
+		g.p("\tset = append(set, versionBump)")
+	}
+	g.p("\thead := %s(updatePrefix, []runtime.Section{", g.spliceFn())
+	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
+	g.p("\t}, %s)", g.spliceTail())
+	g.p("\tif head.Err != nil {")
+	g.p("\t\treturn head")
+	g.p("\t}")
+	if soft {
+		g.p("\treturn updAllCache.Put(key[:n], runtime.SpliceTreeWhereFrom(head.SQL, softDeleteWhere, preds, lowering, \"\", head.NArg))")
+	} else {
+		g.p("\treturn updAllCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, \"\", head.NArg))")
+	}
+	g.p("}")
+	g.p("")
+
+	g.p("// UpdateAll writes m's assigned columns to every row the query")
+	g.p("// matches, in ONE statement, and reports how many it wrote:")
+	g.p("//")
+	g.p("//\tvar m Mut")
+	g.p("//\tm.Set…(v)            // bound values and server-side forms alike")
+	g.p("//\tn, err := New().Where(…).UpdateAll(ctx, ex, m)")
+	g.p("//")
+	g.p("// Only assigned columns are written, as for Update; nothing assigned")
+	g.p("// issues no statement and reports 0. The query must have a predicate —")
+	g.p("// runtime.ErrUnfilteredWrite otherwise — and must not carry Limit,")
+	g.p("// Offset or a row lock, which a set-based UPDATE has no clause for:")
+	g.p("// runtime.ErrPagedWrite. Order is ignored, as it is by Count.")
+	if hasVersion {
+		g.p("//")
+		g.p("// The version column is bumped on every row written and checked on")
+		g.p("// none: a set-based write has no version it read.")
+	}
+	if soft {
+		g.p("//")
+		g.p("// Deleted rows are not written: every read here says they are gone.")
+	}
+	g.p("func (q Query) UpdateAll(ctx context.Context, ex %s, m Mut) (int64, error) {", ex)
+	g.p("\tif err := q.writeAllErr(); err != nil {")
+	g.p("\t\treturn 0, err")
+	g.p("\t}")
+	g.p("\tif m.dirty == 0 && m.expr == 0 {")
+	g.p("\t\treturn 0, nil")
+	g.p("\t}")
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\tst := updAllStmtFor(m.key(), q.preds(&buf))")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn 0, st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range upd {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\targs = append(args, q.bindPreds(b)...)")
+	g.p("\treturn ex.Exec(ctx, st.SQL, args)")
+	g.p("}")
+	g.p("")
+
+	g.p("func delAllStmtFor(toks []runtime.Tok) *runtime.Stmt {")
+	g.p("\tif st := delAllCache.Get(toks); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	if soft {
+		g.p("\treturn delAllCache.Put(toks, runtime.SpliceTreeWhere(%s, softDeleteWhere, toks, lowering, \"\"))",
+			lit(g.lw.SoftDeleteSet(g.t.Name, g.t.SoftDelete)))
+	} else {
+		g.p("\treturn delAllCache.Put(toks, runtime.SpliceTree(deletePrefix, toks, lowering, \"\"))")
+	}
+	g.p("}")
+	g.p("")
+	if soft {
+		g.p("// DeleteAll marks every live row the query matches deleted, in ONE")
+		g.p("// statement, and reports how many it marked — the set-based Delete,")
+		g.p("// and like Delete it removes nothing: the rows keep their keys and")
+		g.p("// every read here stops returning them. Rows already marked are not")
+		g.p("// stamped again.")
+	} else {
+		g.p("// DeleteAll removes every row the query matches, in ONE statement,")
+		g.p("// and reports how many it removed.")
+	}
+	g.p("//")
+	g.p("// The query must have a predicate — runtime.ErrUnfilteredWrite")
+	g.p("// otherwise — and must not carry Limit, Offset or a row lock:")
+	g.p("// runtime.ErrPagedWrite. Order is ignored, as it is by Count.")
+	g.p("func (q Query) DeleteAll(ctx context.Context, ex %s) (int64, error) {", ex)
+	g.p("\tif err := q.writeAllErr(); err != nil {")
+	g.p("\t\treturn 0, err")
+	g.p("\t}")
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\tst := delAllStmtFor(q.preds(&buf))")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn 0, st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("\treturn ex.Exec(ctx, st.SQL, q.bindPreds(b))")
+	g.p("}")
+	g.p("")
 }

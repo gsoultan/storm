@@ -80,6 +80,12 @@ func NewPool(ctx context.Context, cfg Config) (*Pool, error) {
 
 // acquire takes an idle connection, or opens one, or waits for either.
 func (p *Pool) acquire(ctx context.Context) (*Conn, error) {
+	// A warm connection is handed over without waiting, so the select below
+	// never sees a context that was cancelled before the call; and a statement
+	// fast enough to finish before the cancel watcher wakes would then run.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	closed := p.closed
 	p.mu.Unlock()

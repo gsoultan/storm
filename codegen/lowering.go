@@ -215,6 +215,9 @@ type upsertLowering struct {
 	Any, DoNothing, DoUpdate string
 	Spec                     func(keys []pgsql.ConflictKey, where string) string
 	ExcludedAssign           func(string) string
+	// ExcludedAdd accumulates instead of overwriting: the existing row's
+	// value plus the rejected row's. Nil where the back end has no spelling.
+	ExcludedAdd func(table, col string) string
 }
 
 func loweringFor(d Dialect) lowering {
@@ -365,6 +368,7 @@ func postgresLowering() lowering {
 			Any: pgsql.ConflictAny, DoNothing: pgsql.ConflictDoNothing,
 			DoUpdate: pgsql.ConflictDoUpdate,
 			Spec:     pgsql.ConflictSpec, ExcludedAssign: pgsql.ExcludedAssign,
+			ExcludedAdd: pgsql.ExcludedAdd,
 		},
 	}
 }

@@ -1232,7 +1232,8 @@ func Shapes() int { return cache.Shapes() }
 // filter screen turned into 2^n statements.
 func ShapeFlushes() int {
 	return cache.Flushes() + offsetCache.Flushes() +
-		countCache.Flushes() + existsCache.Flushes()
+		countCache.Flushes() + existsCache.Flushes() +
+		updAllCache.Flushes() + delAllCache.Flushes()
 }
 
 // stmtFor compiles a read. LIMIT and LIMIT/OFFSET are different
@@ -2912,6 +2913,10 @@ type Ins struct {
 	// — which is the right default: silently updating a row you meant to
 	// create is a data-loss bug that looks like success.
 	conflict uint8
+
+	// add marks the assigned columns an upsert ACCUMULATES into rather
+	// than overwrites. Part of the statement key, beside the mask.
+	add uint64
 }
 
 // Create stages a new row.
@@ -2953,6 +2958,22 @@ func (n *Ins) SetStatus(v string) {
 func (n *Ins) SetTotal(v runtime.Decimal) {
 	n.row.Total = v
 	n.set |= iTotal
+	n.add &^= iTotal
+}
+
+// AddTotalOnConflict inserts v, or — when the insert conflicts and an
+// OnConflict… target updates the row already there — ADDS v to it:
+//
+//	"total" = "orders"."total" + EXCLUDED."total"
+//
+// The sum is the database's, in the same statement, so two writers
+// counting into one row both land. Reading the row, adding in Go and
+// upserting the total loses one of them, with nothing to show it.
+// Without an OnConflict target, or with DoNothing, it is SetTotal.
+func (n *Ins) AddTotalOnConflict(v runtime.Decimal) {
+	n.row.Total = v
+	n.set |= iTotal
+	n.add |= iTotal
 }
 
 func (n *Ins) SetPlacedAt(v time.Time) {
@@ -2977,7 +2998,11 @@ const conflictAny = 1
 // columns the caller ASSIGNED. Assigning every column would revert
 // each one the caller left out to its default, on the row that
 // already exists — a silent data loss that reads as an upsert working.
-func upsertTail(conflict uint8, mask uint64) string {
+//
+// add marks the assigned columns that ACCUMULATE instead: the row
+// that already exists keeps its value plus the one this insert
+// carried. See the Add…OnConflict setters.
+func upsertTail(conflict uint8, mask uint64, add uint64) string {
 	if conflict == conflictAny {
 		return " ON CONFLICT DO NOTHING"
 	}
@@ -2991,7 +3016,7 @@ func upsertTail(conflict uint8, mask uint64) string {
 		// SQL, and leaving the row alone is what the caller asked for.
 		return spec + " DO NOTHING"
 	}
-	return spec + " DO UPDATE SET " + joinAssign(set)
+	return spec + " DO UPDATE SET " + joinAssign(set, add)
 }
 
 // conflictSpecs is one inference specification per target, in
@@ -3062,15 +3087,31 @@ func (n *Ins) DoNothing() *Ins {
 
 // joinAssign renders the DO UPDATE SET list for the columns the caller
 // assigned. The punctuation comes from the back end, never from here.
-func joinAssign(set []string) string {
+func joinAssign(set []string, add uint64) string {
 	out := ""
 	for i, c := range set {
 		if i > 0 {
 			out += ", "
 		}
+		if a, ok := assignAdded(c, add); ok {
+			out += a
+			continue
+		}
 		out += assignExcluded(c)
 	}
 	return out
+}
+
+// assignAdded is the accumulating assignment for column c, when the
+// caller asked for one: the existing row's value plus the rejected
+// row's, added by the database in the same statement, so two
+// concurrent upserts both land rather than one overwriting the other.
+func assignAdded(c string, add uint64) (string, bool) {
+	switch c {
+	case "total":
+		return "\"total\" = \"orders\".\"total\" + EXCLUDED.\"total\"", add&iTotal != 0
+	}
+	return "", false
 }
 
 var assignFor = map[string]string{
@@ -3084,11 +3125,18 @@ var assignFor = map[string]string{
 
 func assignExcluded(c string) string { return assignFor[c] }
 
-func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
+func stmtForInsert(mask uint64, conflict uint8, add uint64) *runtime.Stmt {
 	// The conflict clause is part of the statement, so it must be part of
 	// the key. Packing it above the column bits keeps one cache for both.
 	key := mask | uint64(conflict)<<nInsertable
-	if st := insCache.Get(runtime.MaskKey{Dirty: key}); st != nil {
+	// Accumulating only means something in a DO UPDATE (an even code
+	// from 2): anywhere else it is an ordinary insert of the value, and
+	// keying it apart would compile the same statement twice.
+	if conflict < 2 || conflict%2 == 1 {
+		add = 0
+	}
+	add &= mask
+	if st := insCache.Get(runtime.MaskKey{Dirty: key, Expr: add}); st != nil {
 		return st
 	}
 	cols := make([]string, 0, nInsertable)
@@ -3099,9 +3147,9 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 	}
 	suffix := insReturning
 	if conflict > 0 {
-		suffix = upsertTail(conflict, mask) + insReturning
+		suffix = upsertTail(conflict, mask, add) + insReturning
 	}
-	return insCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
+	return insCache.Put(runtime.MaskKey{Dirty: key, Expr: add}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // Insert writes the assigned columns and reads every column back, so
@@ -3111,7 +3159,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	if n.set == 0 {
 		return Row{}, runtime.ErrNothingAssigned
 	}
-	st := stmtForInsert(n.set, n.conflict)
+	st := stmtForInsert(n.set, n.conflict, n.add)
 	if st.Err != nil {
 		// A malformed token stream is a code-generation bug. Executing it
 		// would run a query whose filter is not the one that was asked for.
@@ -3289,7 +3337,7 @@ func InsertOp(r Row) runtime.BatchOp {
 	mask |= 1 << 5
 	mask |= 1 << 6
 	mask |= 1 << 7
-	st := stmtForInsertNoReturn(mask, 0)
+	st := stmtForInsertNoReturn(mask, 0, 0)
 	args := make([]any, 0, 8)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
@@ -3322,7 +3370,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 	if n.set == 0 {
 		return runtime.BatchOp{}, runtime.ErrNothingAssigned
 	}
-	st := stmtForInsertNoReturn(n.set, n.conflict)
+	st := stmtForInsertNoReturn(n.set, n.conflict, n.add)
 	if st.Err != nil {
 		return runtime.BatchOp{}, st.Err
 	}
@@ -3356,9 +3404,18 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 // stmtForInsertNoReturn is stmtForInsert without RETURNING, for the
 // batch path. Its own cache: the two differ by a suffix, and sharing
 // one would hand a batch the statement that asks for rows back.
-func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
+func stmtForInsertNoReturn(mask uint64, conflict uint8, add uint64) *runtime.Stmt {
+	// The conflict clause is part of the statement, so it must be part of
+	// the key. Packing it above the column bits keeps one cache for both.
 	key := mask | uint64(conflict)<<nInsertable
-	if st := insOpCache.Get(runtime.MaskKey{Dirty: key}); st != nil {
+	// Accumulating only means something in a DO UPDATE (an even code
+	// from 2): anywhere else it is an ordinary insert of the value, and
+	// keying it apart would compile the same statement twice.
+	if conflict < 2 || conflict%2 == 1 {
+		add = 0
+	}
+	add &= mask
+	if st := insOpCache.Get(runtime.MaskKey{Dirty: key, Expr: add}); st != nil {
 		return st
 	}
 	cols := make([]string, 0, nInsertable)
@@ -3369,9 +3426,9 @@ func stmtForInsertNoReturn(mask uint64, conflict uint8) *runtime.Stmt {
 	}
 	suffix := ""
 	if conflict > 0 {
-		suffix = upsertTail(conflict, mask)
+		suffix = upsertTail(conflict, mask, add)
 	}
-	return insOpCache.Put(runtime.MaskKey{Dirty: key}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
+	return insOpCache.Put(runtime.MaskKey{Dirty: key, Expr: add}, runtime.SpliceInsertWith(insPrefix, insParts, cols, insPlaceholder, suffix))
 }
 
 // UpdateOp is this Mut's update as a queueable statement.
@@ -3565,4 +3622,130 @@ func Delete(ctx context.Context, ex runtime.Executor, iD [16]byte) error {
 		return runtime.ErrNoRow
 	}
 	return nil
+}
+
+// Set-based writes. Two caches of their own, keyed like the read
+// caches by the predicate stream — UpdateAll's prefixed with the
+// assignment masks, which are as much its identity as the predicates.
+var (
+	updAllCache = runtime.NewTreeCache()
+	delAllCache = runtime.NewTreeCache()
+)
+
+// writeAllErr is what UpdateAll and DeleteAll refuse.
+func (q Query) writeAllErr() error {
+	if err := q.Err(); err != nil {
+		return err
+	}
+	if q.nt == 0 {
+		return runtime.ErrUnfilteredWrite
+	}
+	if q.limit != 1000 || q.offset != 0 || q.lock != 0 {
+		return runtime.ErrPagedWrite
+	}
+	return nil
+}
+
+// updAllStmtFor compiles one (assignments, predicates) pair, once.
+func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
+	var key [25]runtime.Tok
+	key[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)
+	key[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)
+	n := 4 + copy(key[4:], preds)
+	if st := updAllCache.Get(key[:n]); st != nil {
+		return st
+	}
+	set := make([]runtime.Frag, 0, nUpdatable+1)
+	for i := 0; i < nUpdatable; i++ {
+		switch {
+		case k.Expr&(1<<uint(i)) != 0:
+			set = append(set, exprFrags[i])
+		case k.Dirty&(1<<uint(i)) != 0:
+			set = append(set, setFrags[i])
+		}
+	}
+	head := runtime.SpliceSections(updatePrefix, []runtime.Section{
+		{Lead: "", Sep: ", ", Frags: set},
+	}, "")
+	if head.Err != nil {
+		return head
+	}
+	return updAllCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, "", head.NArg))
+}
+
+// UpdateAll writes m's assigned columns to every row the query
+// matches, in ONE statement, and reports how many it wrote:
+//
+//	var m Mut
+//	m.Set…(v)            // bound values and server-side forms alike
+//	n, err := New().Where(…).UpdateAll(ctx, ex, m)
+//
+// Only assigned columns are written, as for Update; nothing assigned
+// issues no statement and reports 0. The query must have a predicate —
+// runtime.ErrUnfilteredWrite otherwise — and must not carry Limit,
+// Offset or a row lock, which a set-based UPDATE has no clause for:
+// runtime.ErrPagedWrite. Order is ignored, as it is by Count.
+func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64, error) {
+	if err := q.writeAllErr(); err != nil {
+		return 0, err
+	}
+	if m.dirty == 0 && m.expr == 0 {
+		return 0, nil
+	}
+	var buf [21]runtime.Tok
+	st := updAllStmtFor(m.key(), q.preds(&buf))
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+	args := make([]any, 0, st.NArg)
+	for i := 0; i < nUpdatable; i++ {
+		if m.dirty&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, m.row.UpdatedAt)
+		case 1:
+			args = append(args, m.row.UpdatedBy)
+		case 2:
+			args = append(args, m.row.CustomerID)
+		case 3:
+			args = append(args, m.row.Status)
+		case 4:
+			args = append(args, m.row.Total)
+		case 5:
+			args = append(args, m.row.PlacedAt)
+		}
+	}
+	args = append(args, q.bindPreds(b)...)
+	return ex.Exec(ctx, st.SQL, args)
+}
+
+func delAllStmtFor(toks []runtime.Tok) *runtime.Stmt {
+	if st := delAllCache.Get(toks); st != nil {
+		return st
+	}
+	return delAllCache.Put(toks, runtime.SpliceTree(deletePrefix, toks, lowering, ""))
+}
+
+// DeleteAll removes every row the query matches, in ONE statement,
+// and reports how many it removed.
+//
+// The query must have a predicate — runtime.ErrUnfilteredWrite
+// otherwise — and must not carry Limit, Offset or a row lock:
+// runtime.ErrPagedWrite. Order is ignored, as it is by Count.
+func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error) {
+	if err := q.writeAllErr(); err != nil {
+		return 0, err
+	}
+	var buf [21]runtime.Tok
+	st := delAllStmtFor(q.preds(&buf))
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+	return ex.Exec(ctx, st.SQL, q.bindPreds(b))
 }
