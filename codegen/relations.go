@@ -855,7 +855,7 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	var childKeyField, childHandle string
 	if !p.isLink() {
 		childKeyField = exportName(p.rel.Column)
-		childHandle = childKeyField
+		childHandle = handleName(p.child, p.rel.Column)
 	}
 
 	g.p("// %sRow is %s with its %s loaded.", p.Name, p.parent.Name, p.rel.Field)
@@ -919,7 +919,7 @@ func (g *gen) emitToManyPlan(p relPlan) {
 	g.p("// To page ONE parent's children — the common case — query the child")
 	g.p("// table directly, where Order, After and Limit all work:")
 	g.p("//")
-	g.p("//\t%s.New().Where(%s.%s.Eq(id)).Order(...).After(last).Limit(20)", p.ChildPkg, p.ChildPkg, exportName(p.rel.Column))
+	g.p("//\t%s.New().Where(%s.%s.Eq(id)).Order(...).After(last).Limit(20)", p.ChildPkg, p.ChildPkg, handleName(p.child, p.rel.Column))
 	g.p("func (p %s) ChildLimit(n int64) %s {", q, q)
 	g.p("\tp.childLimit = n")
 	g.p("\treturn p")
@@ -1047,7 +1047,7 @@ func (g *gen) emitToOnePlan(p relPlan) {
 	defer g.inPlan(p.parent)()
 	ownField := exportName(p.rel.Column)
 	childKeyField := exportName(p.ParentKey)
-	childHandle := exportName(p.ParentKey)
+	childHandle := handleName(p.child, p.ParentKey)
 	q := p.Name + "Query"
 
 	g.p("// %sRow is %s with its %s loaded.", p.Name, p.parent.Name, p.rel.Field)

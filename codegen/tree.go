@@ -399,7 +399,7 @@ func (g *gen) treeQuery() {
 	g.p("}")
 	g.p("")
 	g.p("// New starts a query.")
-	g.p("func New() Query { return Query{limit: 1000} }")
+	g.p("func New() Query { return Query{limit: %d} }", defaultLimit)
 	g.p("")
 	g.p("// Limit caps the result set.")
 	g.p("func (q Query) Limit(n int64) Query { q.limit = n; return q }")

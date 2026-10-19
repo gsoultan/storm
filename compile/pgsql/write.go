@@ -203,6 +203,16 @@ func ExcludedAssign(col string) string {
 	return Ident(col) + " = EXCLUDED." + Ident(col)
 }
 
+// ExcludedAdd accumulates into one column instead of overwriting it: the row
+// already there keeps its value plus the rejected row's.
+//
+// The existing value is qualified by the table name because inside DO UPDATE
+// both the target row and EXCLUDED are in scope, and a bare column name on the
+// right-hand side is ambiguous (SQLSTATE 42702) rather than meaning the target.
+func ExcludedAdd(table, col string) string {
+	return Ident(col) + " = " + Ident(table) + "." + Ident(col) + " + EXCLUDED." + Ident(col)
+}
+
 // ConflictAssignSep joins assignments.
 const ConflictAssignSep = ", "
 

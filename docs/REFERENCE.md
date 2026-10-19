@@ -445,8 +445,10 @@ it were:
   statement, which is the whole thesis. Aggregations are declared; [[API]] §7.
 - **`Between`, `HasPrefix`/`HasSuffix`, jsonb `Path`.** The predicate vocabulary
   is generated per column type and is listed in [[API]] §3.
-- **Set-based `UPDATE`/`DELETE … WHERE`.** Writes are per row, or batched per
-  row. A bulk state transition or a purge is `storm.SQLExec`.
+- **A set-based purge of a soft-delete table.** `UpdateAll` and `DeleteAll`
+  run a query's predicates as one `UPDATE`/`DELETE … WHERE` ([[API]] §8), and
+  on a soft-delete table `DeleteAll` marks rows like `Delete` does. Removing
+  marked rows in bulk is `storm.SQLExec`.
 - **`FOR NO KEY UPDATE` and `FOR KEY SHARE`.** The other four lock forms are
   built — see [[API]] §8. These two exist for the deadlock between updating a
   parent row and inserting a child that references it, and a caller who has it

@@ -101,7 +101,7 @@ jobs:
           # were wrong — which is the same mistake tool/mstool's floor recorded
           # a fortnight earlier, made again by the person who wrote that note.
           cov ./compile/oraddl 90   # 93.1
-          cov ./compile/oracle 70   # 74.3 — see below
+          cov ./compile/oracle 64   # 66.3 on go1.27.2 — see below
           cov ./runtime/valdec 70   # 75.0
           cov ./runtime/sqldrv 65   # 68.7
           cov ./schema/oracle 88    # 91.6
@@ -111,7 +111,12 @@ jobs:
           # TWO OF THESE ARE LOWER THAN THEIR SIBLINGS, and both for the same
           # structural reason rather than for want of tests.
           #
-          # compile/oracle is 74 where compile/mssql is 95, because a large part
+          # compile/oracle was measured at 74.3 on go1.27.0, which counted some
+          # multi-line blocks' statements more than once; go1.27.2 does not, and
+          # reads 66.3 for the same tests, so the floor follows the corrected
+          # count.
+          #
+          # compile/oracle is 66 where compile/mssql is 95, because a large part
           # of its expression writer and its declared reads are exercised by
           # internal/oraclespike — a SEPARATE MODULE, whose coverage does not
           # count here. The code is run; it is run from somewhere that cannot

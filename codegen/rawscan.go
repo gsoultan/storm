@@ -125,15 +125,17 @@ func ResolveRawScannerFor(rt reflect.Type, typeImport string, fields []RawField,
 
 	fed := map[string]bool{}
 	for i, f := range fields {
-		fieldName := exportName(f.Name)
-		sf, ok := rt.FieldByName(fieldName)
+		sf, ok, err := rawFieldFor(rt, f.Name)
+		if err != nil {
+			return RawScanner{}, fmt.Errorf("result column %d %q: %w", i+1, f.Name, err)
+		}
 		if !ok {
-			k, tn := fieldKind(d, f)
-			_ = k
+			_, tn := fieldKind(d, f)
 			return RawScanner{}, fmt.Errorf(
 				"result column %d %q (%s) has no field in %s\n  → add `%s %s` or alias the column away",
-				i+1, f.Name, tn, rt.Name(), fieldName, goTypeOf(d, f))
+				i+1, f.Name, tn, rt.Name(), exportName(f.Name), goTypeOf(d, f))
 		}
+		fieldName := sf.Name
 		k, tn := fieldKind(d, f)
 		if k == kindUnsupported {
 			return RawScanner{}, fmt.Errorf(
@@ -153,10 +155,43 @@ func ResolveRawScannerFor(rt reflect.Type, typeImport string, fields []RawField,
 		if name := rt.Field(i).Name; !fed[name] {
 			return RawScanner{}, fmt.Errorf(
 				"%s.%s is fed by no result column — remove the field, or select a column aliased %q",
-				rt.Name(), name, snakeOf(name))
+				rt.Name(), name, schema.ColumnName(name))
 		}
 	}
 	return rs, nil
+}
+
+// rawFieldFor finds the field of rt a result column lands in.
+//
+// The same name mapping a model uses, in both directions. A column first
+// matches the field GoName spells for it (org_name → OrgName), which is what
+// the suggestion in the error names. Failing that, it matches the one field
+// whose model column name is the column — schema.ColumnName(CPUPercent) is
+// cpu_percent — because a field a model accepts as cpu_percent must not be
+// refused here: the two rules disagreeing is how `CPUPercent float64` was
+// rejected with a demand to rename it CpuPercent.
+//
+// Two fields that both map to the column is an error rather than a pick:
+// whichever was chosen, the other would read as zero.
+func rawFieldFor(rt reflect.Type, col string) (reflect.StructField, bool, error) {
+	if sf, ok := rt.FieldByName(exportName(col)); ok {
+		return sf, true, nil
+	}
+	var found reflect.StructField
+	n := 0
+	for i := 0; i < rt.NumField(); i++ {
+		sf := rt.Field(i)
+		if !sf.IsExported() || schema.ColumnName(sf.Name) != col {
+			continue
+		}
+		if n > 0 {
+			return reflect.StructField{}, false, fmt.Errorf(
+				"%s.%s and %s.%s both map to it — keep one, or alias the column",
+				rt.Name(), found.Name, rt.Name(), sf.Name)
+		}
+		found, n = sf, n+1
+	}
+	return found, n == 1, nil
 }
 
 // fieldShape reports the field's element Go type and whether it is Null[T].
