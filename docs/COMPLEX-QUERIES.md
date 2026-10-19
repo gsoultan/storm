@@ -372,7 +372,7 @@ Not declarable, and each for a reason rather than an oversight:
 | probes across two DIFFERENT relations | one child column range, so the lowering cannot route two child packages |
 | set-returning functions | a row source that is not a table — [ADR-0009](adr/0009-gap-filling-needs-a-from-that-is-not-a-table.md) |
 | recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |
-| set-based `UPDATE`/`DELETE … WHERE` | writes are per row or batched per row; a bulk state transition is `storm.SQLExec` |
+| a whole-table or paged `UPDATE`/`DELETE` | `UpdateAll`/`DeleteAll` take a query's predicates as their `WHERE`, but refuse no predicate and refuse `Limit`/`Offset`, which a write has no clause for; those are `storm.SQLExec` |
 | streaming a result set | reads are `All`/`One`/`Count`/`Exists`; an export pages with `After` |
 | jsonb path extraction — `->>`, jsonpath | containment and key tests are declared; asking about a nested scalar is SQL |
 

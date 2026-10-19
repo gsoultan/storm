@@ -120,18 +120,15 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 				t.Name, c.Name, c.Type.SQL(), o.Dialect, o.Dialect)
 		}
 	}
-	// A column whose exported name is one the generator already uses produces a
-	// package that does not compile, and the error names a line of generated
-	// code rather than the model that caused it. Refused here, where the fix
-	// is a rename in the model or `t.Col(&m.X).As("...")`.
-	for _, c := range cols {
-		if n := exportName(c.Name()); reservedNames[n] {
-			return nil, fmt.Errorf(
-				"codegen: table %s column %s generates the identifier %s, which the "+
-					"generated package already declares — rename the column, or give it "+
-					"another Go field name",
-				t.Name, c.Name(), n)
-		}
+	// A column whose exported name is one the generator already declares —
+	// `query` against the Query type — gets its handle under a suffixed name
+	// (QueryCol) instead of a package that does not compile; see handleName.
+	// What is still refused is a collision the suffix cannot settle: two
+	// columns whose handles land on one identifier, or a handle that lands on
+	// a handle TYPE the package declares. The fix is a model change, and the
+	// error names the API that makes it.
+	if err := checkHandles(t, cols); err != nil {
+		return nil, err
 	}
 
 	g := &gen{t: t, o: o, cols: cols}
@@ -413,17 +410,92 @@ func (o opDef) list() bool {
 
 // reservedNames are the package-level identifiers every generated table
 // package declares. A column handle is a package-level var of the same kind,
-// so a column named "and" would redeclare And.
+// so a column named "and" would redeclare And; handleName gives such a column
+// its handle under a suffixed name instead.
 //
 // Enumerated rather than derived: deriving it would mean rendering the package
 // twice, and the list changing is exactly the moment someone should think
-// about whether a new export earns a name this common.
+// about whether a new export earns a name this common. Names a table declares
+// only for some shapes are in reservedFor, beside the condition that emits
+// them — reserving one unconditionally would rename the handle of a table
+// that never declares it, which is a change to generated API for nothing.
 var reservedNames = map[string]bool{
 	"Query": true, "Pred": true, "Grp": true, "Sort": true, "Row": true,
 	"Ins": true, "Mut": true, "And": true, "New": true, "Create": true,
 	"Mutate": true, "Insert": true, "InsertAll": true, "Delete": true,
 	"InsertOp": true, "DeleteOp": true, "Masks": true, "Inserts": true,
 	"Shapes": true, "ShapeFlushes": true, "WhenSet": true,
+	// The composition seams. Every package declares them, and a column
+	// named after one produced a package that did not compile.
+	"Scan": true, "Binder": true, "GetBinder": true, "PutBinder": true,
+	"FragOf": true, "Lowering": true, "StmtPieces": true,
+}
+
+// reservedFor reports whether n is a package-level identifier the package
+// generated for t declares.
+func reservedFor(t *schema.Table, n string) bool {
+	if reservedNames[n] {
+		return true
+	}
+	hasPK := len(t.PrimaryKey) > 0
+	switch n {
+	case "Table":
+		return hasPK
+	case "MutateKey":
+		return hasPK && versionCol(t) == nil
+	case "HardDelete", "Restore", "HardDeleteOp", "RestoreOp":
+		return hasPK && t.SoftDeletes()
+	case "ShardKeyOf":
+		return t.Sharded()
+	case "Descend", "Ascend":
+		parent, err := selfRefColumn(t)
+		return err == nil && parent != "" && len(t.PrimaryKey) == 1
+	}
+	return false
+}
+
+// handleName is the identifier of a column's typed handle: the column's
+// exported name, or — when the package already declares that name — the name
+// with Col appended. A column called query has the handle QueryCol, its
+// chained shorthands stay QueryEq and friends, and its Row field stays Query:
+// only the one package-level identifier that would collide moves.
+//
+// A function of the table and the column alone, because another table's
+// package names this handle too (a relation loader filters the child by its
+// foreign-key column), and the two must agree without consulting each other.
+func handleName(t *schema.Table, col string) string {
+	n := exportName(col)
+	if reservedFor(t, n) {
+		return n + "Col"
+	}
+	return n
+}
+
+// checkHandles refuses the collisions handleName cannot settle.
+func checkHandles(t *schema.Table, cols []colInfo) error {
+	types := map[string]bool{}
+	for _, c := range cols {
+		types[handleType(c)] = true
+	}
+	seen := map[string]string{}
+	for _, c := range cols {
+		h := handleName(t, c.Name())
+		if prev, ok := seen[h]; ok {
+			return fmt.Errorf(
+				"codegen: table %s columns %s and %s both generate the handle %s — "+
+					"rename one column with t.Col(&m.Field).Named(\"...\")",
+				t.Name, prev, c.Name(), h)
+		}
+		if types[h] {
+			return fmt.Errorf(
+				"codegen: table %s column %s generates the handle %s, which is also the "+
+					"type of a column handle in that package — rename the column with "+
+					"t.Col(&m.Field).Named(\"...\")",
+				t.Name, c.Name(), h)
+		}
+		seen[h] = c.Name()
+	}
+	return nil
 }
 
 var ops = []opDef{
@@ -492,7 +564,7 @@ func (g *gen) chained() {
 				continue
 			}
 			m := exportName(c.Name()) + op.m()
-			h := exportName(c.Name())
+			h := handleName(g.t, c.Name())
 			switch {
 			case op.list():
 				// A list operator, so the convenience form is variadic too.
@@ -696,7 +768,12 @@ func (g *gen) compile() {
 	g.p("// filter screen turned into 2^n statements.")
 	g.p("func ShapeFlushes() int {")
 	g.p("\treturn cache.Flushes() + offsetCache.Flushes() +")
-	g.p("\t\tcountCache.Flushes() + existsCache.Flushes()")
+	if g.hasWriteAll() {
+		g.p("\t\tcountCache.Flushes() + existsCache.Flushes() +")
+		g.p("\t\tupdAllCache.Flushes() + delAllCache.Flushes()")
+	} else {
+		g.p("\t\tcountCache.Flushes() + existsCache.Flushes()")
+	}
 	g.p("}")
 	g.p("")
 	g.p("// stmtFor compiles a read. LIMIT and LIMIT/OFFSET are different")

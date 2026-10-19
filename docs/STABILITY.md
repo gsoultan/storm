@@ -55,7 +55,8 @@ impossible; mixed-version generated trees are not a supported state.
    `NotAny`, typed column handles and their per-column shorthands,
    `Order`/`Limit`/`Offset`/`After`/`Unordered`, `All`/`AllInto`/`One`/
    `Count`/`Exists`, `Create`/`Mutate`/`Delete`, `InsertAll`, the `*Op`
-   constructors, plan types with `ChildLimit`/`ChildTop`/`ChildOrder`,
+   constructors, the set-based `UpdateAll`/`DeleteAll` and the upsert's
+   `Add…OnConflict` setters (both from v1.3.0), plan types with `ChildLimit`/`ChildTop`/`ChildOrder`,
    projection readers (`All<Name>`, `One<Name>`), aggregation readers
    (`All<Name>`, `All<Name>Into`), join readers (`All<Name>`), the semi- and
    anti-join composers (`<Parent>Having<Rel>`, `<Parent>NotHaving<Rel>`,
