@@ -132,6 +132,14 @@ type Schemer interface {
 	Schema(t *Table)
 }
 
+// Conversion is how a column's type change reads the value it held before;
+// see ColBuilder.ConvertFrom.
+type Conversion string
+
+// JSONText reads a text column holding JSON, as a list or a document kept
+// as text does, into a json, jsonb or array column.
+const JSONText Conversion = "json-text"
+
 // Action is a referential action for OnDelete/OnUpdate.
 type Action string
 

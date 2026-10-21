@@ -11,6 +11,7 @@
 package migrate
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/gsoultan/storm/schema"
@@ -25,6 +26,11 @@ type Change struct {
 	Destructive bool
 	// Why explains a destructive step, and is emitted as a comment.
 	Why string
+	// Object is the kind of thing the step adds, changes or drops: one of
+	// the Object constants, or "" for a step that is none of them, such as
+	// an enum's or a routine's. AutoOptions.Accept reads it to let through
+	// the destructive steps of one kind.
+	Object string
 	// NoTransaction means the statement cannot run inside a transaction
 	// block — CREATE INDEX CONCURRENTLY — and so cannot share a migration
 	// file with anything else under a runner that wraps each file in one.
@@ -45,6 +51,16 @@ type Change struct {
 	// applying a Plan as a single transaction has to do the same.
 	addsEnumValue bool
 }
+
+// The kinds of thing a Change works on, for Change.Object.
+const (
+	ObjectTable      = "table"
+	ObjectColumn     = "column"
+	ObjectIndex      = "index"
+	ObjectUnique     = "unique constraint"
+	ObjectCheck      = "check constraint"
+	ObjectForeignKey = "foreign key"
+)
 
 // NoTransactionMarker is the comment SQL puts above a change that must run
 // outside a transaction block, for a migration runner to act on.
@@ -187,9 +203,9 @@ func DiffFor(from, to *schema.Schema, dialect Dialect) (Plan, error) {
 		}
 		old := from.Table(t.Name)
 		if old == nil {
-			b.add(Change{SQL: b.sql(d.CreateTable(t))})
+			b.add(Change{SQL: b.sql(d.CreateTable(t)), Object: ObjectTable})
 			for _, fk := range t.ForeignKeys {
-				deferredFKs = append(deferredFKs, Change{SQL: d.AddForeignKey(t, fk)})
+				deferredFKs = append(deferredFKs, Change{SQL: d.AddForeignKey(t, fk), Object: ObjectForeignKey})
 			}
 			continue
 		}
@@ -227,6 +243,7 @@ func DiffFor(from, to *schema.Schema, dialect Dialect) (Plan, error) {
 		if to.Table(t.Name) == nil {
 			b.add(Change{
 				SQL:         d.DropTable(t),
+				Object:      ObjectTable,
 				Destructive: true,
 				Why:         "table " + t.Name + " is no longer in the model",
 			})
@@ -290,7 +307,7 @@ func diffTable(b *planner, old, cur *schema.Table) {
 	for _, c := range cur.Columns {
 		oc := old.Column(c.Name)
 		if oc == nil {
-			ch := Change{SQL: b.sql(d.AddColumn(cur, c))}
+			ch := Change{SQL: b.sql(d.AddColumn(cur, c)), Object: ObjectColumn}
 			if c.NotNull && c.Default == "" && c.Generated == "" && !c.Identity {
 				ch.Destructive = true
 				ch.Why = "adding NOT NULL column " + c.Name + " with no default fails if the table has rows"
@@ -305,6 +322,7 @@ func diffTable(b *planner, old, cur *schema.Table) {
 		if cur.Column(oc.Name) == nil {
 			b.add(Change{
 				SQL:         d.DropColumn(cur, oc),
+				Object:      ObjectColumn,
 				Destructive: true,
 				Why:         "column " + cur.Name + "." + oc.Name + " is no longer in the model",
 			})
@@ -354,8 +372,11 @@ func diffTable(b *planner, old, cur *schema.Table) {
 
 func diffColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
 	d := b.d
-	if !old.Type.Equal(cur.Type) {
-		ch := Change{SQL: b.sql(d.AlterColumnType(t, cur))}
+	retyped := !old.Type.Equal(cur.Type)
+	if retyped && cur.ConvertFrom != "" {
+		convertColumn(b, t, old, cur)
+	} else if retyped {
+		ch := Change{SQL: b.sql(d.AlterColumnType(t, cur)), Object: ObjectColumn}
 		if narrowing(old.Type, cur.Type) {
 			ch.Destructive = true
 			ch.Why = "narrowing " + cur.Name + " from " + old.Type.SQL() + " to " + cur.Type.SQL() + " can truncate"
@@ -372,24 +393,53 @@ func diffColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
 		if cur.NotNull {
 			b.add(Change{
 				SQL:         b.sql(d.SetNotNull(t, cur)),
+				Object:      ObjectColumn,
 				Destructive: true,
 				Why:         "making " + cur.Name + " NOT NULL fails if any existing row is NULL",
 			})
 		} else {
-			b.add(Change{SQL: b.sql(d.DropNotNull(t, cur))})
+			b.add(Change{SQL: b.sql(d.DropNotNull(t, cur)), Object: ObjectColumn})
 		}
 	}
-	if old.Default != cur.Default {
+	if old.Default != cur.Default && !(retyped && cur.ConvertFrom != "") {
 		if cur.Default == "" {
-			b.add(Change{SQL: d.DropDefault(t, cur)})
+			b.add(Change{SQL: d.DropDefault(t, cur), Object: ObjectColumn})
 		} else {
 			// One change, not a drop and an add, even on a back end where the
 			// default is a CONSTRAINT and replacing one means both: see
 			// ddl_mssql.go's SetDefault. Which statements that takes is the
 			// renderer's business, and putting it here would make the shared
 			// loop emit a step PostgreSQL does not need.
-			b.add(Change{SQL: d.SetDefault(t, cur)})
+			b.add(Change{SQL: d.SetDefault(t, cur), Object: ObjectColumn})
 		}
+	}
+}
+
+// convertColumn changes cur's type with the conversion its ConvertFrom
+// names. The old default goes first and the new one comes after: the old
+// type's default seldom casts to the new type, and PostgreSQL refuses the
+// change when it does not. The type change is not marked destructive, as
+// the model says how every value converts and a value that does not fails
+// the migration rather than losing data.
+func convertColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
+	d := b.d
+	if d.ConvertHelper == nil {
+		b.sql("", fmt.Errorf("migrate: %s.%s: ConvertFrom is PostgreSQL-only", t.Name, cur.Name))
+		return
+	}
+	if old.Default != "" {
+		b.add(Change{SQL: d.DropDefault(t, old), Object: ObjectColumn})
+	}
+	create, drop := d.ConvertHelper(cur)
+	if create != "" {
+		b.add(Change{SQL: create})
+	}
+	b.add(Change{SQL: b.sql(d.AlterColumnType(t, cur)), Object: ObjectColumn})
+	if drop != "" {
+		b.add(Change{SQL: drop})
+	}
+	if cur.Default != "" {
+		b.add(Change{SQL: d.SetDefault(t, cur), Object: ObjectColumn})
 	}
 }
 
@@ -398,6 +448,7 @@ func diffNamed[T any](b *planner, t *schema.Table, old, cur []T,
 	name func(T) string, add func(T) Change, drop func(T) Change,
 	same func(a, b T) bool, kind string) {
 
+	add, drop = objectOf(add, kind), objectOf(drop, kind)
 	byName := map[string]T{}
 	for _, o := range old {
 		byName[name(o)] = o
@@ -424,6 +475,15 @@ func diffNamed[T any](b *planner, t *schema.Table, old, cur []T,
 			x.Why = kind + " " + name(o) + " on " + t.Name + " is no longer in the model"
 			b.add(x)
 		}
+	}
+}
+
+// objectOf marks the changes render returns as working on object.
+func objectOf[T any](render func(T) Change, object string) func(T) Change {
+	return func(x T) Change {
+		c := render(x)
+		c.Object = object
+		return c
 	}
 }
 

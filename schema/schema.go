@@ -317,7 +317,17 @@ type Column struct {
 	// They change what the generator emits, not what the database enforces.
 	Immutable bool
 	Version   bool
+
+	// ConvertFrom says how a change of the column's type reads the value
+	// it held before, for a change PostgreSQL has no cast for; "" uses the
+	// cast. It is a migration fact: nothing renders it until the type
+	// changes, so it can stay in a model after every database has moved.
+	ConvertFrom string
 }
+
+// ConvertJSONText is Column.ConvertFrom for a text column of JSON — a list
+// or document a model once kept as text — becoming json, jsonb or an array.
+const ConvertJSONText = "json-text"
 
 // Unique is a table-level uniqueness constraint.
 type Unique struct {

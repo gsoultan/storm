@@ -130,6 +130,21 @@ plan *after* taking it so late replicas find nothing to do, applies every
 transactional step in one transaction, and bounds `lock_timeout` so a queued
 `ALTER TABLE` cannot stall the table's other readers.
 
+`AllowDestructive` is all or nothing; `Accept` takes the steps one kind at a
+time, by `Change.Object`. A model whose reviewed plan replaces indexes and
+CHECK constraints accepts those and still has a dropped column refused:
+
+```go
+migrate.AutoOptions{Accept: func(c migrate.Change) bool {
+        return c.Object == migrate.ObjectIndex || c.Object == migrate.ObjectCheck
+}}
+```
+
+A type change PostgreSQL has no cast for, such as JSON kept in a text column
+becoming an array or jsonb, says how to read the old value with
+`t.Col(&m.Tags).ConvertFrom(storm.JSONText)`; automigrate and `storm diff`
+then write the `USING` conversion themselves.
+
 `storm diff` remains the right path for a production database with data in it.
 See [ADR-0001's amendment](adr/0001-schema-source-of-truth.md#amendment-2026-09-07--automigrate).
 
