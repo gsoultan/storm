@@ -84,6 +84,12 @@ type ddl struct {
 	SetNotNull      func(*schema.Table, *schema.Column) (string, error)
 	DropNotNull     func(*schema.Table, *schema.Column) (string, error)
 
+	// ConvertHelper returns the statements that create and drop what
+	// AlterColumnType's conversion of c's old value calls, or two empty
+	// strings when it calls nothing. Nil where the back end has no
+	// Column.ConvertFrom, which the planner then refuses.
+	ConvertHelper func(*schema.Column) (create, drop string)
+
 	SetDefault  func(*schema.Table, *schema.Column) string
 	DropDefault func(*schema.Table, *schema.Column) string
 
@@ -157,9 +163,13 @@ func postgresDDL() ddl {
 		},
 
 		AlterColumnType: func(t *schema.Table, c *schema.Column) (string, error) {
-			return "ALTER TABLE " + q(t.Name) + " ALTER COLUMN " + q(c.Name) +
-				" TYPE " + c.Type.SQL() + ";", nil
+			s := "ALTER TABLE " + q(t.Name) + " ALTER COLUMN " + q(c.Name) + " TYPE " + c.Type.SQL()
+			if using := pgUsing(c); using != "" {
+				s += " USING " + using
+			}
+			return s + ";", nil
 		},
+		ConvertHelper: pgConvertHelper,
 		SetNotNull: func(t *schema.Table, c *schema.Column) (string, error) {
 			return "ALTER TABLE " + q(t.Name) + " ALTER COLUMN " + q(c.Name) + " SET NOT NULL;", nil
 		},
@@ -238,4 +248,66 @@ func postgresDDL() ddl {
 		}
 	}
 	return d
+}
+
+// pgUsing is the USING clause that converts c's old value to its type, or ""
+// for PostgreSQL's own cast.
+//
+// For ConvertJSONText, ” and the JSON null become the column's default,
+// and anything else is parsed as JSON: a json or jsonb column takes the
+// document as it is, and an array column its elements through the helper
+// pgConvertHelper creates, since USING refuses a subquery and only a
+// function can unnest. A value that is not JSON, or not an array for an
+// array column, fails the statement, and so the migration with nothing
+// applied.
+func pgUsing(c *schema.Column) string {
+	if c.ConvertFrom != schema.ConvertJSONText {
+		return ""
+	}
+	src := "nullif(nullif(btrim(" + pgddl.Ident(c.Name) + "::text), ''), 'null')"
+	fallback := "NULL"
+	if c.Default != "" {
+		fallback = "(" + c.Default + ")::" + c.Type.SQL()
+	}
+	switch {
+	case c.Type.Array:
+		return "coalesce(" + pgJSONArrayFunc(c.Type) + "(" + src + "), " + fallback + ")"
+	case c.Type.Name == schema.TypeJSON || c.Type.Name == schema.TypeJSONB:
+		return "coalesce(" + src + "::" + c.Type.SQL() + ", " + fallback + ")"
+	default:
+		return "" // the builder refuses ConvertFrom on any other type
+	}
+}
+
+// pgConvertHelper creates and drops the function pgUsing calls for an array
+// column: one per element type, in pg_temp, so it is private to the session
+// running the migration and leaves nothing in the schema should the drop
+// never run.
+func pgConvertHelper(c *schema.Column) (create, drop string) {
+	if c.ConvertFrom != schema.ConvertJSONText || !c.Type.Array {
+		return "", ""
+	}
+	fn := pgJSONArrayFunc(c.Type)
+	elem := c.Type
+	elem.Array = false
+	create = "CREATE OR REPLACE FUNCTION " + fn + "(s text) RETURNS " + c.Type.SQL() +
+		" LANGUAGE sql IMMUTABLE STRICT AS $storm$\n" +
+		"    SELECT coalesce(array_agg(e::" + elem.SQL() + " ORDER BY n), '{}')\n" +
+		"      FROM jsonb_array_elements_text(s::jsonb) WITH ORDINALITY AS x(e, n)\n" +
+		"$storm$;"
+	return create, "DROP FUNCTION " + fn + "(text);"
+}
+
+// pgJSONArrayFunc names the helper that reads JSON text into an array of t's
+// element type.
+func pgJSONArrayFunc(t schema.Type) string {
+	elem := t
+	elem.Array = false
+	name := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '_'
+	}, strings.ToLower(elem.SQL()))
+	return "pg_temp.storm_json_" + name
 }

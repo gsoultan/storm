@@ -65,6 +65,13 @@ type AutoOptions struct {
 	// Auto returns *DestructiveError and applies nothing at all.
 	AllowDestructive bool
 
+	// Accept, if set, lets through each destructive step it returns true
+	// for, as AllowDestructive does every one: a model whose reviewed plan
+	// replaces indexes, say, can accept the steps whose Object is
+	// ObjectIndex and still have a dropped column refused. Auto refuses the
+	// plan while any destructive step is left that Accept turned down.
+	Accept func(Change) bool
+
 	// Concurrently builds and drops indexes on tables that already exist with
 	// CREATE/DROP INDEX CONCURRENTLY, which does not block the table's writers.
 	// Those steps cannot share the transaction, so they run after it, one at a
@@ -133,15 +140,12 @@ type DestructiveError struct {
 	// Plan is the whole plan, so the message can show a destructive step in the
 	// company of the steps that would have preceded it.
 	Plan Plan
+
+	accept func(Change) bool // AutoOptions.Accept, which Destructive leaves out
 }
 
 func (e *DestructiveError) Error() string {
-	var steps []Change
-	for _, c := range e.Plan.Changes {
-		if c.Destructive {
-			steps = append(steps, c)
-		}
-	}
+	steps := e.Destructive()
 	var b strings.Builder
 	fmt.Fprintf(&b, "automigrate refused: %d step(s) can lose data, and nothing was applied.\n", len(steps))
 	b.WriteString("Read them, then either set AutoOptions.AllowDestructive or take the\n")
@@ -152,11 +156,12 @@ func (e *DestructiveError) Error() string {
 	return b.String()
 }
 
-// Destructive lets errors.As callers reach the steps without parsing the text.
+// Destructive lets errors.As callers reach the steps without parsing the
+// text: the destructive steps AutoOptions.Accept did not accept.
 func (e *DestructiveError) Destructive() []Change {
 	var steps []Change
 	for _, c := range e.Plan.Changes {
-		if c.Destructive {
+		if c.Destructive && (e.accept == nil || !e.accept(c)) {
 			steps = append(steps, c)
 		}
 	}
@@ -266,8 +271,8 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 		o.logf("storm: schema %s already matches the model", ns)
 		return res, nil
 	}
-	if plan.Destructive() && !o.AllowDestructive {
-		return res, &DestructiveError{Plan: plan}
+	if refused := (&DestructiveError{Plan: plan, accept: o.Accept}); !o.AllowDestructive && len(refused.Destructive()) > 0 {
+		return res, refused
 	}
 
 	// The plan splits three ways, and the order of the three is the whole point.

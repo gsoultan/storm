@@ -434,6 +434,31 @@ func (b *ColBuilder) Comment(s string) *ColBuilder { b.c.sc.Comment = s; return 
 func (b *ColBuilder) NotNull() *ColBuilder         { b.c.sc.NotNull = true; return b }
 func (b *ColBuilder) Nullable() *ColBuilder        { b.c.sc.NotNull = false; return b }
 
+// ConvertFrom says how to read the value the column held before its type
+// changed, for a change PostgreSQL has no cast for. JSONText reads a text
+// column of JSON into the column's json, jsonb or array type: an array
+// becomes the array, element by element, and ” or 'null' becomes the
+// column's default (NULL with none). A value that is not JSON, or not an
+// array for an array column, fails the migration, which then applies
+// nothing.
+//
+// It is PostgreSQL-only, renders nothing while the type stays the same,
+// and so can stay in the model after every database has moved.
+func (b *ColBuilder) ConvertFrom(c Conversion) *ColBuilder {
+	t := b.c.sc.Type
+	switch {
+	case c != JSONText:
+		b.t.errs.add(fmt.Errorf("%s.%s: ConvertFrom(%q): the conversion storm knows is storm.JSONText",
+			b.t.out.Name, b.c.sc.Name, string(c)))
+	case !t.Array && t.Name != schema.TypeJSON && t.Name != schema.TypeJSONB:
+		b.t.errs.add(fmt.Errorf("%s.%s: ConvertFrom(storm.JSONText) reads JSON into a json, jsonb or array column, not %s",
+			b.t.out.Name, b.c.sc.Name, t.SQL()))
+	default:
+		b.c.sc.ConvertFrom = schema.ConvertJSONText
+	}
+	return b
+}
+
 // AcknowledgeNoFK records why this AnyRef gives up referential integrity.
 //
 // Required: Build refuses an AnyRef without one. The reason travels into the
