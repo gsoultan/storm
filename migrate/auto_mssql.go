@@ -111,8 +111,8 @@ func AutoMSSQL(ctx context.Context, dial MSSQLDialer, want *schema.Schema, o Aut
 		o.logf("storm: schema %s already matches the model", ns)
 		return res, nil
 	}
-	if plan.Destructive() && !o.AllowDestructive {
-		return res, &DestructiveError{Plan: plan}
+	if refused := (&DestructiveError{Plan: plan, accept: o.Accept}); !o.AllowDestructive && len(refused.Destructive()) > 0 {
+		return res, refused
 	}
 	for _, ch := range plan.Changes {
 		if ch.NoTransaction {

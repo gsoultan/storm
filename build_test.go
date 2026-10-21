@@ -434,3 +434,41 @@ func TestDuplicateColumnIsRefused(t *testing.T) {
 		}
 	}
 }
+
+type convertModel struct {
+	storm.Model
+	Tags []string
+	Doc  storm.JSON
+	Note string
+}
+
+func (m *convertModel) Schema(t *storm.Table) {
+	t.Col(&m.Tags).ConvertFrom(storm.JSONText)
+	t.Col(&m.Doc).ConvertFrom(storm.JSONText)
+}
+
+func TestBuild_ConvertFromJSONText(t *testing.T) {
+	s, err := storm.Build(&convertModel{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tags", "doc"} {
+		if c := s.Tables[0].Column(name); c == nil || c.ConvertFrom != "json-text" {
+			t.Errorf("%s: ConvertFrom = %+v, want json-text", name, c)
+		}
+	}
+}
+
+type convertScalarModel struct {
+	storm.Model
+	Note string
+}
+
+func (m *convertScalarModel) Schema(t *storm.Table) { t.Col(&m.Note).ConvertFrom(storm.JSONText) }
+
+func TestBuild_ConvertFromRefusesAScalar(t *testing.T) {
+	_, err := storm.Build(&convertScalarModel{})
+	if err == nil || !strings.Contains(err.Error(), "json, jsonb or array column") {
+		t.Fatalf("ConvertFrom(JSONText) on a text column: %v", err)
+	}
+}

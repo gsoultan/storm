@@ -78,7 +78,29 @@ func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schem
 	if _, err := c.Exec(ctx, pgddl.Create(s)); err != nil {
 		return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
 	}
-	return schemapg.Introspect(ctx, c, scratch)
+	norm, err := schemapg.Introspect(ctx, c, scratch)
+	if err != nil {
+		return nil, err
+	}
+	carryConversions(norm, s)
+	return norm, nil
+}
+
+// carryConversions copies each column's ConvertFrom from the model onto its
+// normalised form. The catalogue has no place for it, so the round trip
+// through the scratch namespace would otherwise lose it.
+func carryConversions(norm, model *schema.Schema) {
+	for _, t := range model.Tables {
+		nt := norm.Table(t.Name)
+		if nt == nil {
+			continue
+		}
+		for _, c := range t.Columns {
+			if nc := nt.Column(c.Name); c.ConvertFrom != "" && nc != nil {
+				nc.ConvertFrom = c.ConvertFrom
+			}
+		}
+	}
 }
 
 // For computes the plan that takes the live `target` namespace to `want`,

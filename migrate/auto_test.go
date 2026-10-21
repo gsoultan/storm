@@ -5,6 +5,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -752,4 +753,155 @@ func TestAutoPool_RestoresTheSessionEvenWhenAConcurrentStepFails(t *testing.T) {
 		t.Errorf("a FAILED concurrent step left search_path=%q on the pooled connection", path)
 	}
 	_ = c
+}
+
+// A column of JSON kept as text moves to arrays and jsonb with every value
+// kept, its old default out of the way, and nothing left in the schema.
+func TestAuto_ConvertsJSONTextColumns(t *testing.T) {
+	ns := "storm_auto_convert"
+	ctx, c := conn(t, ns)
+
+	text := func(name string) *schema.Column {
+		cl := col(name, "text", true)
+		cl.Default = "''"
+		return cl
+	}
+	before := users(text("tags"), text("sizes"), text("doc"))
+	if _, err := migrate.Auto(ctx, c, before, migrate.AutoOptions{Schema: ns}); err != nil {
+		t.Fatalf("setup Auto: %v", err)
+	}
+	rows := []string{
+		`INSERT INTO ` + ns + `.users VALUES ('00000000-0000-0000-0000-000000000001', 'a', '["x","y \"z\"","a,b"]', '[3,1,2]', '{"k":[1]}')`,
+		`INSERT INTO ` + ns + `.users VALUES ('00000000-0000-0000-0000-000000000002', 'b', '', 'null', '')`,
+		`INSERT INTO ` + ns + `.users VALUES ('00000000-0000-0000-0000-000000000003', 'c', '[]', ' [] ', 'null')`,
+	}
+	for _, r := range rows {
+		if _, err := c.Exec(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tags := col("tags", "text", true)
+	tags.Type.Array, tags.Default, tags.ConvertFrom = true, "'{}'::text[]", schema.ConvertJSONText
+	sizes := col("sizes", "int8", true)
+	sizes.Type.Array, sizes.Default, sizes.ConvertFrom = true, "'{}'::bigint[]", schema.ConvertJSONText
+	doc := col("doc", "jsonb", true)
+	doc.Default, doc.ConvertFrom = "'[]'::jsonb", schema.ConvertJSONText
+	after := users(tags, sizes, doc)
+	res, err := migrate.Auto(ctx, c, after, migrate.AutoOptions{Schema: ns})
+	if err != nil {
+		t.Fatalf("Auto: %v", err)
+	}
+	for _, ch := range res.Applied {
+		if ch.Destructive {
+			t.Fatalf("a declared conversion was marked destructive: %s", ch.SQL)
+		}
+	}
+
+	type row struct {
+		tags  []string
+		sizes []int64
+		doc   string
+	}
+	want := map[string]row{
+		"a": {[]string{"x", `y "z"`, "a,b"}, []int64{3, 1, 2}, `{"k": [1]}`},
+		"b": {[]string{}, []int64{}, `[]`},
+		"c": {[]string{}, []int64{}, `[]`},
+	}
+	got, err := c.Query(ctx, `SELECT email, tags, sizes, doc::text FROM `+ns+`.users`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+	for got.Next() {
+		var email string
+		var r row
+		if err := got.Scan(&email, &r.tags, &r.sizes, &r.doc); err != nil {
+			t.Fatal(err)
+		}
+		w := want[email]
+		if !slices.Equal(r.tags, w.tags) || !slices.Equal(r.sizes, w.sizes) || r.doc != w.doc {
+			t.Errorf("%s: got %q %v %s, want %q %v %s", email, r.tags, r.sizes, r.doc, w.tags, w.sizes, w.doc)
+		}
+	}
+	if err := got.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	var helpers int
+	if err := c.QueryRow(ctx, `SELECT count(*) FROM pg_proc WHERE proname LIKE 'storm_json_%'`).Scan(&helpers); err != nil {
+		t.Fatal(err)
+	}
+	if helpers != 0 {
+		t.Fatalf("%d conversion helper(s) left behind", helpers)
+	}
+	again, err := migrate.Auto(ctx, c, after, migrate.AutoOptions{Schema: ns})
+	if err != nil {
+		t.Fatalf("second Auto: %v", err)
+	}
+	if !again.Empty() {
+		t.Fatalf("second Auto applied:\n%s", again.SQL())
+	}
+}
+
+// A value a conversion cannot read fails the migration, which applies none
+// of it, rather than losing the value.
+func TestAuto_ConversionOfABadValueAppliesNothing(t *testing.T) {
+	ns := "storm_auto_convert_bad"
+	ctx, c := conn(t, ns)
+
+	if _, err := migrate.Auto(ctx, c, users(col("tags", "text", false)), migrate.AutoOptions{Schema: ns}); err != nil {
+		t.Fatalf("setup Auto: %v", err)
+	}
+	if _, err := c.Exec(ctx, `INSERT INTO `+ns+`.users VALUES ('00000000-0000-0000-0000-000000000001', 'a', '{"not":"a list"}')`); err != nil {
+		t.Fatal(err)
+	}
+	tags := col("tags", "text", false)
+	tags.Type.Array, tags.ConvertFrom = true, schema.ConvertJSONText
+	if _, err := migrate.Auto(ctx, c, users(tags), migrate.AutoOptions{Schema: ns}); err == nil {
+		t.Fatal("converting a JSON object to an array succeeded")
+	}
+	var v string
+	if err := c.QueryRow(ctx, `SELECT tags FROM `+ns+`.users`).Scan(&v); err != nil {
+		t.Fatalf("the column moved anyway: %v", err)
+	}
+}
+
+// Accept lets the destructive steps of one kind through and still refuses
+// the rest.
+func TestAuto_AcceptLetsThroughOneKind(t *testing.T) {
+	ns := "storm_auto_accept"
+	ctx, c := conn(t, ns)
+
+	indexed := func(extra ...*schema.Column) *schema.Schema {
+		s := users(extra...)
+		s.Tables[0].Indexes = []*schema.Index{{Name: "ix_users_email", Columns: []schema.IndexColumn{{Name: "email"}}}}
+		return s
+	}
+	if _, err := migrate.Auto(ctx, c, indexed(col("nickname", "text", false)), migrate.AutoOptions{Schema: ns}); err != nil {
+		t.Fatalf("setup Auto: %v", err)
+	}
+	indexes := migrate.AutoOptions{Schema: ns, Accept: func(ch migrate.Change) bool { return ch.Object == migrate.ObjectIndex }}
+
+	// Dropping the index and the column: the column is still refused.
+	_, err := migrate.Auto(ctx, c, users(), indexes)
+	var de *migrate.DestructiveError
+	if !errors.As(err, &de) {
+		t.Fatalf("dropping a column with only indexes accepted returned %v, want *DestructiveError", err)
+	}
+	if steps := de.Destructive(); len(steps) != 1 || steps[0].Object != migrate.ObjectColumn {
+		t.Fatalf("refused %v, want only the column", steps)
+	}
+
+	// Dropping only the index goes through.
+	if _, err := migrate.Auto(ctx, c, users(col("nickname", "text", false)), indexes); err != nil {
+		t.Fatalf("dropping an accepted index: %v", err)
+	}
+	var n int
+	if err := c.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'ix_users_email'`, ns).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("the accepted index drop did not happen")
+	}
 }
