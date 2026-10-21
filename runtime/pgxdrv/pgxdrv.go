@@ -47,6 +47,18 @@ func (e Pool) Exec(ctx context.Context, sql string, args []any) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
+// DatabaseSize reports the bytes the pool's database takes on disk, as
+// pg_database_size counts them, for a usage or health page. It is a catalog
+// function, which no model and no builder has words for, so the adapter
+// that knows it is talking to PostgreSQL asks.
+func (e Pool) DatabaseSize(ctx context.Context) (int64, error) {
+	var n int64
+	if err := e.P.QueryRow(ctx, "SELECT pg_database_size(current_database())").Scan(&n); err != nil {
+		return 0, classify(err)
+	}
+	return n, nil
+}
+
 type rows struct{ pgx.Rows }
 
 func (r rows) Close() { r.Rows.Close() }

@@ -14,6 +14,31 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Type changes PostgreSQL has no cast for, and reviewed index replacements
+
+A model that once kept lists and documents as JSON in text can now move them to
+arrays and jsonb through automigrate and `storm diff`, with no hand-written
+migration:
+
+```go
+t.Col(&m.Labels).Default("'{}'").ConvertFrom(storm.JSONText)
+```
+
+- **`ColBuilder.ConvertFrom(storm.JSONText)`** reads the old text through
+  `USING`: an array becomes the array, element by element, and `''` or `null`
+  becomes the new default. The old default is dropped first and the new one set
+  after, because PostgreSQL refuses a type change whose default does not cast.
+  Arrays go through a `pg_temp` function the plan creates and drops beside the
+  change, since `USING` refuses a subquery. A value that is not JSON fails the
+  migration, which applies nothing; so the step is not destructive. It renders
+  nothing while the type stays the same, and is PostgreSQL-only.
+- **`migrate.Change.Object`** says what a step works on (`ObjectIndex`,
+  `ObjectCheck`, `ObjectColumn`, ...), and **`AutoOptions.Accept`** lets through
+  the destructive steps it returns true for. A server whose reviewed plan
+  replaces indexes accepts `ObjectIndex` and still has a dropped column refused.
+- **`pgxdrv.Pool.DatabaseSize`** reports `pg_database_size`, for a usage page
+  that would otherwise need a raw statement.
+
 ### Transactions you write once, for every database
 
 `runtime.Tx` and `runtime.DB` name the two things a caller holds when they own

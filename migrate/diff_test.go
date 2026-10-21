@@ -228,3 +228,31 @@ func TestPlan_ConcurrentlyDropsConcurrently(t *testing.T) {
 		}
 	}
 }
+
+// A declared conversion renders the default dance and the helper around the
+// type change, none of it destructive, and is refused off PostgreSQL.
+func TestDiff_ConvertFromJSONText(t *testing.T) {
+	old := col("tags", "text", true)
+	old.Default = "''"
+	cur := col("tags", "int8", true)
+	cur.Type.Array, cur.Default, cur.ConvertFrom = true, "'{}'::bigint[]", schema.ConvertJSONText
+	p := migrate.Diff(sch(tbl("t", col("id", "uuid", true), old)), sch(tbl("t", col("id", "uuid", true), cur)))
+	sql := p.SQL()
+	for _, want := range []string{
+		`ALTER TABLE "t" ALTER COLUMN "tags" DROP DEFAULT;`,
+		`CREATE OR REPLACE FUNCTION pg_temp.storm_json_int8(s text) RETURNS int8[]`,
+		`ALTER TABLE "t" ALTER COLUMN "tags" TYPE int8[] USING coalesce(pg_temp.storm_json_int8(nullif(nullif(btrim("tags"::text), ''), 'null')), ('{}'::bigint[])::int8[]);`,
+		`DROP FUNCTION pg_temp.storm_json_int8(text);`,
+		`ALTER TABLE "t" ALTER COLUMN "tags" SET DEFAULT '{}'::bigint[];`,
+	} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("plan lacks %s\n%s", want, sql)
+		}
+	}
+	if p.Destructive() {
+		t.Errorf("a declared conversion is marked destructive:\n%s", sql)
+	}
+	if _, err := migrate.DiffFor(sch(tbl("t", col("id", "uuid", true), old)), sch(tbl("t", col("id", "uuid", true), cur)), migrate.MSSQL); err == nil {
+		t.Error("SQL Server rendered a PostgreSQL-only conversion")
+	}
+}

@@ -95,3 +95,23 @@ func scanBool(t *testing.T, rows runtime.Rows) bool {
 	}
 	return v[0][0] == 't' || v[0][0] == 1
 }
+
+func TestPoolDatabaseSize(t *testing.T) {
+	dsn := os.Getenv("STORM_DSN")
+	if dsn == "" {
+		t.Skip("STORM_DSN unset")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	n, err := pgxdrv.Pool{P: pool}.DatabaseSize(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n <= 0 {
+		t.Fatalf("DatabaseSize = %d, want the bytes of a real database", n)
+	}
+}
