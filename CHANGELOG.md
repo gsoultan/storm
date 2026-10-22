@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-09-25
+updated: 2026-10-21
 ---
 
 # Changelog
@@ -12,7 +12,7 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v1.4.0 — 2026-10-21
 
 ### Type changes PostgreSQL has no cast for, and reviewed index replacements
 
@@ -38,6 +38,8 @@ t.Col(&m.Labels).Default("'{}'").ConvertFrom(storm.JSONText)
   replaces indexes accepts `ObjectIndex` and still has a dropped column refused.
 - **`pgxdrv.Pool.DatabaseSize`** reports `pg_database_size`, for a usage page
   that would otherwise need a raw statement.
+
+## v1.3.0 — 2026-10-19
 
 ### Transactions you write once, for every database
 
