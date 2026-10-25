@@ -267,6 +267,11 @@ type Relation struct {
 	// Nullable is true when the link is optional (`*Profile`, a nullable FK).
 	Nullable bool
 
+	// NoFK is the reason the model gave for leaving this reference's foreign
+	// key out (t.Col(&x.Field).AcknowledgeNoFK), or empty when the database
+	// enforces it. Only ever set on the owning side.
+	NoFK string
+
 	// Link is the join table of a MANY-TO-MANY, empty for every other shape.
 	//
 	// Neither side of a many-to-many carries a key, so Column means nothing
