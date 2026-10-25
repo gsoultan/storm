@@ -178,6 +178,12 @@ func Build(models ...any) (*schema.Schema, error) {
 		}
 	}
 
+	// Pass 5a: the references a model left unconstrained lose their foreign
+	// key. After pass 5, so the column was indexed as any reference is.
+	for _, mi := range b.ordered {
+		b.dropAcknowledgedFKs(mi)
+	}
+
 	// Pass 5b: on a soft-delete table, uniqueness means "among the rows that
 	// are alive". Runs before index validation so what it produces is checked
 	// like any other index, and before nothing else depends on it.
@@ -1533,4 +1539,45 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// dropAcknowledgedFKs removes the foreign key of each reference the model
+// declared AcknowledgeNoFK on, and records the reason on its relation.
+//
+// A referential action or a constraint name on the same column is refused
+// rather than ignored: both describe a constraint the model also says is not
+// there, and silently keeping one of the two statements is a guess about which
+// the author meant.
+func (b *builder) dropAcknowledgedFKs(mi *modelInfo) {
+	if len(mi.tbl.noFK) == 0 {
+		return
+	}
+	drop := map[string]string{}
+	for c, reason := range mi.tbl.noFK {
+		drop[c.sc.Name] = reason
+	}
+	kept := mi.tbl.out.ForeignKeys[:0]
+	for _, fk := range mi.tbl.out.ForeignKeys {
+		reason, ok := "", false
+		if len(fk.Columns) == 1 {
+			reason, ok = drop[fk.Columns[0]]
+		}
+		if !ok {
+			kept = append(kept, fk)
+			continue
+		}
+		if fk.OnDelete != "" || fk.OnUpdate != "" || fk.Name != "" || fk.Deferrable {
+			b.errs.add(fmt.Errorf(
+				"%s.%s: AcknowledgeNoFK and OnDelete, OnUpdate, ConstraintName or Deferrable on one column — "+
+					"those describe the foreign key AcknowledgeNoFK leaves out; keep one or the other",
+				mi.tbl.out.Name, fk.Columns[0]))
+		}
+		for _, r := range mi.tbl.out.Relations {
+			if r.Owner && r.Column == fk.Columns[0] {
+				r.NoFK = reason
+			}
+		}
+	}
+	clear(mi.tbl.out.ForeignKeys[len(kept):])
+	mi.tbl.out.ForeignKeys = kept
 }

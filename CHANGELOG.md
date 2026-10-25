@@ -12,6 +12,18 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### A reference to a model can leave its foreign key out
+
+`t.Col(&h.Instance).AcknowledgeNoFK("<why>")` on an ordinary reference keeps the
+field typed (`Instance ProcessInstance`), keeps the column, its type and its
+index, and keeps the relation for loading and joins, but declares no foreign
+key. Until now a model that deliberately left a key off had to hold a bare
+`storm.UUID` instead. The reason is recorded on `schema.Relation.NoFK`.
+Combining it with `OnDelete`, `OnUpdate` or `ConstraintName` on one column fails
+the build. Additive; nothing that built before builds differently.
+
 ## v1.4.0 — 2026-10-21
 
 ### Type changes PostgreSQL has no cast for, and reviewed index replacements

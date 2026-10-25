@@ -88,7 +88,7 @@ func (u *User) Schema(t *storm.Table) {
 | `.Named(s)` | override the derived column name |
 | `.Comment(s)` | a `COMMENT ON COLUMN` |
 | `.Index()` | a single-column index |
-| `.AcknowledgeNoFK(why)` | required on `storm.AnyRef` — see §6 |
+| `.AcknowledgeNoFK(why)` | required on `storm.AnyRef`; on a reference to a model, leaves its foreign key out — see §6 |
 
 ### On the table
 
@@ -366,6 +366,30 @@ Without `AcknowledgeNoFK`, generation fails naming referential integrity and
 pointing at `OneOf`. The reason is not paperwork: an `AnyRef` is the one place
 storm cannot give the guarantee it gives everywhere else, and a cost you
 acknowledged is different from one you did not notice.
+
+**A reference without its foreign key.** The same call on an ordinary reference
+keeps the field typed and leaves the constraint out. The column is still
+`instance_id`, of the target's key type, indexed, and the relation still loads
+and joins; only the `FOREIGN KEY` is gone:
+
+```go
+type RetentionHold struct {
+    storm.Model
+    Instance ProcessInstance
+}
+
+func (h *RetentionHold) Schema(t *storm.Table) {
+    t.Col(&h.Instance).AcknowledgeNoFK("placing a hold must not wait on the instance's row lock")
+}
+```
+
+It is for the reference a database deliberately does not enforce: a key whose
+check would make a write wait on a lock the referenced row's owner holds, or a
+row meant to outlive what it names. The alternative was a bare `uuid` field,
+which loses the type, the join and the reason all at once. The reason lands on
+the relation (`schema.Relation.NoFK`). Combining it with `OnDelete`, `OnUpdate`
+or `ConstraintName` on the same column fails the build, since those describe the
+key it leaves out.
 
 ## 7. Declared reads
 
