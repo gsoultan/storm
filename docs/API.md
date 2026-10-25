@@ -767,7 +767,9 @@ refused rather than guessed at:
   write those instead. An `Order` is ignored, as `Count` ignores it.
 - **A soft-delete table** behaves as its per-row functions do: `UpdateAll`
   writes only live rows, and `DeleteAll` *marks* matching live rows and removes
-  nothing. A set-based purge is `storm.SQLExec`.
+  nothing. `HardDeleteAll` is the set-based purge: one `DELETE` over every row
+  the query matches, marked or not, as `HardDelete` is for one row. It takes
+  the same refusals.
 
 A versioned table's version is bumped on every row written and checked on
 none — a set-based write has no version it read. A `Mut` with nothing assigned
