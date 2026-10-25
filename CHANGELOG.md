@@ -24,6 +24,15 @@ key. Until now a model that deliberately left a key off had to hold a bare
 Combining it with `OnDelete`, `OnUpdate` or `ConstraintName` on one column fails
 the build. Additive; nothing that built before builds differently.
 
+### A set-based purge for soft-delete tables
+
+A soft-delete table's package gains `Query.HardDeleteAll`: one `DELETE` over
+every row the query matches, marked deleted or not, the set-based form of the
+per-row `HardDelete`. `DeleteAll` still only marks. It refuses what `DeleteAll`
+refuses: no predicate (`runtime.ErrUnfilteredWrite`), and `Limit`, `Offset` or a
+row lock (`runtime.ErrPagedWrite`). Until now that purge had to be written as
+`storm.SQLExec`. Additive; tables without soft delete are unchanged.
+
 ## v1.4.0 — 2026-10-21
 
 ### Type changes PostgreSQL has no cast for, and reviewed index replacements
