@@ -48,6 +48,11 @@ type Table struct {
 	// automatic index. Keyed by the column being built rather than by name, so
 	// a later t.Col(...).Named() cannot strand the entry.
 	noAutoIdx map[*col]bool
+	// noFK are the reference columns whose foreign key the model leaves out,
+	// with the reason it gave. The key is built like any other and removed
+	// after the indexes are, so the column keeps its index and every
+	// declaration that looks the key up still finds it while Schema runs.
+	noFK map[*col]string
 }
 
 // fkDecl is one t.ForeignKey(...).References(...) call.
@@ -459,24 +464,43 @@ func (b *ColBuilder) ConvertFrom(c Conversion) *ColBuilder {
 	return b
 }
 
-// AcknowledgeNoFK records why this AnyRef gives up referential integrity.
+// AcknowledgeNoFK records why this field gives up referential integrity.
 //
-// Required: Build refuses an AnyRef without one. The reason travels into the
-// schema and out through `storm diff`, so the decision is visible where it is
-// reviewed rather than only where it was made.
+// On a storm.AnyRef it is required: Build refuses an AnyRef without one.
+//
+// On an ordinary reference (`Instance ProcessInstance`) it leaves the foreign
+// key out and keeps everything else: the field is still typed, the column is
+// still `instance_id` of the target's key type, the relation still loads and
+// joins, and the column is still indexed unless NoIndex says otherwise. It is
+// for the reference a database deliberately does not constrain — typically
+// because enforcing it would make a write wait on a lock the referenced row's
+// owner holds, or because the row is meant to outlive what it refers to.
+//
+// Either way the reason travels into the schema and out through `storm diff`,
+// so the decision is visible where it is reviewed rather than only where it
+// was made.
 func (b *ColBuilder) AcknowledgeNoFK(reason string) *ColBuilder {
+	name := b.c.sc.Name
+	if b.c.anyRef != nil {
+		name = b.c.anyRef.Field
+	}
 	switch {
-	case b.c.anyRef == nil:
+	case b.c.anyRef == nil && (!b.c.isRel || b.t.fkFor(b.c.sc.Name) == nil):
 		b.t.errs.add(fmt.Errorf(
-			"%s.%s: AcknowledgeNoFK is only meaningful on a storm.AnyRef field — "+
-				"an ordinary reference already has a foreign key",
+			"%s.%s: AcknowledgeNoFK is only meaningful on a storm.AnyRef field or a reference "+
+				"to another model — this column has no foreign key to leave out",
 			b.t.out.Name, b.c.sc.Name))
 	case strings.TrimSpace(reason) == "":
 		b.t.errs.add(fmt.Errorf(
 			"%s.%s: AcknowledgeNoFK needs a reason — it is what a reviewer reads in the diff",
-			b.t.out.Name, b.c.anyRef.Field))
-	default:
+			b.t.out.Name, name))
+	case b.c.anyRef != nil:
 		b.c.anyRef.Reason = reason
+	default:
+		if b.t.noFK == nil {
+			b.t.noFK = map[*col]string{}
+		}
+		b.t.noFK[b.c] = reason
 	}
 	return b
 }
