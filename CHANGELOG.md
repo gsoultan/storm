@@ -12,7 +12,7 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v1.6.0 — 2026-10-26
 
 ### An aggregation can read the soft-deleted rows, where the model declares it
 
