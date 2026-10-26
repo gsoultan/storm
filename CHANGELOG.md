@@ -33,6 +33,14 @@ refuses: no predicate (`runtime.ErrUnfilteredWrite`), and `Limit`, `Offset` or a
 row lock (`runtime.ErrPagedWrite`). Until now that purge had to be written as
 `storm.SQLExec`. Additive; tables without soft delete are unchanged.
 
+### Array parameters leave room for the parameters after them
+
+The fast `uuid[]`, `int8[]` and `text[]` encoders grew pgx's parameter buffer to
+the array's exact size, so the next scalar parameter (a `LIMIT`, a key) made
+append double the buffer and copy the whole array again. They now leave 256
+bytes of room. For 2,000 ids followed by one `LIMIT`: 38.1 µs to 13.8 µs,
+96 KiB to 40 KiB and 3 to 2 allocations per encode. No change on the wire.
+
 ## v1.4.0 — 2026-10-21
 
 ### Type changes PostgreSQL has no cast for, and reviewed index replacements

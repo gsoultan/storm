@@ -27,6 +27,28 @@ import (
 // everything else — scanning, text format, other Go types — to the codec pgx
 // already installed.
 
+// paramHeadroom is the spare room an array encoder leaves at the end of the
+// buffer it grows.
+//
+// pgx encodes a statement's parameters into one buffer, one after another, so
+// an array is rarely the last thing in it: a LIMIT, a timestamp or a key often
+// follows. Grown to the array's exact size, the buffer was full the moment the
+// array was written, and the next eight-byte parameter made append double it —
+// copying the whole array again to add eight bytes. A few hundred bytes of room
+// covers the scalar parameters that follow and the rest of the Bind message.
+const paramHeadroom = 256
+
+// growFor makes room for need more bytes in buf, plus paramHeadroom, in one
+// allocation, and returns buf unchanged when it already has the room.
+func growFor(buf []byte, need int) []byte {
+	if cap(buf)-len(buf) >= need {
+		return buf
+	}
+	grown := make([]byte, len(buf), len(buf)+need+paramHeadroom)
+	copy(grown, buf)
+	return grown
+}
+
 // arrayHeaderInto writes the five fixed header words of a one-dimensional
 // array with no NULLs. Shared so the two plans below cannot drift apart.
 func arrayHeaderInto(buf []byte, elemOID uint32, n int) []byte {
@@ -63,11 +85,7 @@ func (int8ArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
 	// Every element is a 4-byte length plus 8 bytes, so the size is exact and
 	// the buffer grows once.
 	need := 20 + len(vs)*12
-	if cap(buf)-len(buf) < need {
-		grown := make([]byte, len(buf), len(buf)+need)
-		copy(grown, buf)
-		buf = grown
-	}
+	buf = growFor(buf, need)
 	buf = arrayHeaderInto(buf, pgtype.Int8OID, len(vs))
 	for _, v := range vs {
 		buf = binary.BigEndian.AppendUint32(buf, 8)
@@ -105,11 +123,7 @@ func (textArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
 	for i := range vs {
 		need += 4 + len(vs[i])
 	}
-	if cap(buf)-len(buf) < need {
-		grown := make([]byte, len(buf), len(buf)+need)
-		copy(grown, buf)
-		buf = grown
-	}
+	buf = growFor(buf, need)
 	buf = arrayHeaderInto(buf, pgtype.TextOID, len(vs))
 	for i := range vs {
 		buf = binary.BigEndian.AppendUint32(buf, uint32(len(vs[i])))
