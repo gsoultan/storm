@@ -72,8 +72,12 @@ func TestEveryReadOfASoftDeleteTableIsGuarded(t *testing.T) {
 	// runtime.SpliceTree is the UNGUARDED splice. On a soft-delete table every
 	// read must use SpliceTreeWhere instead, so any bare SpliceTree( here is a
 	// read that would return deleted rows.
+	//
+	// One statement is unguarded on purpose: HardDeleteAll's purge, which
+	// removes matched rows whether or not they are marked. It is not a read,
+	// and it is named here so that nothing else can borrow the exception.
 	for i, line := range strings.Split(src, "\n") {
-		if strings.Contains(line, "runtime.SpliceTree(") {
+		if strings.Contains(line, "runtime.SpliceTree(") && !strings.Contains(line, "purgeAllCache.Put(") {
 			t.Errorf("line %d reads without the soft-delete predicate:\n  %s", i+1, strings.TrimSpace(line))
 		}
 	}

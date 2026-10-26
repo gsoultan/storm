@@ -2060,8 +2060,9 @@ func (g *gen) hasWriteAll() bool { return len(pkCols(g.t)) > 0 }
 // A soft-delete table is handled the way its reads are: both statements carry
 // the liveness predicate ahead of the caller's, so UpdateAll cannot write to a
 // row every read here says is gone, and DeleteAll MARKS rows rather than
-// removing them — the same choice Delete makes. Purging is not set-based on
-// purpose; HardDelete is per row, and a purge is storm.SQLExec.
+// removing them — the same choice Delete makes. HardDeleteAll is the purge,
+// spelled out: one DELETE over every row the query matches, marked or not,
+// as HardDelete is for one row.
 func (g *gen) writeAll(upd []colInfo) {
 	soft := g.t.SoftDeletes()
 	hasVersion := versionCol(g.t) != nil
@@ -2074,6 +2075,9 @@ func (g *gen) writeAll(upd []colInfo) {
 	g.p("var (")
 	g.p("\tupdAllCache = runtime.NewTreeCache()")
 	g.p("\tdelAllCache = runtime.NewTreeCache()")
+	if soft {
+		g.p("\tpurgeAllCache = runtime.NewTreeCache()")
+	}
 	g.p(")")
 	g.p("")
 	g.p("// writeAllErr is what UpdateAll and DeleteAll refuse.")
@@ -2214,6 +2218,47 @@ func (g *gen) writeAll(upd []colInfo) {
 	g.p("\t}")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
 	g.p("\tst := delAllStmtFor(q.preds(&buf))")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn 0, st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("\treturn ex.Exec(ctx, st.SQL, q.bindPreds(b))")
+	g.p("}")
+	g.p("")
+	if soft {
+		g.writeHardDeleteAll(ex)
+	}
+}
+
+// writeHardDeleteAll emits the set-based purge of a soft-delete table.
+//
+// It does not carry the liveness predicate: like HardDelete it removes a row
+// whether or not it was marked, which is what a purge of a table whose rows
+// are deliberately not kept means. The caller's predicate is still required,
+// and Limit, Offset and a row lock are still refused, for the reasons
+// DeleteAll gives.
+func (g *gen) writeHardDeleteAll(ex string) {
+	g.p("func purgeAllStmtFor(toks []runtime.Tok) *runtime.Stmt {")
+	g.p("\tif st := purgeAllCache.Get(toks); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\treturn purgeAllCache.Put(toks, runtime.SpliceTree(deletePrefix, toks, lowering, \"\"))")
+	g.p("}")
+	g.p("")
+	g.p("// HardDeleteAll removes every row the query matches for real, in ONE")
+	g.p("// statement, marked deleted or not, and reports how many it removed —")
+	g.p("// the set-based HardDelete. DeleteAll only marks them.")
+	g.p("//")
+	g.p("// The query must have a predicate — runtime.ErrUnfilteredWrite")
+	g.p("// otherwise — and must not carry Limit, Offset or a row lock:")
+	g.p("// runtime.ErrPagedWrite. Order is ignored, as it is by Count.")
+	g.p("func (q Query) HardDeleteAll(ctx context.Context, ex %s) (int64, error) {", ex)
+	g.p("\tif err := q.writeAllErr(); err != nil {")
+	g.p("\t\treturn 0, err")
+	g.p("\t}")
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\tst := purgeAllStmtFor(q.preds(&buf))")
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn 0, st.Err")
 	g.p("\t}")
