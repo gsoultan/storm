@@ -239,6 +239,19 @@ func describeExpr(e schema.Expr) string {
 	return "the same expression"
 }
 
+// AcrossDeleted makes this aggregation read the soft-deleted rows as well as
+// the live ones. A call site still cannot widen any read; the model widens
+// this one, by name, where a reviewer sees it — the same shape as
+// Table.UniqueAcrossDeleted. It is for a figure that has to count every row
+// that ever existed, such as the highest version number a unique key has
+// handed out. The table must declare SoftDelete.
+func (b *AggregateBuilder) AcrossDeleted() *AggregateBuilder {
+	if !b.dead {
+		b.agg.AcrossDeleted = true
+	}
+	return b
+}
+
 // Rollup turns the grouping into ROLLUP(...): every prefix of the grouping
 // columns plus a grand total, in one pass instead of one query per level.
 //

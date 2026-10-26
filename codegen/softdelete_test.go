@@ -32,6 +32,13 @@ func (u *sdUser) Schema(t *storm.Table) {
 	t.Unique(&u.Email)
 }
 
+// Aggregates declares one ordinary aggregation and one that reads the marked
+// rows too, so the guard test below can tell them apart.
+func (u *sdUser) Aggregates(a *storm.Aggregates) {
+	a.Named("Live").Count("Users")
+	a.Named("Ever").AcrossDeleted().Count("Users")
+}
+
 func buildSoftDelete(t *testing.T) *schema.Schema {
 	t.Helper()
 	s, err := storm.Build(&sdUser{})
@@ -73,11 +80,14 @@ func TestEveryReadOfASoftDeleteTableIsGuarded(t *testing.T) {
 	// read must use SpliceTreeWhere instead, so any bare SpliceTree( here is a
 	// read that would return deleted rows.
 	//
-	// One statement is unguarded on purpose: HardDeleteAll's purge, which
-	// removes matched rows whether or not they are marked. It is not a read,
-	// and it is named here so that nothing else can borrow the exception.
+	// Two statements are unguarded on purpose, and each is named here so that
+	// nothing else can borrow the exception: HardDeleteAll's purge, which
+	// removes matched rows whether or not they are marked and is not a read;
+	// and the "Ever" aggregation, which the model declared AcrossDeleted.
 	for i, line := range strings.Split(src, "\n") {
-		if strings.Contains(line, "runtime.SpliceTree(") && !strings.Contains(line, "purgeAllCache.Put(") {
+		if strings.Contains(line, "runtime.SpliceTree(") &&
+			!strings.Contains(line, "purgeAllCache.Put(") &&
+			!strings.Contains(line, "runtime.SpliceTree(everPrefix,") {
 			t.Errorf("line %d reads without the soft-delete predicate:\n  %s", i+1, strings.TrimSpace(line))
 		}
 	}
@@ -85,9 +95,11 @@ func TestEveryReadOfASoftDeleteTableIsGuarded(t *testing.T) {
 		"runtime.SpliceTreeWhere(selectPrefix, softDeleteWhere,",
 		"runtime.SpliceTreeWhere(existsPrefix, softDeleteWhere,",
 		"runtime.SpliceTreeWhere(countPrefix, softDeleteWhere,",
+		"runtime.SpliceTreeWhere(livePrefix, softDeleteWhere,",
+		"runtime.SpliceTree(everPrefix,",
 	} {
 		if !strings.Contains(src, want) {
-			t.Errorf("missing guarded read: %s", want)
+			t.Errorf("missing read: %s", want)
 		}
 	}
 }
@@ -283,6 +295,7 @@ func TestSoftDeleteBehaviourAgainstPostgres(t *testing.T) {
 		"TestHardDeleteActuallyRemoves",
 		"TestDeleteAllMarksMatchingLiveRows",
 		"TestUpdateAllSkipsDeletedRows",
+		"TestOnlyAnAggregateDeclaredAcrossDeletedCountsMarkedRows",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)

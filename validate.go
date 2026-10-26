@@ -21,6 +21,13 @@ import (
 // wrong: `row_number() OVER (ORDER BY placed_at)` next to
 // `GROUP BY date_trunc('day', placed_at)` looks reasonable and is not.
 func validateAggregate(tbl *schema.Table, agg *schema.Aggregate) error {
+	if agg.AcrossDeleted && !tbl.SoftDeletes() {
+		return fmt.Errorf(
+			"%s: aggregate %q is declared AcrossDeleted, but the table does not "+
+				"soft-delete — every row it holds is already read, so the "+
+				"declaration says nothing",
+			tbl.Name, agg.Name)
+	}
 	for _, p := range agg.Params {
 		if p.Type.Name == "" {
 			return fmt.Errorf(
