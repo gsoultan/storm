@@ -208,6 +208,23 @@ t.UniqueAcrossDeleted(&u.ExternalRef)   // a real constraint, over every row
 
 `t.Index(...).Unique().AcrossDeleted()` does the same for an index.
 
+### Reading the deleted rows, where the model says so
+
+A call site has no way to widen a read past the marked rows. Some figures
+have to count them all the same — the highest version number a unique key
+has handed out, which must never be reissued after a delete. The model
+declares that once, on a named aggregation:
+
+```go
+func (d *Definition) Aggregates(a *storm.Aggregates) {
+        a.Named("HighestVersion").AcrossDeleted().Max(&d.Version, "Version")
+}
+```
+
+`AllHighestVersion` then reads every row, marked or not; every other read of
+the table still leaves the marked rows out. A table without `SoftDelete`
+refuses the declaration, since it would say nothing.
+
 ### Cross-table reads
 
 Declared joins, aggregates, fetch plans, unions, top-N batch loads, `EXISTS`

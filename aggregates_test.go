@@ -102,6 +102,15 @@ func (m *dupGroup) Aggregates(a *storm.Aggregates) {
 	b.Count("N")
 }
 
+type acrossNothing struct {
+	storm.Model
+	Name string
+}
+
+func (m *acrossNothing) Aggregates(a *storm.Aggregates) {
+	a.Named("Ever").AcrossDeleted().Count("N")
+}
+
 // PostgreSQL has no sum(text), no max(uuid) and no min(bool). Left to the
 // server these are "function max(uuid) does not exist" — raised from a report
 // that may only run at month end, months after the line was written. Build
@@ -119,6 +128,7 @@ func TestAggregateDeclarationsAreCheckedAtBuildTime(t *testing.T) {
 		{"two aggregates share a name", &dupName{}, []string{"declared twice"}},
 		{"output is not an identifier", &badIdent{}, []string{"identifier"}},
 		{"grouped by a column twice", &dupGroup{}, []string{"twice"}},
+		{"across deleted on a table that deletes for real", &acrossNothing{}, []string{"AcrossDeleted", "soft-delete"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
