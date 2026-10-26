@@ -12,7 +12,7 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## v1.5.0 — 2026-10-26
 
 ### A reference to a model can leave its foreign key out
 
