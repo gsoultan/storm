@@ -57,6 +57,20 @@ type relPlan struct {
 	LinkRowType string
 }
 
+// mayDangle reports whether a to-one reference may name a row that is not
+// there. Without a foreign key nothing stops the target from being deleted,
+// or from living in another database, so a missing target is an answer — the
+// loaded field is a pointer left nil — and not a broken constraint.
+func (p relPlan) mayDangle() bool {
+	return !p.rel.ToMany && p.rel.NoFK != ""
+}
+
+// targetOptional reports whether a to-one plan loads its target into a
+// pointer: the key may be NULL, or the target may be missing.
+func (p relPlan) targetOptional() bool {
+	return p.KeyNullable || p.mayDangle()
+}
+
 // isLink reports whether this plan loads through a join table.
 func (p relPlan) isLink() bool { return p.LinkPkg != "" }
 
@@ -427,7 +441,7 @@ func planField(m planMemberT) string {
 	if m.rel.ToMany {
 		return name + " []" + elem
 	}
-	if m.KeyNullable {
+	if m.targetOptional() {
 		return name + " *" + elem
 	}
 	return name + " " + elem
@@ -655,10 +669,14 @@ func (g *gen) emitMemberLoader(q, fn, rowType, parentTable string, m planMemberT
 	}
 	g.p("\t\tj, ok := by[key]")
 	g.p("\t\tif !ok {")
-	g.p("\t\t\treturn fmt.Errorf(\"storm: %%s references a missing %%s row\", %q, %q)",
-		parentTable, m.child.Name)
+	if m.mayDangle() {
+		g.p("\t\t\tcontinue // no foreign key: the row it names may be gone")
+	} else {
+		g.p("\t\t\treturn fmt.Errorf(\"storm: %%s references a missing %%s row\", %q, %q)",
+			parentTable, m.child.Name)
+	}
 	g.p("\t\t}")
-	if m.KeyNullable {
+	if m.targetOptional() {
 		g.p("\t\tout[i].%s = &targets[j]", field)
 	} else {
 		g.p("\t\tout[i].%s = targets[j]", field)
@@ -1053,11 +1071,21 @@ func (g *gen) emitToOnePlan(p relPlan) {
 	g.p("// %sRow is %s with its %s loaded.", p.Name, p.parent.Name, p.rel.Field)
 	g.p("type %sRow struct {", p.Name)
 	g.p("\t%s.Row", p.ParentPkg)
-	if p.KeyNullable {
+	switch {
+	case p.KeyNullable && p.mayDangle():
+		g.p("\t// A pointer because the link is optional and nothing keeps its target")
+		g.p("\t// there: nil means the row has no %s, or the column has no foreign", p.rel.Field)
+		g.p("\t// key and the row it names is gone.")
+		g.p("\t%s *%s.Row", exportName(p.rel.Field), p.ChildPkg)
+	case p.KeyNullable:
 		g.p("\t// A pointer because the link is optional. nil means the row has no")
 		g.p("\t// %s, which is different from having one that failed to load.", p.rel.Field)
 		g.p("\t%s *%s.Row", exportName(p.rel.Field), p.ChildPkg)
-	} else {
+	case p.mayDangle():
+		g.p("\t// A pointer because nothing keeps the target there: the column has no")
+		g.p("\t// foreign key. nil means the row it names is gone.")
+		g.p("\t%s *%s.Row", exportName(p.rel.Field), p.ChildPkg)
+	default:
 		g.p("\t%s %s.Row", exportName(p.rel.Field), p.ChildPkg)
 	}
 	g.p("}")
@@ -1131,11 +1159,15 @@ func (g *gen) emitToOnePlan(p relPlan) {
 	}
 	g.p("\t\tj, ok := by[key]")
 	g.p("\t\tif !ok {")
-	g.p("\t\t\t// A foreign key pointing at a row that is not there. The database")
-	g.p("\t\t\t// forbids it, so reaching this means the constraint was dropped.")
-	g.p("\t\t\treturn nil, fmt.Errorf(\"storm: %%s references a missing %%s row\", %q, %q)", p.parent.Name, p.child.Name)
+	if p.mayDangle() {
+		g.p("\t\t\tcontinue // no foreign key: the row it names may be gone")
+	} else {
+		g.p("\t\t\t// A foreign key pointing at a row that is not there. The database")
+		g.p("\t\t\t// forbids it, so reaching this means the constraint was dropped.")
+		g.p("\t\t\treturn nil, fmt.Errorf(\"storm: %%s references a missing %%s row\", %q, %q)", p.parent.Name, p.child.Name)
+	}
 	g.p("\t\t}")
-	if p.KeyNullable {
+	if p.targetOptional() {
 		g.p("\t\tout[i].%s = &targets[j]", exportName(p.rel.Field))
 	} else {
 		g.p("\t\tout[i].%s = targets[j]", exportName(p.rel.Field))

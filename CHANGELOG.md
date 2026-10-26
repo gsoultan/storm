@@ -12,6 +12,19 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### A plan over a reference with no foreign key loads a missing target as nil
+
+A reference declared `AcknowledgeNoFK` can name a row that is not there: it was
+deleted, or it lives in another database. Its plans — `XWith<Field>` and a named
+plan's member — now load it into a pointer and leave it nil when the row is
+missing. Before, the read failed with "references a missing row", an error
+that is right only where a foreign key makes the missing row impossible.
+
+Breaking for code that reads such a plan's field: it changes from `child.Row` to
+`*child.Row`. A reference with its foreign key generates as before.
+
 ## v1.6.0 — 2026-10-26
 
 ### An aggregation can read the soft-deleted rows, where the model declares it
