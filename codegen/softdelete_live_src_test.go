@@ -370,6 +370,42 @@ func TestDeleteAllMarksMatchingLiveRows(t *testing.T) {
 	}
 }
 
+// The set-based purge removes what it matches for real, marked or not, and
+// leaves what it did not match; it refuses what DeleteAll refuses.
+func TestHardDeleteAllRemovesMatchingRowsMarkedOrNot(t *testing.T) {
+	ctx := context.Background()
+	a := insert(t, "purge-a@example.com", "PurgeGone")
+	b := insert(t, "purge-b@example.com", "PurgeGone")
+	keep := insert(t, "purge-keep@example.com", "PurgeKept")
+	if err := sd.Delete(ctx, ex, b); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := sd.New().Where(sd.Name.Eq("PurgeGone")).HardDeleteAll(ctx, ex)
+	if err != nil {
+		t.Fatalf("HardDeleteAll: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("HardDeleteAll removed %d rows; one live and one marked row matched", n)
+	}
+	var stored int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM sd_users WHERE id = ANY($1)", [][16]byte{a, b}).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != 0 {
+		t.Errorf("HardDeleteAll left %d matched rows in the table", stored)
+	}
+	if ok, err := sd.New().Where(sd.ID.Eq(keep)).Exists(ctx, ex); err != nil || !ok {
+		t.Errorf("a row HardDeleteAll did not match was removed (%v)", err)
+	}
+	if _, err := sd.New().HardDeleteAll(ctx, ex); !errors.Is(err, runtime.ErrUnfilteredWrite) {
+		t.Errorf("an unfiltered HardDeleteAll: %v, want ErrUnfilteredWrite", err)
+	}
+	if _, err := sd.New().Where(sd.Name.Eq("PurgeKept")).Limit(1).HardDeleteAll(ctx, ex); !errors.Is(err, runtime.ErrPagedWrite) {
+		t.Errorf("a limited HardDeleteAll: %v, want ErrPagedWrite", err)
+	}
+}
+
 // A set-based update must not write through a row every read says is gone.
 func TestUpdateAllSkipsDeletedRows(t *testing.T) {
 	ctx := context.Background()
