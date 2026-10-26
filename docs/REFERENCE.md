@@ -391,6 +391,12 @@ the relation (`schema.Relation.NoFK`). Combining it with `OnDelete`, `OnUpdate`
 or `ConstraintName` on the same column fails the build, since those describe the
 key it leaves out.
 
+Without a key nothing keeps the target there, so a plan that loads one loads it
+into a pointer: `RetentionHoldWithInstanceRow.Instance` is a `*processinstance.Row`,
+nil when the row it names is gone. A reference with its key fails the plan on a
+missing target instead, because there that can only mean the constraint was
+dropped.
+
 ## 7. Declared reads
 
 The reads whose *shape* must be known at build time are declared on the model:
