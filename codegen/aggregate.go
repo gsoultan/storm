@@ -71,7 +71,9 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tif st := c.Get(toks); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	soft := g.t.SoftDeletes()
+	// An aggregation declared AcrossDeleted is the one read of a soft-delete
+	// table that leaves the predicate out, because its model said so.
+	soft := g.t.SoftDeletes() && !agg.AcrossDeleted
 	switch {
 	case len(agg.Params) > 0 && soft:
 		g.p("\t// The declared parameters spell $1..$%d in the prefix, so the", len(agg.Params))
@@ -84,8 +86,13 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 		g.p("\t// call-site predicates are numbered from there.")
 		g.p("\treturn c.Put(toks, runtime.SpliceTreeFrom(%sPrefix, toks, lowering, suffix, %d))",
 			low, len(agg.Params))
-	default:
+	case soft:
 		g.p("\treturn c.Put(toks, %s)", g.splice(low+"Prefix", "toks, lowering, suffix"))
+	default:
+		if g.t.SoftDeletes() {
+			g.p("\t// Declared AcrossDeleted: the marked rows are counted too.")
+		}
+		g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)
 	}
 	g.p("}")
 	g.p("")

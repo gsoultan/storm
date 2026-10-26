@@ -406,6 +406,26 @@ func TestHardDeleteAllRemovesMatchingRowsMarkedOrNot(t *testing.T) {
 	}
 }
 
+// An aggregation counts the live rows unless its model declared it
+// AcrossDeleted, and then it counts the marked ones as well.
+func TestOnlyAnAggregateDeclaredAcrossDeletedCountsMarkedRows(t *testing.T) {
+	ctx := context.Background()
+	insert(t, "across-live@example.com", "Across")
+	gone := insert(t, "across-gone@example.com", "Across")
+	if err := sd.Delete(ctx, ex, gone); err != nil {
+		t.Fatal(err)
+	}
+	q := sd.New().Where(sd.Name.Eq("Across"))
+	live, err := q.AllLive(ctx, ex)
+	if err != nil || len(live) != 1 || live[0].Users != 1 {
+		t.Errorf("AllLive = %+v (%v); want one group counting the 1 live row", live, err)
+	}
+	ever, err := q.AllEver(ctx, ex)
+	if err != nil || len(ever) != 1 || ever[0].Users != 2 {
+		t.Errorf("AllEver = %+v (%v); want one group counting both rows", ever, err)
+	}
+}
+
 // A set-based update must not write through a row every read says is gone.
 func TestUpdateAllSkipsDeletedRows(t *testing.T) {
 	ctx := context.Background()

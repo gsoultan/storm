@@ -62,6 +62,14 @@ type Aggregate struct {
 	// call-site Where it never varies, so it is rendered into the statement
 	// rather than bound.
 	Having *Cond
+
+	// AcrossDeleted reads the soft-deleted rows too. Every other read of a
+	// soft-delete table leaves them out and no call site can widen it; this
+	// is the one place a model says, once and in review, that a count or a
+	// maximum has to see every row — a version number that must never be
+	// reissued, say. Meaningless on a table without soft delete, and refused
+	// there.
+	AcrossDeleted bool
 }
 
 // GroupTerm is one grouping expression and the field it lands in.

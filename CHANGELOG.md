@@ -12,6 +12,17 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
+## Unreleased
+
+### An aggregation can read the soft-deleted rows, where the model declares it
+
+`a.Named(...).AcrossDeleted()` makes one declared aggregation read every row of
+a soft-delete table, marked or not, the way `UniqueAcrossDeleted` makes a
+constraint cover them. Call sites still cannot widen any read; the exception is
+written once, in the model. It is for figures such as the highest version a
+unique key has handed out. On a table without `SoftDelete` the build refuses
+it. Additive; every existing aggregation is generated as before.
+
 ## v1.5.0 — 2026-10-26
 
 ### A reference to a model can leave its foreign key out
