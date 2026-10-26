@@ -58,11 +58,7 @@ func (uuidArrayPlan) Encode(value any, buf []byte) ([]byte, error) {
 
 	// One grow for the whole array: the size is known exactly.
 	need := 20 + len(ids)*20
-	if cap(buf)-len(buf) < need {
-		grown := make([]byte, len(buf), len(buf)+need)
-		copy(grown, buf)
-		buf = grown
-	}
+	buf = growFor(buf, need)
 
 	buf = binary.BigEndian.AppendUint32(buf, 1)                // ndim
 	buf = binary.BigEndian.AppendUint32(buf, 0)                // hasnull
