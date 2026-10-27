@@ -953,7 +953,22 @@ var customerOrdersProbeQueryCache = runtime.NewTreeCache()
 
 func (h CustomerOrdersProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
-	toks := h.q.PredToks(buf[:0])
+	toks := h.tokens(buf[:0], count)
+	sel, cnt, limitSfx := customer.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := customerOrdersProbeQueryCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return customerOrdersProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, customerOrdersProbeQueryLowering, suffix)), toks
+}
+
+// tokens appends the composed stream to dst: the parent's predicates,
+// each probe, and — unless count — the parent's ordering.
+func (h CustomerOrdersProbeQuery) tokens(dst []runtime.Tok, count bool) []runtime.Tok {
+	toks := h.q.PredToks(dst)
 	stack := 0
 	if len(toks) > 0 {
 		stack = 1
@@ -978,15 +993,7 @@ func (h CustomerOrdersProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok
 	if !count {
 		toks = h.q.OrderToks(toks)
 	}
-	sel, cnt, limitSfx := customer.StmtPieces()
-	prefix, suffix := sel, limitSfx
-	if count {
-		prefix, suffix = cnt, ""
-	}
-	if st := customerOrdersProbeQueryCache.Get(toks); st != nil {
-		return st, toks
-	}
-	return customerOrdersProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, customerOrdersProbeQueryLowering, suffix)), toks
+	return toks
 }
 
 // bind returns the arguments in STREAM order: parent predicates, then
@@ -1159,7 +1166,22 @@ var orderLinesProbeQueryCache = runtime.NewTreeCache()
 
 func (h OrderLinesProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
-	toks := h.q.PredToks(buf[:0])
+	toks := h.tokens(buf[:0], count)
+	sel, cnt, limitSfx := order.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := orderLinesProbeQueryCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return orderLinesProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix)), toks
+}
+
+// tokens appends the composed stream to dst: the parent's predicates,
+// each probe, and — unless count — the parent's ordering.
+func (h OrderLinesProbeQuery) tokens(dst []runtime.Tok, count bool) []runtime.Tok {
+	toks := h.q.PredToks(dst)
 	stack := 0
 	if len(toks) > 0 {
 		stack = 1
@@ -1184,15 +1206,7 @@ func (h OrderLinesProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	if !count {
 		toks = h.q.OrderToks(toks)
 	}
-	sel, cnt, limitSfx := order.StmtPieces()
-	prefix, suffix := sel, limitSfx
-	if count {
-		prefix, suffix = cnt, ""
-	}
-	if st := orderLinesProbeQueryCache.Get(toks); st != nil {
-		return st, toks
-	}
-	return orderLinesProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix)), toks
+	return toks
 }
 
 // bind returns the arguments in STREAM order: parent predicates, then

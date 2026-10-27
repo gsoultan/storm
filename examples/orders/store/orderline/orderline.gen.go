@@ -1197,6 +1197,11 @@ func (q Query) OrderToks(dst []runtime.Tok) []runtime.Tok {
 	return append(dst, q.otoks[:q.no]...)
 }
 
+// Locked and Paged report a row lock and an Offset, which a statement
+// composed around this query's read may have no place for.
+func (q Query) Locked() bool { return q.lock != 0 }
+func (q Query) Paged() bool  { return q.offset != 0 }
+
 // BindPreds binds this query's predicate values into b, appending to v.
 func (q Query) BindPreds(b *Binder, v []any) []any {
 	return append(v, q.bindPreds(b)...)
@@ -1646,6 +1651,19 @@ var exprFrags = [nUpdatable]runtime.Frag{
 	{}, // unit_price has no server-side form
 }
 
+// addFrags adds a bound amount to a counter's own value. A column set
+// this way carries BOTH its dirty and its expr bit — a pair no setter
+// can otherwise produce, because each clears the other's — so the
+// statement key needs no third mask. A zero Frag means the column
+// cannot be added to.
+var addFrags = [nUpdatable]runtime.Frag{
+	{}, // updated_at cannot be added to
+	{}, // order_id cannot be added to
+	{}, // product_id cannot be added to
+	{A: "\"quantity\" = \"quantity\" + $", B: ""}, // quantity = its own value plus an amount
+	{}, // unit_price cannot be added to
+}
+
 // pkFrags addresses one row.
 var pkFrags = [1]runtime.Frag{
 	{A: "\"id\" = $", B: ""}, // id
@@ -1793,6 +1811,17 @@ func (m *Mut) SetQuantity(v int32) {
 func (m *Mut) IncQuantity() {
 	m.expr |= dQuantity
 	m.dirty &^= dQuantity
+}
+
+// AddQuantity adds n to the column's OWN value, in the database, for
+// the same reason IncQuantity does. It replaces any other assignment
+// to the column staged on m, as every setter does.
+//
+// Until the write, Row() holds n, not the column's value.
+func (m *Mut) AddQuantity(n int32) {
+	m.row.Quantity = n
+	m.dirty |= dQuantity
+	m.expr |= dQuantity
 }
 
 func (m *Mut) SetUnitPrice(v runtime.Decimal) {
@@ -2402,6 +2431,8 @@ func stmtForKey(k runtime.MaskKey, ret bool) *runtime.Stmt {
 		// An expression wins: a column set both ways cannot happen,
 		// because each setter clears the other's bit.
 		switch {
+		case k.Expr&k.Dirty&(1<<uint(i)) != 0:
+			set = append(set, addFrags[i])
 		case k.Expr&(1<<uint(i)) != 0:
 			set = append(set, exprFrags[i])
 		case k.Dirty&(1<<uint(i)) != 0:
@@ -2549,16 +2580,22 @@ func (q Query) writeAllErr() error {
 
 // updAllStmtFor compiles one (assignments, predicates) pair, once.
 func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
+	return updAllStmtIn(updAllCache, "", k, preds)
+}
+
+func updAllStmtIn(c *runtime.TreeCache, suffix string, k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
 	var key [25]runtime.Tok
 	key[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)
 	key[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)
 	n := 4 + copy(key[4:], preds)
-	if st := updAllCache.Get(key[:n]); st != nil {
+	if st := c.Get(key[:n]); st != nil {
 		return st
 	}
 	set := make([]runtime.Frag, 0, nUpdatable+1)
 	for i := 0; i < nUpdatable; i++ {
 		switch {
+		case k.Expr&k.Dirty&(1<<uint(i)) != 0:
+			set = append(set, addFrags[i])
 		case k.Expr&(1<<uint(i)) != 0:
 			set = append(set, exprFrags[i])
 		case k.Dirty&(1<<uint(i)) != 0:
@@ -2571,7 +2608,7 @@ func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
 	if head.Err != nil {
 		return head
 	}
-	return updAllCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, "", head.NArg))
+	return c.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, suffix, head.NArg))
 }
 
 // UpdateAll writes m's assigned columns to every row the query
@@ -2647,4 +2684,73 @@ func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error
 	b := binders.Get()
 	defer putBinder(b)
 	return ex.Exec(ctx, st.SQL, q.bindPreds(b))
+}
+
+// The step this table's UpdateAll is, and the statements written after
+// another table's step.
+var updStepCache = runtime.NewTreeCache()
+
+const stepReturning = ` RETURNING "id"`
+
+// UpdateAllStep is UpdateAll as a step: it writes when the statement
+// it is handed to runs, and that statement's write can count the rows it
+// wrote. It refuses what UpdateAll refuses, and nothing assigned is
+// refused with runtime.ErrNothingAssigned: a step that writes nothing
+// would count nothing for a reason nobody asked for.
+func (q Query) UpdateAllStep(m Mut) runtime.Step {
+	return func(run func(string, []any) error) error {
+		if err := q.writeAllErr(); err != nil {
+			return err
+		}
+		if m.dirty == 0 && m.expr == 0 {
+			return runtime.ErrNothingAssigned
+		}
+		var buf [21]runtime.Tok
+		st := updAllStmtIn(updStepCache, stepReturning, m.key(), q.preds(&buf))
+		if st.Err != nil {
+			return st.Err
+		}
+		b := binders.Get()
+		defer putBinder(b)
+		args := make([]any, 0, st.NArg)
+		for i := 0; i < nUpdatable; i++ {
+			if m.dirty&(1<<uint(i)) == 0 {
+				continue
+			}
+			switch i {
+			case 0:
+				args = append(args, m.row.UpdatedAt)
+			case 1:
+				args = append(args, m.row.OrderID)
+			case 2:
+				args = append(args, m.row.ProductID)
+			case 3:
+				args = append(args, m.row.Quantity)
+			case 4:
+				args = append(args, m.row.UnitPrice)
+			}
+		}
+		return run(st.SQL, append(args, q.bindPreds(b)...))
+	}
+}
+
+// ExistsStep is the existence probe as a step: at most one row, when
+// the query matches any. A write after it can act on whether it did.
+func (q Query) ExistsStep() runtime.Step {
+	return func(run func(string, []any) error) error {
+		if err := q.Err(); err != nil {
+			return err
+		}
+		if q.lock != 0 {
+			return errExistsLocked
+		}
+		var buf [21]runtime.Tok
+		st := existsStmtFor(q.preds(&buf))
+		if st.Err != nil {
+			return st.Err
+		}
+		b := binders.Get()
+		defer putBinder(b)
+		return run(st.SQL, q.bindPreds(b))
+	}
 }

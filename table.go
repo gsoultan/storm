@@ -870,6 +870,30 @@ func (t *Table) SoftDelete(fieldPtr any) *Table {
 	return t
 }
 
+// Takes generates Query.Take for this table: an UPDATE of exactly the rows a
+// read selects, returning them — the queue claim, with ForUpdateSkipLocked.
+// Opt-in, because most tables are not queues and their packages need not
+// carry it.
+func (t *Table) Takes() *Table { t.out.Takes = true; return t }
+
+// Tallies generates Tally and Query.UpdateAllAfter for this table: a write
+// that runs after another table's step in the same statement and moves this
+// table's counters by the rows the step had. Opt-in, for the same reason.
+func (t *Table) Tallies() *Table { t.out.Tallies = true; return t }
+
+// InsertsPer generates, in the context package, an INSERT … SELECT that fills
+// the to-one reference fieldPtr from the key of every row a query of the
+// referenced table selects: Insert<Model>Per<Field>.
+func (t *Table) InsertsPer(fieldPtr any) *Table {
+	name, err := t.resolveRel(fieldPtr)
+	if err != nil {
+		t.errs.add(fmt.Errorf("%s: InsertsPer: %w", t.out.Name, err))
+		return t
+	}
+	t.out.InsertSelects = append(t.out.InsertSelects, name)
+	return t
+}
+
 // UniqueAcrossDeleted declares uniqueness that a soft-delete table's marked
 // rows still take part in.
 //

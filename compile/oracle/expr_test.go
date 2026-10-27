@@ -319,6 +319,9 @@ func TestWriteFragments(t *testing.T) {
 	if a, _ := oracle.BumpFrag("version"); a != `"version" = "version" + 1` {
 		t.Errorf("BumpFrag = %s", a)
 	}
+	if a, _ := oracle.AddFrag("hits"); a != `"hits" = "hits" + :` {
+		t.Errorf("AddFrag = %s", a)
+	}
 	if got := oracle.RestoreSet("users", "deleted_at"); got != `UPDATE "users" SET "deleted_at" = NULL` {
 		t.Errorf("RestoreSet = %s", got)
 	}
