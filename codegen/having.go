@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"fmt"
+
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -124,7 +126,31 @@ func (g *gen) emitHaving(np havingSpec) {
 
 	g.p("func (h %s) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {", q)
 	g.p("	var buf [%d]runtime.Tok", g.composedBuf())
-	g.p("	toks := h.q.PredToks(buf[:0])")
+	g.p("	toks := h.tokens(buf[:0], count)")
+	g.p("	sel, cnt, limitSfx := %s.StmtPieces()", np.ParentPkg)
+	g.p("	prefix, suffix := sel, limitSfx")
+	g.p("	if count {")
+	g.p("		prefix, suffix = cnt, \"\"")
+	g.p("	}")
+	g.p("	if st := %sCache.Get(toks); st != nil {", lowerFirst(q))
+	g.p("		return st, toks")
+	g.p("	}")
+	// The parent's marked rows stay out, as they do from every read of its
+	// own package: a probe narrows the parent query, it does not widen it.
+	if np.ParentLive != "" {
+		g.p("	return %sCache.Put(toks, runtime.SpliceTreeWhere(prefix, %s, toks, %sLowering, suffix)), toks",
+			lowerFirst(q), lit(np.ParentLive), lowerFirst(q))
+	} else {
+		g.p("	return %sCache.Put(toks, runtime.SpliceTree(prefix, toks, %sLowering, suffix)), toks",
+			lowerFirst(q), lowerFirst(q))
+	}
+	g.p("}")
+	g.p("")
+
+	g.p("// tokens appends the composed stream to dst: the parent's predicates,")
+	g.p("// each probe, and — unless count — the parent's ordering.")
+	g.p("func (h %s) tokens(dst []runtime.Tok, count bool) []runtime.Tok {", q)
+	g.p("	toks := h.q.PredToks(dst)")
 	g.p("	stack := 0")
 	g.p("	if len(toks) > 0 {")
 	g.p("		stack = 1")
@@ -149,23 +175,7 @@ func (g *gen) emitHaving(np havingSpec) {
 	g.p("	if !count {")
 	g.p("		toks = h.q.OrderToks(toks)")
 	g.p("	}")
-	g.p("	sel, cnt, limitSfx := %s.StmtPieces()", np.ParentPkg)
-	g.p("	prefix, suffix := sel, limitSfx")
-	g.p("	if count {")
-	g.p("		prefix, suffix = cnt, \"\"")
-	g.p("	}")
-	g.p("	if st := %sCache.Get(toks); st != nil {", lowerFirst(q))
-	g.p("		return st, toks")
-	g.p("	}")
-	// The parent's marked rows stay out, as they do from every read of its
-	// own package: a probe narrows the parent query, it does not widen it.
-	if np.ParentLive != "" {
-		g.p("	return %sCache.Put(toks, runtime.SpliceTreeWhere(prefix, %s, toks, %sLowering, suffix)), toks",
-			lowerFirst(q), lit(np.ParentLive), lowerFirst(q))
-	} else {
-		g.p("	return %sCache.Put(toks, runtime.SpliceTree(prefix, toks, %sLowering, suffix)), toks",
-			lowerFirst(q), lowerFirst(q))
-	}
+	g.p("	return toks")
 	g.p("}")
 	g.p("")
 
@@ -278,6 +288,9 @@ type havingSpec struct {
 	// child's is in the headers; the parent's goes ahead of the caller's
 	// predicates, as every read of the parent's own package puts it.
 	ParentLive string
+	// ParentTable is the parent's table, which an INSERT … SELECT whose
+	// source it is names.
+	ParentTable string
 }
 
 // havingSpecs enumerates the composers for a context.
@@ -325,9 +338,177 @@ func havingSpecs(lw lowering, s *schema.Schema, tables []string) ([]havingSpec, 
 					string(liveIn(lw, s, child.Name, ""))),
 				NegHeader: lw.NotExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0],
 					string(liveIn(lw, s, child.Name, ""))),
-				ParentLive: string(liveIn(lw, s, t.Name, "")),
+				ParentLive:  string(liveIn(lw, s, t.Name, "")),
+				ParentTable: t.Name,
 			})
 		}
 	}
 	return out, nil
+}
+
+// INSERT … SELECT, composed in the context package as the semi-join is.
+//
+//	var ins item.Ins
+//	ins.SetBatchID(batch)
+//	ins.SetStatus("pending")
+//	n, err := store.InsertItemPerInstance(ctx, ex, ins,
+//	    instance.New().Where(instance.ProjectID.Eq(p)).Limit(10_000))
+//
+// One statement: one item row per instance the query selects, the reference
+// filled from the instance's key and every other assigned column carried
+// alike. Nothing is read into Go. The target's package knows its columns and
+// values (Ins.SelectHead), the source's its predicates, order and limit; the
+// splice numbers the read's placeholders on from the head's.
+
+// insertSelectFor names the pieces of one INSERT … SELECT: a reference rel of
+// table t filled from the rows a query of rel's target selects. fn is its
+// name, ref the reference column's insert bit, and splice the call that
+// splices the read onto the head, given the read's lowering.
+func insertSelectFor(lw lowering, s *schema.Schema, t *schema.Table, rel *schema.Relation) (
+	fn, tpkg, spkg string, ref int, splice func(lowering string) string, err error,
+) {
+	src := s.Table(rel.Target)
+	if tpkg, err = PackageName(t.GoName, t.Name); err != nil {
+		return
+	}
+	if spkg, err = PackageName(src.GoName, src.Name); err != nil {
+		return
+	}
+	fn = "Insert" + exportName(t.GoName) + "Per" + exportName(rel.Field)
+	ref = insertIndex(insertable(t), rel.Column)
+	keyFrom := lit(lw.KeyFrom(src.Name, src.PrimaryKey[0]))
+	live := string(liveIn(lw, s, src.Name, ""))
+	splice = func(lowering string) string {
+		if live != "" {
+			return fmt.Sprintf("runtime.SpliceTreeWhereFrom(head.SQL+%s, %s, toks, %s, limitSfx, head.NArg)",
+				keyFrom, lit(live), lowering)
+		}
+		return fmt.Sprintf("runtime.SpliceTreeFrom(head.SQL+%s, toks, %s, limitSfx, head.NArg)", keyFrom, lowering)
+	}
+	return
+}
+
+// insertSelects calls each for every INSERT … SELECT among tables whose
+// source is also among them.
+func insertSelects(lw lowering, s *schema.Schema, tables []string, each func(t *schema.Table, rel *schema.Relation) error) error {
+	in := map[string]bool{}
+	for _, t := range tables {
+		in[t] = true
+	}
+	for _, name := range tables {
+		t := s.Table(name)
+		if t == nil {
+			continue
+		}
+		for _, rel := range insertSelectRefs(lw, s, t) {
+			if !in[rel.Target] {
+				continue
+			}
+			if err := each(t, rel); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// emitInsertSelect writes the function over a plain query of the source.
+func (g *gen) emitInsertSelect(lw lowering, s *schema.Schema, t *schema.Table, rel *schema.Relation) error {
+	fn, tpkg, spkg, ref, splice, err := insertSelectFor(lw, s, t, rel)
+	if err != nil {
+		return err
+	}
+	cache := lowerFirst(fn) + "Cache"
+	g.p("var %s = runtime.NewTreeCache()", cache)
+	g.p("")
+	g.p("// %s inserts one %s row per row q selects — its", fn, t.Name)
+	g.p("// predicates, order and Limit apply — with %s set to that row's key", rel.Column)
+	g.p("// and every other column assigned on ins carried alike, in ONE")
+	g.p("// statement, and reports how many it inserted. Nothing is read into Go.")
+	g.p("// A query holding a row lock is refused with runtime.ErrPagedWrite, and so")
+	g.p("// is an Offset: neither has a place in the statement.")
+	g.p("func %s(ctx context.Context, ex %s, ins %s.Ins, q %s.Query) (int64, error) {", fn, g.execType(), tpkg, spkg)
+	g.p("	if err := q.Err(); err != nil {")
+	g.p("		return 0, err")
+	g.p("	}")
+	g.p("	if q.Locked() || q.Paged() {")
+	g.p("		return 0, runtime.ErrPagedWrite")
+	g.p("	}")
+	g.p("	var buf [%d]runtime.Tok", g.composedBuf())
+	g.p("	toks := q.OrderToks(q.PredToks(buf[:0]))")
+	g.p("	head, args := ins.SelectHead(%d)", ref)
+	g.p("	if head.Err != nil {")
+	g.p("		return 0, head.Err")
+	g.p("	}")
+	g.p("	mask := ins.Assigned() &^ (1 << %d)", ref)
+	g.p("	var key [%d]runtime.Tok", g.composedBuf()+2)
+	g.p("	key[0], key[1] = runtime.Tok(mask), runtime.Tok(mask>>32)")
+	g.p("	n := 2 + copy(key[2:], toks)")
+	g.p("	st := %s.Get(key[:n])", cache)
+	g.p("	if st == nil {")
+	g.p("		_, _, limitSfx := %s.StmtPieces()", spkg)
+	g.p("		st = %s.Put(key[:n], %s)", cache, splice(spkg+".Lowering()"))
+	g.p("	}")
+	g.p("	if st.Err != nil {")
+	g.p("		return 0, st.Err")
+	g.p("	}")
+	g.p("	pb := %s.GetBinder()", spkg)
+	g.p("	defer %s.PutBinder(pb)", spkg)
+	g.p("	args = q.BindPaging(pb, q.BindPreds(pb, args))")
+	g.p("	return ex.Exec(ctx, st.SQL, args)")
+	g.p("}")
+	g.p("")
+	return nil
+}
+
+// emitProbeInsertSelect writes the same INSERT … SELECT over a semi-join of
+// the source, as a method of its composer.
+func (g *gen) emitProbeInsertSelect(np havingSpec, lw lowering, s *schema.Schema, t *schema.Table, rel *schema.Relation) error {
+	fn, tpkg, spkg, ref, splice, err := insertSelectFor(lw, s, t, rel)
+	if err != nil {
+		return err
+	}
+	q := np.TypeName
+	cache := lowerFirst(q) + fn + "Cache"
+	g.p("var %s = runtime.NewTreeCache()", cache)
+	g.p("")
+	g.p("// %s is the package function of that name over this", fn)
+	g.p("// semi-join: one %s row per row it selects, in ONE statement.", t.Name)
+	g.p("func (h %s) %s(ctx context.Context, ex %s, ins %s.Ins) (int64, error) {", q, fn, g.execType(), tpkg)
+	g.p("	if err := h.err(); err != nil {")
+	g.p("		return 0, err")
+	g.p("	}")
+	g.p("	if h.q.Locked() || h.q.Paged() {")
+	g.p("		return 0, runtime.ErrPagedWrite")
+	g.p("	}")
+	g.p("	var buf [%d]runtime.Tok", g.composedBuf())
+	g.p("	toks := h.tokens(buf[:0], false)")
+	g.p("	head, args := ins.SelectHead(%d)", ref)
+	g.p("	if head.Err != nil {")
+	g.p("		return 0, head.Err")
+	g.p("	}")
+	g.p("	mask := ins.Assigned() &^ (1 << %d)", ref)
+	g.p("	var key [%d]runtime.Tok", g.composedBuf()+2)
+	g.p("	key[0], key[1] = runtime.Tok(mask), runtime.Tok(mask>>32)")
+	g.p("	n := 2 + copy(key[2:], toks)")
+	g.p("	st := %s.Get(key[:n])", cache)
+	g.p("	if st == nil {")
+	g.p("		_, _, limitSfx := %s.StmtPieces()", spkg)
+	g.p("		st = %s.Put(key[:n], %s)", cache, splice(lowerFirst(q)+"Lowering"))
+	g.p("	}")
+	g.p("	if st.Err != nil {")
+	g.p("		return 0, st.Err")
+	g.p("	}")
+	g.p("	pb := %s.GetBinder()", np.ParentPkg)
+	g.p("	defer %s.PutBinder(pb)", np.ParentPkg)
+	g.p("	bound, cbs := h.bind(pb, true)")
+	g.p("	defer func() {")
+	g.p("		for _, cb := range cbs {")
+	g.p("			%s.PutBinder(cb)", np.ChildPkg)
+	g.p("		}")
+	g.p("	}()")
+	g.p("	return ex.Exec(ctx, st.SQL, append(args, bound...))")
+	g.p("}")
+	g.p("")
+	return nil
 }

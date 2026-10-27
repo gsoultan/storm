@@ -22,6 +22,12 @@ var optional = map[string]string{
 	"CreateIndexConcurrently": "a back end with no non-blocking index build",
 	"DropIndexConcurrently":   "ditto",
 	"LockHint":                "a back end whose lock is a suffix rather than a hint",
+	"TakeOpen":                "a back end that cannot lock and limit inside an UPDATE's subquery",
+	"KeyFrom":                 "a back end with no INSERT … SELECT spelled yet",
+	"AddStepFrag":             "a back end with no data-modifying WITH",
+	"SubtractStepFrag":        "ditto",
+	"IfNoStepFrag":            "ditto",
+	"AndStepExists":           "ditto",
 }
 
 func TestEveryDialectFillsTheSeam(t *testing.T) {

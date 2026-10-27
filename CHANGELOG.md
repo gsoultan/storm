@@ -14,6 +14,48 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A write after a step, in one statement
+
+`Query.UpdateAllStep(m)` and `Query.ExistsStep()` make a `runtime.Step`: a
+write, or an existence probe, that runs ahead of another table's
+`Query.UpdateAllAfter(ctx, ex, step, m, t)` in one statement
+(`WITH "_storm_step" AS (…) UPDATE …`). The new per-table `Tally` says what
+the step's rows move (on a table whose `Schema` calls `t.Tallies()`): `Add…()`/`Subtract…()` by how many there were,
+`Set…IfNone(v)` only when there were none, and `OnlyIfAny()` to write nothing
+otherwise. It is how a child write and its parent's counters move together
+without a transaction around two round trips. PostgreSQL only;
+`runtime.SpliceSectionsFrom` and `runtime.HashString` support it, and `Tally`
+joins the reserved package names.
+
+### `INSERT … SELECT` from a query or a semi-join
+
+The context package gains `Insert<Table>Per<Field>(ctx, ex, ins, q)` for each
+owned to-one reference a table names with `t.InsertsPer(&field)`: one row per row
+`q` selects, the reference filled from its key and the other assigned columns
+of `ins` carried alike, in one statement that reads nothing into Go. Each
+semi-join composer of the target gains the same as a method. The table
+package's seams gain `Ins.SelectHead`, `Query.Locked` and `Query.Paged`.
+PostgreSQL only.
+
+### `Take`: an `UPDATE` of the rows a read selects
+
+`Query.Take(ctx, ex, m, dst)` writes `m` to the rows the query would return —
+predicates, order, `Limit` and row lock — and returns them as written, in one
+statement: `UPDATE … WHERE key IN (SELECT key … LIMIT n FOR UPDATE SKIP
+LOCKED) RETURNING …`. It is the queue claim without a transaction around a
+read and a write. A table asks for it with `t.Takes()`. PostgreSQL, one-column
+keys; `Offset` is refused.
+
+### `Add…(n)` on a counter
+
+A `NOT NULL` integer column's `Mut` gains `Add<Col>(n)`, which writes
+`col = col + $n` and so lands every concurrent writer's amount, as `Inc<Col>`
+does for one. It works in `Update`, `UpdateOp` and `UpdateAll`, and `Update`
+reads the new value back where the back end can return rows. The column is
+marked with both its dirty and its expression bit, a pair no other setter
+produces, so the statement cache key is unchanged. A table with no such column
+generates byte-for-byte as before.
+
 ### A semi-join leaves the parent's deleted rows out
 
 `XHavingY` and `XNotHavingY` on a soft-delete parent returned and counted its

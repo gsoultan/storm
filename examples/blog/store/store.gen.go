@@ -532,7 +532,22 @@ var authorArticlesProbeQueryCache = runtime.NewTreeCache()
 
 func (h AuthorArticlesProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok) {
 	var buf [44]runtime.Tok
-	toks := h.q.PredToks(buf[:0])
+	toks := h.tokens(buf[:0], count)
+	sel, cnt, limitSfx := author.StmtPieces()
+	prefix, suffix := sel, limitSfx
+	if count {
+		prefix, suffix = cnt, ""
+	}
+	if st := authorArticlesProbeQueryCache.Get(toks); st != nil {
+		return st, toks
+	}
+	return authorArticlesProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, authorArticlesProbeQueryLowering, suffix)), toks
+}
+
+// tokens appends the composed stream to dst: the parent's predicates,
+// each probe, and — unless count — the parent's ordering.
+func (h AuthorArticlesProbeQuery) tokens(dst []runtime.Tok, count bool) []runtime.Tok {
+	toks := h.q.PredToks(dst)
 	stack := 0
 	if len(toks) > 0 {
 		stack = 1
@@ -557,15 +572,7 @@ func (h AuthorArticlesProbeQuery) stmt(count bool) (*runtime.Stmt, []runtime.Tok
 	if !count {
 		toks = h.q.OrderToks(toks)
 	}
-	sel, cnt, limitSfx := author.StmtPieces()
-	prefix, suffix := sel, limitSfx
-	if count {
-		prefix, suffix = cnt, ""
-	}
-	if st := authorArticlesProbeQueryCache.Get(toks); st != nil {
-		return st, toks
-	}
-	return authorArticlesProbeQueryCache.Put(toks, runtime.SpliceTree(prefix, toks, authorArticlesProbeQueryLowering, suffix)), toks
+	return toks
 }
 
 // bind returns the arguments in STREAM order: parent predicates, then

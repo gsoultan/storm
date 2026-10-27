@@ -62,13 +62,25 @@ func SpliceSectionsOutput(prefix string, secs []Section, out, suffix string, ph 
 	return spliceSections(prefix, secs, out, suffix, ph)
 }
 
+// SpliceSectionsFrom is SpliceSections numbering on from start: the head of a
+// statement whose first start placeholders are already spoken for, by a step
+// written ahead of it. NArg counts them too, so a predicate spliced after it
+// numbers on from there.
+func SpliceSectionsFrom(prefix string, secs []Section, suffix string, start int) *Stmt {
+	return spliceSectionsFrom(prefix, secs, "", suffix, Placeholder{}, start)
+}
+
 func spliceSections(prefix string, secs []Section, out, suffix string, ph Placeholder) *Stmt {
+	return spliceSectionsFrom(prefix, secs, out, suffix, ph, 0)
+}
+
+func spliceSectionsFrom(prefix string, secs []Section, out, suffix string, ph Placeholder, start int) *Stmt {
 	var b strings.Builder
 	b.WriteString(prefix)
 	if len(secs) == 0 {
 		b.WriteString(out)
 	}
-	ord := 0
+	ord := start
 	for si, s := range secs {
 		if si == len(secs)-1 {
 			b.WriteString(out)
@@ -95,6 +107,27 @@ func spliceSections(prefix string, secs []Section, out, suffix string, ph Placeh
 	}
 	b.WriteString(suffix)
 	return &Stmt{SQL: b.String(), NArg: ord}
+}
+
+// Step is a write or a read that runs ahead of another write in the SAME
+// statement, whose rows that write can count. It hands run its text, numbered
+// from one, and its arguments, which stay valid until run returns: they may
+// point into a binder the step gives back afterwards.
+//
+// A function rather than a statement and its arguments, for that lifetime: a
+// step's arguments live in its own package's binder, and the write that runs
+// after it is assembled in another package.
+type Step func(run func(sql string, args []any) error) error
+
+// HashString is a statement's text folded to a cache key. A key, not an
+// identity: whoever caches by it compares the text on a hit.
+func HashString(s string) uint64 {
+	var h uint64 = 14695981039346656037
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
 }
 
 // MaskCache maps a dirty mask to a compiled statement.
@@ -229,6 +262,30 @@ func SpliceInsertWith(prefix string, p InsertParts, cols []string, ph Placeholde
 	}
 	b.WriteString(p.Close)
 	b.WriteString(suffix)
+	return &Stmt{SQL: b.String(), NArg: len(cols)}
+}
+
+// SpliceInsertSelect assembles the head of an INSERT … SELECT: the assigned
+// columns and then ref, the column the SELECT fills from another table's key,
+// with one placeholder per assigned column — every inserted row carries the
+// same value for those. mid is the back end's text between the column list and
+// the selected values. The caller appends the selected key and its FROM, and
+// splices the read's predicate numbered on from NArg. Cold path: once per
+// (assigned columns, ref).
+func SpliceInsertSelect(prefix string, p InsertParts, cols []string, ref, mid string, ph Placeholder) *Stmt {
+	var b strings.Builder
+	b.WriteString(prefix)
+	b.WriteString(p.Open)
+	for _, c := range cols {
+		b.WriteString(c)
+		b.WriteString(p.Sep)
+	}
+	b.WriteString(ref)
+	b.WriteString(mid)
+	for i := range cols {
+		ph.write(&b, i+1)
+		b.WriteString(p.Sep)
+	}
 	return &Stmt{SQL: b.String(), NArg: len(cols)}
 }
 

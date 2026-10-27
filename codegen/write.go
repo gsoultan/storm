@@ -75,6 +75,22 @@ const (
 	exprInc
 )
 
+// addableCol reports whether a column takes Add: a NOT NULL integer. NOT NULL
+// because NULL + n is NULL, and an add that erased the count it was meant to
+// grow would be worse than none.
+func addableCol(c colInfo) bool {
+	return colExpr(c.col) == exprInc && c.col.NotNull
+}
+
+func hasAddable(upd []colInfo) bool {
+	for _, c := range upd {
+		if addableCol(c) {
+			return true
+		}
+	}
+	return false
+}
+
 // colExpr reports which expression a column admits, if any.
 func colExpr(c *schema.Column) setExpr {
 	switch goKind(c) {
@@ -148,6 +164,9 @@ func (g *gen) writes() {
 	g.updateFn(upd, pk)
 	g.deleteFn(pk)
 	g.writeAll(upd)
+	g.takeFn(upd, pk)
+	g.selectHeadFn(ins)
+	g.stepFns(upd, pk)
 }
 
 func (g *gen) writeConsts(ins, upd, pk []colInfo) {
@@ -219,6 +238,25 @@ func (g *gen) writeConsts(ins, upd, pk []colInfo) {
 	}
 	g.p("}")
 	g.p("")
+
+	if hasAddable(upd) {
+		g.p("// addFrags adds a bound amount to a counter's own value. A column set")
+		g.p("// this way carries BOTH its dirty and its expr bit — a pair no setter")
+		g.p("// can otherwise produce, because each clears the other's — so the")
+		g.p("// statement key needs no third mask. A zero Frag means the column")
+		g.p("// cannot be added to.")
+		g.p("var addFrags = [nUpdatable]runtime.Frag{")
+		for _, c := range upd {
+			if addableCol(c) {
+				a, b := g.lw.AddFrag(c.Name())
+				g.p("\t{A: %q, B: %q}, // %s = its own value plus an amount", a, b, c.Name())
+			} else {
+				g.p("\t{}, // %s cannot be added to", c.Name())
+			}
+		}
+		g.p("}")
+		g.p("")
+	}
 
 	g.p("// pkFrags addresses one row.")
 	g.p("var pkFrags = [%d]runtime.Frag{", len(pk))
@@ -426,6 +464,19 @@ func (g *gen) mutType(upd, pk []colInfo) {
 			g.p("\tm.dirty &^= d%s", n)
 			g.p("}")
 			g.p("")
+			if addableCol(c) {
+				g.p("// Add%s adds n to the column's OWN value, in the database, for", n)
+				g.p("// the same reason Inc%s does. It replaces any other assignment", n)
+				g.p("// to the column staged on m, as every setter does.")
+				g.p("//")
+				g.p("// Until the write, Row() holds n, not the column's value.")
+				g.p("func (m *Mut) Add%s(n %s) {", n, c.goBase)
+				g.p("\tm.row.%s = n", n)
+				g.p("\tm.dirty |= d%s", n)
+				g.p("\tm.expr |= d%s", n)
+				g.p("}")
+				g.p("")
+			}
 		}
 		if isNullable(c.col) {
 			// Writing NULL needs its own method. Overloading the setter with a
@@ -1378,6 +1429,10 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 	g.p("\t\t// An expression wins: a column set both ways cannot happen,")
 	g.p("\t\t// because each setter clears the other's bit.")
 	g.p("\t\tswitch {")
+	if hasAddable(upd) {
+		g.p("\t\tcase k.Expr&k.Dirty&(1<<uint(i)) != 0:")
+		g.p("\t\t\tset = append(set, addFrags[i])")
+	}
 	g.p("\t\tcase k.Expr&(1<<uint(i)) != 0:")
 	g.p("\t\t\tset = append(set, exprFrags[i])")
 	g.p("\t\tcase k.Dirty&(1<<uint(i)) != 0:")
@@ -2097,18 +2152,36 @@ func (g *gen) writeAll(upd []colInfo) {
 
 	// UpdateAll's statement: the SET list spliced exactly as Update splices
 	// it, then the predicate stream numbered on from where it stopped.
-	g.p("// updAllStmtFor compiles one (assignments, predicates) pair, once.")
-	g.p("func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {")
+	cache, suffix := "updAllCache", `""`
+	if g.steps() {
+		// One body for UpdateAll and for its step, which differ only in
+		// the cache and in the step's RETURNING, which is what lets a
+		// write after it count the rows it wrote.
+		g.p("// updAllStmtFor compiles one (assignments, predicates) pair, once.")
+		g.p("func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {")
+		g.p("\treturn updAllStmtIn(updAllCache, \"\", k, preds)")
+		g.p("}")
+		g.p("")
+		g.p("func updAllStmtIn(c *runtime.TreeCache, suffix string, k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {")
+		cache, suffix = "c", "suffix"
+	} else {
+		g.p("// updAllStmtFor compiles one (assignments, predicates) pair, once.")
+		g.p("func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {")
+	}
 	g.p("\tvar key [%d]runtime.Tok", keyBuf)
 	g.p("\tkey[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)")
 	g.p("\tkey[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)")
 	g.p("\tn := 4 + copy(key[4:], preds)")
-	g.p("\tif st := updAllCache.Get(key[:n]); st != nil {")
+	g.p("\tif st := %s.Get(key[:n]); st != nil {", cache)
 	g.p("\t\treturn st")
 	g.p("\t}")
 	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
 	g.p("\tfor i := 0; i < nUpdatable; i++ {")
 	g.p("\t\tswitch {")
+	if hasAddable(upd) {
+		g.p("\t\tcase k.Expr&k.Dirty&(1<<uint(i)) != 0:")
+		g.p("\t\t\tset = append(set, addFrags[i])")
+	}
 	g.p("\t\tcase k.Expr&(1<<uint(i)) != 0:")
 	g.p("\t\t\tset = append(set, exprFrags[i])")
 	g.p("\t\tcase k.Dirty&(1<<uint(i)) != 0:")
@@ -2127,9 +2200,9 @@ func (g *gen) writeAll(upd []colInfo) {
 	g.p("\t\treturn head")
 	g.p("\t}")
 	if soft {
-		g.p("\treturn updAllCache.Put(key[:n], runtime.SpliceTreeWhereFrom(head.SQL, softDeleteWhere, preds, lowering, \"\", head.NArg))")
+		g.p("\treturn %s.Put(key[:n], runtime.SpliceTreeWhereFrom(head.SQL, softDeleteWhere, preds, lowering, %s, head.NArg))", cache, suffix)
 	} else {
-		g.p("\treturn updAllCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, \"\", head.NArg))")
+		g.p("\treturn %s.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, %s, head.NArg))", cache, suffix)
 	}
 	g.p("}")
 	g.p("")
@@ -2267,4 +2340,534 @@ func (g *gen) writeHardDeleteAll(ex string) {
 	g.p("\treturn ex.Exec(ctx, st.SQL, q.bindPreds(b))")
 	g.p("}")
 	g.p("")
+}
+
+// takeFn emits Take: an UPDATE of exactly the rows a read would return — its
+// predicate, order, limit and row lock — handing those rows back as written.
+// It is the queue claim in one statement: with ForUpdateSkipLocked, two
+// workers asking at once take different rows, and neither waits.
+//
+// Only where the back end says how (Lowering.TakeOpen), the key is one column
+// and the UPDATE can return rows. Elsewhere the method is absent, which is an
+// undefined-method compile error naming what is missing.
+func (g *gen) takeFn(upd, pk []colInfo) {
+	if !g.t.Takes || g.lw.TakeOpen == nil || len(pk) != 1 || !g.lw.canReturn() || g.lw.ReturningPositional {
+		return
+	}
+	hasVersion := versionCol(g.t) != nil
+	ex := g.execType()
+	keyBuf := 5 + g.streamBuf()
+
+	g.p("var takeCache = runtime.NewTreeCache()")
+	g.p("")
+	g.p("// takeOpen narrows the UPDATE to the rows the read selects.")
+	g.p("const takeOpen = %s", lit(g.lw.TakeOpen(g.t.Name, pk[0].Name())))
+	g.p("")
+	g.p("// takeStmtFor compiles one (assignments, lock, read) triple, once.")
+	g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, toks []runtime.Tok) *runtime.Stmt {")
+	g.p("\tvar key [%d]runtime.Tok", keyBuf)
+	g.p("\tkey[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)")
+	g.p("\tkey[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)")
+	g.p("\tkey[4] = runtime.Tok(lock)")
+	g.p("\tn := 5 + copy(key[5:], toks)")
+	g.p("\tif st := takeCache.Get(key[:n]); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tswitch {")
+	if hasAddable(upd) {
+		g.p("\t\tcase k.Expr&k.Dirty&(1<<uint(i)) != 0:")
+		g.p("\t\t\tset = append(set, addFrags[i])")
+	}
+	g.p("\t\tcase k.Expr&(1<<uint(i)) != 0:")
+	g.p("\t\t\tset = append(set, exprFrags[i])")
+	g.p("\t\tcase k.Dirty&(1<<uint(i)) != 0:")
+	g.p("\t\t\tset = append(set, setFrags[i])")
+	g.p("\t\t}")
+	g.p("\t}")
+	if hasVersion {
+		g.p("\tset = append(set, versionBump)")
+	}
+	g.p("\thead := %s(updatePrefix, []runtime.Section{", g.spliceFn())
+	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
+	g.p("\t}, %s)", g.spliceTail())
+	g.p("\tif head.Err != nil {")
+	g.p("\t\treturn head")
+	g.p("\t}")
+	g.p("\tsuffix := limitSuffix + lockSuffix[lock] + %s + updReturning", lit(g.lw.TakeClose))
+	if g.t.SoftDeletes() {
+		g.p("\treturn takeCache.Put(key[:n], runtime.SpliceTreeWhereFrom(head.SQL+takeOpen, softDeleteWhere, toks, lowering, suffix, head.NArg))")
+	} else {
+		g.p("\treturn takeCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL+takeOpen, toks, lowering, suffix, head.NArg))")
+	}
+	g.p("}")
+	g.p("")
+
+	g.p("// Take writes m's assigned columns to the rows the query would read —")
+	g.p("// its predicates, order, Limit and row lock all apply — in ONE")
+	g.p("// statement, and returns those rows as they now stand:")
+	g.p("//")
+	g.p("//\tvar m Mut")
+	g.p("//\tm.Set…(leaseEnd)")
+	g.p("//\tgot, err := New().Where(…).Order(…).Limit(1).ForUpdateSkipLocked().Take(ctx, ex, m, nil)")
+	g.p("//")
+	g.p("// That is the queue claim: with ForUpdateSkipLocked two workers asking")
+	g.p("// at once take different rows, or one finds none, and neither waits.")
+	g.p("// Without a lock it is an UPDATE bounded by a read. Nothing assigned")
+	g.p("// issues no statement and returns dst. Offset is refused with")
+	g.p("// runtime.ErrPagedWrite: a claim that skips rows it could take is a")
+	g.p("// claim that leaves work behind.")
+	if hasVersion {
+		g.p("//")
+		g.p("// The version column is bumped on every row taken.")
+	}
+	g.p("func (q Query) Take(ctx context.Context, ex %s, m Mut, dst []Row) ([]Row, error) {", ex)
+	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\t\treturn dst, err")
+	g.p("\t}")
+	g.p("\tif q.offset != 0 {")
+	g.p("\t\treturn dst, runtime.ErrPagedWrite")
+	g.p("\t}")
+	g.p("\tif m.dirty == 0 && m.expr == 0 {")
+	g.p("\t\treturn dst, nil")
+	g.p("\t}")
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\tst := takeStmtFor(m.key(), q.lock, q.stream(&buf))")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn dst, st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range upd {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\targs = append(args, q.bind(b)...)")
+	g.p("\tvar sl runtime.Slab")
+	g.p("\tsl.Reserve(st.SlabHint())")
+	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
+	g.p("\tif err != nil {")
+	g.p("\t\treturn dst, err")
+	g.p("\t}")
+	g.p("\tdefer rows.Close()")
+	g.p("\tfor rows.Next() {")
+	g.p("\t\tdst = append(dst, Row{})")
+	g.p("\t\tif err := scan(rows.%s(), &dst[len(dst)-1], &sl); err != nil {", g.dec.rowsAccessor())
+	g.p("\t\t\treturn dst, err")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tst.ObserveSlab(sl.Size())")
+	g.p("\treturn dst, rows.Err()")
+	g.p("}")
+	g.p("")
+}
+
+// insertSelectRefs is the reference columns of t an INSERT … SELECT can fill
+// from the key of the table they reference: owned, to-one, one column, and
+// insertable. Empty where the back end cannot spell the statement.
+func insertSelectRefs(lw lowering, s *schema.Schema, t *schema.Table) []*schema.Relation {
+	if lw.InsertSelectMid == "" || lw.KeyFrom == nil || lw.PlaceholderExpr != "" || len(t.PrimaryKey) == 0 {
+		return nil
+	}
+	ins := insertable(t)
+	asked := map[string]bool{}
+	for _, f := range t.InsertSelects {
+		asked[f] = true
+	}
+	var out []*schema.Relation
+	for _, rel := range t.Relations {
+		if !asked[rel.Field] || !rel.Owner || rel.ToMany || rel.Column == "" || insertIndex(ins, rel.Column) < 0 {
+			continue
+		}
+		if target := s.Table(rel.Target); target == nil || len(target.PrimaryKey) != 1 {
+			continue
+		}
+		out = append(out, rel)
+	}
+	return out
+}
+
+// selectHeadFn emits Ins.SelectHead, the seam the context package builds an
+// INSERT … SELECT on: the assigned columns as constants and one reference
+// column filled from the rows another table's query selects.
+func (g *gen) selectHeadFn(ins []colInfo) {
+	refs := insertSelectRefs(g.lw, g.s, g.t)
+	if g.lw.InsertSelectMid != "" && g.lw.PlaceholderExpr == "" && len(refs) != len(g.t.InsertSelects) {
+		g.err = fmt.Errorf("codegen: table %s: InsertsPer names %v, and only an owned to-one "+
+			"reference to a table with a one-column key, set on insert, can be filled from a read",
+			g.t.Name, g.t.InsertSelects)
+		return
+	}
+	if len(refs) == 0 {
+		return
+	}
+	g.p("var insSelCache = runtime.NewMaskCache()")
+	g.p("")
+	g.p("const insSelectMid = %s", lit(g.lw.InsertSelectMid))
+	g.p("")
+	g.p("// SelectHead is the head of an INSERT … SELECT that fills insert")
+	g.p("// column ref from the key of the rows another table's query selects,")
+	g.p("// and the arguments for every other column assigned on n, which each")
+	g.p("// inserted row carries alike. A value staged for ref itself is ignored.")
+	g.p("// Exported for the context package, which appends the read.")
+	g.p("func (n Ins) SelectHead(ref int) (*runtime.Stmt, []any) {")
+	g.p("\tmask := n.set &^ (1 << uint(ref))")
+	g.p("\tk := runtime.MaskKey{Dirty: mask, Expr: uint64(ref) + 1}")
+	g.p("\tst := insSelCache.Get(k)")
+	g.p("\tif st == nil {")
+	g.p("\t\tcols := make([]string, 0, nInsertable)")
+	g.p("\t\tfor i := 0; i < nInsertable; i++ {")
+	g.p("\t\t\tif mask&(1<<uint(i)) != 0 {")
+	g.p("\t\t\t\tcols = append(cols, insCols[i])")
+	g.p("\t\t\t}")
+	g.p("\t\t}")
+	g.p("\t\tst = insSelCache.Put(k, runtime.SpliceInsertSelect(insPrefix, insParts, cols, insCols[ref], insSelectMid, insPlaceholder))")
+	g.p("\t}")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\tfor i := 0; i < nInsertable; i++ {")
+	g.p("\t\tif mask&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range ins {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\treturn st, args")
+	g.p("}")
+	g.p("")
+}
+
+// steps reports whether this package writes steps and writes after them: the
+// back end can spell a data-modifying WITH, and a row can be addressed.
+func (g *gen) steps() bool {
+	return g.lw.StepOpen != "" && g.lw.PlaceholderExpr == "" && !g.lw.ReturningPositional &&
+		g.lw.canReturn() && len(pkCols(g.t)) > 0
+}
+
+// stepFns emits the two steps this table can be (UpdateAllStep, ExistsStep),
+// the Tally of what a step's rows move here, and UpdateAllAfter, which writes
+// after a step in the same statement.
+//
+// That is a write that moves another table's counters by what it wrote, in
+// ONE statement: an item settled and its batch's count of settled items moved
+// on, with no window between the two for another writer to see one without
+// the other, and one round trip.
+func (g *gen) stepFns(upd, pk []colInfo) {
+	if !g.steps() {
+		return
+	}
+	soft := g.t.SoftDeletes()
+	hasVersion := versionCol(g.t) != nil
+	ex := g.execType()
+	keyBuf := 13 + g.streamBuf()
+
+	g.p("// The step this table's UpdateAll is, and the statements written after")
+	g.p("// another table's step.")
+	g.p("var updStepCache = runtime.NewTreeCache()")
+	g.p("")
+	g.p("const stepReturning = %s", lit(g.lw.ReturningClause([]string{pk[0].Name()})))
+	g.p("")
+
+	g.p("// UpdateAllStep is UpdateAll as a step: it writes when the statement")
+	g.p("// it is handed to runs, and that statement's write can count the rows it")
+	g.p("// wrote. It refuses what UpdateAll refuses, and nothing assigned is")
+	g.p("// refused with runtime.ErrNothingAssigned: a step that writes nothing")
+	g.p("// would count nothing for a reason nobody asked for.")
+	g.p("func (q Query) UpdateAllStep(m Mut) runtime.Step {")
+	g.p("\treturn func(run func(string, []any) error) error {")
+	g.p("\t\tif err := q.writeAllErr(); err != nil {")
+	g.p("\t\t\treturn err")
+	g.p("\t\t}")
+	g.p("\t\tif m.dirty == 0 && m.expr == 0 {")
+	g.p("\t\t\treturn runtime.ErrNothingAssigned")
+	g.p("\t\t}")
+	g.p("\t\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\t\tst := updAllStmtIn(updStepCache, stepReturning, m.key(), q.preds(&buf))")
+	g.p("\t\tif st.Err != nil {")
+	g.p("\t\t\treturn st.Err")
+	g.p("\t\t}")
+	g.p("\t\tb := binders.Get()")
+	g.p("\t\tdefer putBinder(b)")
+	g.p("\t\targs := make([]any, 0, st.NArg)")
+	g.p("\t\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\t\tif m.dirty&(1<<uint(i)) == 0 {")
+	g.p("\t\t\t\tcontinue")
+	g.p("\t\t\t}")
+	g.p("\t\t\tswitch i {")
+	for i, c := range upd {
+		g.p("\t\t\tcase %d:", i)
+		g.p("\t\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
+	}
+	g.p("\t\t\t}")
+	g.p("\t\t}")
+	g.p("\t\treturn run(st.SQL, append(args, q.bindPreds(b)...))")
+	g.p("\t}")
+	g.p("}")
+	g.p("")
+
+	g.p("// ExistsStep is the existence probe as a step: at most one row, when")
+	g.p("// the query matches any. A write after it can act on whether it did.")
+	g.p("func (q Query) ExistsStep() runtime.Step {")
+	g.p("\treturn func(run func(string, []any) error) error {")
+	g.p("\t\tif err := q.Err(); err != nil {")
+	g.p("\t\t\treturn err")
+	g.p("\t\t}")
+	g.p("\t\tif q.lock != 0 {")
+	g.p("\t\t\treturn errExistsLocked")
+	g.p("\t\t}")
+	g.p("\t\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\t\tst := existsStmtFor(q.preds(&buf))")
+	g.p("\t\tif st.Err != nil {")
+	g.p("\t\t\treturn st.Err")
+	g.p("\t\t}")
+	g.p("\t\tb := binders.Get()")
+	g.p("\t\tdefer putBinder(b)")
+	g.p("\t\treturn run(st.SQL, q.bindPreds(b))")
+	g.p("\t}")
+	g.p("}")
+	g.p("")
+
+	if !g.t.Tallies {
+		return
+	}
+	addable := hasAddable(upd)
+	if addable {
+		g.p("// stepAddFrags and stepSubFrags move a counter by the step's rows.")
+		g.p("var stepAddFrags = [nUpdatable]runtime.Frag{")
+		for _, c := range upd {
+			if addableCol(c) {
+				a, b := g.lw.AddStepFrag(c.Name())
+				g.p("\t{A: %q, B: %q}, // %s", a, b, c.Name())
+			} else {
+				g.p("\t{}, // %s", c.Name())
+			}
+		}
+		g.p("}")
+		g.p("")
+		g.p("var stepSubFrags = [nUpdatable]runtime.Frag{")
+		for _, c := range upd {
+			if addableCol(c) {
+				a, b := g.lw.SubtractStepFrag(c.Name())
+				g.p("\t{A: %q, B: %q}, // %s", a, b, c.Name())
+			} else {
+				g.p("\t{}, // %s", c.Name())
+			}
+		}
+		g.p("}")
+		g.p("")
+	}
+	g.p("// ifNoStepFrags assign a bound value only when the step had no rows.")
+	g.p("var ifNoStepFrags = [nUpdatable]runtime.Frag{")
+	for _, c := range upd {
+		a, b := g.lw.IfNoStepFrag(c.Name())
+		g.p("\t{A: %q, B: %q}, // %s", a, b, c.Name())
+	}
+	g.p("}")
+	g.p("")
+
+	g.p("// Tally is what the rows of a step move on the rows UpdateAllAfter")
+	g.p("// writes. An assignment here replaces one m makes to the same column.")
+	g.p("type Tally struct {")
+	g.p("\trow                 Row")
+	g.p("\tadd, sub, ifNone    uint64")
+	g.p("\tonlyIfAny           bool")
+	g.p("}")
+	g.p("")
+	g.p("// OnlyIfAny writes only when the step had rows: an item that was not")
+	g.p("// settled moves no count and touches no batch.")
+	g.p("func (t *Tally) OnlyIfAny() { t.onlyIfAny = true }")
+	g.p("")
+	g.p("func (t Tally) key() (add, sub, ifNone uint64, only bool) {")
+	g.p("\treturn t.add, t.sub, t.ifNone, t.onlyIfAny")
+	g.p("}")
+	g.p("")
+	for _, c := range upd {
+		n := exportName(c.Name())
+		if addableCol(c) {
+			g.p("// Add%s adds the number of rows the step had to %s.", n, c.Name())
+			g.p("func (t *Tally) Add%s() {", n)
+			g.p("\tt.add |= d%s", n)
+			g.p("\tt.sub &^= d%s", n)
+			g.p("\tt.ifNone &^= d%s", n)
+			g.p("}")
+			g.p("")
+			g.p("// Subtract%s subtracts the number of rows the step had from %s.", n, c.Name())
+			g.p("func (t *Tally) Subtract%s() {", n)
+			g.p("\tt.sub |= d%s", n)
+			g.p("\tt.add &^= d%s", n)
+			g.p("\tt.ifNone &^= d%s", n)
+			g.p("}")
+			g.p("")
+		}
+		g.p("// Set%sIfNone assigns v when the step had no rows, and leaves %s", n, c.Name())
+		g.p("// as it is when it had any.")
+		g.p("func (t *Tally) Set%sIfNone(v %s) {", n, c.goBase)
+		g.p("\tt.row.%s = %s", n, mutAssign(c))
+		g.p("\tt.ifNone |= d%s", n)
+		g.p("\tt.add &^= d%s", n)
+		g.p("\tt.sub &^= d%s", n)
+		g.p("}")
+		g.p("")
+	}
+
+	g.p("var afterCache = runtime.NewTreeCache()")
+	g.p("")
+	g.p("const (")
+	g.p("\tstepOpen  = %s", lit(g.lw.StepOpen))
+	g.p("\tstepClose = %s", lit(g.lw.StepClose))
+	g.p(")")
+	g.p("")
+	g.p("// afterStmtFor compiles one write after one step, once. The step's text")
+	g.p("// is keyed by its hash and compared on a hit.")
+	g.p("func afterStmtFor(step string, nStep int, k runtime.MaskKey, t Tally, preds []runtime.Tok) *runtime.Stmt {")
+	g.p("\tadd, sub, ifNone, only := t.key()")
+	g.p("\t// The tally's columns are not m's: one assignment per column.")
+	g.p("\tk.Dirty &^= add | sub | ifNone")
+	g.p("\tk.Expr &^= add | sub | ifNone")
+	g.p("\th := runtime.HashString(step)")
+	g.p("\tvar key [%d]runtime.Tok", keyBuf)
+	g.p("\tkey[0], key[1], key[2] = runtime.Tok(h), runtime.Tok(h>>32), runtime.Tok(len(step))")
+	g.p("\tkey[3], key[4] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)")
+	g.p("\tkey[5], key[6] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)")
+	g.p("\tkey[7], key[8] = runtime.Tok(add), runtime.Tok(add>>32)")
+	g.p("\tkey[9], key[10] = runtime.Tok(sub), runtime.Tok(sub>>32)")
+	g.p("\tkey[11], key[12] = runtime.Tok(ifNone), runtime.Tok(ifNone>>32)")
+	g.p("\tif only {")
+	g.p("\t\tkey[12] |= 1 << 31 // nUpdatable < 64 leaves the top bit free")
+	g.p("\t}")
+	g.p("\tn := 13 + copy(key[13:], preds)")
+	g.p("\tif st := afterCache.Get(key[:n]); st != nil && len(st.SQL) > len(stepOpen)+len(step) && st.SQL[len(stepOpen):len(stepOpen)+len(step)] == step {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tbit := uint64(1) << uint(i)")
+	g.p("\t\tswitch {")
+	g.p("\t\tcase ifNone&bit != 0:")
+	g.p("\t\t\tset = append(set, ifNoStepFrags[i])")
+	if addable {
+		g.p("\t\tcase add&bit != 0:")
+		g.p("\t\t\tset = append(set, stepAddFrags[i])")
+		g.p("\t\tcase sub&bit != 0:")
+		g.p("\t\t\tset = append(set, stepSubFrags[i])")
+		g.p("\t\tcase k.Expr&k.Dirty&bit != 0:")
+		g.p("\t\t\tset = append(set, addFrags[i])")
+	}
+	g.p("\t\tcase k.Expr&bit != 0:")
+	g.p("\t\t\tset = append(set, exprFrags[i])")
+	g.p("\t\tcase k.Dirty&bit != 0:")
+	g.p("\t\t\tset = append(set, setFrags[i])")
+	g.p("\t\t}")
+	g.p("\t}")
+	if hasVersion {
+		g.p("\tset = append(set, versionBump)")
+	}
+	g.p("\thead := runtime.SpliceSectionsFrom(stepOpen+step+stepClose+updatePrefix, []runtime.Section{")
+	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
+	g.p("\t}, \"\", nStep)")
+	g.p("\tif head.Err != nil {")
+	g.p("\t\treturn head")
+	g.p("\t}")
+	live := ""
+	if soft {
+		live = "softDeleteWhere"
+	}
+	g.p("\tvar st *runtime.Stmt")
+	g.p("\tif only {")
+	g.p("\t\tst = runtime.SpliceTreeWhereFrom(head.SQL, %s, preds, lowering, \"\", head.NArg)", lit(g.lw.AndStepExists(g.declaredLive())))
+	g.p("\t} else {")
+	if live != "" {
+		g.p("\t\tst = runtime.SpliceTreeWhereFrom(head.SQL, %s, preds, lowering, \"\", head.NArg)", live)
+	} else {
+		g.p("\t\tst = runtime.SpliceTreeFrom(head.SQL, preds, lowering, \"\", head.NArg)")
+	}
+	g.p("\t}")
+	g.p("\treturn afterCache.Put(key[:n], st)")
+	g.p("}")
+	g.p("")
+
+	g.p("// UpdateAllAfter writes m's assigned columns and t's tally to every row")
+	g.p("// the query matches, after step, in ONE statement, and reports how many")
+	g.p("// rows it wrote here:")
+	g.p("//")
+	g.p("//\tvar t Tally")
+	g.p("//\tt.Add…()         // … = … + the rows the step wrote")
+	g.p("//\tt.OnlyIfAny()    // and nothing at all when it wrote none")
+	g.p("//\tn, err := New().Where(…).UpdateAllAfter(ctx, ex, other.New().Where(…).UpdateAllStep(om), m, t)")
+	g.p("//")
+	g.p("// The step runs to completion whether or not anything here matches,")
+	g.p("// and both see one snapshot. The query must have a predicate and no")
+	g.p("// Limit, Offset or lock, as for UpdateAll.")
+	g.p("func (q Query) UpdateAllAfter(ctx context.Context, ex %s, step runtime.Step, m Mut, t Tally) (int64, error) {", ex)
+	g.p("\tif err := q.writeAllErr(); err != nil {")
+	g.p("\t\treturn 0, err")
+	g.p("\t}")
+	g.p("\tadd, sub, ifNone, _ := t.key()")
+	g.p("\ttallied := add | sub | ifNone")
+	g.p("\tif (m.dirty|m.expr)&^tallied == 0 && tallied == 0 {")
+	g.p("\t\treturn 0, runtime.ErrNothingAssigned")
+	g.p("\t}")
+	g.p("\tvar written int64")
+	g.p("\terr := step(func(sql string, stepArgs []any) error {")
+	g.p("\t\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\t\tst := afterStmtFor(sql, len(stepArgs), m.key(), t, q.preds(&buf))")
+	g.p("\t\tif st.Err != nil {")
+	g.p("\t\t\treturn st.Err")
+	g.p("\t\t}")
+	g.p("\t\tb := binders.Get()")
+	g.p("\t\tdefer putBinder(b)")
+	g.p("\t\targs := make([]any, 0, st.NArg)")
+	g.p("\t\targs = append(args, stepArgs...)")
+	g.p("\t\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\t\tbit := uint64(1) << uint(i)")
+	g.p("\t\t\tswitch {")
+	g.p("\t\t\tcase ifNone&bit != 0:")
+	g.p("\t\t\t\targs = append(args, t.arg(i))")
+	g.p("\t\t\tcase tallied&bit != 0, m.dirty&bit == 0:")
+	g.p("\t\t\tdefault:")
+	g.p("\t\t\t\targs = append(args, m.arg(i))")
+	g.p("\t\t\t}")
+	g.p("\t\t}")
+	g.p("\t\targs = append(args, q.bindPreds(b)...)")
+	g.p("\t\tn, err := ex.Exec(ctx, st.SQL, args)")
+	g.p("\t\twritten = n")
+	g.p("\t\treturn err")
+	g.p("\t})")
+	g.p("\treturn written, err")
+	g.p("}")
+	g.p("")
+
+	for _, recv := range []string{"m Mut", "t Tally"} {
+		g.p("func (%s) arg(i int) any {", recv)
+		g.p("\tswitch i {")
+		v := recv[:1]
+		for i, c := range upd {
+			g.p("\tcase %d:", i)
+			g.p("\t\treturn %s", writeArg(c, v+".row."+exportName(c.Name())))
+		}
+		g.p("\t}")
+		g.p("\treturn nil")
+		g.p("}")
+		g.p("")
+	}
+}
+
+// declaredLive is the table's own soft-delete predicate, or empty.
+func (g *gen) declaredLive() string {
+	if !g.t.SoftDeletes() {
+		return ""
+	}
+	return g.lw.SoftDeleteWhere(g.t.SoftDelete)
 }
