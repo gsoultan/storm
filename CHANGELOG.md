@@ -14,6 +14,14 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A semi-join leaves the parent's deleted rows out
+
+`XHavingY` and `XNotHavingY` on a soft-delete parent returned and counted its
+marked rows: the composer is built in the context package, which spliced the
+parent's statement without the predicate every read in the parent's own
+package carries. The child's predicate was already in the `EXISTS`. A fix to
+the generated SQL only; the API is unchanged.
+
 ### A plan over a reference with no foreign key loads a missing target as nil
 
 A reference declared `AcknowledgeNoFK` can name a row that is not there: it was
