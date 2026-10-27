@@ -157,8 +157,15 @@ func (g *gen) emitHaving(np havingSpec) {
 	g.p("	if st := %sCache.Get(toks); st != nil {", lowerFirst(q))
 	g.p("		return st, toks")
 	g.p("	}")
-	g.p("	return %sCache.Put(toks, runtime.SpliceTree(prefix, toks, %sLowering, suffix)), toks",
-		lowerFirst(q), lowerFirst(q))
+	// The parent's marked rows stay out, as they do from every read of its
+	// own package: a probe narrows the parent query, it does not widen it.
+	if np.ParentLive != "" {
+		g.p("	return %sCache.Put(toks, runtime.SpliceTreeWhere(prefix, %s, toks, %sLowering, suffix)), toks",
+			lowerFirst(q), lit(np.ParentLive), lowerFirst(q))
+	} else {
+		g.p("	return %sCache.Put(toks, runtime.SpliceTree(prefix, toks, %sLowering, suffix)), toks",
+			lowerFirst(q), lowerFirst(q))
+	}
 	g.p("}")
 	g.p("")
 
@@ -267,6 +274,10 @@ type havingSpec struct {
 	child     string // child table name, for docs
 	PosHeader string // the EXISTS opener, built by pgsql at generate time
 	NegHeader string // the NOT EXISTS opener
+	// ParentLive is the parent's own soft-delete predicate, or empty. The
+	// child's is in the headers; the parent's goes ahead of the caller's
+	// predicates, as every read of the parent's own package puts it.
+	ParentLive string
 }
 
 // havingSpecs enumerates the composers for a context.
@@ -314,6 +325,7 @@ func havingSpecs(lw lowering, s *schema.Schema, tables []string) ([]havingSpec, 
 					string(liveIn(lw, s, child.Name, ""))),
 				NegHeader: lw.NotExistsOpen(child.Name, relColumn, t.Name, t.PrimaryKey[0],
 					string(liveIn(lw, s, child.Name, ""))),
+				ParentLive: string(liveIn(lw, s, t.Name, "")),
 			})
 		}
 	}
