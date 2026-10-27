@@ -38,6 +38,10 @@ func TestPrefixesAndFragments(t *testing.T) {
 	if a, b := mssql.BumpFrag("version"); a != "[version] = [version] + 1" || b != "" {
 		t.Errorf("BumpFrag = %q, %q", a, b)
 	}
+	// An add binds only the amount: the sum is the column's own value plus it.
+	if a, b := mssql.AddFrag("hits"); a != "[hits] = [hits] + @" || b != "" {
+		t.Errorf("AddFrag = %q, %q", a, b)
+	}
 
 	open, sep, mid, close := mssql.InsertParts(nil)
 	if open != " (" || sep != ", " || mid != ") VALUES (" || close != ")" {

@@ -210,8 +210,22 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	lw := loweringFor(o.Dialect)
+	if err := insertSelects(lw, s, names, func(t *schema.Table, rel *schema.Relation) error {
+		return body.emitInsertSelect(lw, s, t, rel)
+	}); err != nil {
+		return nil, err
+	}
 	for _, h := range having {
 		body.emitHaving(h)
+		if err := insertSelects(lw, s, names, func(t *schema.Table, rel *schema.Relation) error {
+			if rel.Target != h.ParentTable {
+				return nil
+			}
+			return body.emitProbeInsertSelect(h, lw, s, t, rel)
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	// Arc loaders need every variant's package, which only a whole-context

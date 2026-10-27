@@ -69,3 +69,37 @@ func TestSpliceInsertEdges(t *testing.T) {
 		t.Errorf("NArg = %d for no columns", none.NArg)
 	}
 }
+
+// An INSERT … SELECT names the assigned columns and then the reference, and
+// binds only the assigned ones: the reference comes from the SELECT.
+func TestSpliceInsertSelectBindsOnlyTheConstants(t *testing.T) {
+	p := runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Close: ")"}
+	st := runtime.SpliceInsertSelect(`INSERT INTO "items"`, p, []string{`"batch_id"`, `"status"`}, `"instance_id"`, ") SELECT ", runtime.Placeholder{})
+	want := `INSERT INTO "items" ("batch_id", "status", "instance_id") SELECT $1, $2, `
+	if st.SQL != want || st.NArg != 2 {
+		t.Errorf("got %q (%d args), want %q (2)", st.SQL, st.NArg, want)
+	}
+	st = runtime.SpliceInsertSelect(`INSERT INTO "items"`, p, nil, `"instance_id"`, ") SELECT ", runtime.Placeholder{})
+	if want := `INSERT INTO "items" ("instance_id") SELECT `; st.SQL != want || st.NArg != 0 {
+		t.Errorf("with nothing assigned got %q (%d args), want %q", st.SQL, st.NArg, want)
+	}
+}
+
+// A write after a step numbers its placeholders on from the step's, and its
+// count says so, so a predicate spliced after it carries on from there.
+func TestSpliceSectionsFromNumbersOnFromTheStep(t *testing.T) {
+	st := runtime.SpliceSectionsFrom(`WITH s AS (…$1, $2) UPDATE "t"`, []runtime.Section{
+		{Lead: " SET ", Sep: ", ", Frags: []runtime.Frag{{A: `"a" = $`}, {A: `"b" = now()`}, {A: `"c" = CASE WHEN x THEN "c" ELSE $`, B: " END"}}},
+	}, "", 2)
+	want := `WITH s AS (…$1, $2) UPDATE "t" SET "a" = $3, "b" = now(), "c" = CASE WHEN x THEN "c" ELSE $4 END`
+	if st.SQL != want || st.NArg != 4 {
+		t.Errorf("got %q (%d args), want %q (4)", st.SQL, st.NArg, want)
+	}
+}
+
+func TestHashStringTellsTextsApart(t *testing.T) {
+	a, b := runtime.HashString(`UPDATE "a"`), runtime.HashString(`UPDATE "b"`)
+	if a == b || a != runtime.HashString(`UPDATE "a"`) {
+		t.Errorf("HashString is not a stable, discriminating key: %x %x", a, b)
+	}
+}

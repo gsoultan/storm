@@ -87,6 +87,13 @@ func SetFrag(col string) (a, b string) { return Ident(col) + " = " + Placeholder
 // moves it on so a second writer's predicate matches nothing.
 func BumpFrag(col string) (a, b string) { return Ident(col) + " = " + Ident(col) + " + 1", "" }
 
+// AddFrag adds a bound amount to a counter's own value, in the database. Two
+// writers who both add land both amounts, which a value computed in Go and
+// written back would not.
+func AddFrag(col string) (a, b string) {
+	return Ident(col) + " = " + Ident(col) + " + " + Placeholder, ""
+}
+
 // SoftDeleteWhere is the predicate that hides deleted rows.
 func SoftDeleteWhere(col string) string { return Ident(col) + " IS NULL" }
 

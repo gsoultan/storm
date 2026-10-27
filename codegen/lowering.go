@@ -128,7 +128,27 @@ type lowering struct {
 	DeletePrefix    func(string) string
 	SetFrag         func(string) (string, string)
 	BumpFrag        func(string) (string, string)
-	NowFrag         func(string) (string, string)
+	AddFrag         func(string) (string, string)
+	// TakeOpen narrows an UPDATE to the rows a read of the same table
+	// selects, by key; TakeClose ends it. Nil where the back end cannot
+	// lock and limit inside the subquery, and Take is then not generated.
+	TakeOpen  func(table, key string) string
+	TakeClose string
+	// InsertSelectMid and KeyFrom spell INSERT … SELECT: the text between
+	// the column list and the selected values, and the selected key with its
+	// FROM. Empty and nil where the back end has none, and the context
+	// package then generates no Insert…Per….
+	InsertSelectMid string
+	KeyFrom         func(table, key string) string
+	// The step: a write or read ahead of an UPDATE in one statement, whose
+	// rows the UPDATE counts. Empty and nil where the back end has no
+	// data-modifying WITH, and then no Tally, UpdateAllAfter or …Step.
+	StepOpen, StepClose string
+	AddStepFrag         func(string) (string, string)
+	SubtractStepFrag    func(string) (string, string)
+	IfNoStepFrag        func(string) (string, string)
+	AndStepExists       func(string) string
+	NowFrag             func(string) (string, string)
 
 	SetLead, SetSep     string
 	WhereLead, WhereSep string
@@ -351,19 +371,30 @@ func postgresLowering() lowering {
 		InsertStmt: func(t string, c, r []string) (string, error) {
 			return pgsql.InsertStmt(t, c, r), nil
 		},
-		InsertPrefix:    pgsql.InsertPrefix,
-		InsertParts:     func([]string) (string, string, string, string) { return pgsql.InsertParts() },
-		ReturningClause: pgsql.ReturningClause,
-		UpdatePrefix:    pgsql.UpdatePrefix,
-		DeletePrefix:    pgsql.DeletePrefix,
-		SetFrag:         pgsql.SetFrag,
-		BumpFrag:        pgsql.BumpFrag,
-		NowFrag:         pgsql.NowFrag,
-		SetLead:         pgsql.SetLead,
-		SetSep:          pgsql.SetSep,
-		WhereLead:       pgsql.WhereLead,
-		WhereSep:        pgsql.WhereSep,
-		Placeholder:     pgsql.Placeholder,
+		InsertPrefix:     pgsql.InsertPrefix,
+		InsertParts:      func([]string) (string, string, string, string) { return pgsql.InsertParts() },
+		ReturningClause:  pgsql.ReturningClause,
+		UpdatePrefix:     pgsql.UpdatePrefix,
+		DeletePrefix:     pgsql.DeletePrefix,
+		SetFrag:          pgsql.SetFrag,
+		BumpFrag:         pgsql.BumpFrag,
+		AddFrag:          pgsql.AddFrag,
+		TakeOpen:         pgsql.TakeOpen,
+		TakeClose:        pgsql.TakeClose,
+		InsertSelectMid:  pgsql.InsertSelectMid,
+		KeyFrom:          pgsql.KeyFrom,
+		StepOpen:         pgsql.StepOpen,
+		StepClose:        pgsql.StepClose,
+		AddStepFrag:      pgsql.AddStepFrag,
+		SubtractStepFrag: pgsql.SubtractStepFrag,
+		IfNoStepFrag:     pgsql.IfNoStepFrag,
+		AndStepExists:    pgsql.AndStepExists,
+		NowFrag:          pgsql.NowFrag,
+		SetLead:          pgsql.SetLead,
+		SetSep:           pgsql.SetSep,
+		WhereLead:        pgsql.WhereLead,
+		WhereSep:         pgsql.WhereSep,
+		Placeholder:      pgsql.Placeholder,
 		Upsert: &upsertLowering{
 			Any: pgsql.ConflictAny, DoNothing: pgsql.ConflictDoNothing,
 			DoUpdate: pgsql.ConflictDoUpdate,
@@ -475,6 +506,7 @@ func mysqlLowering() lowering {
 		DeletePrefix:    mysql.DeletePrefix,
 		SetFrag:         mysql.SetFrag,
 		BumpFrag:        mysql.BumpFrag,
+		AddFrag:         mysql.AddFrag,
 		NowFrag:         mysql.NowFrag,
 		SetLead:         mysql.SetLead,
 		SetSep:          mysql.SetSep,
@@ -658,6 +690,7 @@ func mssqlLowering() lowering {
 		DeletePrefix:        mssql.DeletePrefix,
 		SetFrag:             mssql.SetFrag,
 		BumpFrag:            mssql.BumpFrag,
+		AddFrag:             mssql.AddFrag,
 		NowFrag:             mssql.NowFrag,
 		SetLead:             mssql.SetLead,
 		SetSep:              mssql.SetSep,
@@ -812,6 +845,7 @@ func oracleLowering() lowering {
 		DeletePrefix:    oracle.DeletePrefix,
 		SetFrag:         oracle.SetFrag,
 		BumpFrag:        oracle.BumpFrag,
+		AddFrag:         oracle.AddFrag,
 		NowFrag:         oracle.NowFrag,
 		SetLead:         oracle.SetLead,
 		SetSep:          oracle.SetSep,
