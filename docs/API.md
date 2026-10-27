@@ -748,6 +748,17 @@ pass SQL text, which keeps statement fragments out of Go and the statement
 cache bounded. A column assigned both ways keeps the last call: the two setters
 clear each other, so a column is never assigned twice in one statement.
 
+A `NOT NULL` integer column also gets an `Add…(n)`, which adds a bound amount
+the same way: `hits = hits + $1`. A nullable one does not, because `NULL + n`
+is `NULL` and the add would erase the count. Until the write, `m.Row()` holds
+the amount, not the column's value.
+
+```go
+var m batch.Mut
+m.AddSucceeded(int64(len(done)))  // succeeded = succeeded + $1
+m.AddSkipped(-1)                  // skipped = skipped + $2
+```
+
 `Update` reads the row back in the same statement when an expression was used,
 so `m.Row()` is the row that now exists rather than the one that used to. The
 batch form (`UpdateOp`) does not, because a batch reports counts, not rows.
@@ -791,6 +802,88 @@ refused rather than guessed at:
 A versioned table's version is bumped on every row written and checked on
 none — a set-based write has no version it read. A `Mut` with nothing assigned
 issues no statement and reports 0.
+
+### Taking rows: `UPDATE` of what a read selects
+
+`Take` writes a `Mut` to exactly the rows the query would read — its
+predicates, order, `Limit` and row lock all apply — and returns them as they
+now stand, in one statement. With `ForUpdateSkipLocked` it is the queue claim:
+two workers asking at once take different rows, or one finds none, and
+neither waits.
+
+```go
+var m job.Mut
+m.SetLeaseExpires(now.Add(lease))
+got, err := job.New().
+        Where(job.Status.Eq("running"), job.LeaseExpires.IsNull()).
+        Order(job.CreatedAt.Asc()).
+        Limit(1).
+        ForUpdateSkipLocked().
+        Take(ctx, ex, m, nil)
+// UPDATE "jobs" SET "lease_expires" = $1
+//  WHERE "id" IN (SELECT "id" FROM "jobs" WHERE … ORDER BY "created_at"
+//                 LIMIT $3 FOR UPDATE SKIP LOCKED)
+//  RETURNING …
+```
+
+`Offset` is refused with `runtime.ErrPagedWrite`. A table asks for Take with
+`t.Takes()` in its `Schema`; it is generated on PostgreSQL for a table with a
+one-column key, and elsewhere the method is absent.
+
+### Copying keys: `INSERT … SELECT`
+
+A to-one reference can be filled from the rows a query of the table it
+references selects, one inserted row per selected row, without reading them
+into Go. The other assigned columns of the `Ins` are carried alike:
+
+```go
+ins := item.Create()
+ins.SetBatchID(b)
+ins.SetStatus("pending")
+n, err := store.InsertItemPerInstance(ctx, ex, ins,
+        instance.New().Where(instance.ProjectID.Eq(p)).
+                Order(instance.CreatedAt.Asc()).Limit(10_000))
+// INSERT INTO "items" ("batch_id", "status", "instance_id")
+//  SELECT $1, $2, "id" FROM "instances" WHERE … ORDER BY "created_at" LIMIT $4
+```
+
+A table asks for one per reference with `t.InsertsPer(&i.Instance)` in its
+`Schema`. The function is `Insert<Table>Per<Field>` in the context package, and the same
+method exists on every semi-join composer of the source
+(`store.InstanceHavingIncidents(q, …).InsertItemPerInstance(ctx, ex, ins)`).
+The source's predicates, order and `Limit` apply; a row lock or an `Offset` is
+refused with `runtime.ErrPagedWrite`. PostgreSQL only for now.
+
+### A write after a step: counting what another write did
+
+A step is a write, or an existence probe, that runs ahead of an `UPDATE` in the
+same statement. The `UPDATE` can count the step's rows into its counters, set
+a column only when the step had none, or write only when it had some:
+
+```go
+var done item.Mut
+done.SetStatus("succeeded")
+var touch batch.Mut
+touch.SetUpdatedAtNow()
+var t batch.Tally
+t.AddSucceeded()   // succeeded = succeeded + (rows the step wrote)
+t.OnlyIfAny()      // and no write at all when it wrote none
+n, err := batch.New().Where(batch.ID.Eq(b)).UpdateAllAfter(ctx, ex,
+        item.New().Where(item.ID.Eq(i), item.Status.Eq("pending")).UpdateAllStep(done),
+        touch, t)
+// WITH "_storm_step" AS (UPDATE "items" SET "status" = $1 WHERE … RETURNING "id")
+// UPDATE "batches" SET "updated_at" = now(),
+//        "succeeded" = "succeeded" + (SELECT count(*) FROM "_storm_step")
+//  WHERE EXISTS (SELECT 1 FROM "_storm_step") AND ("id" = $4)
+```
+
+Every table has the two steps; a table asks for `Tally` and `UpdateAllAfter`
+with `t.Tallies()` in its `Schema`. `Tally` has `Add…()` and `Subtract…()` for every `NOT NULL` integer column,
+`Set…IfNone(v)` for every updatable one, and `OnlyIfAny()`. `ExistsStep()`
+makes a step of a probe: "complete the batch unless an item is still pending"
+is `t.SetStatusIfNone("completed")` after
+`item.New().Where(…pending…).ExistsStep()`. The step runs to completion whatever
+the `UPDATE` matches, and both see one snapshot. PostgreSQL only.
 
 ## 8b. Transactions — one contract, every target
 

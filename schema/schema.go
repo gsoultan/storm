@@ -71,6 +71,14 @@ type Table struct {
 	// (SELECT *, COPY) so it must not be sorted.
 	Columns []*Column
 
+	// Takes, Tallies and InsertSelects ask for write shapes only some tables
+	// need, so the rest do not carry their code: Take (an UPDATE of the rows
+	// a read selects), the Tally a step's rows move (UpdateAllAfter), and an
+	// INSERT … SELECT per named relation field. Storm-level facts with no DDL.
+	Takes         bool
+	Tallies       bool
+	InsertSelects []string
+
 	// Relations are the Go-level links the model declared, kept because a
 	// foreign key alone cannot reconstruct them: it says users.org_id
 	// references orgs.id, not that the field is called Org, that Org has a

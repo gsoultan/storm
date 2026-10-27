@@ -184,6 +184,10 @@ func TestBumpReadsTheColumnItWrites(t *testing.T) {
 	if a != "`version` = `version` + 1" || b != "" {
 		t.Errorf("BumpFrag = %q, %q", a, b)
 	}
+	a, b = mysql.AddFrag("hits")
+	if a != "`hits` = `hits` + ?" || b != "" {
+		t.Errorf("AddFrag = %q, %q", a, b)
+	}
 }
 
 func TestExprAndCondRenderMySQLSpelling(t *testing.T) {

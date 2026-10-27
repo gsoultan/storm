@@ -181,6 +181,13 @@ func SetFrag(col string) (a, b string) { return Ident(col) + " = " + Placeholder
 // BumpFrag increments a version column from its own value.
 func BumpFrag(col string) (a, b string) { return Ident(col) + " = " + Ident(col) + " + 1", "" }
 
+// AddFrag adds a bound amount to a counter's own value, in the database. Two
+// writers who both add land both amounts, which a value computed in Go and
+// written back would not.
+func AddFrag(col string) (a, b string) {
+	return Ident(col) + " = " + Ident(col) + " + " + Placeholder, ""
+}
+
 // NowFrag assigns a column the database's clock rather than the caller's.
 //
 // The explicit (6) is not decoration: bare CURRENT_TIMESTAMP carries zero

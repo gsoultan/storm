@@ -441,6 +441,8 @@ func reservedFor(t *schema.Table, n string) bool {
 	switch n {
 	case "Table":
 		return hasPK
+	case "Tally":
+		return hasPK && t.Tallies
 	case "MutateKey":
 		return hasPK && versionCol(t) == nil
 	case "HardDelete", "Restore", "HardDeleteOp", "RestoreOp":
@@ -829,6 +831,11 @@ func (g *gen) compile() {
 	g.p("\t}")
 	g.p("\treturn append(dst, q.otoks[:q.no]...)")
 	g.p("}")
+	g.p("")
+	g.p("// Locked and Paged report a row lock and an Offset, which a statement")
+	g.p("// composed around this query's read may have no place for.")
+	g.p("func (q Query) Locked() bool { return q.lock != 0 }")
+	g.p("func (q Query) Paged() bool  { return q.offset != 0 }")
 	g.p("")
 	g.p("// BindPreds binds this query's predicate values into b, appending to v.")
 	g.p("func (q Query) BindPreds(b *Binder, v []any) []any {")

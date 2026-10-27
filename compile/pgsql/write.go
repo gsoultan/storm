@@ -79,6 +79,72 @@ func SetFrag(col string) (a, b string) { return Ident(col) + " = " + Placeholder
 // the winner had in memory.
 func BumpFrag(col string) (a, b string) { return Ident(col) + " = " + Ident(col) + " + 1", "" }
 
+// AddFrag adds a bound amount to a counter's own value, in the database. Two
+// writers who both add land both amounts, which a value computed in Go and
+// written back would not.
+func AddFrag(col string) (a, b string) {
+	return Ident(col) + " = " + Ident(col) + " + " + Placeholder, ""
+}
+
+// stepName is the step's name inside a statement that writes after it.
+const stepName = `"_storm_step"`
+
+// StepOpen and StepClose wrap a step — a write or a read whose rows another
+// write counts — ahead of that write, in one statement. A data-modifying step
+// runs to completion whether or not anything reads it, and both see one
+// snapshot.
+const (
+	StepOpen  = "WITH " + stepName + " AS ("
+	StepClose = ") "
+)
+
+// StepExists is true when the step had rows.
+const StepExists = "EXISTS (SELECT 1 FROM " + stepName + ")"
+
+// AddStepFrag and SubtractStepFrag move a counter by the number of rows the
+// step had.
+func AddStepFrag(col string) (a, b string) {
+	return Ident(col) + " = " + Ident(col) + " + (SELECT count(*) FROM " + stepName + ")", ""
+}
+
+func SubtractStepFrag(col string) (a, b string) {
+	return Ident(col) + " = " + Ident(col) + " - (SELECT count(*) FROM " + stepName + ")", ""
+}
+
+// IfNoStepFrag assigns a bound value only when the step had no rows, and
+// leaves the column as it is otherwise.
+func IfNoStepFrag(col string) (a, b string) {
+	return Ident(col) + " = CASE WHEN " + StepExists + " THEN " + Ident(col) + " ELSE " + Placeholder, " END"
+}
+
+// AndStepExists joins a declared predicate, which may be empty, to StepExists.
+func AndStepExists(declared string) string {
+	if declared == "" {
+		return StepExists
+	}
+	return declared + " AND " + StepExists
+}
+
+// TakeOpen narrows an UPDATE to the rows a read selects: the read's
+// predicate, order, limit and row lock run inside the subquery, so the UPDATE
+// writes exactly the rows it would have returned. With a LIMIT the subquery
+// cannot be pulled up into a join, so it runs once, and FOR UPDATE SKIP LOCKED
+// inside it is the queue claim.
+func TakeOpen(table, key string) string {
+	return " WHERE " + Ident(key) + " IN (SELECT " + Ident(key) + " FROM " + Ident(table)
+}
+
+// TakeClose ends what TakeOpen began.
+const TakeClose = ")"
+
+// InsertSelectMid is what an INSERT … SELECT has between its column list and
+// the selected values, where a plain insert has VALUES.
+const InsertSelectMid = ") SELECT "
+
+// KeyFrom selects one table's key, the tail of an INSERT … SELECT that fills a
+// reference from a read of that table.
+func KeyFrom(table, key string) string { return Ident(key) + " FROM " + Ident(table) }
+
 // NowFrag assigns a column the DATABASE's clock rather than the caller's.
 //
 // These are not the same fact. Application servers skew, and a revocation
