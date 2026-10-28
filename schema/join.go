@@ -50,6 +50,9 @@ type CTE struct {
 	// Table and Aggregate name the declared aggregation this CTE runs.
 	Table     string
 	Aggregate string
+	// Narrowed takes the CTE's WHERE from the call site: a query of the
+	// aggregated table, whose predicates choose the rows it aggregates.
+	Narrowed bool
 }
 
 // JoinTable is one attached table.

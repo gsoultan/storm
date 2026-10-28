@@ -689,6 +689,38 @@ func (o *Order) Joins(j *storm.Joins) {
 joins against it — once, rather than a correlated subquery per row. Anything
 taken through a `Left` join comes back nullable, including a count.
 
+`WithWhere(alias, model, aggregate)` is the same CTE narrowed at the call site.
+A join with one runs through the context package's composer, which takes the
+join's own query and one query per narrowed CTE, and has `All` and `Count`:
+
+```go
+func (d *Definition) Joins(j *storm.Joins) {
+    var r Release
+    var lv Definition                                  // the same table again
+    j.Named("Shown").
+        WithWhere("keys", d, "Keys").                 // By project, key: Max version "Newest"
+        WithWhere("live", &r, "Live").                // By project, key: FirstOf version
+        InnerWith("keys", j.OnCols("keys", "project_id", &d.Project).And("keys", "key", &d.Key)).
+        LeftWith("live", j.OnCols("live", "project_id", &d.Project).And("live", "key", &d.Key)).
+        LeftAs("lv", &lv, j.OnCols("definitions", "project_id", &lv.Project).
+            And("definitions", "key", &lv.Key).And("live", "version", &lv.Version)).
+        Where(j.Eq(&d.Version, j.Coalesce(&lv.Version, j.ColOf("keys", "newest")))).
+        Take(&d.Name, "Name").
+        OrderAsc(&d.Key)
+}
+
+rows, err := store.DefinitionShown(
+    definition.New().Where(definition.Project.Eq(p)).Limit(50),
+    definition.New().Where(definition.Project.Eq(p)),
+    release.New().Where(release.Project.Eq(p), release.ActivateAt.Lte(now)),
+).All(ctx, ex)
+```
+
+`OnCols(...).And(...)` joins on several columns; `InnerAs`/`LeftAs` attach a
+table under an alias, which is how a table joins itself; `ColOf(alias, column)`
+names a CTE's column in a condition, and `Coalesce` and the other scalar
+functions work there too. Narrowed CTEs are PostgreSQL only.
+
 ## 8. Writes
 
 Insert is a **masked builder**, not a struct. Absence is tracked by the mask and

@@ -74,6 +74,11 @@ type lowering struct {
 	// unable to express a declaration rather than merely spell it differently.
 	JoinSelect func(table string, j *schema.Join,
 		aggFor func(schema.CTE) (string, string), live func(table, alias string) string) (string, error)
+	// JoinPieces is JoinSelect cut for a join with narrowed CTEs: each CTE's
+	// head and tail around its call-site predicates, then the select and the
+	// count. Nil where the back end has none.
+	JoinPieces func(table string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+		live func(table, alias string) string) (ctes [][2]string, sel, count string)
 	JoinSuffix        func(j *schema.Join) (string, error)
 	JoinDeclaredWhere func(j *schema.Join, driving string) (string, error)
 
@@ -353,6 +358,11 @@ func postgresLowering() lowering {
 			live func(table, alias string) string) (string, error) {
 			return pgsql.JoinSelect(t, j, aggFor,
 				func(tb, al string) pgsql.Live { return pgsql.Live(live(tb, al)) }), nil
+		},
+		JoinPieces: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+			live func(table, alias string) string) ([][2]string, string, string) {
+			return pgsql.JoinPieces(t, j, aggFor,
+				func(tb, al string) pgsql.Live { return pgsql.Live(live(tb, al)) })
 		},
 		JoinSuffix: func(j *schema.Join) (string, error) { return pgsql.JoinSuffix(j), nil },
 		JoinDeclaredWhere: func(j *schema.Join, driving string) (string, error) {
