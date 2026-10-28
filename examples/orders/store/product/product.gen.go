@@ -2540,7 +2540,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		case 7:
 			args = append(args, n.row.Tags)
 		case 8:
-			args = append(args, n.row.Attrs)
+			args = append(args, n.row.Attrs.OrNull())
 		}
 	}
 	var out Row
@@ -2587,7 +2587,7 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args = append(args, r.Price)
 	args = append(args, r.Active)
 	args = append(args, r.Tags)
-	args = append(args, r.Attrs)
+	args = append(args, r.Attrs.OrNull())
 	rows, err := ex.Query(ctx, insertSQL, args)
 	if err != nil {
 		return err
@@ -2705,7 +2705,7 @@ func InsertOp(r Row) runtime.BatchOp {
 	args = append(args, r.Price)
 	args = append(args, r.Active)
 	args = append(args, r.Tags)
-	args = append(args, r.Attrs)
+	args = append(args, r.Attrs.OrNull())
 	return runtime.BatchOp{SQL: st.SQL, Args: args}
 }
 
@@ -2756,7 +2756,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		case 7:
 			args = append(args, n.row.Tags)
 		case 8:
-			args = append(args, n.row.Attrs)
+			args = append(args, n.row.Attrs.OrNull())
 		}
 	}
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
@@ -2825,7 +2825,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 		case 5:
 			args = append(args, m.row.Tags)
 		case 6:
-			args = append(args, m.row.Attrs)
+			args = append(args, m.row.Attrs.OrNull())
 		}
 	}
 	args = append(args, m.row.ID)
@@ -2921,7 +2921,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		case 5:
 			args = append(args, m.row.Tags)
 		case 6:
-			args = append(args, m.row.Attrs)
+			args = append(args, m.row.Attrs.OrNull())
 		}
 	}
 	args = append(args, m.row.ID)
@@ -3030,7 +3030,7 @@ func (m Mut) updateArgs(args []any) []any {
 		case 5:
 			args = append(args, m.row.Tags)
 		case 6:
-			args = append(args, m.row.Attrs)
+			args = append(args, m.row.Attrs.OrNull())
 		}
 	}
 	return args
@@ -3200,7 +3200,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 			case 5:
 				args = append(args, m.row.Tags)
 			case 6:
-				args = append(args, m.row.Attrs)
+				args = append(args, m.row.Attrs.OrNull())
 			}
 		}
 		return run(st.SQL, append(args, q.bindPreds(b)...))
