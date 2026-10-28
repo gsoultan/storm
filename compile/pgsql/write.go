@@ -319,11 +319,14 @@ func InsertParts() (open, sep, mid, close string) {
 // LockMode is a row-level lock: a strength, and what to do when the row is
 // already locked. The zero value locks nothing.
 //
-// Two strengths rather than PostgreSQL's four. FOR NO KEY UPDATE and FOR KEY
-// SHARE exist for the deadlock between a parent update and a child insert,
-// which is real and rare, and every caller who has it knows the exact SQL
-// they want — so they get storm.SQL rather than four more methods on every
-// generated table.
+// Three strengths of PostgreSQL's four. FOR NO KEY UPDATE is the exclusive
+// lock that leaves a row's KEY alone: it serialises writers as FOR UPDATE does,
+// but a foreign-key check on the row — which takes FOR KEY SHARE — is not made
+// to wait for it. Without it, a transaction that locks a parent and then waits
+// on anything deadlocks with one that inserted a child of that parent first,
+// and every table with a foreign key into a locked one is such a child. FOR
+// KEY SHARE itself is what the server takes for those checks; nobody asks for
+// it by hand.
 type LockMode uint8
 
 // The lock modes, in the order the generated cache array is indexed.
@@ -335,6 +338,7 @@ const (
 	LockShare
 	LockShareNoWait
 	LockShareSkipLocked
+	LockNoKeyUpdate
 	numLockModes
 )
 
@@ -359,6 +363,8 @@ func LockName(m LockMode) string {
 		return "ForShareNoWait"
 	case LockShareSkipLocked:
 		return "ForShareSkipLocked"
+	case LockNoKeyUpdate:
+		return "ForNoKeyUpdate"
 	}
 	return ""
 }
@@ -382,6 +388,12 @@ func LockDoc(m LockMode) string {
 		return "is the shared lock, failing rather than waiting."
 	case LockShareSkipLocked:
 		return "is the shared lock, stepping over rows another transaction holds."
+	case LockNoKeyUpdate:
+		return "takes the exclusive row lock that leaves the key alone: writers " +
+			"wait for it as for ForUpdate, but a foreign-key check on the row — " +
+			"another transaction inserting a child of it — does not. Use it to " +
+			"serialise changes to a row other tables point at. A back end with " +
+			"no such lock takes ForUpdate's."
 	}
 	return ""
 }
@@ -400,10 +412,11 @@ func LockNotes() []string {
 		"nullable side of an outer join; refusing at the call site names the",
 		"rule, where the server would name a SQLSTATE.",
 		"",
-		"The two weakest strengths are deliberately absent. They exist for the",
-		"deadlock between updating a parent row and inserting a child that",
-		"references it, which is real and rare, and a caller who has it knows",
-		"the exact SQL they want — storm.SQL gives it to them typed.",
+		"ForUpdate also blocks a foreign-key check on the row, so a transaction",
+		"that holds it and then waits on anything deadlocks with one that",
+		"inserted a child of the row first. ForNoKeyUpdate serialises writers",
+		"the same way and lets the check through; prefer it unless the row's",
+		"key is about to change or the row about to go.",
 	}
 }
 
@@ -454,6 +467,8 @@ func LockSuffix(m LockMode) string {
 		return " FOR SHARE NOWAIT"
 	case LockShareSkipLocked:
 		return " FOR SHARE SKIP LOCKED"
+	case LockNoKeyUpdate:
+		return " FOR NO KEY UPDATE"
 	}
 	return ""
 }

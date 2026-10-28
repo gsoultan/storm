@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gsoultan/storm/internal/planspike/store/org"
 	"github.com/gsoultan/storm/internal/planspike/store/user"
@@ -225,5 +226,51 @@ func TestLock_IsZeroAlloc(t *testing.T) {
 		}
 	}); n != 0 {
 		t.Errorf("composing a locked query allocates %v times, want 0", n)
+	}
+}
+
+// FOR NO KEY UPDATE is what lets a locked parent take children. A user row
+// points at its org, and inserting one checks the org row with FOR KEY SHARE:
+// under ForUpdate that check waits for the lock, so a transaction that holds an
+// org and then waits on the inserter deadlocks with it. Under ForNoKeyUpdate
+// the insert goes through — and a second writer still waits, which is the lock
+// doing its job.
+func TestLock_NoKeyUpdateLetsAChildInWhileWritersStillWait(t *testing.T) {
+	ctx := context.Background()
+	orgID, _ := lockFixture(t, ctx, "nokey", 0)
+
+	held, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Rollback(ctx)
+	if _, err := org.New().IDEq(orgID).ForNoKeyUpdate().All(ctx, pgxdrv.Tx{T: held}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Rollback(ctx)
+	nu := user.Create()
+	nu.SetEmail("child@lock-nokey.invalid")
+	nu.SetName("child")
+	nu.SetStatus("pending")
+	nu.SetOrgID(orgID)
+	quick, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, err := nu.Insert(quick, pgxdrv.Tx{T: child}); err != nil {
+		t.Fatalf("a child of the locked org was made to wait or refused: %v", err)
+	}
+
+	writer, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	_, err = org.New().IDEq(orgID).ForUpdateNoWait().All(ctx, pgxdrv.Tx{T: writer}, nil)
+	if !errors.Is(err, runtime.ErrLockNotAvailable) {
+		t.Fatalf("a second writer got %v; want it held off by the lock", err)
 	}
 }
