@@ -53,6 +53,11 @@ type Table struct {
 	// after the indexes are, so the column keeps its index and every
 	// declaration that looks the key up still finds it while Schema runs.
 	noFK map[*col]string
+
+	// matches are the t.ProbesOn declarations, resolved once every table's
+	// relations are wired: the target is named by a local instance, and its
+	// columns, its references among them, may not exist while Schema runs.
+	matches []func(*builder)
 }
 
 // fkDecl is one t.ForeignKey(...).References(...) call.
@@ -916,6 +921,76 @@ func (t *Table) Probes(fieldPtr any) *Table {
 	}
 	t.out.Probes = append(t.out.Probes, name)
 	return t
+}
+
+// ProbesOn declares a semi-join a foreign key does not describe: the rows of
+// another table whose columns equal this one's, pair by pair. The target is a
+// LOCAL instance of its model, so the pairs are field pointers on both sides
+// and a rename is a compile error:
+//
+//	func (e *ExternalTask) Schema(t *storm.Table) {
+//	    var i Incident
+//	    t.ProbesOn("StepIncidents", &i, &e.Instance, &i.Instance, &e.NodeID, &i.NodeID)
+//	}
+//
+// The context package then has <Model>Having<Name> and <Model>NotHaving<Name>
+// with every composer method a relation's has, the target's soft delete
+// applied. PostgreSQL only.
+func (t *Table) ProbesOn(name string, target any, pairs ...any) *Table {
+	if !isExportedIdent(name) {
+		t.errs.add(fmt.Errorf("%s: ProbesOn name %q must be a valid exported Go identifier", t.out.Name, name))
+		return t
+	}
+	if len(pairs) == 0 || len(pairs)%2 != 0 {
+		t.errs.add(fmt.Errorf("%s: ProbesOn %s wants pairs of field pointers, this table's then the target's", t.out.Name, name))
+		return t
+	}
+	t.matches = append(t.matches, func(b *builder) {
+		mi := b.infoFor(target)
+		if mi == nil {
+			b.errs.add(fmt.Errorf("%s: ProbesOn %s probes %T, which is not a registered model", t.out.Name, name, target))
+			return
+		}
+		local := &Table{base: unsafe.Pointer(reflect.ValueOf(target).Pointer()), typ: mi.tbl.typ,
+			out: mi.tbl.out, off: mi.tbl.off, relOff: mi.tbl.relOff, errs: t.errs}
+		own := make([]string, 0, len(pairs)/2)
+		theirs := make([]string, 0, len(pairs)/2)
+		for i := 0; i < len(pairs); i += 2 {
+			c, err := t.columnOf(pairs[i])
+			if err == nil {
+				own = append(own, c)
+				c, err = local.columnOf(pairs[i+1])
+			}
+			if err != nil {
+				b.errs.add(fmt.Errorf("%s: ProbesOn %s: %w", t.out.Name, name, err))
+				return
+			}
+			theirs = append(theirs, c)
+		}
+		t.out.Matches = append(t.out.Matches, &schema.Match{
+			Name: name, Target: mi.tbl.out.Name, TargetGo: mi.tbl.out.GoName,
+			Columns: own, TargetColumns: theirs,
+		})
+	})
+	return t
+}
+
+// columnOf is the column a field pointer names: its own, or for an owned
+// reference the key column it carries.
+func (t *Table) columnOf(fieldPtr any) (string, error) {
+	if name, ok := t.relOff[t.offsetOf(fieldPtr)]; ok {
+		for _, r := range t.out.Relations {
+			if r.Field == name && r.Owner && r.Column != "" {
+				return r.Column, nil
+			}
+		}
+		return "", fmt.Errorf("%s.%s is a reference that carries no column of its own", t.out.Name, name)
+	}
+	c, err := t.resolve(fieldPtr)
+	if err != nil {
+		return "", err
+	}
+	return c.sc.Name, nil
 }
 
 // UniqueAcrossDeleted declares uniqueness that a soft-delete table's marked

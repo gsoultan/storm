@@ -3417,6 +3417,47 @@ func (h CommentRepliesProbeQuery) Count(ctx context.Context, ex runtime.Executor
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
+var commentRepliesProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the comment package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every comments row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h CommentRepliesProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m comment.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := commentRepliesProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = commentRepliesProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], commentRepliesProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := comment.GetBinder()
+	defer comment.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			comment.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
+}
+
 // OrgChildrenProbeQuery is a parent query with one or more existence probes against
 // orgs, combined with AND. Build it with OrgHavingChildren or
 // OrgNotHavingChildren and extend it with AndHaving/AndNotHaving.
@@ -3628,6 +3669,47 @@ func (h OrgChildrenProbeQuery) Count(ctx context.Context, ex runtime.Executor) (
 		return 0, rows.Err()
 	}
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+var orgChildrenProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the org package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every orgs row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h OrgChildrenProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m org.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := orgChildrenProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = orgChildrenProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], orgChildrenProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := org.GetBinder()
+	defer org.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			org.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
 }
 
 // OrgUsersProbeQuery is a parent query with one or more existence probes against
@@ -3843,6 +3925,47 @@ func (h OrgUsersProbeQuery) Count(ctx context.Context, ex runtime.Executor) (int
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
+var orgUsersProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the org package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every orgs row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h OrgUsersProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m org.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := orgUsersProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = orgUsersProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], orgUsersProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := org.GetBinder()
+	defer org.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			user.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
+}
+
 // PostCommentsProbeQuery is a parent query with one or more existence probes against
 // comments, combined with AND. Build it with PostHavingComments or
 // PostNotHavingComments and extend it with AndHaving/AndNotHaving.
@@ -4056,6 +4179,47 @@ func (h PostCommentsProbeQuery) Count(ctx context.Context, ex runtime.Executor) 
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
+var postCommentsProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the post package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every posts row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h PostCommentsProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m post.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := postCommentsProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = postCommentsProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], postCommentsProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := post.GetBinder()
+	defer post.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			comment.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
+}
+
 // UserPostsProbeQuery is a parent query with one or more existence probes against
 // posts, combined with AND. Build it with UserHavingPosts or
 // UserNotHavingPosts and extend it with AndHaving/AndNotHaving.
@@ -4267,6 +4431,47 @@ func (h UserPostsProbeQuery) Count(ctx context.Context, ex runtime.Executor) (in
 		return 0, rows.Err()
 	}
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+var userPostsProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the user package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every users row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h UserPostsProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m user.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := userPostsProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = userPostsProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], userPostsProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := user.GetBinder()
+	defer user.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			post.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
 }
 
 // AttachmentWithSubjectRow is attachments with its Subject resolved.

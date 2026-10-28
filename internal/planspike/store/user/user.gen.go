@@ -5006,84 +5006,21 @@ var (
 	delAllCache = runtime.NewTreeCache()
 )
 
-// writeAllErr is what UpdateAll and DeleteAll refuse.
-func (q Query) writeAllErr() error {
-	if err := q.Err(); err != nil {
-		return err
-	}
-	if q.nt == 0 {
-		return runtime.ErrUnfilteredWrite
-	}
-	if q.limit != 1000 || q.offset != 0 || q.lock != 0 {
-		return runtime.ErrPagedWrite
-	}
-	return nil
-}
-
-// updAllStmtFor compiles one (assignments, predicates) pair, once.
-func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
-	return updAllStmtIn(updAllCache, "", k, preds)
-}
-
-func updAllStmtIn(c *runtime.TreeCache, suffix string, k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
-	var key [25]runtime.Tok
-	key[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)
-	key[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)
-	n := 4 + copy(key[4:], preds)
-	if st := c.Get(key[:n]); st != nil {
-		return st
-	}
-	set := make([]runtime.Frag, 0, nUpdatable+1)
-	for i := 0; i < nUpdatable; i++ {
-		switch {
-		case k.Expr&(1<<uint(i)) != 0:
-			set = append(set, exprFrags[i])
-		case k.Dirty&(1<<uint(i)) != 0:
-			set = append(set, setFrags[i])
-		}
-	}
-	// Every row written moves its version on, so a reader holding one
-	// of them loses its optimistic lock — exactly as if Update had run.
-	set = append(set, versionBump)
-	head := runtime.SpliceSections(updatePrefix, []runtime.Section{
-		{Lead: "", Sep: ", ", Frags: set},
-	}, "")
-	if head.Err != nil {
-		return head
-	}
-	return c.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, suffix, head.NArg))
-}
-
-// UpdateAll writes m's assigned columns to every row the query
-// matches, in ONE statement, and reports how many it wrote:
-//
-//	var m Mut
-//	m.Set…(v)            // bound values and server-side forms alike
-//	n, err := New().Where(…).UpdateAll(ctx, ex, m)
-//
-// Only assigned columns are written, as for Update; nothing assigned
-// issues no statement and reports 0. The query must have a predicate —
-// runtime.ErrUnfilteredWrite otherwise — and must not carry Limit,
-// Offset or a row lock, which a set-based UPDATE has no clause for:
-// runtime.ErrPagedWrite. Order is ignored, as it is by Count.
-//
-// The version column is bumped on every row written and checked on
-// none: a set-based write has no version it read.
-func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64, error) {
-	if err := q.writeAllErr(); err != nil {
-		return 0, err
-	}
+// UpdateHead is UpdateAll's statement without its predicates, for the
+// context package to narrow with a composed read: the UPDATE … SET, the
+// identity a statement built from it is cached under, and the values m
+// assigns. ok is false when m assigns nothing.
+func (m Mut) UpdateHead() (head *runtime.Stmt, key [4]runtime.Tok, args []any, ok bool) {
 	if m.dirty == 0 && m.expr == 0 {
-		return 0, nil
+		return nil, key, nil, false
 	}
-	var buf [21]runtime.Tok
-	st := updAllStmtFor(m.key(), q.preds(&buf))
-	if st.Err != nil {
-		return 0, st.Err
-	}
-	b := binders.Get()
-	defer putBinder(b)
-	args := make([]any, 0, st.NArg)
+	key[0], key[1] = runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32)
+	key[2], key[3] = runtime.Tok(m.expr), runtime.Tok(m.expr>>32)
+	return updHead(m.key()), key, m.updateArgs(nil), true
+}
+
+// updateArgs appends the values m assigns, in SET order.
+func (m Mut) updateArgs(args []any) []any {
 	for i := 0; i < nUpdatable; i++ {
 		if m.dirty&(1<<uint(i)) == 0 {
 			continue
@@ -5119,7 +5056,104 @@ func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64
 			args = append(args, m.row.OrgID)
 		}
 	}
-	args = append(args, q.bindPreds(b)...)
+	return args
+}
+
+// Shaped reports a Limit, Offset or row lock, which shape a read and
+// which a set-based write composed around this query has no place for.
+func (q Query) Shaped() bool {
+	return q.limit != 1000 || q.offset != 0 || q.lock != 0
+}
+
+// writeAllErr is what UpdateAll and DeleteAll refuse.
+func (q Query) writeAllErr() error {
+	if err := q.Err(); err != nil {
+		return err
+	}
+	if q.nt == 0 {
+		return runtime.ErrUnfilteredWrite
+	}
+	if q.limit != 1000 || q.offset != 0 || q.lock != 0 {
+		return runtime.ErrPagedWrite
+	}
+	return nil
+}
+
+var updHeadCache = runtime.NewMaskCache()
+
+// updHead is the UPDATE … SET of one assignment mask, before the
+// predicates or the read that narrow it.
+func updHead(k runtime.MaskKey) *runtime.Stmt {
+	if st := updHeadCache.Get(k); st != nil {
+		return st
+	}
+	set := make([]runtime.Frag, 0, nUpdatable+1)
+	for i := 0; i < nUpdatable; i++ {
+		switch {
+		case k.Expr&(1<<uint(i)) != 0:
+			set = append(set, exprFrags[i])
+		case k.Dirty&(1<<uint(i)) != 0:
+			set = append(set, setFrags[i])
+		}
+	}
+	// Every row written moves its version on, so a reader holding one
+	// of them loses its optimistic lock — exactly as if Update had run.
+	set = append(set, versionBump)
+	return updHeadCache.Put(k, runtime.SpliceSections(updatePrefix, []runtime.Section{
+		{Lead: "", Sep: ", ", Frags: set},
+	}, ""))
+}
+
+// updAllStmtFor compiles one (assignments, predicates) pair, once.
+func updAllStmtFor(k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
+	return updAllStmtIn(updAllCache, "", k, preds)
+}
+
+func updAllStmtIn(c *runtime.TreeCache, suffix string, k runtime.MaskKey, preds []runtime.Tok) *runtime.Stmt {
+	var key [25]runtime.Tok
+	key[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)
+	key[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)
+	n := 4 + copy(key[4:], preds)
+	if st := c.Get(key[:n]); st != nil {
+		return st
+	}
+	head := updHead(k)
+	if head.Err != nil {
+		return head
+	}
+	return c.Put(key[:n], runtime.SpliceTreeFrom(head.SQL, preds, lowering, suffix, head.NArg))
+}
+
+// UpdateAll writes m's assigned columns to every row the query
+// matches, in ONE statement, and reports how many it wrote:
+//
+//	var m Mut
+//	m.Set…(v)            // bound values and server-side forms alike
+//	n, err := New().Where(…).UpdateAll(ctx, ex, m)
+//
+// Only assigned columns are written, as for Update; nothing assigned
+// issues no statement and reports 0. The query must have a predicate —
+// runtime.ErrUnfilteredWrite otherwise — and must not carry Limit,
+// Offset or a row lock, which a set-based UPDATE has no clause for:
+// runtime.ErrPagedWrite. Order is ignored, as it is by Count.
+//
+// The version column is bumped on every row written and checked on
+// none: a set-based write has no version it read.
+func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64, error) {
+	if err := q.writeAllErr(); err != nil {
+		return 0, err
+	}
+	if m.dirty == 0 && m.expr == 0 {
+		return 0, nil
+	}
+	var buf [21]runtime.Tok
+	st := updAllStmtFor(m.key(), q.preds(&buf))
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+	args := append(m.updateArgs(make([]any, 0, st.NArg)), q.bindPreds(b)...)
 	return ex.Exec(ctx, st.SQL, args)
 }
 

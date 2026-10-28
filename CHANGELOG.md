@@ -67,6 +67,17 @@ pending delivery whose webhook is active, skipping locked rows" is one
 `Offset` is `runtime.ErrPagedWrite`. The table package gains the seam
 `Mut.TakeHead(q)`. PostgreSQL only.
 
+### Probes on matching columns, and `UpdateAll` over a probe
+
+`t.ProbesOn(name, &target, &own, &theirs, ...)` declares a semi-join no
+foreign key describes, correlated on every pair of columns, with the target's
+soft delete applied; the context package gains `<Model>Having<Name>` and
+`<Model>NotHaving<Name>` with every composer method. Every semi-join composer
+gains `UpdateAll(ctx, ex, m)`, the parent's set-based write bounded by the
+composed read. The table package gains the seams `Mut.UpdateHead()` and
+`Query.Shaped()`, and `UpdateAll`, `Take` and the composers now share one
+cached `UPDATE … SET` head per assignment mask. `ProbesOn` is PostgreSQL only.
+
 ### Reading the marked rows, where the model says so
 
 `t.ReadsDeleted()` on a soft-delete table generates `Query.WithDeleted()`:

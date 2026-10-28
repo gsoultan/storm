@@ -489,6 +489,26 @@ soft delete applied as they are to every read of it:
 store.DeliveryHavingWebhook(delivery.New(), webhook.Active.Eq(true)).All(ctx, ex)
 ```
 
+A semi-join no foreign key describes (two tables that share a run and a step,
+say) is declared with `t.ProbesOn`, the target named by a local instance so
+both sides are field pointers:
+
+```go
+func (e *ExternalTask) Schema(t *storm.Table) {
+    var i Incident
+    t.ProbesOn("StepIncidents", &i, &e.Instance, &i.Instance, &e.NodeID, &i.NodeID)
+}
+
+store.ExternalTaskNotHavingStepIncidents(
+    externaltask.New().Where(externaltask.Retries.Lte(0)),
+    incident.Status.Eq("open"),
+).UpdateAll(ctx, ex, m)
+```
+
+Every composer also has `UpdateAll`, the table's set-based write bounded by
+the composed predicates and probes; a `Limit`, `Offset` or row lock is
+`runtime.ErrPagedWrite`. `ProbesOn` is PostgreSQL only for now.
+
 A composer also runs each of the parent's declared aggregations that takes no
 parameter, so the probes decide which rows go into the groups:
 

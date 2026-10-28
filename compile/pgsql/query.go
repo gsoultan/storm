@@ -337,6 +337,25 @@ func ExistsOpen(childTable, childFK, parentTable, parentPK string, childLive Liv
 	return f[:len(f)-1]
 }
 
+// ExistsOnOpen is ExistsOpen correlated on several column pairs rather than a
+// key: the child row whose childCols equal the parent's parentCols, pair by
+// pair, and is live.
+func ExistsOnOpen(childTable string, childCols []string, parentTable string, parentCols []string, childLive Live) string {
+	s := "EXISTS (SELECT 1 FROM " + Ident(childTable) + " AS " + Ident(existsAlias) + " WHERE "
+	for i, c := range childCols {
+		if i > 0 {
+			s += " AND "
+		}
+		s += Ident(existsAlias) + "." + Ident(c) + " = " + Ident(parentTable) + "." + Ident(parentCols[i])
+	}
+	return s + aliasLive(childLive)
+}
+
+// NotExistsOnOpen is ExistsOnOpen negated.
+func NotExistsOnOpen(childTable string, childCols []string, parentTable string, parentCols []string, childLive Live) string {
+	return "NOT " + ExistsOnOpen(childTable, childCols, parentTable, parentCols, childLive)
+}
+
 // NotExistsOpen is ExistsOpen negated — the anti-join's header.
 //
 // `NOT EXISTS (...)` rather than `NOT (EXISTS (...))`: the same plan either

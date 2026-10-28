@@ -22,6 +22,8 @@ var optional = map[string]string{
 	"CreateIndexConcurrently": "a back end with no non-blocking index build",
 	"DropIndexConcurrently":   "ditto",
 	"LockHint":                "a back end whose lock is a suffix rather than a hint",
+	"ExistsOnOpen":            "a back end with no multi-column probe spelled yet",
+	"NotExistsOnOpen":         "a back end with no multi-column probe spelled yet",
 	"TakeOpen":                "a back end that cannot lock and limit inside an UPDATE's subquery",
 	"TrimOpen":                "a back end with no bounded DELETE spelled yet",
 	"KeyFrom":                 "a back end with no INSERT … SELECT spelled yet",

@@ -110,6 +110,10 @@ type lowering struct {
 	NotExistsFrag func(childTable, childFK, parentTable, parentPK, childLive string) string
 	ExistsOpen    func(childTable, childFK, parentTable, parentPK, childLive string) string
 	NotExistsOpen func(childTable, childFK, parentTable, parentPK, childLive string) string
+	// ExistsOnOpen and NotExistsOnOpen are the same headers correlated on
+	// several column pairs (t.ProbesOn). Nil where the back end has none yet.
+	ExistsOnOpen    func(childTable string, childCols []string, parentTable string, parentCols []string, childLive string) string
+	NotExistsOnOpen func(childTable string, childCols []string, parentTable string, parentCols []string, childLive string) string
 
 	SoftDeleteWhere func(col string) string
 	SoftDeleteSet   func(table, col string) string
@@ -368,6 +372,12 @@ func postgresLowering() lowering {
 		},
 		NotExistsOpen: func(ct, fk, pt, pk, live string) string {
 			return pgsql.NotExistsOpen(ct, fk, pt, pk, pgsql.Live(live))
+		},
+		ExistsOnOpen: func(ct string, cc []string, pt string, pc []string, live string) string {
+			return pgsql.ExistsOnOpen(ct, cc, pt, pc, pgsql.Live(live))
+		},
+		NotExistsOnOpen: func(ct string, cc []string, pt string, pc []string, live string) string {
+			return pgsql.NotExistsOnOpen(ct, cc, pt, pc, pgsql.Live(live))
 		},
 		SoftDeleteWhere: pgsql.SoftDeleteWhere,
 		SoftDeleteSet:   pgsql.SoftDeleteSet,

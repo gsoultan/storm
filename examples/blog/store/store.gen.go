@@ -666,6 +666,47 @@ func (h AuthorArticlesProbeQuery) Count(ctx context.Context, ex runtime.Executor
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
+var authorArticlesProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the author package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every authors row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h AuthorArticlesProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m author.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := authorArticlesProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = authorArticlesProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], authorArticlesProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := author.GetBinder()
+	defer author.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			article.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
+}
+
 // FeedRow is the "Feed" union: 3 column(s) merged from 2 table(s).
 //
 // A column is nullable here when ANY branch can produce NULL for it,
