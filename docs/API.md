@@ -140,6 +140,11 @@ migrate.AutoOptions{Accept: func(c migrate.Change) bool {
 }}
 ```
 
+A column the model makes NOT NULL that a live database still holds NULLs in
+says what they become with `t.Col(&m.Title).FillNulls("''")`: the plan sets it
+on those rows and then tightens the column, in the same transaction, and the
+step is no longer destructive. Without it a NULL row fails the migration.
+
 A schema the model shares with tables something else owns sets
 `DeclaredOnly`: a table the model does not declare is then neither dropped nor
 compared, rather than a destructive step that refuses the plan.

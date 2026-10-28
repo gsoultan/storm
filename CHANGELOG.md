@@ -14,6 +14,13 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `FillNulls`: tightening a column that holds NULLs
+
+`t.Col(&m.F).FillNulls(expr)` says what the rows already NULL become when a
+migration makes the column NOT NULL. The plan sets it on them and then adds
+the constraint, in one transaction, so the step is no longer destructive.
+Declaring it on a nullable column is a build error.
+
 ### `pgstat`: which session waits behind which
 
 `pgstat.Backend` names the session an `Executor` runs on and the schema it

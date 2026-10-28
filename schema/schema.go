@@ -366,6 +366,13 @@ type Column struct {
 	// cast. It is a migration fact: nothing renders it until the type
 	// changes, so it can stay in a model after every database has moved.
 	ConvertFrom string
+
+	// FillNulls is the value, a raw SQL expression, that the rows already
+	// NULL in this column are given when a migration makes it NOT NULL; ""
+	// for none, which leaves such a row to fail the migration. Like
+	// ConvertFrom a migration fact: nothing renders it while the column is
+	// already NOT NULL.
+	FillNulls string
 }
 
 // ConvertJSONText is Column.ConvertFrom for a text column of JSON — a list

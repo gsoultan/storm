@@ -390,7 +390,12 @@ func diffColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
 		// destructive — and a migration that applies the same ALTER twice is
 		// correct, where one that skipped the second would not be if only the
 		// nullability moved.
-		if cur.NotNull {
+		if cur.NotNull && cur.FillNulls != "" {
+			// The model says what the NULL rows become, so tightening cannot
+			// fail on one: the fill and the constraint are one step to review.
+			b.add(Change{SQL: d.FillNulls(t, cur), Object: ObjectColumn})
+			b.add(Change{SQL: b.sql(d.SetNotNull(t, cur)), Object: ObjectColumn})
+		} else if cur.NotNull {
 			b.add(Change{
 				SQL:         b.sql(d.SetNotNull(t, cur)),
 				Object:      ObjectColumn,
