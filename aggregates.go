@@ -859,6 +859,9 @@ func (b *AggregateBuilder) resolveTerm(t Term) (schema.Expr, error) {
 			Type: schema.Type{Name: t.lit.Kind}}, nil
 
 	case schema.ExprCol:
+		if t.scope != "" {
+			return schema.Expr{}, fmt.Errorf("ColOf(%q, %q) names a join's scope, and an aggregation has none", t.scope, t.out)
+		}
 		c, err := b.a.t.resolve(t.fp)
 		if err != nil {
 			return schema.Expr{}, err
@@ -890,39 +893,49 @@ func (b *AggregateBuilder) resolveTerm(t Term) (schema.Expr, error) {
 		}, nil
 
 	case schema.ExprFunc:
-		sig, ok := schema.Funcs[t.fn]
-		if !ok {
-			return schema.Expr{}, fmt.Errorf("unknown function %q", t.fn)
-		}
-		args, in, anyNull, err := b.resolveArgs(t.args)
+		args, _, _, err := b.resolveArgs(t.args)
 		if err != nil {
 			return schema.Expr{}, err
 		}
-		if sig.Args >= 0 && len(args) != sig.Args {
-			return schema.Expr{}, fmt.Errorf("%s wants %d argument(s), got %d", t.fn, sig.Args, len(args))
-		}
-		rt, err := sig.Result(in)
-		if err != nil {
-			return schema.Expr{}, fmt.Errorf("%s: %w", t.fn, err)
-		}
-		nullable := sig.NullableIfAnyArgIs && anyNull
-		switch t.fn {
-		case "nullif":
-			nullable = true // its entire purpose
-		case "coalesce":
-			// Non-null exactly when some argument cannot be null.
-			nullable = true
-			for _, a := range args {
-				if !a.Nullable {
-					nullable = false
-					break
-				}
-			}
-		}
-		return schema.Expr{Kind: schema.ExprFunc, Fn: t.fn, Args: args,
-			Type: rt, Nullable: nullable}, nil
+		return funcExpr(t.fn, args)
 	}
 	return schema.Expr{}, fmt.Errorf("unsupported expression")
+}
+
+// funcExpr types a scalar function call over resolved arguments.
+func funcExpr(fn string, args []schema.Expr) (schema.Expr, error) {
+	sig, ok := schema.Funcs[fn]
+	if !ok {
+		return schema.Expr{}, fmt.Errorf("unknown function %q", fn)
+	}
+	if sig.Args >= 0 && len(args) != sig.Args {
+		return schema.Expr{}, fmt.Errorf("%s wants %d argument(s), got %d", fn, sig.Args, len(args))
+	}
+	in := make([]schema.Type, 0, len(args))
+	anyNull := false
+	for _, a := range args {
+		in = append(in, a.Type)
+		anyNull = anyNull || a.Nullable
+	}
+	rt, err := sig.Result(in)
+	if err != nil {
+		return schema.Expr{}, fmt.Errorf("%s: %w", fn, err)
+	}
+	nullable := sig.NullableIfAnyArgIs && anyNull
+	switch fn {
+	case "nullif":
+		nullable = true // its entire purpose
+	case "coalesce":
+		// Non-null exactly when some argument cannot be null.
+		nullable = true
+		for _, a := range args {
+			if !a.Nullable {
+				nullable = false
+				break
+			}
+		}
+	}
+	return schema.Expr{Kind: schema.ExprFunc, Fn: fn, Args: args, Type: rt, Nullable: nullable}, nil
 }
 
 func (b *AggregateBuilder) resolveArgs(ts []Term) ([]schema.Expr, []schema.Type, bool, error) {

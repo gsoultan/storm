@@ -13,25 +13,54 @@ import (
 // dynamic and this prefix is fixed at generation time.
 func JoinSelect(table string, j *schema.Join, aggFor func(cte schema.CTE) (prefix, suffix string), live func(table, alias string) Live) string {
 	var b strings.Builder
-
+	for i, c := range j.CTEs {
+		prefix, suffix := aggFor(c)
+		head, tail := ctePiece(i, c.Alias, prefix, suffix)
+		b.WriteString(head)
+		b.WriteString(tail)
+	}
 	if len(j.CTEs) > 0 {
-		b.WriteString("WITH ")
-		for i, c := range j.CTEs {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(Ident(c.Alias))
-			b.WriteString(" AS (")
-			prefix, suffix := aggFor(c)
-			b.WriteString(prefix)
-			b.WriteString(suffix)
-			b.WriteByte(')')
-		}
 		b.WriteByte(' ')
 	}
+	b.WriteString(joinBody(table, j, live, false))
+	return b.String()
+}
 
+// JoinPieces is JoinSelect cut where a narrowed CTE's own predicates go:
+// each CTE's head — WITH or a comma, its name, its aggregation up to the WHERE
+// — and tail — the aggregation's GROUP BY and the closing parenthesis — and
+// then the main select, and the count of the same rows, each with a leading
+// space.
+func JoinPieces(table string, j *schema.Join, aggFor func(cte schema.CTE) (prefix, suffix string), live func(table, alias string) Live) (ctes [][2]string, sel, count string) {
+	for i, c := range j.CTEs {
+		prefix, suffix := aggFor(c)
+		head, tail := ctePiece(i, c.Alias, prefix, suffix)
+		ctes = append(ctes, [2]string{head, tail})
+	}
+	return ctes, " " + joinBody(table, j, live, false), " " + joinBody(table, j, live, true)
+}
+
+// ctePiece is one CTE around an aggregation's prefix and suffix.
+func ctePiece(i int, alias, prefix, suffix string) (head, tail string) {
+	lead := ", "
+	if i == 0 {
+		lead = "WITH "
+	}
+	return lead + Ident(alias) + " AS (" + prefix, suffix + ")"
+}
+
+// joinBody is the SELECT, the FROM and every JOIN; count selects count(*)
+// instead of the declared outputs.
+func joinBody(table string, j *schema.Join, live func(table, alias string) Live, count bool) string {
+	var b strings.Builder
 	b.WriteString("SELECT ")
+	if count {
+		b.WriteString("count(*)")
+	}
 	for i, c := range j.Select {
+		if count {
+			break
+		}
 		if i > 0 {
 			b.WriteString(", ")
 		}
@@ -49,7 +78,11 @@ func JoinSelect(table string, j *schema.Join, aggFor func(cte schema.CTE) (prefi
 		default:
 			b.WriteString(" JOIN ")
 		}
-		b.WriteString(Ident(t.Alias))
+		if t.Table != "" {
+			b.WriteString(Ident(t.Table))
+		} else {
+			b.WriteString(Ident(t.Alias))
+		}
 		// A CTE is referred to by its alias, which IS its name; a table joined
 		// under a different alias needs the AS.
 		if t.Table != "" && t.Table != t.Alias {

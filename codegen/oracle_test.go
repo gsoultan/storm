@@ -28,6 +28,7 @@ var optional = map[string]string{
 	"LockTimeout":             "ditto",
 	"DistinctOn":              "a back end with no DISTINCT ON",
 	"Turns":                   "a back end with no recursive seek spelled yet",
+	"JoinPieces":              "a back end with no narrowed CTE spelled yet",
 	"TakeOpen":                "a back end that cannot lock and limit inside an UPDATE's subquery",
 	"TrimOpen":                "a back end with no bounded DELETE spelled yet",
 	"KeyFrom":                 "a back end with no INSERT … SELECT spelled yet",

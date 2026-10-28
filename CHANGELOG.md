@@ -14,6 +14,23 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Joins: narrowed CTEs, composite keys, self-joins
+
+`WithWhere(alias, model, aggregate)` declares a CTE the call site narrows. A
+join with one is run by a composer in the context package,
+`store.<Model><Join>(q, ctes...)`, with `All` and `Count`: one statement, each
+CTE's predicates bound in its own WHERE and the join's own predicates and
+paging after them. PostgreSQL only.
+
+`JoinOn.And` joins on several columns, `InnerAs` and `LeftAs` attach a table
+under an alias (a table joined to itself), and a join's `Where` takes
+`ColOf(alias, column)` and scalar functions such as `Coalesce`.
+
+Fixed: a CTE over a soft-delete table aggregated its marked rows too. It now
+leaves them out, as the aggregation's own read does, unless the aggregation is
+`AcrossDeleted`. A table joined under an alias was rendered as the alias twice;
+no declaration could reach that before `InnerAs`.
+
 ### `FirstOf`: a group's first value in a declared order
 
 An aggregation can take `FirstOf(&f, "As", a.Over().OrderByAsc(...))`: the
