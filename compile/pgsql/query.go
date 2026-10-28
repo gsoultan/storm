@@ -38,6 +38,18 @@ func SelectPrefix(table string, cols []string) string {
 	return "SELECT " + strings.Join(q, ", ") + " FROM " + Ident(table)
 }
 
+// DistinctOn is SelectPrefix for a read that keeps the first row of each run
+// of its leading ORDER BY terms: the text before the key columns, their
+// separator, and the select list after them. The keys are the order's, so
+// PostgreSQL's rule that they lead the ORDER BY holds by construction.
+func DistinctOn(table string, cols []string) (open, sep, tail string) {
+	q := make([]string, len(cols))
+	for i, c := range cols {
+		q[i] = Ident(c)
+	}
+	return "SELECT DISTINCT ON (", ", ", ") " + strings.Join(q, ", ") + " FROM " + Ident(table)
+}
+
 // SoftDeleteWhere is the predicate that keeps marked rows out of a read.
 //
 // It is rendered as a DECLARED predicate, which the splice ANDs ahead of the

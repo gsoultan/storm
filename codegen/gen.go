@@ -815,6 +815,7 @@ func (g *gen) compile() {
 	g.p("}")
 	g.p("")
 	g.readStmts()
+	g.distinctOn()
 	g.p("// Composition seams, for the generated CONTEXT package and it alone:")
 	g.p("// cross-table statements (a filtered semi-join spans two packages) are")
 	g.p("// assembled there from each side's tokens, fragments and bindings. Ids")

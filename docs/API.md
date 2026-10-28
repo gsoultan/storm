@@ -369,6 +369,19 @@ page2, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
     After(page1[len(page1)-1]).Limit(2).All(ctx, ex, nil)
 ```
 
+`AllDistinctOn(ctx, ex, n, dst)` keeps one row for each distinct value of the
+query's first `n` ORDER BY terms: the first, in the query's order. Order by the
+key and then by what picks the row:
+
+```go
+newest, err := setting.New().
+    Order(setting.ProjectID.Asc(), setting.Key.Asc(), setting.CreatedAt.Desc()).
+    AllDistinctOn(ctx, ex, 2, nil) // SELECT DISTINCT ON ("project_id", "key") …
+```
+
+It is PostgreSQL's `DISTINCT ON`, generated only there. `n` outside the explicit
+order, or a row lock, is refused; Limit and Offset count the rows kept.
+
 ## 5. Dynamic filters — this is the whole thesis, and it looks boring
 
 ```go

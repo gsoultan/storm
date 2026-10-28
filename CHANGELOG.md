@@ -14,6 +14,15 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `AllDistinctOn`: the first row of each key
+
+`q.Order(a.Asc(), b.Asc(), at.Desc()).AllDistinctOn(ctx, ex, 2, nil)` is
+`SELECT DISTINCT ON ("a", "b") …`: one row for each value of the order's first
+two terms, the newest. A terminal rather than a modifier, so no count, probe or
+write has to refuse a state it cannot honour. The keys are read from the order,
+so PostgreSQL's rule that they lead the ORDER BY holds by construction.
+PostgreSQL only; every PostgreSQL package regenerates.
+
 ### A guarded increment: `IncWhen`
 
 `t.Col(&j.Retries).IncWhen(&j.Status)` gives the generated `Mut` an
