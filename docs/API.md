@@ -830,6 +830,23 @@ m.AddSucceeded(int64(len(done)))  // succeeded = succeeded + $1
 m.AddSkipped(-1)                  // skipped = skipped + $2
 ```
 
+A counter can also carry a guarded increment, declared in the model with
+`t.Col(&j.Retries).IncWhen(&j.Status)`. The `Mut` then has
+`IncRetriesWhenStatus(v)`, which adds one when the status, as the row stands
+before the write, equals `v`, and adds nothing otherwise. The test is read in
+the statement that writes, so it sees the value the write replaces:
+
+```go
+var m job.Mut
+m.SetStatus("running")
+m.IncRetriesWhenStatus("running") // retries = retries + CASE WHEN status = $2 THEN 1 ELSE 0 END
+```
+
+A claim that takes over a job whose worker died counts as an attempt; a claim
+of a pending job does not; and both are one `UPDATE`. The counter is a
+`NOT NULL` integer, the guarded column a bool, integer, text or uuid. Any other
+setter on the counter drops the guard, as the setters clear each other.
+
 `Update` reads the row back in the same statement when an expression was used,
 so `m.Row()` is the row that now exists rather than the one that used to. The
 batch form (`UpdateOp`) does not, because a batch reports counts, not rows.

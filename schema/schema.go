@@ -342,6 +342,13 @@ type Column struct {
 	Immutable bool
 	Version   bool
 
+	// IncWhen names the column whose value, as the row stands before the
+	// write, decides whether this counter's guarded increment counts: the
+	// counter moves by one when that column equals the value the write
+	// binds, and by nothing otherwise. A storm-level fact like Immutable;
+	// "" for a counter that has no guarded increment.
+	IncWhen string
+
 	// ConvertFrom says how a change of the column's type reads the value
 	// it held before, for a change PostgreSQL has no cast for; "" uses the
 	// cast. It is a migration fact: nothing renders it until the type
