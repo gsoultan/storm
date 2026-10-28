@@ -135,6 +135,10 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.callPlans(mi)
 		b.callAggregates(mi)
+		if t := mi.tbl.out; t.ReadsDeleted && !t.SoftDeletes() {
+			b.errs.add(fmt.Errorf("%s: ReadsDeleted, but the table does not soft-delete — "+
+				"every row it holds is already read, so the declaration says nothing", t.Name))
+		}
 	}
 	// Joins last: they reference other tables' columns and other tables'
 	// declared aggregations, so every table has to be complete first.

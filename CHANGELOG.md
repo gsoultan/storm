@@ -67,6 +67,16 @@ pending delivery whose webhook is active, skipping locked rows" is one
 `Offset` is `runtime.ErrPagedWrite`. The table package gains the seam
 `Mut.TakeHead(q)`. PostgreSQL only.
 
+### Reading the marked rows, where the model says so
+
+`t.ReadsDeleted()` on a soft-delete table generates `Query.WithDeleted()`:
+`All`, `One`, `Count`, `Exists`, `Take` and the declared projections then read the marked rows as well,
+so a restore by key is one `Take` that clears the mark. Every other terminal
+refuses a widened query. A table that does not declare it is unchanged, and
+declaring it on a table without `SoftDelete` is a build error. Every package's
+`All`, `Count` and `Exists` now pick their statement through an unexported
+method, so committed packages regenerate.
+
 ### A declared aggregation over a probe
 
 Every semi-join composer gains `All<Aggregate>(ctx, ex)` for each of the

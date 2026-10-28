@@ -313,6 +313,11 @@ func (q Query) Order(ts ...Sort) Query {
 
 // Err reports a query that outgrew its buffers.
 func (q Query) Err() error {
+	return q.readErr()
+}
+
+// readErr is Err for the terminals that can read the marked rows too.
+func (q Query) readErr() error {
 	if q.over {
 		return errTooComplex
 	}
@@ -1295,6 +1300,13 @@ func countStmtFor(toks []runtime.Tok) *runtime.Stmt {
 	return countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, lowering, ""))
 }
 
+func (q Query) readStmt(toks []runtime.Tok) *runtime.Stmt {
+	return stmtFor(toks, q.offset > 0, q.lock)
+}
+
+func (q Query) countStmt(toks []runtime.Tok) *runtime.Stmt  { return countStmtFor(toks) }
+func (q Query) existsStmt(toks []runtime.Tok) *runtime.Stmt { return existsStmtFor(toks) }
+
 // Composition seams, for the generated CONTEXT package and it alone:
 // cross-table statements (a filtered semi-join spans two packages) are
 // assembled there from each side's tokens, fragments and bindings. Ids
@@ -1365,7 +1377,7 @@ func (q Query) Shape() uint64 {
 // SQL returns the compiled text for this query's structure.
 func (q Query) SQL() string {
 	var buf [21]runtime.Tok
-	return stmtFor(q.stream(&buf), q.offset > 0, q.lock).SQL
+	return q.readStmt(q.stream(&buf)).SQL
 }
 
 // Scan decodes one row from raw wire bytes into r, copying text into sl.
@@ -1547,11 +1559,11 @@ func (q Query) All(ctx context.Context, ex runtime.Executor, dst []Row) ([]Row, 
 
 // AllInto lets the caller own the string arena.
 func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *runtime.Slab) ([]Row, error) {
-	if err := q.Err(); err != nil {
+	if err := q.readErr(); err != nil {
 		return dst, err
 	}
 	var buf [21]runtime.Tok
-	st := stmtFor(q.stream(&buf), q.offset > 0, q.lock)
+	st := q.readStmt(q.stream(&buf))
 	if st.Err != nil {
 		// A malformed token stream is a code-generation bug. Executing it
 		// would run a query whose filter is not the one that was asked for.
@@ -1589,14 +1601,14 @@ func (q Query) One(ctx context.Context, ex runtime.Executor) (Row, bool, error) 
 
 // Count ignores Limit: counting a truncated set is a bug, not a feature.
 func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := q.Err(); err != nil {
+	if err := q.readErr(); err != nil {
 		return 0, err
 	}
 	if q.lock != 0 {
 		return 0, errCountLocked
 	}
 	var buf [21]runtime.Tok
-	st := countStmtFor(q.preds(&buf))
+	st := q.countStmt(q.preds(&buf))
 	if st.Err != nil {
 		// A malformed token stream is a code-generation bug. Executing it
 		// would run a query whose filter is not the one that was asked for.
@@ -1626,14 +1638,14 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 // measured on 50k rows, the planner top-N-sorted all 16,667 matches to
 // return the "first" of an order nobody was going to read.
 func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
-	if err := q.Err(); err != nil {
+	if err := q.readErr(); err != nil {
 		return false, err
 	}
 	if q.lock != 0 {
 		return false, errExistsLocked
 	}
 	var buf [21]runtime.Tok
-	st := existsStmtFor(q.preds(&buf))
+	st := q.existsStmt(q.preds(&buf))
 	if st.Err != nil {
 		return false, st.Err
 	}
@@ -1650,7 +1662,7 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 // Prepare resolves the structure and binds arguments without executing.
 func (q Query) Prepare(b *Binder) (string, []any) {
 	var buf [21]runtime.Tok
-	return stmtFor(q.stream(&buf), q.offset > 0, q.lock).SQL, q.bind(b)
+	return q.readStmt(q.stream(&buf)).SQL, q.bind(b)
 }
 
 // Greatest-n-per-group: at most n children per parent, in ONE query.
@@ -1811,7 +1823,7 @@ func (q Query) AllContact(ctx context.Context, ex runtime.Executor) ([]ContactRo
 // as AllInto does — a projection's terminals mirror the full read's, so a
 // hot loop reuses both and a benchmark compares like with like.
 func (q Query) AllContactInto(ctx context.Context, ex runtime.Executor, dst []ContactRow, sl *runtime.Slab) ([]ContactRow, error) {
-	if err := q.Err(); err != nil {
+	if err := q.readErr(); err != nil {
 		return dst, err
 	}
 	var buf [21]runtime.Tok
