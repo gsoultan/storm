@@ -78,6 +78,10 @@ type Table struct {
 	Takes         bool
 	Tallies       bool
 	InsertSelects []string
+	// Probes are the owned to-one relation fields the context package
+	// composes an existence probe through, as it does for every to-many:
+	// <Model>Having<Field>.
+	Probes []string
 
 	// Relations are the Go-level links the model declared, kept because a
 	// foreign key alone cannot reconstruct them: it says users.org_id
