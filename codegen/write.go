@@ -2400,11 +2400,20 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("}")
 	g.p("")
 	g.p("// takeStmtFor compiles one (assignments, lock, read) triple, once.")
-	g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, toks []runtime.Tok) *runtime.Stmt {")
+	if g.widens() {
+		g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, deleted bool, toks []runtime.Tok) *runtime.Stmt {")
+	} else {
+		g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, toks []runtime.Tok) *runtime.Stmt {")
+	}
 	g.p("\tvar key [%d]runtime.Tok", keyBuf)
 	g.p("\tkey[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)")
 	g.p("\tkey[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)")
 	g.p("\tkey[4] = runtime.Tok(lock)")
+	if g.widens() {
+		g.p("\tif deleted {")
+		g.p("\t\tkey[4] |= 1 << 8")
+		g.p("\t}")
+	}
 	g.p("\tn := 5 + copy(key[5:], toks)")
 	g.p("\tif st := takeCache.Get(key[:n]); st != nil {")
 	g.p("\t\treturn st")
@@ -2415,6 +2424,11 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("\t}")
 	g.p("\tsuffix := limitSuffix + lockSuffix[lock] + %s + updReturning", lit(g.lw.TakeClose))
 	if g.t.SoftDeletes() {
+		if g.widens() {
+			g.p("\tif deleted {")
+			g.p("\t\treturn takeCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL+takeOpen, toks, lowering, suffix, head.NArg))")
+			g.p("\t}")
+		}
 		g.p("\treturn takeCache.Put(key[:n], runtime.SpliceTreeWhereFrom(head.SQL+takeOpen, softDeleteWhere, toks, lowering, suffix, head.NArg))")
 	} else {
 		g.p("\treturn takeCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL+takeOpen, toks, lowering, suffix, head.NArg))")
@@ -2441,7 +2455,7 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 		g.p("// The version column is bumped on every row taken.")
 	}
 	g.p("func (q Query) Take(ctx context.Context, ex %s, m Mut, dst []Row) ([]Row, error) {", ex)
-	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\tif err := q.readErr(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
 	g.p("\tif q.offset != 0 {")
@@ -2451,7 +2465,11 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("\t\treturn dst, nil")
 	g.p("\t}")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
-	g.p("\tst := takeStmtFor(m.key(), q.lock, q.stream(&buf))")
+	if g.widens() {
+		g.p("\tst := takeStmtFor(m.key(), q.lock, q.deleted, q.stream(&buf))")
+	} else {
+		g.p("\tst := takeStmtFor(m.key(), q.lock, q.stream(&buf))")
+	}
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn dst, st.Err")
 	g.p("\t}")

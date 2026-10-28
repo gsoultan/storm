@@ -876,6 +876,14 @@ func (t *Table) SoftDelete(fieldPtr any) *Table {
 // carry it.
 func (t *Table) Takes() *Table { t.out.Takes = true; return t }
 
+// ReadsDeleted generates Query.WithDeleted for this soft-delete table: a read
+// that sees the marked rows as well, through All, One, Count, Exists, the
+// projections and Take. Every other read still leaves them out. Opt-in, because a call site
+// that can widen what it sees is the hazard soft delete exists to close;
+// the tables that need it (restoring a row by its key, telling a removed row
+// from one never written) say so here.
+func (t *Table) ReadsDeleted() *Table { t.out.ReadsDeleted = true; return t }
+
 // Tallies generates Tally and Query.UpdateAllAfter for this table: a write
 // that runs after another table's step in the same statement and moves this
 // table's counters by the rows the step had. Opt-in, for the same reason.

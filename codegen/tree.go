@@ -421,6 +421,11 @@ func (g *gen) treeQuery() {
 	g.p("\t// noOrder suppresses the default ordering. See Unordered.")
 	g.p("\tnoOrder bool")
 	g.p("\tbadAfter bool")
+	if g.widens() {
+		g.p("")
+		g.p("\t// deleted reads the marked rows as well. See WithDeleted.")
+		g.p("\tdeleted bool")
+	}
 	g.p("}")
 	g.p("")
 	g.p("// New starts a query.")
@@ -565,6 +570,16 @@ func (g *gen) treeQuery() {
 	g.p("")
 	g.p("// Err reports a query that outgrew its buffers.")
 	g.p("func (q Query) Err() error {")
+	if g.widens() {
+		g.p("\tif q.deleted {")
+		g.p("\t\treturn errWithDeleted")
+		g.p("\t}")
+	}
+	g.p("\treturn q.readErr()")
+	g.p("}")
+	g.p("")
+	g.p("// readErr is Err for the terminals that can read the marked rows too.")
+	g.p("func (q Query) readErr() error {")
 	g.p("\tif q.over {")
 	g.p("\t\treturn errTooComplex")
 	g.p("\t}")
@@ -577,6 +592,13 @@ func (g *gen) treeQuery() {
 	g.p("\treturn nil")
 	g.p("}")
 	g.p("")
+	if g.widens() {
+		g.p("var errWithDeleted = errors.New(")
+		g.p("\t%q)", "storm: WithDeleted() reaches All, One, Count, Exists, Take and the declared projections; "+
+			"every other terminal keeps the marked rows out, and running it as if it did not "+
+			"would answer a different question than the one asked")
+		g.p("")
+	}
 	g.p("var errAfterUnordered = errors.New(")
 	g.p("\t%q)", "storm: After() on an Unordered() query with no explicit Order — "+
 		"a keyset cursor without an ordering is a position in nothing")

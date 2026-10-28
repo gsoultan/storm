@@ -82,6 +82,10 @@ type Table struct {
 	// composes an existence probe through, as it does for every to-many:
 	// <Model>Having<Field>.
 	Probes []string
+	// ReadsDeleted lets a call site widen a read of this soft-delete table
+	// past the marked rows (Query.WithDeleted). The model says so once, as
+	// it does for an aggregation AcrossDeleted.
+	ReadsDeleted bool
 
 	// Relations are the Go-level links the model declared, kept because a
 	// foreign key alone cannot reconstruct them: it says users.org_id

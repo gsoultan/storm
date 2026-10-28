@@ -225,6 +225,25 @@ func (d *Definition) Aggregates(a *storm.Aggregates) {
 the table still leaves the marked rows out. A table without `SoftDelete`
 refuses the declaration, since it would say nothing.
 
+A table whose call sites must find a marked row by something other than its
+key (restore the entry removed last under a name, tell a removed row from one
+never written) declares it with `t.ReadsDeleted()`. Its package then has
+`Query.WithDeleted()`, which `All`, `One`, `Count`, `Exists`, `Take` and the declared projections
+honour:
+
+```go
+var m connector.Mut
+m.SetDeletedAtNull()
+got, err := connector.New().WithDeleted().
+        Where(connector.Key.Eq(key), connector.DeletedAt.IsNotNull()).
+        Order(connector.DeletedAt.Desc()).Limit(1).
+        Take(ctx, ex, m, nil)
+```
+
+Every other terminal refuses a widened query rather than quietly answering
+about the live rows only, and a table that does not declare it has no way to
+widen a read at all.
+
 ### Cross-table reads
 
 Declared joins, aggregates, fetch plans, unions, top-N batch loads, `EXISTS`
