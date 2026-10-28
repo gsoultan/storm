@@ -14,6 +14,14 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `pgstat`: which session waits behind which
+
+`pgstat.Backend` names the session an `Executor` runs on and the schema it
+works in, `pgstat.Sessions` lists the database's other sessions with what each
+waits for, who it waits behind and the relation locks it holds or waits for,
+and `pgstat.Terminate` ends one. For tests and diagnostics about concurrency.
+PostgreSQL only.
+
 ### Automigrate leaves other tables alone on request
 
 `AutoOptions.DeclaredOnly` (and `Options.DeclaredOnly` for `ForWith`) leaves
