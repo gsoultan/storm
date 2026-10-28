@@ -27,7 +27,20 @@ type lowering struct {
 	Ident func(string) string
 	Frag  func(op, ident string, col *schema.Column) (a, b string, ok bool)
 
-	SelectPrefix      func(table string, cols []string) string
+	SelectPrefix func(table string, cols []string) string
+	// LockTables is LOCK TABLE: the text before the tables, their separator
+	// and each mode's clause. LockTimeout bounds a lock wait for the rest of
+	// the transaction. Nil where the back end has neither, and the context
+	// package then has no LockTables and no LockTimeout.
+	LockTables  func() (open, sep string, modes []string)
+	LockTimeout func() string
+	// DistinctOn splits a select around the keys of DISTINCT ON. Nil where
+	// the back end has none, and AllDistinctOn is then not generated.
+	DistinctOn func(table string, cols []string) (open, sep, tail string)
+	// Turns is the round-robin read's text around its splices (see
+	// pgsql.Turns). Nil where the back end has no recursive seek, and
+	// AllTurns is then not generated.
+	Turns             func(table, group string, cols []string, nullable bool, live string) (head string, groups [4][2]string, rows [][2]string)
 	CountPrefix       func(string) string
 	ExistsPrefix      func(string) string
 	ExistsSuffix      func() string
@@ -61,6 +74,11 @@ type lowering struct {
 	// unable to express a declaration rather than merely spell it differently.
 	JoinSelect func(table string, j *schema.Join,
 		aggFor func(schema.CTE) (string, string), live func(table, alias string) string) (string, error)
+	// JoinPieces is JoinSelect cut for a join with narrowed CTEs: each CTE's
+	// head and tail around its call-site predicates, then the select and the
+	// count. Nil where the back end has none.
+	JoinPieces func(table string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+		live func(table, alias string) string) (ctes [][2]string, sel, count string)
 	JoinSuffix        func(j *schema.Join) (string, error)
 	JoinDeclaredWhere func(j *schema.Join, driving string) (string, error)
 
@@ -75,6 +93,9 @@ type lowering struct {
 	// different spelling.
 	AggregateSelect func(table string, agg *schema.Aggregate) (string, error)
 	AggregateSuffix func(agg *schema.Aggregate) (string, error)
+	// AggregateWhere is the declared predicate an aggregation reads its rows
+	// through, or empty.
+	AggregateWhere func(agg *schema.Aggregate) (string, error)
 
 	// KeyType spells a column's type for the places a lowering has to NAME one
 	// — the JSON_TABLE COLUMNS declaration a bound key list is unpacked
@@ -110,6 +131,10 @@ type lowering struct {
 	NotExistsFrag func(childTable, childFK, parentTable, parentPK, childLive string) string
 	ExistsOpen    func(childTable, childFK, parentTable, parentPK, childLive string) string
 	NotExistsOpen func(childTable, childFK, parentTable, parentPK, childLive string) string
+	// ExistsOnOpen and NotExistsOnOpen are the same headers correlated on
+	// several column pairs (t.ProbesOn). Nil where the back end has none yet.
+	ExistsOnOpen    func(childTable string, childCols []string, parentTable string, parentCols []string, childLive string) string
+	NotExistsOnOpen func(childTable string, childCols []string, parentTable string, parentCols []string, childLive string) string
 
 	SoftDeleteWhere func(col string) string
 	SoftDeleteSet   func(table, col string) string
@@ -129,11 +154,19 @@ type lowering struct {
 	SetFrag         func(string) (string, string)
 	BumpFrag        func(string) (string, string)
 	AddFrag         func(string) (string, string)
+	// IncWhenFrag is a counter's guarded increment: one when the named
+	// column equals the bound value, as the row stands, and none otherwise.
+	IncWhenFrag func(col, cond string) (string, string)
 	// TakeOpen narrows an UPDATE to the rows a read of the same table
 	// selects, by key; TakeClose ends it. Nil where the back end cannot
 	// lock and limit inside the subquery, and Take is then not generated.
 	TakeOpen  func(table, key string) string
 	TakeClose string
+	// TrimOpen narrows a DELETE to the rows a read of the same table selects;
+	// TrimClose ends it. Nil where the back end has no form for it, and
+	// DeleteBatch is then not generated.
+	TrimOpen  func(table string) string
+	TrimClose string
 	// InsertSelectMid and KeyFrom spell INSERT … SELECT: the text between
 	// the column list and the selected values, and the selected key with its
 	// FROM. Empty and nil where the back end has none, and the context
@@ -295,7 +328,13 @@ func postgresLowering() lowering {
 		Frag: func(op, ident string, _ *schema.Column) (string, string, bool) {
 			return pgsql.Frag(op, ident)
 		},
-		SelectPrefix:       pgsql.SelectPrefix,
+		SelectPrefix: pgsql.SelectPrefix,
+		DistinctOn:   pgsql.DistinctOn,
+		Turns: func(t, g string, cols []string, nullable bool, live string) (string, [4][2]string, [][2]string) {
+			return pgsql.Turns(t, g, cols, nullable, pgsql.Live(live))
+		},
+		LockTables:         pgsql.LockTables,
+		LockTimeout:        pgsql.LockTimeout,
 		CountPrefix:        pgsql.CountPrefix,
 		ExistsPrefix:       pgsql.ExistsPrefix,
 		ExistsSuffix:       pgsql.ExistsSuffix,
@@ -323,6 +362,11 @@ func postgresLowering() lowering {
 			return pgsql.JoinSelect(t, j, aggFor,
 				func(tb, al string) pgsql.Live { return pgsql.Live(live(tb, al)) }), nil
 		},
+		JoinPieces: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+			live func(table, alias string) string) ([][2]string, string, string) {
+			return pgsql.JoinPieces(t, j, aggFor,
+				func(tb, al string) pgsql.Live { return pgsql.Live(live(tb, al)) })
+		},
 		JoinSuffix: func(j *schema.Join) (string, error) { return pgsql.JoinSuffix(j), nil },
 		JoinDeclaredWhere: func(j *schema.Join, driving string) (string, error) {
 			return pgsql.JoinDeclaredWhere(j, pgsql.Live(driving)), nil
@@ -333,6 +377,9 @@ func postgresLowering() lowering {
 		UnionSuffix: func(u *schema.Union) (string, error) { return pgsql.UnionSuffix(u), nil },
 		AggregateSelect: func(t string, a *schema.Aggregate) (string, error) {
 			return pgsql.AggregateSelect(t, a), nil
+		},
+		AggregateWhere: func(a *schema.Aggregate) (string, error) {
+			return pgsql.AggregateWhere(a), nil
 		},
 		AggregateSuffix: func(a *schema.Aggregate) (string, error) {
 			return pgsql.AggregateSuffix(a), nil
@@ -364,6 +411,12 @@ func postgresLowering() lowering {
 		NotExistsOpen: func(ct, fk, pt, pk, live string) string {
 			return pgsql.NotExistsOpen(ct, fk, pt, pk, pgsql.Live(live))
 		},
+		ExistsOnOpen: func(ct string, cc []string, pt string, pc []string, live string) string {
+			return pgsql.ExistsOnOpen(ct, cc, pt, pc, pgsql.Live(live))
+		},
+		NotExistsOnOpen: func(ct string, cc []string, pt string, pc []string, live string) string {
+			return pgsql.NotExistsOnOpen(ct, cc, pt, pc, pgsql.Live(live))
+		},
 		SoftDeleteWhere: pgsql.SoftDeleteWhere,
 		SoftDeleteSet:   pgsql.SoftDeleteSet,
 		RestoreSet:      pgsql.RestoreSet,
@@ -379,8 +432,11 @@ func postgresLowering() lowering {
 		SetFrag:          pgsql.SetFrag,
 		BumpFrag:         pgsql.BumpFrag,
 		AddFrag:          pgsql.AddFrag,
+		IncWhenFrag:      pgsql.IncWhenFrag,
 		TakeOpen:         pgsql.TakeOpen,
 		TakeClose:        pgsql.TakeClose,
+		TrimOpen:         pgsql.TrimOpen,
+		TrimClose:        pgsql.TrimClose,
 		InsertSelectMid:  pgsql.InsertSelectMid,
 		KeyFrom:          pgsql.KeyFrom,
 		StepOpen:         pgsql.StepOpen,
@@ -465,8 +521,10 @@ func mysqlLowering() lowering {
 			}
 			return mysql.UnionSuffix(u), nil
 		},
-		AggregateSelect:   mysql.AggregateSelect,
-		AggregateSuffix:   mysql.AggregateSuffix,
+		AggregateSelect: mysql.AggregateSelect,
+		AggregateSuffix: mysql.AggregateSuffix,
+		// Refused with the select, which is called first.
+		AggregateWhere:    noAggregateWhere,
 		KeyType:           mysql.ColumnType,
 		RecursiveMaxDepth: mysql.MaxRecursionDepth,
 		KeysAreClientSide: true,
@@ -507,6 +565,7 @@ func mysqlLowering() lowering {
 		SetFrag:         mysql.SetFrag,
 		BumpFrag:        mysql.BumpFrag,
 		AddFrag:         mysql.AddFrag,
+		IncWhenFrag:     mysql.IncWhenFrag,
 		NowFrag:         mysql.NowFrag,
 		SetLead:         mysql.SetLead,
 		SetSep:          mysql.SetSep,
@@ -646,6 +705,8 @@ func mssqlLowering() lowering {
 		},
 		AggregateSelect: mssql.AggregateSelect,
 		AggregateSuffix: mssql.AggregateSuffix,
+		// Refused with the select, which is called first.
+		AggregateWhere: noAggregateWhere,
 
 		KeyType:           mssql.ColumnType,
 		RecursiveMaxDepth: mssql.MaxRecursionDepth,
@@ -691,6 +752,7 @@ func mssqlLowering() lowering {
 		SetFrag:             mssql.SetFrag,
 		BumpFrag:            mssql.BumpFrag,
 		AddFrag:             mssql.AddFrag,
+		IncWhenFrag:         mssql.IncWhenFrag,
 		NowFrag:             mssql.NowFrag,
 		SetLead:             mssql.SetLead,
 		SetSep:              mssql.SetSep,
@@ -802,6 +864,8 @@ func oracleLowering() lowering {
 		},
 		AggregateSelect: oracle.AggregateSelect,
 		AggregateSuffix: oracle.AggregateSuffix,
+		// Refused with the select, which is called first.
+		AggregateWhere: noAggregateWhere,
 
 		KeyType:           oracle.ColumnType,
 		RecursiveMaxDepth: oracle.MaxRecursionDepth,
@@ -846,6 +910,7 @@ func oracleLowering() lowering {
 		SetFrag:         oracle.SetFrag,
 		BumpFrag:        oracle.BumpFrag,
 		AddFrag:         oracle.AddFrag,
+		IncWhenFrag:     oracle.IncWhenFrag,
 		NowFrag:         oracle.NowFrag,
 		SetLead:         oracle.SetLead,
 		SetSep:          oracle.SetSep,
@@ -882,3 +947,7 @@ func oracleLowering() lowering {
 // same method mean different things.
 func pgsqlLockName(m int) string { return pgsql.LockName(pgsql.LockMode(m)) }
 func pgsqlLockDoc(m int) string  { return pgsql.LockDoc(pgsql.LockMode(m)) }
+
+// noAggregateWhere is the declared-predicate seam of a back end whose
+// AggregateSelect already refuses an aggregation that has one.
+func noAggregateWhere(*schema.Aggregate) (string, error) { return "", nil }

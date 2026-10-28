@@ -56,14 +56,17 @@ const (
 	opJSONContainedBy  runtime.Op = 21
 	opHasAnyKey        runtime.Op = 22
 	opHasAllKeys       runtime.Op = 23
-	opIsNull           runtime.Op = 24
-	opIsNotNull        runtime.Op = 25
+	opJSONTextLikeAny  runtime.Op = 24
+	opIsNull           runtime.Op = 25
+	opIsNotNull        runtime.Op = 26
+	opJSONIsEmpty      runtime.Op = 27
+	opNullOrEmpty      runtime.Op = 28
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 26
-	opNotExists runtime.Op = 27
+	opExists    runtime.Op = 29
+	opNotExists runtime.Op = 30
 )
 
 const nCols = 8
@@ -309,6 +312,11 @@ func (q Query) Order(ts ...Sort) Query {
 
 // Err reports a query that outgrew its buffers.
 func (q Query) Err() error {
+	return q.readErr()
+}
+
+// readErr is Err for the terminals that can read the marked rows too.
+func (q Query) readErr() error {
 	if q.over {
 		return errTooComplex
 	}
@@ -417,12 +425,14 @@ func (h UUIDCol) DescNullsLast() Sort {
 
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+func (h UUIDCol) NotIn(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+}
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
@@ -464,12 +474,12 @@ func (h TextCol) Lte(v string) Pred     { return Pred{col: h.c, op: opLte, str: 
 func (h TextCol) EqLower(v string) Pred { return Pred{col: h.c, op: opEqLower, str: v} }
 func (h TextCol) Like(v string) Pred    { return Pred{col: h.c, op: opLike, str: v} }
 func (h TextCol) ILike(v string) Pred   { return Pred{col: h.c, op: opILike, str: v} }
-func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: v} }
+func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
 
 // DecimalCol addresses a numeric(12,2) column.
 type DecimalCol struct{ c uint8 }
@@ -629,7 +639,7 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys {
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
 		case 0:
 			if int(q.nar) >= 3 {
@@ -663,7 +673,7 @@ func (q *Query) leaf(p Pred) {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
-	if p.op == opIsNull || p.op == opIsNotNull {
+	if p.op == opIsNull || p.op == opIsNotNull || p.op == opJSONIsEmpty || p.op == opNullOrEmpty {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
@@ -921,7 +931,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [9][28]runtime.Frag{
+var fragTable = [9][31]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -951,6 +961,9 @@ var fragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -960,6 +973,9 @@ var fragTable = [9][28]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1011,6 +1027,9 @@ var fragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // updated_by
 		{}, // opNone
@@ -1030,6 +1049,9 @@ var fragTable = [9][28]runtime.Frag{
 		{},
 		{A: "\"updated_by\" = ANY($", B: ")"},
 		{A: "\"updated_by\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1071,6 +1093,9 @@ var fragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // status
 		{}, // opNone
@@ -1101,6 +1126,9 @@ var fragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // total
 		{}, // opNone
@@ -1110,6 +1138,9 @@ var fragTable = [9][28]runtime.Frag{
 		{A: "\"total\" >= $", B: ""},
 		{A: "\"total\" < $", B: ""},
 		{A: "\"total\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1161,9 +1192,15 @@ var fragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // relation Lines (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1271,6 +1308,93 @@ func countStmtFor(toks []runtime.Tok) *runtime.Stmt {
 	return countCache.Put(toks, runtime.SpliceTree(countPrefix, toks, lowering, ""))
 }
 
+func (q Query) readStmt(toks []runtime.Tok) *runtime.Stmt {
+	return stmtFor(toks, q.offset > 0, q.lock)
+}
+
+func (q Query) countStmt(toks []runtime.Tok) *runtime.Stmt  { return countStmtFor(toks) }
+func (q Query) existsStmt(toks []runtime.Tok) *runtime.Stmt { return existsStmtFor(toks) }
+
+const (
+	distinctOpen = "SELECT DISTINCT ON ("
+	distinctSep  = ", "
+	distinctTail = ") \"id\", \"created_at\", \"updated_at\", \"updated_by\", \"customer_id\", \"status\", \"total\", \"placed_at\" FROM \"orders\""
+)
+
+// distinctCaches are AllDistinctOn's, without and with an offset. The
+// key is the stream and then n, which the stream alone does not carry.
+var distinctCaches = [2]*runtime.TreeCache{runtime.NewTreeCache(), runtime.NewTreeCache()}
+
+var errDistinctOn = errors.New(
+	"storm: AllDistinctOn keeps the first row of each run of the query's first n order terms; n must be between one and the number of terms Order set, and the query must not lock rows")
+
+// distinctStmtFor compiles one (stream, n), once.
+func distinctStmtFor(key, toks []runtime.Tok, n int, withOffset bool) *runtime.Stmt {
+	i, suffix := 0, limitSuffix
+	if withOffset {
+		i, suffix = 1, limitOffsetSuffix
+	}
+	c := distinctCaches[i]
+	if st := c.Get(key); st != nil {
+		return st
+	}
+	prefix := distinctOpen
+	for _, t := range toks {
+		if t.Kind() != runtime.KOrder || n == 0 {
+			continue
+		}
+		if prefix != distinctOpen {
+			prefix += distinctSep
+		}
+		prefix += identTable[t.Col()]
+		n--
+	}
+	return c.Put(key, runtime.SpliceTree(prefix+distinctTail, toks, lowering, suffix))
+}
+
+// AllDistinctOn runs the query keeping one row for each distinct value
+// of its first n order terms: the first, in the query's order. Order
+// by the key and then by what picks the row:
+//
+//	q.Order(Project.Asc(), Key.Asc(), CreatedAt.Desc()).AllDistinctOn(ctx, ex, 2, nil)
+//
+// is each project's and key's newest row. Limit and Offset count the
+// rows kept. n outside the explicit order, or a row lock, is refused.
+func (q Query) AllDistinctOn(ctx context.Context, ex runtime.Executor, n int, dst []Row) ([]Row, error) {
+	if err := q.Err(); err != nil {
+		return dst, err
+	}
+	if n < 1 || n > int(q.no) || q.lock != 0 {
+		return dst, errDistinctOn
+	}
+	var buf [21]runtime.Tok
+	toks := q.stream(&buf)
+	var kb [22]runtime.Tok
+	key := kb[:copy(kb[:], toks)+1]
+	key[len(key)-1] = runtime.Tok(n)
+	st := distinctStmtFor(key, toks, n, q.offset > 0)
+	if st.Err != nil {
+		return dst, st.Err
+	}
+	var sl runtime.Slab
+	sl.Reserve(st.SlabHint())
+	b := binders.Get()
+	defer putBinder(b)
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, Row{})
+		if err := scan(rows.RawValues(), &dst[len(dst)-1], &sl); err != nil {
+			return dst, err
+		}
+	}
+	st.ObserveSlab(sl.Size())
+	return dst, rows.Err()
+}
+
 // Composition seams, for the generated CONTEXT package and it alone:
 // cross-table statements (a filtered semi-join spans two packages) are
 // assembled there from each side's tokens, fragments and bindings. Ids
@@ -1311,6 +1435,10 @@ func (q Query) OrderToks(dst []runtime.Tok) []runtime.Tok {
 func (q Query) Locked() bool { return q.lock != 0 }
 func (q Query) Paged() bool  { return q.offset != 0 }
 
+// Ordered reports an Order(), which a grouped read composed around this
+// query's predicates has no place for.
+func (q Query) Ordered() bool { return q.no > 0 }
+
 // BindPreds binds this query's predicate values into b, appending to v.
 func (q Query) BindPreds(b *Binder, v []any) []any {
 	return append(v, q.bindPreds(b)...)
@@ -1337,7 +1465,7 @@ func (q Query) Shape() uint64 {
 // SQL returns the compiled text for this query's structure.
 func (q Query) SQL() string {
 	var buf [21]runtime.Tok
-	return stmtFor(q.stream(&buf), q.offset > 0, q.lock).SQL
+	return q.readStmt(q.stream(&buf)).SQL
 }
 
 // Scan decodes one row from raw wire bytes into r, copying text into sl.
@@ -1426,9 +1554,9 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		}
 		switch runtime.Op(t.Op()) {
-		case opIsNull, opIsNotNull:
+		case opIsNull, opIsNotNull, opJSONIsEmpty, opNullOrEmpty:
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys:
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
 			case 0:
 				b.anyRaw[nar] = q.anyRaw[nar]
@@ -1511,11 +1639,11 @@ func (q Query) All(ctx context.Context, ex runtime.Executor, dst []Row) ([]Row, 
 
 // AllInto lets the caller own the string arena.
 func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *runtime.Slab) ([]Row, error) {
-	if err := q.Err(); err != nil {
+	if err := q.readErr(); err != nil {
 		return dst, err
 	}
 	var buf [21]runtime.Tok
-	st := stmtFor(q.stream(&buf), q.offset > 0, q.lock)
+	st := q.readStmt(q.stream(&buf))
 	if st.Err != nil {
 		// A malformed token stream is a code-generation bug. Executing it
 		// would run a query whose filter is not the one that was asked for.
@@ -1553,14 +1681,14 @@ func (q Query) One(ctx context.Context, ex runtime.Executor) (Row, bool, error) 
 
 // Count ignores Limit: counting a truncated set is a bug, not a feature.
 func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := q.Err(); err != nil {
+	if err := q.readErr(); err != nil {
 		return 0, err
 	}
 	if q.lock != 0 {
 		return 0, errCountLocked
 	}
 	var buf [21]runtime.Tok
-	st := countStmtFor(q.preds(&buf))
+	st := q.countStmt(q.preds(&buf))
 	if st.Err != nil {
 		// A malformed token stream is a code-generation bug. Executing it
 		// would run a query whose filter is not the one that was asked for.
@@ -1590,14 +1718,14 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 // measured on 50k rows, the planner top-N-sorted all 16,667 matches to
 // return the "first" of an order nobody was going to read.
 func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
-	if err := q.Err(); err != nil {
+	if err := q.readErr(); err != nil {
 		return false, err
 	}
 	if q.lock != 0 {
 		return false, errExistsLocked
 	}
 	var buf [21]runtime.Tok
-	st := existsStmtFor(q.preds(&buf))
+	st := q.existsStmt(q.preds(&buf))
 	if st.Err != nil {
 		return false, st.Err
 	}
@@ -1614,7 +1742,7 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 // Prepare resolves the structure and binds arguments without executing.
 func (q Query) Prepare(b *Binder) (string, []any) {
 	var buf [21]runtime.Tok
-	return stmtFor(q.stream(&buf), q.offset > 0, q.lock).SQL, q.bind(b)
+	return q.readStmt(q.stream(&buf)).SQL, q.bind(b)
 }
 
 // Greatest-n-per-group: at most n children per parent, in ONE query.
@@ -1824,6 +1952,16 @@ func (q Query) AllByStatusInto(ctx context.Context, ex runtime.Executor, dst []B
 	return dst, rows.Err()
 }
 
+// ByStatusPieces is the "ByStatus" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func ByStatusPieces() (prefix, suffix string) { return byStatusPrefix, byStatusSuffix + limitSuffix }
+
+// ScanByStatus decodes one row of the "ByStatus" aggregation.
+func ScanByStatus(rv [][]byte, r *ByStatusRow, sl *runtime.Slab) error {
+	return scanByStatus(rv, r, sl)
+}
+
 var errByStatusLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -1921,6 +2059,14 @@ func (q Query) AllDailyInto(ctx context.Context, ex runtime.Executor, dst []Dail
 	return dst, rows.Err()
 }
 
+// DailyPieces is the "Daily" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func DailyPieces() (prefix, suffix string) { return dailyPrefix, dailySuffix + limitSuffix }
+
+// ScanDaily decodes one row of the "Daily" aggregation.
+func ScanDaily(rv [][]byte, r *DailyRow, sl *runtime.Slab) error { return scanDaily(rv, r, sl) }
+
 var errDailyLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -2015,6 +2161,14 @@ func (q Query) AllFacetsInto(ctx context.Context, ex runtime.Executor, dst []Fac
 	return dst, rows.Err()
 }
 
+// FacetsPieces is the "Facets" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func FacetsPieces() (prefix, suffix string) { return facetsPrefix, facetsSuffix + limitSuffix }
+
+// ScanFacets decodes one row of the "Facets" aggregation.
+func ScanFacets(rv [][]byte, r *FacetsRow, sl *runtime.Slab) error { return scanFacets(rv, r, sl) }
+
 var errFacetsLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -2103,6 +2257,18 @@ func (q Query) AllTopCustomersInto(ctx context.Context, ex runtime.Executor, dst
 	}
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
+}
+
+// TopCustomersPieces is the "TopCustomers" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func TopCustomersPieces() (prefix, suffix string) {
+	return topCustomersPrefix, topCustomersSuffix + limitSuffix
+}
+
+// ScanTopCustomers decodes one row of the "TopCustomers" aggregation.
+func ScanTopCustomers(rv [][]byte, r *TopCustomersRow, sl *runtime.Slab) error {
+	return scanTopCustomers(rv, r, sl)
 }
 
 var errTopCustomersLocked = errors.New(
@@ -2215,6 +2381,14 @@ func (q Query) AllTrendInto(ctx context.Context, ex runtime.Executor, dst []Tren
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
 }
+
+// TrendPieces is the "Trend" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func TrendPieces() (prefix, suffix string) { return trendPrefix, trendSuffix + limitSuffix }
+
+// ScanTrend decodes one row of the "Trend" aggregation.
+func ScanTrend(rv [][]byte, r *TrendRow, sl *runtime.Slab) error { return scanTrend(rv, r, sl) }
 
 var errTrendLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
@@ -2404,6 +2578,18 @@ func (q Query) AllByCustomerInto(ctx context.Context, ex runtime.Executor, dst [
 	return dst, rows.Err()
 }
 
+// ByCustomerPieces is the "ByCustomer" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func ByCustomerPieces() (prefix, suffix string) {
+	return byCustomerPrefix, byCustomerSuffix + limitSuffix
+}
+
+// ScanByCustomer decodes one row of the "ByCustomer" aggregation.
+func ScanByCustomer(rv [][]byte, r *ByCustomerRow, sl *runtime.Slab) error {
+	return scanByCustomer(rv, r, sl)
+}
+
 var errByCustomerLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -2490,6 +2676,14 @@ func (q Query) AllTotalsInto(ctx context.Context, ex runtime.Executor, dst []Tot
 	return dst, rows.Err()
 }
 
+// TotalsPieces is the "Totals" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func TotalsPieces() (prefix, suffix string) { return totalsPrefix, totalsSuffix + limitSuffix }
+
+// ScanTotals decodes one row of the "Totals" aggregation.
+func ScanTotals(rv [][]byte, r *TotalsRow, sl *runtime.Slab) error { return scanTotals(rv, r, sl) }
+
 var errTotalsLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -2506,7 +2700,7 @@ func (q Query) OneTotals(ctx context.Context, ex runtime.Executor) (TotalsRow, e
 }
 
 // joinFragTable is fragTable for a join: every column named with its table.
-var joinFragTable = [9][28]runtime.Frag{
+var joinFragTable = [9][31]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"orders\".\"id\" = $", B: ""},
@@ -2536,6 +2730,9 @@ var joinFragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -2545,6 +2742,9 @@ var joinFragTable = [9][28]runtime.Frag{
 		{A: "\"orders\".\"created_at\" >= $", B: ""},
 		{A: "\"orders\".\"created_at\" < $", B: ""},
 		{A: "\"orders\".\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2596,6 +2796,9 @@ var joinFragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // updated_by
 		{}, // opNone
@@ -2615,6 +2818,9 @@ var joinFragTable = [9][28]runtime.Frag{
 		{},
 		{A: "\"orders\".\"updated_by\" = ANY($", B: ")"},
 		{A: "\"orders\".\"updated_by\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2656,6 +2862,9 @@ var joinFragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // status
 		{}, // opNone
@@ -2686,6 +2895,9 @@ var joinFragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // total
 		{}, // opNone
@@ -2695,6 +2907,9 @@ var joinFragTable = [9][28]runtime.Frag{
 		{A: "\"orders\".\"total\" >= $", B: ""},
 		{A: "\"orders\".\"total\" < $", B: ""},
 		{A: "\"orders\".\"total\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2746,9 +2961,15 @@ var joinFragTable = [9][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // relation Lines (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -3927,6 +4148,49 @@ var (
 	delAllCache = runtime.NewTreeCache()
 )
 
+// UpdateHead is UpdateAll's statement without its predicates, for the
+// context package to narrow with a composed read: the UPDATE … SET, the
+// identity a statement built from it is cached under, and the values m
+// assigns. ok is false when m assigns nothing.
+func (m Mut) UpdateHead() (head *runtime.Stmt, key [4]runtime.Tok, args []any, ok bool) {
+	if m.dirty == 0 && m.expr == 0 {
+		return nil, key, nil, false
+	}
+	key[0], key[1] = runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32)
+	key[2], key[3] = runtime.Tok(m.expr), runtime.Tok(m.expr>>32)
+	return updHead(m.key()), key, m.updateArgs(nil), true
+}
+
+// updateArgs appends the values m assigns, in SET order.
+func (m Mut) updateArgs(args []any) []any {
+	for i := 0; i < nUpdatable; i++ {
+		if m.dirty&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, m.row.UpdatedAt)
+		case 1:
+			args = append(args, m.row.UpdatedBy)
+		case 2:
+			args = append(args, m.row.CustomerID)
+		case 3:
+			args = append(args, m.row.Status)
+		case 4:
+			args = append(args, m.row.Total)
+		case 5:
+			args = append(args, m.row.PlacedAt)
+		}
+	}
+	return args
+}
+
+// Shaped reports a Limit, Offset or row lock, which shape a read and
+// which a set-based write composed around this query has no place for.
+func (q Query) Shaped() bool {
+	return q.limit != 1000 || q.offset != 0 || q.lock != 0
+}
+
 // writeAllErr is what UpdateAll and DeleteAll refuse.
 func (q Query) writeAllErr() error {
 	if err := q.Err(); err != nil {
@@ -3939,6 +4203,28 @@ func (q Query) writeAllErr() error {
 		return runtime.ErrPagedWrite
 	}
 	return nil
+}
+
+var updHeadCache = runtime.NewMaskCache()
+
+// updHead is the UPDATE … SET of one assignment mask, before the
+// predicates or the read that narrow it.
+func updHead(k runtime.MaskKey) *runtime.Stmt {
+	if st := updHeadCache.Get(k); st != nil {
+		return st
+	}
+	set := make([]runtime.Frag, 0, nUpdatable+1)
+	for i := 0; i < nUpdatable; i++ {
+		switch {
+		case k.Expr&(1<<uint(i)) != 0:
+			set = append(set, exprFrags[i])
+		case k.Dirty&(1<<uint(i)) != 0:
+			set = append(set, setFrags[i])
+		}
+	}
+	return updHeadCache.Put(k, runtime.SpliceSections(updatePrefix, []runtime.Section{
+		{Lead: "", Sep: ", ", Frags: set},
+	}, ""))
 }
 
 // updAllStmtFor compiles one (assignments, predicates) pair, once.
@@ -3954,18 +4240,7 @@ func updAllStmtIn(c *runtime.TreeCache, suffix string, k runtime.MaskKey, preds 
 	if st := c.Get(key[:n]); st != nil {
 		return st
 	}
-	set := make([]runtime.Frag, 0, nUpdatable+1)
-	for i := 0; i < nUpdatable; i++ {
-		switch {
-		case k.Expr&(1<<uint(i)) != 0:
-			set = append(set, exprFrags[i])
-		case k.Dirty&(1<<uint(i)) != 0:
-			set = append(set, setFrags[i])
-		}
-	}
-	head := runtime.SpliceSections(updatePrefix, []runtime.Section{
-		{Lead: "", Sep: ", ", Frags: set},
-	}, "")
+	head := updHead(k)
 	if head.Err != nil {
 		return head
 	}
@@ -3998,27 +4273,7 @@ func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64
 	}
 	b := binders.Get()
 	defer putBinder(b)
-	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.UpdatedBy)
-		case 2:
-			args = append(args, m.row.CustomerID)
-		case 3:
-			args = append(args, m.row.Status)
-		case 4:
-			args = append(args, m.row.Total)
-		case 5:
-			args = append(args, m.row.PlacedAt)
-		}
-	}
-	args = append(args, q.bindPreds(b)...)
+	args := append(m.updateArgs(make([]any, 0, st.NArg)), q.bindPreds(b)...)
 	return ex.Exec(ctx, st.SQL, args)
 }
 

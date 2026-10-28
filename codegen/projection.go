@@ -67,6 +67,24 @@ func (g *gen) projection(name string, columns []string) {
 	g.p("\treturn c.Put(toks, %s)", g.splice(low+"Prefix", "toks, lowering, suffix"))
 	g.p("}")
 	g.p("")
+	if g.widens() {
+		g.p("var %sDeletedCaches = [2]*runtime.TreeCache{runtime.NewTreeCache(), runtime.NewTreeCache()}", low)
+		g.p("")
+		g.p("// %sDeletedStmtFor is %sStmtFor under WithDeleted: no soft-delete", low, low)
+		g.p("// predicate, because the model let this table's call sites ask for that.")
+		g.p("func %sDeletedStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {", low)
+		g.p("\ti, suffix := 0, limitSuffix")
+		g.p("\tif withOffset {")
+		g.p("\t\ti, suffix = 1, limitOffsetSuffix")
+		g.p("\t}")
+		g.p("\tc := %sDeletedCaches[i]", low)
+		g.p("\tif st := c.Get(toks); st != nil {")
+		g.p("\t\treturn st")
+		g.p("\t}")
+		g.p("\treturn c.Put(toks, runtime.SpliceTree(%sPrefix, toks, lowering, suffix))", low)
+		g.p("}")
+		g.p("")
+	}
 
 	fallible := false
 	for _, c := range cols {
@@ -103,11 +121,19 @@ func (g *gen) projection(name string, columns []string) {
 	g.p("// as AllInto does — a projection's terminals mirror the full read's, so a")
 	g.p("// hot loop reuses both and a benchmark compares like with like.")
 	g.p("func (q Query) All%sInto(ctx context.Context, ex "+g.execType()+", dst []%sRow, sl *runtime.Slab) ([]%sRow, error) {", name, name, name)
-	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\tif err := q.readErr(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
-	g.p("\tst := %sStmtFor(q.stream(&buf), q.offset > 0)", low)
+	if g.widens() {
+		g.p("\tpick := %sStmtFor", low)
+		g.p("\tif q.deleted {")
+		g.p("\t\tpick = %sDeletedStmtFor", low)
+		g.p("\t}")
+		g.p("\tst := pick(q.stream(&buf), q.offset > 0)")
+	} else {
+		g.p("\tst := %sStmtFor(q.stream(&buf), q.offset > 0)", low)
+	}
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn dst, st.Err")
 	g.p("\t}")

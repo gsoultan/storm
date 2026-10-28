@@ -53,6 +53,11 @@ type Table struct {
 	// after the indexes are, so the column keeps its index and every
 	// declaration that looks the key up still finds it while Schema runs.
 	noFK map[*col]string
+
+	// matches are the t.ProbesOn declarations, resolved once every table's
+	// relations are wired: the target is named by a local instance, and its
+	// columns, its references among them, may not exist while Schema runs.
+	matches []func(*builder)
 }
 
 // fkDecl is one t.ForeignKey(...).References(...) call.
@@ -359,6 +364,14 @@ func (b *ColBuilder) Named(n string) *ColBuilder {
 // A rename under an expression that mentions the old column is a build failure
 // against the scratch schema, which is where it belongs.
 func renameCol(t *schema.Table, old, n string) {
+	for _, c := range t.Columns {
+		if c.IncWhen == old {
+			c.IncWhen = n
+		}
+	}
+	if t.Turns == old {
+		t.Turns = n
+	}
 	for i, c := range t.PrimaryKey {
 		if c == old {
 			t.PrimaryKey[i] = n
@@ -438,6 +451,34 @@ func (b *ColBuilder) Version() *ColBuilder         { b.c.sc.Version = true; retu
 func (b *ColBuilder) Comment(s string) *ColBuilder { b.c.sc.Comment = s; return b }
 func (b *ColBuilder) NotNull() *ColBuilder         { b.c.sc.NotNull = true; return b }
 func (b *ColBuilder) Nullable() *ColBuilder        { b.c.sc.NotNull = false; return b }
+
+// IncWhen gives a counter a guarded increment: Inc<Counter>When<Field>(v)
+// on the generated Mut adds one to the counter when the field, as the row
+// stands before the write, equals v, and adds nothing otherwise.
+//
+// The test reads the row inside the same statement that writes it, so it
+// sees the value the write replaces. A claim that takes over a job whose
+// worker died, and counts that as an attempt, says it in one UPDATE: the
+// job's status is set to running and the attempt counts only if it already
+// was. Read first and decide in Go, and two claimants racing for one job
+// both see the old status.
+//
+// The counter is a NOT NULL integer; the field is a scalar the database can
+// compare with =, so not json and not an array. The generator refuses both
+// otherwise, naming the column.
+func (b *ColBuilder) IncWhen(fieldPtr any) *ColBuilder {
+	c, err := b.t.columnOf(fieldPtr)
+	switch {
+	case err != nil:
+		b.t.errs.add(fmt.Errorf("%s.%s: IncWhen: %w", b.t.out.Name, b.c.sc.Name, err))
+	case c == b.c.sc.Name:
+		b.t.errs.add(fmt.Errorf("%s.%s: IncWhen names the counter itself; a guard reads another column",
+			b.t.out.Name, b.c.sc.Name))
+	default:
+		b.c.sc.IncWhen = c
+	}
+	return b
+}
 
 // ConvertFrom says how to read the value the column held before its type
 // changed, for a change PostgreSQL has no cast for. JSONText reads a text
@@ -876,6 +917,46 @@ func (t *Table) SoftDelete(fieldPtr any) *Table {
 // carry it.
 func (t *Table) Takes() *Table { t.out.Takes = true; return t }
 
+// ReadsDeleted generates Query.WithDeleted for this soft-delete table: a read
+// that sees the marked rows as well, through All, One, Count, Exists, the
+// projections and Take. Every other read still leaves them out. Opt-in, because a call site
+// that can widen what it sees is the hazard soft delete exists to close;
+// the tables that need it (restoring a row by its key, telling a removed row
+// from one never written) say so here.
+func (t *Table) ReadsDeleted() *Table { t.out.ReadsDeleted = true; return t }
+
+// GuardsUpsert generates Ins.UpsertWhere: an upsert on one of the table's
+// unique keys whose update applies only when the row already there matches a
+// query, and otherwise leaves it alone. "Record the worker, but rewrite its
+// row only when it is stale or says another version" is then one statement.
+// PostgreSQL only.
+func (t *Table) GuardsUpsert() *Table { t.out.GuardsUpsert = true; return t }
+
+// Lockable puts this table in its context package's LockTables, as
+// Table<GoName>: a lock on the whole table for the rest of a transaction,
+// where the back end has one. A sweep that must not race the writers of the
+// rows it reads takes one, and waits for every transaction already writing
+// them; a table no sweep locks never needs it.
+func (t *Table) Lockable() *Table { t.out.Lockable = true; return t }
+
+// TakesTurns gives the table AllTurns, a read that deals its rows out by the
+// column fieldPtr names, a turn at a time: each group's first rows numbered
+// in the read's order, every group's first ahead of anyone's second. A queue
+// whose claim must not let one tenant's backlog starve the others takes turns
+// by tenant. The groups are found a seek at a time along the column, so an
+// index that leads with the groups' predicates' columns and then this one is
+// what keeps the read as cheap as the groups it looks at. A nullable column's
+// rows with none are one more group. PostgreSQL only.
+func (t *Table) TakesTurns(fieldPtr any) *Table {
+	name, err := t.columnOf(fieldPtr)
+	if err != nil {
+		t.errs.add(fmt.Errorf("%s: TakesTurns: %w", t.out.Name, err))
+		return t
+	}
+	t.out.Turns = name
+	return t
+}
+
 // Tallies generates Tally and Query.UpdateAllAfter for this table: a write
 // that runs after another table's step in the same statement and moves this
 // table's counters by the rows the step had. Opt-in, for the same reason.
@@ -892,6 +973,92 @@ func (t *Table) InsertsPer(fieldPtr any) *Table {
 	}
 	t.out.InsertSelects = append(t.out.InsertSelects, name)
 	return t
+}
+
+// Probes generates, in the context package, the semi-join through the owned
+// to-one reference fieldPtr: <Model>Having<Field> and <Model>NotHaving<Field>,
+// which narrow a query of this table to the rows whose referenced row matches
+// (or does not) the referenced table's own predicates, in one statement. A
+// to-many relation has them without asking; a to-one asks, because most
+// references are never asked about and their composers would be dead code.
+func (t *Table) Probes(fieldPtr any) *Table {
+	name, err := t.resolveRel(fieldPtr)
+	if err != nil {
+		t.errs.add(fmt.Errorf("%s: Probes: %w", t.out.Name, err))
+		return t
+	}
+	t.out.Probes = append(t.out.Probes, name)
+	return t
+}
+
+// ProbesOn declares a semi-join a foreign key does not describe: the rows of
+// another table whose columns equal this one's, pair by pair. The target is a
+// LOCAL instance of its model, so the pairs are field pointers on both sides
+// and a rename is a compile error:
+//
+//	func (e *ExternalTask) Schema(t *storm.Table) {
+//	    var i Incident
+//	    t.ProbesOn("StepIncidents", &i, &e.Instance, &i.Instance, &e.NodeID, &i.NodeID)
+//	}
+//
+// The context package then has <Model>Having<Name> and <Model>NotHaving<Name>
+// with every composer method a relation's has, the target's soft delete
+// applied. PostgreSQL only.
+func (t *Table) ProbesOn(name string, target any, pairs ...any) *Table {
+	if !isExportedIdent(name) {
+		t.errs.add(fmt.Errorf("%s: ProbesOn name %q must be a valid exported Go identifier", t.out.Name, name))
+		return t
+	}
+	if len(pairs) == 0 || len(pairs)%2 != 0 {
+		t.errs.add(fmt.Errorf("%s: ProbesOn %s wants pairs of field pointers, this table's then the target's", t.out.Name, name))
+		return t
+	}
+	t.matches = append(t.matches, func(b *builder) {
+		mi := b.infoFor(target)
+		if mi == nil {
+			b.errs.add(fmt.Errorf("%s: ProbesOn %s probes %T, which is not a registered model", t.out.Name, name, target))
+			return
+		}
+		local := &Table{base: unsafe.Pointer(reflect.ValueOf(target).Pointer()), typ: mi.tbl.typ,
+			out: mi.tbl.out, off: mi.tbl.off, relOff: mi.tbl.relOff, errs: t.errs}
+		own := make([]string, 0, len(pairs)/2)
+		theirs := make([]string, 0, len(pairs)/2)
+		for i := 0; i < len(pairs); i += 2 {
+			c, err := t.columnOf(pairs[i])
+			if err == nil {
+				own = append(own, c)
+				c, err = local.columnOf(pairs[i+1])
+			}
+			if err != nil {
+				b.errs.add(fmt.Errorf("%s: ProbesOn %s: %w", t.out.Name, name, err))
+				return
+			}
+			theirs = append(theirs, c)
+		}
+		t.out.Matches = append(t.out.Matches, &schema.Match{
+			Name: name, Target: mi.tbl.out.Name, TargetGo: mi.tbl.out.GoName,
+			Columns: own, TargetColumns: theirs,
+		})
+	})
+	return t
+}
+
+// columnOf is the column a field pointer names: its own, or for an owned
+// reference the key column it carries.
+func (t *Table) columnOf(fieldPtr any) (string, error) {
+	if name, ok := t.relOff[t.offsetOf(fieldPtr)]; ok {
+		for _, r := range t.out.Relations {
+			if r.Field == name && r.Owner && r.Column != "" {
+				return r.Column, nil
+			}
+		}
+		return "", fmt.Errorf("%s.%s is a reference that carries no column of its own", t.out.Name, name)
+	}
+	c, err := t.resolve(fieldPtr)
+	if err != nil {
+		return "", err
+	}
+	return c.sc.Name, nil
 }
 
 // UniqueAcrossDeleted declares uniqueness that a soft-delete table's marked

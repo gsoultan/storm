@@ -78,6 +78,29 @@ type Table struct {
 	Takes         bool
 	Tallies       bool
 	InsertSelects []string
+	// Probes are the owned to-one relation fields the context package
+	// composes an existence probe through, as it does for every to-many:
+	// <Model>Having<Field>.
+	Probes []string
+	// Matches are the declared probes on matching columns (t.ProbesOn).
+	Matches []*Match
+
+	// ReadsDeleted lets a call site widen a read of this soft-delete table
+	// past the marked rows (Query.WithDeleted). The model says so once, as
+	// it does for an aggregation AcrossDeleted.
+	ReadsDeleted bool
+
+	// GuardsUpsert gives the insert UpsertWhere: an upsert whose update
+	// applies only to an existing row a query matches.
+	GuardsUpsert bool
+
+	// Lockable puts the table in its context's LockTables, which takes a
+	// table lock for the rest of a transaction.
+	Lockable bool
+
+	// Turns is the column AllTurns deals the rows out by, a turn per group
+	// (t.TakesTurns). Empty when the table does not.
+	Turns string
 
 	// Relations are the Go-level links the model declared, kept because a
 	// foreign key alone cannot reconstruct them: it says users.org_id
@@ -330,6 +353,13 @@ type Column struct {
 	// They change what the generator emits, not what the database enforces.
 	Immutable bool
 	Version   bool
+
+	// IncWhen names the column whose value, as the row stands before the
+	// write, decides whether this counter's guarded increment counts: the
+	// counter moves by one when that column equals the value the write
+	// binds, and by nothing otherwise. A storm-level fact like Immutable;
+	// "" for a counter that has no guarded increment.
+	IncWhen string
 
 	// ConvertFrom says how a change of the column's type reads the value
 	// it held before, for a change PostgreSQL has no cast for; "" uses the

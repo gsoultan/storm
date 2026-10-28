@@ -1357,6 +1357,40 @@ func TestJSONPredicates(t *testing.T) {
 	if n := count("all keys partial", mdwide.Doc.HasAllKeys("a", "z")); n != 0 {
 		t.Errorf("HasAllKeys matched %d rows for a key that is not there, want 0", n)
 	}
+	// The document read as its text: a list of names stored as a JSON array,
+	// asked whether it names someone and whether it names nobody. Every row
+	// written so far is an object, so neither question matches one of them.
+	lists := []mdwide.Row{
+		{ID: id(0xe1, 3), Text: "named", Doc: storm.JSON("[\"ada\", \"bo_b\"]")},
+		{ID: id(0xe1, 4), Text: "empty", Doc: storm.JSON("[]")},
+		{ID: id(0xe1, 5), Text: "null", Doc: storm.JSON("null")},
+	}
+	for i := range lists {
+		if err := mdwide.Insert(ctx, ex, &lists[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Quoted, so "ad" does not match "ada"; any one pattern is enough.
+	if n := count("text like any", mdwide.Doc.TextLikeAny("%\"zed\"%", "%\"ada\"%")); n != 1 {
+		t.Errorf("TextLikeAny matched %d rows, want 1", n)
+	}
+	if n := count("text like any partial", mdwide.Doc.TextLikeAny("%\"ad\"%")); n != 0 {
+		t.Errorf("TextLikeAny matched %d rows for a name that is not there, want 0", n)
+	}
+	// An escaped underscore is a literal one, as LIKE's is.
+	if n := count("text like any escaped", mdwide.Doc.TextLikeAny("%\"bo\\_b\"%")); n != 1 {
+		t.Errorf("TextLikeAny matched %d rows for an escaped underscore, want 1", n)
+	}
+	if n := count("is empty", mdwide.Doc.IsEmpty()); n != 2 {
+		t.Errorf("IsEmpty matched %d rows, want the empty list and the JSON null", n)
+	}
+	n, err := mdwide.New().Not(mdwide.Doc.IsEmpty()).Count(ctx, ex)
+	if err != nil {
+		t.Fatalf("not is empty: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("not IsEmpty matched %d rows, want the two objects and the named list", n)
+	}
 }
 
 // A many-to-many with a PAYLOAD: the join row records something a generated

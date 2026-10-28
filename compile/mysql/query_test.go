@@ -165,3 +165,22 @@ func TestEmittedSQLCannotGoInAGoRawStringLiteral(t *testing.T) {
 		t.Fatalf("quoting is lossy:\n%s\n%s", sql, unquoted)
 	}
 }
+
+// MySQL has no LIKE ANY and no `= ANY(array)`, so the document's text is
+// matched against the rows JSON_TABLE unpacks from the one bound array.
+func TestJSONTextOperatorsUnpackTheList(t *testing.T) {
+	for op, want := range map[string]string{
+		"JSONTextLikeAny": "EXISTS (SELECT 1 FROM JSON_TABLE(?, '$[*]' COLUMNS (`p` TEXT PATH '$')) AS `_storm_l` " +
+			"WHERE COALESCE(CAST(`doc` AS CHAR), '') LIKE `_storm_l`.`p`)",
+		"JSONIsEmpty": "COALESCE(CAST(`doc` AS CHAR), '') IN ('', 'null', '[]', '{}')",
+		"NullOrEmpty": "COALESCE(`doc`, '') = ''",
+	} {
+		a, b, ok := mysql.Frag(op, mysql.Ident("doc"))
+		if !ok {
+			t.Fatalf("no lowering for %s", op)
+		}
+		if got := a + b; got != want {
+			t.Errorf("%s = %s\nwant %s", op, got, want)
+		}
+	}
+}

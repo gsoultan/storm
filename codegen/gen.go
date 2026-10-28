@@ -402,7 +402,7 @@ func (o opDef) m() string {
 func (o opDef) list() bool {
 	switch o.name {
 	case "In", "NotIn", "ArrayContains", "ArrayContainedBy", "ArrayOverlaps",
-		"HasAnyKey", "HasAllKeys":
+		"HasAnyKey", "HasAllKeys", "JSONTextLikeAny":
 		return true
 	}
 	return false
@@ -533,8 +533,25 @@ var ops = []opDef{
 	// rather than an arena, exactly like In on a text column.
 	{name: "HasAnyKey", args: 1},
 	{name: "HasAllKeys", args: 1},
+	// The document read as its TEXT: does it match any of these LIKE
+	// patterns. A missing document reads as the empty string. A list, so a
+	// variable number of patterns is still one placeholder and one statement.
+	//
+	// Not a substitute for @> or ?|. It is what a column that was stored as
+	// the characters of a JSON array is asked until it can be converted, and
+	// the question it answers survives that conversion.
+	{name: "JSONTextLikeAny", method: "TextLikeAny", args: 1},
 	{name: "IsNull", args: 0},
 	{name: "IsNotNull", args: 0},
+	// The document holds nothing: missing, the JSON null, or an empty array
+	// or object. Argless, so "names nobody" spends no list slot, and asked of
+	// the text, so it holds whether the column is jsonb or the characters of
+	// one.
+	{name: "JSONIsEmpty", method: "IsEmpty", args: 0},
+	// A nullable text column holding nothing: NULL or the empty string. One
+	// predicate rather than Any(IsNull(), Eq("")), so it can sit inside an
+	// And group, which takes no disjunction.
+	{name: "NullOrEmpty", method: "IsNullOrEmpty", args: 0},
 }
 
 const opNone = 0 // nibble 0 means "no predicate on this column"
@@ -797,6 +814,9 @@ func (g *gen) compile() {
 	g.p("\treturn countCache.Put(toks, %s)", g.splice("countPrefix", "toks, lowering, \"\""))
 	g.p("}")
 	g.p("")
+	g.readStmts()
+	g.distinctOn()
+	g.turns()
 	g.p("// Composition seams, for the generated CONTEXT package and it alone:")
 	g.p("// cross-table statements (a filtered semi-join spans two packages) are")
 	g.p("// assembled there from each side's tokens, fragments and bindings. Ids")
@@ -836,6 +856,10 @@ func (g *gen) compile() {
 	g.p("// composed around this query's read may have no place for.")
 	g.p("func (q Query) Locked() bool { return q.lock != 0 }")
 	g.p("func (q Query) Paged() bool  { return q.offset != 0 }")
+	g.p("")
+	g.p("// Ordered reports an Order(), which a grouped read composed around this")
+	g.p("// query's predicates has no place for.")
+	g.p("func (q Query) Ordered() bool { return q.no > 0 }")
 	g.p("")
 	g.p("// BindPreds binds this query's predicate values into b, appending to v.")
 	g.p("func (q Query) BindPreds(b *Binder, v []any) []any {")
@@ -877,7 +901,7 @@ func (g *gen) compile() {
 	g.p("// SQL returns the compiled text for this query's structure.")
 	g.p("func (q Query) SQL() string {")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
-	g.p("\treturn stmtFor(q.stream(&buf), q.offset > 0, q.lock).SQL")
+	g.p("\treturn q.readStmt(q.stream(&buf)).SQL")
 	g.p("}")
 	g.p("")
 }
@@ -938,11 +962,11 @@ func (g *gen) terminals() {
 	g.p("")
 	g.p("// AllInto lets the caller own the string arena.")
 	g.p("func (q Query) AllInto(ctx context.Context, ex %s, dst []Row, sl *runtime.Slab) ([]Row, error) {", g.execType())
-	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\tif err := q.readErr(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
-	g.p("\tst := stmtFor(q.stream(&buf), q.offset > 0, q.lock)")
+	g.p("\tst := q.readStmt(q.stream(&buf))")
 	g.p("\tif st.Err != nil {")
 	g.p("\t\t// A malformed token stream is a code-generation bug. Executing it")
 	g.p("\t\t// would run a query whose filter is not the one that was asked for.")
@@ -980,14 +1004,14 @@ func (g *gen) terminals() {
 	g.p("")
 	g.p("// Count ignores Limit: counting a truncated set is a bug, not a feature.")
 	g.p("func (q Query) Count(ctx context.Context, ex %s) (int64, error) {", g.execType())
-	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\tif err := q.readErr(); err != nil {")
 	g.p("\t\treturn 0, err")
 	g.p("\t}")
 	g.p("\tif q.lock != 0 {")
 	g.p("\t\treturn 0, errCountLocked")
 	g.p("\t}")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
-	g.p("\tst := countStmtFor(q.preds(&buf))")
+	g.p("\tst := q.countStmt(q.preds(&buf))")
 	g.p("\tif st.Err != nil {")
 	g.p("\t\t// A malformed token stream is a code-generation bug. Executing it")
 	g.p("\t\t// would run a query whose filter is not the one that was asked for.")
@@ -1017,14 +1041,14 @@ func (g *gen) terminals() {
 	g.p("// measured on 50k rows, the planner top-N-sorted all 16,667 matches to")
 	g.p("// return the \"first\" of an order nobody was going to read.")
 	g.p("func (q Query) Exists(ctx context.Context, ex %s) (bool, error) {", g.execType())
-	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\tif err := q.readErr(); err != nil {")
 	g.p("\t\treturn false, err")
 	g.p("\t}")
 	g.p("\tif q.lock != 0 {")
 	g.p("\t\treturn false, errExistsLocked")
 	g.p("\t}")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
-	g.p("\tst := existsStmtFor(q.preds(&buf))")
+	g.p("\tst := q.existsStmt(q.preds(&buf))")
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn false, st.Err")
 	g.p("\t}")
@@ -1041,7 +1065,7 @@ func (g *gen) terminals() {
 	g.p("// Prepare resolves the structure and binds arguments without executing.")
 	g.p("func (q Query) Prepare(b *Binder) (string, []any) {")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
-	g.p("\treturn stmtFor(q.stream(&buf), q.offset > 0, q.lock).SQL, q.bind(b)")
+	g.p("\treturn q.readStmt(q.stream(&buf)).SQL, q.bind(b)")
 	g.p("}")
 	g.p("")
 }

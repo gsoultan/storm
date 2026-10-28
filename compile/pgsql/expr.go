@@ -54,12 +54,22 @@ func writeExpr(b *strings.Builder, e schema.Expr) {
 	case schema.ExprBinary:
 		writeBinary(b, e)
 
+	case schema.ExprField:
+		// The element's field as text: NULL when it has no such key.
+		b.WriteString(Ident(e.Tbl))
+		b.WriteString("->>")
+		b.WriteString(schema.Literal{Kind: schema.TypeText, S: e.Col}.SQL())
+
 	case schema.ExprGrouping:
 		b.WriteString("GROUPING(")
 		writeArgs(b, e.Args)
 		b.WriteByte(')')
 
 	case schema.ExprAgg:
+		if e.Fn == string(schema.AggFirst) {
+			writeFirst(b, e)
+			return
+		}
 		// avg() over an integer or a numeric divides, and PostgreSQL's numeric
 		// division chooses a scale large enough to overflow the eighteen
 		// significant digits a Decimal holds. The result type carries the
@@ -104,6 +114,28 @@ func writeExpr(b *strings.Builder, e schema.Expr) {
 			writeOver(b, *e.Over)
 		}
 	}
+}
+
+// writeFirst renders the group's first value: its values collected in the
+// declared order, and the first of them read off.
+//
+// PostgreSQL has no first() aggregate. The FILTER sits inside the parentheses
+// because it belongs to array_agg, and the subscript applies to what that
+// returns. Collecting the group is the price; the alternative, a window over
+// every row and a filter on its row number, sorts the same rows and needs a
+// second level of query to say it.
+func writeFirst(b *strings.Builder, e schema.Expr) {
+	b.WriteString("(array_agg(")
+	writeArgs(b, e.Args)
+	b.WriteByte(' ')
+	writeOrderBy(b, e.Within)
+	b.WriteByte(')')
+	if e.Filter != nil {
+		b.WriteString(" FILTER (WHERE ")
+		writeCond(b, *e.Filter)
+		b.WriteByte(')')
+	}
+	b.WriteString(")[1]")
 }
 
 // writeBinary renders arithmetic, always parenthesised.
@@ -171,6 +203,28 @@ func writeArgs(b *strings.Builder, args []schema.Expr) {
 	}
 }
 
+// writeOrderBy renders ORDER BY and its terms, for a window or an aggregate's
+// own ordering.
+func writeOrderBy(b *strings.Builder, terms []schema.OrderTerm) {
+	b.WriteString("ORDER BY ")
+	for i, t := range terms {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		writeExpr(b, t.Expr)
+		if t.Desc {
+			b.WriteString(" DESC")
+		}
+		if t.NullsFirst != nil {
+			if *t.NullsFirst {
+				b.WriteString(" NULLS FIRST")
+			} else {
+				b.WriteString(" NULLS LAST")
+			}
+		}
+	}
+}
+
 func writeOver(b *strings.Builder, w schema.Window) {
 	b.WriteString(" OVER (")
 	if len(w.PartitionBy) > 0 {
@@ -181,23 +235,7 @@ func writeOver(b *strings.Builder, w schema.Window) {
 		if len(w.PartitionBy) > 0 {
 			b.WriteByte(' ')
 		}
-		b.WriteString("ORDER BY ")
-		for i, t := range w.OrderBy {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			writeExpr(b, t.Expr)
-			if t.Desc {
-				b.WriteString(" DESC")
-			}
-			if t.NullsFirst != nil {
-				if *t.NullsFirst {
-					b.WriteString(" NULLS FIRST")
-				} else {
-					b.WriteString(" NULLS LAST")
-				}
-			}
-		}
+		writeOrderBy(b, w.OrderBy)
 	}
 	if w.Frame != nil {
 		writeFrame(b, *w.Frame)

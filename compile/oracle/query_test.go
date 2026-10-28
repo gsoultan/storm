@@ -255,3 +255,25 @@ func TestFixedTextStatementsNumberTheirOwnPlaceholders(t *testing.T) {
 		t.Errorf("a bare sigil reached a fixed-text statement: %s", got)
 	}
 }
+
+// The empty string is NULL here, so a missing document cannot read as empty
+// text.
+func TestJSONTextOperatorsAreRefusedByName(t *testing.T) {
+	for _, op := range []string{"JSONTextLikeAny", "JSONIsEmpty"} {
+		if oracle.Supported(op) {
+			t.Errorf("%s is claimed", op)
+		}
+		if why := oracle.Refused(op); !strings.Contains(why, "empty string") {
+			t.Errorf("the refusal must say why: %s", why)
+		}
+	}
+}
+
+// The empty string IS NULL here, so a text column holding nothing is a NULL
+// one, and nothing else needs saying.
+func TestNullOrEmptyIsNull(t *testing.T) {
+	a, b, ok := oracle.Frag("NullOrEmpty", `"c"`)
+	if !ok || a+b != `"c" IS NULL` {
+		t.Errorf("NullOrEmpty = %s (ok %v)", a+b, ok)
+	}
+}

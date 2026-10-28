@@ -207,3 +207,14 @@ func Int8Array(b []byte) ([]int64, error) {
 func Int4Array(b []byte) ([]int32, error) {
 	return Array(b, Int4)
 }
+
+// List is v as an array parameter: an empty slice where v is nil. A variadic
+// list predicate called with nothing has a nil v, which a driver binds as
+// NULL, and `<> ALL(NULL)` and `@> NULL` are NULL for every row where the
+// empty array gives the answer the empty set does.
+func List[T any](v []T) []T {
+	if v == nil {
+		return []T{}
+	}
+	return v
+}

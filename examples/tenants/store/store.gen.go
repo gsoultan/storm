@@ -6,6 +6,9 @@ package store
 import (
 	"context"
 	"fmt"
+	"strconv"
+
+	"time"
 
 	"github.com/gsoultan/storm/examples/tenants/store/currency"
 	"github.com/gsoultan/storm/examples/tenants/store/order"
@@ -160,4 +163,22 @@ func (p OrderWithCurrencyQuery) All(ctx context.Context, ex shard.Bound) ([]Orde
 		out[i].Currency = &targets[j]
 	}
 	return out, nil
+}
+
+const lockTimeoutSQL = "SELECT set_config('lock_timeout', $1, true)"
+
+// LockTimeout bounds how long each later statement of this transaction
+// waits for a lock: past it the statement fails rather than waits. Zero
+// or less waits for ever. It ends with the transaction, and outside one
+// with the statement, so it cannot leak onto a pooled connection.
+func LockTimeout(ctx context.Context, ex runtime.Executor, d time.Duration) error {
+	ms := d.Milliseconds()
+	if d > 0 && ms == 0 {
+		ms = 1 // a positive wait shorter than the unit is not "for ever"
+	}
+	if ms < 0 {
+		ms = 0
+	}
+	_, err := ex.Exec(ctx, lockTimeoutSQL, []any{strconv.FormatInt(ms, 10)})
+	return err
 }

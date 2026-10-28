@@ -38,6 +38,18 @@ func SelectPrefix(table string, cols []string) string {
 	return "SELECT " + strings.Join(q, ", ") + " FROM " + Ident(table)
 }
 
+// DistinctOn is SelectPrefix for a read that keeps the first row of each run
+// of its leading ORDER BY terms: the text before the key columns, their
+// separator, and the select list after them. The keys are the order's, so
+// PostgreSQL's rule that they lead the ORDER BY holds by construction.
+func DistinctOn(table string, cols []string) (open, sep, tail string) {
+	q := make([]string, len(cols))
+	for i, c := range cols {
+		q[i] = Ident(c)
+	}
+	return "SELECT DISTINCT ON (", ", ", ") " + strings.Join(q, ", ") + " FROM " + Ident(table)
+}
+
 // SoftDeleteWhere is the predicate that keeps marked rows out of a read.
 //
 // It is rendered as a DECLARED predicate, which the splice ANDs ahead of the
@@ -152,6 +164,14 @@ var frags = map[string]struct{ a, b string }{
 	"JSONContainedBy": {" <@ " + Placeholder, ""},
 	"HasAnyKey":       {" ?| " + Placeholder, ""},
 	"HasAllKeys":      {" ?& " + Placeholder, ""},
+	// The document's text. COALESCE (see prefixes) makes a missing document
+	// the empty string rather than NULL, so a negation of either never meets
+	// a NULL. LIKE ANY keeps every pattern in one bound text[]. The empty
+	// spellings are what jsonb prints and what json.Marshal writes, so they
+	// hold for a text column holding a document's characters too.
+	"JSONTextLikeAny": {"::text, '') LIKE ANY(" + Placeholder, ")"},
+	"JSONIsEmpty":     {"::text, '') IN ('', 'null', '[]', '{}')", ""},
+	"NullOrEmpty":     {", '') = ''", ""},
 	"IsNull":          {" IS NULL", ""},
 	"IsNotNull":       {" IS NOT NULL", ""},
 	// Case-insensitive equality, spelled the way the INDEX is. A unique index
@@ -170,7 +190,10 @@ var frags = map[string]struct{ a, b string }{
 // trees, so the query has to say lower(username) — not username, and not
 // upper(), and not a collation.
 var prefixes = map[string]string{
-	"EqLower": "lower(",
+	"EqLower":         "lower(",
+	"JSONTextLikeAny": "COALESCE(",
+	"JSONIsEmpty":     "COALESCE(",
+	"NullOrEmpty":     "COALESCE(",
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is
@@ -324,6 +347,25 @@ func NotExistsFrag(childTable, childFK, parentTable, parentPK string, childLive 
 func ExistsOpen(childTable, childFK, parentTable, parentPK string, childLive Live) string {
 	f := ExistsFrag(childTable, childFK, parentTable, parentPK, childLive)
 	return f[:len(f)-1]
+}
+
+// ExistsOnOpen is ExistsOpen correlated on several column pairs rather than a
+// key: the child row whose childCols equal the parent's parentCols, pair by
+// pair, and is live.
+func ExistsOnOpen(childTable string, childCols []string, parentTable string, parentCols []string, childLive Live) string {
+	s := "EXISTS (SELECT 1 FROM " + Ident(childTable) + " AS " + Ident(existsAlias) + " WHERE "
+	for i, c := range childCols {
+		if i > 0 {
+			s += " AND "
+		}
+		s += Ident(existsAlias) + "." + Ident(c) + " = " + Ident(parentTable) + "." + Ident(parentCols[i])
+	}
+	return s + aliasLive(childLive)
+}
+
+// NotExistsOnOpen is ExistsOnOpen negated.
+func NotExistsOnOpen(childTable string, childCols []string, parentTable string, parentCols []string, childLive Live) string {
+	return "NOT " + ExistsOnOpen(childTable, childCols, parentTable, parentCols, childLive)
 }
 
 // NotExistsOpen is ExistsOpen negated — the anti-join's header.

@@ -120,6 +120,9 @@ func ungrouped(e schema.Expr, grouped []schema.Expr) (string, bool) {
 	case schema.ExprCol:
 		return e.Col, true
 
+	case schema.ExprField:
+		return e.Tbl + "->>" + e.Col, true
+
 	case schema.ExprAgg:
 		// An aggregate's arguments AND its FILTER are evaluated per row inside
 		// the group, so both may read any column — `count(*) FILTER (WHERE
@@ -209,7 +212,7 @@ func ungroupedCond(c schema.Cond, grouped []schema.Expr) (string, bool) {
 // SELECT matches date_trunc('day', placed_at) in the GROUP BY; a different unit
 // does not.
 func exprEqual(a, b schema.Expr) bool {
-	if a.Kind != b.Kind || a.Col != b.Col || a.Fn != b.Fn || a.Arith != b.Arith ||
+	if a.Kind != b.Kind || a.Col != b.Col || a.Tbl != b.Tbl || a.Fn != b.Fn || a.Arith != b.Arith ||
 		len(a.Args) != len(b.Args) {
 		return false
 	}

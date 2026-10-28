@@ -67,7 +67,11 @@ func JoinSelect(table string, j *schema.Join,
 		default:
 			b.WriteString(" JOIN ")
 		}
-		b.WriteString(Ident(t.Alias))
+		if t.Table != "" {
+			b.WriteString(Ident(t.Table))
+		} else {
+			b.WriteString(Ident(t.Alias))
+		}
 		if t.Table != "" && t.Table != t.Alias {
 			b.WriteString(" AS ")
 			b.WriteString(Ident(t.Alias))

@@ -14,6 +14,187 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Automigrate leaves other tables alone on request
+
+`AutoOptions.DeclaredOnly` (and `Options.DeclaredOnly` for `ForWith`) leaves
+every table the model does not declare out of the plan: not dropped, not
+compared. For a model that shares its schema with tables it does not own,
+which without it were a DROP that refused the whole plan.
+
+### Aggregations over a joined table and a JSON array's elements
+
+An aggregation can `Join(&model, &m.Relation)` the table a foreign key
+references, range over a JSON array column with `Elements(alias, &m.Col)`, read
+an element's field with `Field(alias, key)`, and filter on all of them with a
+declared `Where`, ANDed with the call site's predicates. One statement, as
+before. PostgreSQL only; the other back ends refuse the declaration.
+
+### Joins: narrowed CTEs, composite keys, self-joins
+
+`WithWhere(alias, model, aggregate)` declares a CTE the call site narrows. A
+join with one is run by a composer in the context package,
+`store.<Model><Join>(q, ctes...)`, with `All` and `Count`: one statement, each
+CTE's predicates bound in its own WHERE and the join's own predicates and
+paging after them. PostgreSQL only.
+
+`JoinOn.And` joins on several columns, `InnerAs` and `LeftAs` attach a table
+under an alias (a table joined to itself), and a join's `Where` takes
+`ColOf(alias, column)` and scalar functions such as `Coalesce`.
+
+Fixed: a CTE over a soft-delete table aggregated its marked rows too. It now
+leaves them out, as the aggregation's own read does, unless the aggregation is
+`AcrossDeleted`. A table joined under an alias was rendered as the alias twice;
+no declaration could reach that before `InnerAs`.
+
+### `FirstOf`: a group's first value in a declared order
+
+An aggregation can take `FirstOf(&f, "As", a.Over().OrderByAsc(...))`: the
+group's value of `f` from its first row in that order, nullable, and filterable
+like any aggregate. PostgreSQL spells it `(array_agg(f ORDER BY …))[1]`; the
+other back ends refuse it. Windows and first values gain
+`OrderByAscNullsFirst` and `OrderByDescNullsLast`.
+
+### `AllTurns`: a read that takes turns by group
+
+A table declared `t.TakesTurns(&f)` gets `Query.AllTurns(ctx, ex, groups, from,
+n, dst)`: each group's first rows, numbered in the query's order, every group's
+first turn ahead of anyone's second, in one statement. The groups are chosen by
+`groups`' predicates and found a seek at a time along the column from `from`,
+wrapping, at most `n`; a nullable column's rows with none are one more group.
+The fair queue claim, which was a recursive CTE written by hand. PostgreSQL
+only.
+
+### Fixed: a list predicate with no values
+
+`In`, `NotIn`, `Contains`, `ContainedBy`, `Overlaps` and `TextLikeAny` called
+with no values bound a nil slice, which the driver sends as NULL. `NotIn()` then
+matched no rows instead of every row, and `Contains()` none instead of all, as
+its doc comment says. The generated predicate now binds the empty array
+(`runtime.List`). Every package regenerates; no allocation is added.
+
+### `UpsertWhere`: an upsert whose update is guarded
+
+A table declared `t.GuardsUpsert()` gets `Ins.UpsertWhere(ctx, ex, q)`: the
+`ON CONFLICT … DO UPDATE` carries a `WHERE` from `q`, read from the row already
+there with every column qualified by the table, so a heartbeat that rewrites a
+row only when it is stale is one statement. PostgreSQL only.
+
+### `LockTables` and `LockTimeout`
+
+A table declared `t.Lockable()` gets a `Table<Name>` in its context package,
+and `LockTables(ctx, ex, mode, tables...)` is `LOCK TABLE a, b IN <mode> MODE`:
+a sweep that must not race the writers of two tables waits for them and holds
+new ones off until it commits. `LockTimeout(ctx, ex, d)` bounds every later
+lock wait of the transaction, and ends with it. PostgreSQL only; every
+PostgreSQL context package gains `LockTimeout`.
+
+### `AllDistinctOn`: the first row of each key
+
+`q.Order(a.Asc(), b.Asc(), at.Desc()).AllDistinctOn(ctx, ex, 2, nil)` is
+`SELECT DISTINCT ON ("a", "b") …`: one row for each value of the order's first
+two terms, the newest. A terminal rather than a modifier, so no count, probe or
+write has to refuse a state it cannot honour. The keys are read from the order,
+so PostgreSQL's rule that they lead the ORDER BY holds by construction.
+PostgreSQL only; every PostgreSQL package regenerates.
+
+### A guarded increment: `IncWhen`
+
+`t.Col(&j.Retries).IncWhen(&j.Status)` gives the generated `Mut` an
+`IncRetriesWhenStatus(v)`: `retries = retries + CASE WHEN status = $n THEN 1
+ELSE 0 END`, which counts only when the row, as it stands before the write,
+holds `v`. A claim that counts taking over a running job as an attempt is then
+one `UPDATE`, rather than raw SQL or a read and a write. Every back end spells
+it; `Update`, `UpdateOp`, `UpdateAll`, `Take` and the composed writes bind it.
+
+Each guard takes an expression bit above the columns' in the statement key, so
+a table without one generates byte-for-byte what it did, and a table's
+updatable columns plus its guards must fit the 64-bit mask.
+
+### A JSON document read as its text
+
+A jsonb column gains `TextLikeAny(patterns...)` and `IsEmpty()`. The first
+matches the document's text against any of a list of `LIKE` patterns, with a
+missing document read as the empty string; the list is one bound value, so
+the number of patterns never changes the statement
+(`COALESCE("col"::text, '') LIKE ANY($1)` on PostgreSQL, `JSON_TABLE` on MySQL
+and MariaDB, `OPENJSON` on SQL Server). The second holds when the document is
+missing, the JSON null, or an empty array or object, and binds nothing. They
+are what a list of names kept as a JSON array is asked ("does it name this
+person", "does it name nobody") without raw SQL. Refused on Oracle, where the
+empty string is NULL.
+
+A nullable text column gains `IsNullOrEmpty()`: `COALESCE("col", '') = ''`,
+one predicate where `Any(IsNull(), Eq(""))` was two, so it fits inside an
+`And` group (which takes no disjunction). On Oracle, where the empty string is
+NULL, it is `IS NULL`.
+
+Three new operator ids shift the generated `op…` constants, so committed
+packages regenerate. The bind loop now skips every argument-less operator by
+reading the operator table, rather than naming `IsNull` and `IsNotNull`.
+
+### A bounded purge: `DeleteBatch`
+
+On a table that asks for `t.Takes()`, `Query.DeleteBatch(ctx, ex)` removes
+exactly the rows the query would read (its predicates, order, `Limit` and row
+lock) in one statement, and reports how many: `DELETE FROM "t" WHERE ctid =
+ANY(ARRAY(SELECT ctid FROM "t" WHERE … LIMIT $n))`. On a soft-delete table it
+is `HardDeleteBatch`, which, like `HardDeleteAll`, purges marked rows and live
+ones alike. A sweep repeats it until a run removes fewer than its limit, so no
+one statement holds a large table's locks for the whole purge. No predicate is
+`runtime.ErrUnfilteredWrite` and an `Offset` is `runtime.ErrPagedWrite`.
+The semi-join composer of such a table has it too
+(`store.JobNotHavingIncidents(q, incident.Status.NotEq("resolved")).HardDeleteBatch(ctx, ex)`),
+purging the parent rows the probes select; there a row lock is refused as
+well. PostgreSQL only for now.
+
+### A probe through a to-one reference, and `Take` over a probe
+
+`t.Probes(&d.Webhook)` gives an owned to-one reference the semi-join
+composers a to-many relation has without asking:
+`store.DeliveryHavingWebhook(q, webhook.Active.Eq(true))` and its
+`NotHaving` twin, correlated on the referenced table's key, with that table's
+soft delete applied. A to-many, link or unowned field named there is a
+generation error.
+
+Every semi-join composer of a table with `t.Takes()` gains `Take(ctx, ex, m,
+dst)`: the table package's claim, bounded by the composed read, so "the oldest
+pending delivery whose webhook is active, skipping locked rows" is one
+`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING …`. An
+`Offset` is `runtime.ErrPagedWrite`. The table package gains the seam
+`Mut.TakeHead(q)`. PostgreSQL only.
+
+### Probes on matching columns, and `UpdateAll` over a probe
+
+`t.ProbesOn(name, &target, &own, &theirs, ...)` declares a semi-join no
+foreign key describes, correlated on every pair of columns, with the target's
+soft delete applied; the context package gains `<Model>Having<Name>` and
+`<Model>NotHaving<Name>` with every composer method. Every semi-join composer
+gains `UpdateAll(ctx, ex, m)`, the parent's set-based write bounded by the
+composed read. The table package gains the seams `Mut.UpdateHead()` and
+`Query.Shaped()`, and `UpdateAll`, `Take` and the composers now share one
+cached `UPDATE … SET` head per assignment mask. `ProbesOn` is PostgreSQL only.
+
+### Reading the marked rows, where the model says so
+
+`t.ReadsDeleted()` on a soft-delete table generates `Query.WithDeleted()`:
+`All`, `One`, `Count`, `Exists`, `Take` and the declared projections then read the marked rows as well,
+so a restore by key is one `Take` that clears the mark. Every other terminal
+refuses a widened query. A table that does not declare it is unchanged, and
+declaring it on a table without `SoftDelete` is a build error. Every package's
+`All`, `Count` and `Exists` now pick their statement through an unexported
+method, so committed packages regenerate.
+
+### A declared aggregation over a probe
+
+Every semi-join composer gains `All<Aggregate>(ctx, ex)` for each of the
+parent's declared aggregations that takes no parameter: the predicates and
+probes filter the rows that go into the groups, in one statement. An `Order`,
+`Offset` or row lock on the composed query is the new
+`runtime.ErrGroupedRead`. The table package gains the seams
+`<Aggregate>Pieces()`, `Scan<Aggregate>` and `Query.Ordered()`.
+
+## v1.7.0 — 2026-10-28
+
 ### A write after a step, in one statement
 
 `Query.UpdateAllStep(m)` and `Query.ExistsStep()` make a `runtime.Step`: a
