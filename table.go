@@ -369,6 +369,9 @@ func renameCol(t *schema.Table, old, n string) {
 			c.IncWhen = n
 		}
 	}
+	if t.Turns == old {
+		t.Turns = n
+	}
 	for i, c := range t.PrimaryKey {
 		if c == old {
 			t.PrimaryKey[i] = n
@@ -935,6 +938,24 @@ func (t *Table) GuardsUpsert() *Table { t.out.GuardsUpsert = true; return t }
 // rows it reads takes one, and waits for every transaction already writing
 // them; a table no sweep locks never needs it.
 func (t *Table) Lockable() *Table { t.out.Lockable = true; return t }
+
+// TakesTurns gives the table AllTurns, a read that deals its rows out by the
+// column fieldPtr names, a turn at a time: each group's first rows numbered
+// in the read's order, every group's first ahead of anyone's second. A queue
+// whose claim must not let one tenant's backlog starve the others takes turns
+// by tenant. The groups are found a seek at a time along the column, so an
+// index that leads with the groups' predicates' columns and then this one is
+// what keeps the read as cheap as the groups it looks at. A nullable column's
+// rows with none are one more group. PostgreSQL only.
+func (t *Table) TakesTurns(fieldPtr any) *Table {
+	name, err := t.columnOf(fieldPtr)
+	if err != nil {
+		t.errs.add(fmt.Errorf("%s: TakesTurns: %w", t.out.Name, err))
+		return t
+	}
+	t.out.Turns = name
+	return t
+}
 
 // Tallies generates Tally and Query.UpdateAllAfter for this table: a write
 // that runs after another table's step in the same statement and moves this

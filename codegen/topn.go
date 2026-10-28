@@ -269,3 +269,159 @@ func (g *gen) distinctOn() {
 	g.p("}")
 	g.p("")
 }
+
+// turns emits AllTurns for a table that takes turns (t.TakesTurns): the
+// round-robin read, in one statement. The groups query's predicates choose
+// the groups and the receiver's choose, order and count the rows, so the
+// statement splices two streams; each is spliced as often as the text
+// repeats it, with the same ordinals, and bound once.
+func (g *gen) turns() {
+	if g.t.Turns == "" || g.lw.Turns == nil {
+		return
+	}
+	var group *schema.Column
+	for _, c := range g.t.Columns {
+		if c.Name == g.t.Turns {
+			group = c
+		}
+	}
+	var gc colInfo
+	for _, c := range g.cols {
+		if c.col == group {
+			gc = c
+		}
+	}
+	if group == nil || gc.col == nil {
+		return
+	}
+	live := ""
+	if g.t.SoftDeletes() {
+		live = g.lw.SoftDeleteWhere(g.t.SoftDelete)
+	}
+	head, groups, rows := g.lw.Turns(g.t.Name, group.Name, readableCols(g.t), !group.NotNull, live)
+	g.p("// TurnRow is a row and its turn: its place among its group's rows, in")
+	g.p("// the order AllTurns was given.")
+	g.p("type TurnRow struct {")
+	g.p("\tRow")
+	g.p("\tTurn int64")
+	g.p("}")
+	g.p("")
+	g.p("const turnsHead = %q", head)
+	g.p("")
+	g.p("// turnsGroups and turnsRows are each splice's declared predicate and")
+	g.p("// the text after it.")
+	g.p("var turnsGroups = [4][2]string{")
+	for _, p := range groups {
+		g.p("\t{%q, %q},", p[0], p[1])
+	}
+	g.p("}")
+	g.p("")
+	g.p("var turnsRows = [%d][2]string{", len(rows))
+	for _, p := range rows {
+		g.p("\t{%q, %q},", p[0], p[1])
+	}
+	g.p("}")
+	g.p("")
+	g.p("var turnsCache = runtime.NewTreeCache()")
+	g.p("")
+	g.p("var errTurns = errors.New(")
+	g.p("\t%q)", "storm: AllTurns deals out the rows of a query with no Offset and no row "+
+		"lock, from groups chosen by predicates alone, and wants at least one group")
+	g.p("")
+	g.p("// turnsStmtFor compiles one pair of streams, once. key is the groups'")
+	g.p("// stream behind its length, then the rows'.")
+	g.p("func turnsStmtFor(key, gt, rt []runtime.Tok) *runtime.Stmt {")
+	g.p("\tif st := turnsCache.Get(key); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\tsql, n := turnsHead, 3")
+	g.p("\tvar err error")
+	g.p("\tfor _, p := range turnsGroups {")
+	g.p("\t\tst := runtime.SpliceTreeWhereFrom(\"\", p[0], gt, lowering, p[1], 3)")
+	g.p("\t\tsql, n = sql+st.SQL, st.NArg")
+	g.p("\t\tif err == nil {")
+	g.p("\t\t\terr = st.Err")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\treserved := n")
+	g.p("\tfor _, p := range turnsRows {")
+	g.p("\t\tst := runtime.SpliceTreeWhereFrom(\"\", p[0], rt, lowering, p[1], reserved)")
+	g.p("\t\tsql, n = sql+st.SQL, st.NArg")
+	g.p("\t\tif err == nil {")
+	g.p("\t\t\terr = st.Err")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tvar terms []string")
+	g.p("\tfor _, t := range rt {")
+	g.p("\t\tif t.Kind() == runtime.KOrder {")
+	g.p("\t\t\tterms = append(terms, lowering.Order(t.Op(), t.Col()))")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\t// Each window numbers by the order, and the result is in turn, then")
+	g.p("\t// the order.")
+	g.p("\tfor range turnsRows {")
+	g.p("\t\tsql = runtime.SpliceOrder(sql, terms, lowering.OB.Lead, lowering.OB.Sep)")
+	g.p("\t}")
+	g.p("\tsql = runtime.SpliceOrder(sql, terms, lowering.OB.Sep, lowering.OB.Sep)")
+	g.p("\treturn turnsCache.Put(key, &runtime.Stmt{SQL: sql, NArg: n, Err: err})")
+	g.p("}")
+	g.p("")
+	g.p("// AllTurns deals the query's rows out by %s, a turn at a time: each", exportName(group.Name))
+	g.p("// group's first rows numbered in the query's order, and every group's")
+	g.p("// first turn ahead of anyone's second. groups chooses the groups by its")
+	g.p("// predicates alone; at most n of them are read, from the first at or")
+	g.p("// after from, wrapping round to the start. The query's limit caps each")
+	g.p("// group's rows and the rows returned.")
+	if !group.NotNull {
+		g.p("//")
+		g.p("// The rows with no %s are one more group.", exportName(group.Name))
+	}
+	g.p("func (q Query) AllTurns(ctx context.Context, ex %s, groups Query, from %s, n int, dst []TurnRow) ([]TurnRow, error) {",
+		g.execType(), gc.goBase)
+	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\t\treturn dst, err")
+	g.p("\t}")
+	g.p("\tif err := groups.Err(); err != nil {")
+	g.p("\t\treturn dst, err")
+	g.p("\t}")
+	g.p("\tif n < 1 || q.offset != 0 || q.lock != 0 || groups.lock != 0 {")
+	g.p("\t\treturn dst, errTurns")
+	g.p("\t}")
+	g.p("\tvar gb, rb [%d]runtime.Tok", g.streamBuf())
+	g.p("\tgt, rt := groups.preds(&gb), q.stream(&rb)")
+	g.p("\tvar kb [%d]runtime.Tok", 2*g.streamBuf()+1)
+	g.p("\tkb[0] = runtime.Tok(len(gt))")
+	g.p("\tkey := kb[:1+copy(kb[1:], gt)]")
+	g.p("\tkey = key[:len(key)+copy(kb[len(key):], rt)]")
+	g.p("\tst := turnsStmtFor(key, gt, rt)")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn dst, st.Err")
+	g.p("\t}")
+	g.p("\tgbind, rbind := binders.Get(), binders.Get()")
+	g.p("\tdefer putBinder(gbind)")
+	g.p("\tdefer putBinder(rbind)")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\targs = append(args, from, int64(n), q.limit)")
+	g.p("\targs = append(args, groups.bindPreds(gbind)...)")
+	g.p("\targs = append(args, q.bindPreds(rbind)...)")
+	g.p("\tvar sl runtime.Slab")
+	g.p("\tsl.Reserve(st.SlabHint())")
+	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
+	g.p("\tif err != nil {")
+	g.p("\t\treturn dst, err")
+	g.p("\t}")
+	g.p("\tdefer rows.Close()")
+	g.p("\tfor rows.Next() {")
+	g.p("\t\trv := rows.%s()", g.dec.rowsAccessor())
+	g.p("\t\tdst = append(dst, TurnRow{})")
+	g.p("\t\tr := &dst[len(dst)-1]")
+	g.p("\t\tif err := scan(rv, &r.Row, &sl); err != nil {")
+	g.p("\t\t\treturn dst, err")
+	g.p("\t\t}")
+	g.p("\t\tr.Turn = runtime.Int8(rv[len(rv)-1])")
+	g.p("\t}")
+	g.p("\tst.ObserveSlab(sl.Size())")
+	g.p("\treturn dst, rows.Err()")
+	g.p("}")
+	g.p("")
+}

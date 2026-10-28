@@ -36,7 +36,11 @@ type lowering struct {
 	LockTimeout func() string
 	// DistinctOn splits a select around the keys of DISTINCT ON. Nil where
 	// the back end has none, and AllDistinctOn is then not generated.
-	DistinctOn        func(table string, cols []string) (open, sep, tail string)
+	DistinctOn func(table string, cols []string) (open, sep, tail string)
+	// Turns is the round-robin read's text around its splices (see
+	// pgsql.Turns). Nil where the back end has no recursive seek, and
+	// AllTurns is then not generated.
+	Turns             func(table, group string, cols []string, nullable bool, live string) (head string, groups [4][2]string, rows [][2]string)
 	CountPrefix       func(string) string
 	ExistsPrefix      func(string) string
 	ExistsSuffix      func() string
@@ -316,8 +320,11 @@ func postgresLowering() lowering {
 		Frag: func(op, ident string, _ *schema.Column) (string, string, bool) {
 			return pgsql.Frag(op, ident)
 		},
-		SelectPrefix:       pgsql.SelectPrefix,
-		DistinctOn:         pgsql.DistinctOn,
+		SelectPrefix: pgsql.SelectPrefix,
+		DistinctOn:   pgsql.DistinctOn,
+		Turns: func(t, g string, cols []string, nullable bool, live string) (string, [4][2]string, [][2]string) {
+			return pgsql.Turns(t, g, cols, nullable, pgsql.Live(live))
+		},
 		LockTables:         pgsql.LockTables,
 		LockTimeout:        pgsql.LockTimeout,
 		CountPrefix:        pgsql.CountPrefix,
