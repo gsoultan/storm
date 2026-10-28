@@ -1096,6 +1096,26 @@ for range 3 {
 }
 ```
 
+A table the model declares `t.Lockable()` can be locked whole for the rest of a
+transaction, from the context package, and any transaction can bound how long
+its statements wait for a lock (PostgreSQL):
+
+```go
+err := storm.InTx(ctx, db, func(ex storm.Executor) error {
+    // waits for every transaction writing either table, and holds new ones off
+    if err := store.LockTables(ctx, ex, store.LockShare, store.TableRetentionHold, store.TableRetentionPeriod); err != nil {
+        return err
+    }
+    ...
+})
+
+err := store.LockTimeout(ctx, tx, 2*time.Second) // a later wait past 2s fails with ErrLockNotAvailable
+```
+
+`LockTables` locks in the order named, in one statement. `LockTimeout` is
+`set_config('lock_timeout', …, true)`: it ends with the transaction, so it
+cannot leak onto a pooled connection.
+
 Isolation levels are the driver's. `sqldrv` gives you `BeginTx` with
 `*sql.TxOptions` and `sqldrv.NewTx` to wrap the result; pgx gives you
 `BeginTx` and `pgxdrv.Tx{T: tx}`.

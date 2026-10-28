@@ -28,6 +28,12 @@ type lowering struct {
 	Frag  func(op, ident string, col *schema.Column) (a, b string, ok bool)
 
 	SelectPrefix func(table string, cols []string) string
+	// LockTables is LOCK TABLE: the text before the tables, their separator
+	// and each mode's clause. LockTimeout bounds a lock wait for the rest of
+	// the transaction. Nil where the back end has neither, and the context
+	// package then has no LockTables and no LockTimeout.
+	LockTables  func() (open, sep string, modes []string)
+	LockTimeout func() string
 	// DistinctOn splits a select around the keys of DISTINCT ON. Nil where
 	// the back end has none, and AllDistinctOn is then not generated.
 	DistinctOn        func(table string, cols []string) (open, sep, tail string)
@@ -312,6 +318,8 @@ func postgresLowering() lowering {
 		},
 		SelectPrefix:       pgsql.SelectPrefix,
 		DistinctOn:         pgsql.DistinctOn,
+		LockTables:         pgsql.LockTables,
+		LockTimeout:        pgsql.LockTimeout,
 		CountPrefix:        pgsql.CountPrefix,
 		ExistsPrefix:       pgsql.ExistsPrefix,
 		ExistsSuffix:       pgsql.ExistsSuffix,

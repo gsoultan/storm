@@ -457,3 +457,20 @@ func LockSuffix(m LockMode) string {
 	}
 	return ""
 }
+
+// LockTables takes a table lock on each table, in the order named, held to
+// the end of the transaction: the text before the tables, their separator,
+// and the clause each mode ends with, by mode from ACCESS SHARE (0) to
+// ACCESS EXCLUSIVE (7).
+func LockTables() (open, sep string, modes []string) {
+	return "LOCK TABLE ", ", ", []string{
+		" IN ACCESS SHARE MODE", " IN ROW SHARE MODE", " IN ROW EXCLUSIVE MODE",
+		" IN SHARE UPDATE EXCLUSIVE MODE", " IN SHARE MODE", " IN SHARE ROW EXCLUSIVE MODE",
+		" IN EXCLUSIVE MODE", " IN ACCESS EXCLUSIVE MODE",
+	}
+}
+
+// LockTimeout bounds how long any statement waits for a lock, for the rest
+// of the transaction. set_config rather than SET LOCAL, because SET takes no
+// bound value; the value is milliseconds, as text.
+func LockTimeout() string { return "SELECT set_config('lock_timeout', $1, true)" }

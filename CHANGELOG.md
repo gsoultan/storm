@@ -14,6 +14,15 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `LockTables` and `LockTimeout`
+
+A table declared `t.Lockable()` gets a `Table<Name>` in its context package,
+and `LockTables(ctx, ex, mode, tables...)` is `LOCK TABLE a, b IN <mode> MODE`:
+a sweep that must not race the writers of two tables waits for them and holds
+new ones off until it commits. `LockTimeout(ctx, ex, d)` bounds every later
+lock wait of the transaction, and ends with it. PostgreSQL only; every
+PostgreSQL context package gains `LockTimeout`.
+
 ### `AllDistinctOn`: the first row of each key
 
 `q.Order(a.Asc(), b.Asc(), at.Desc()).AllDistinctOn(ctx, ex, 2, nil)` is

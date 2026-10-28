@@ -90,6 +90,10 @@ type Table struct {
 	// it does for an aggregation AcrossDeleted.
 	ReadsDeleted bool
 
+	// Lockable puts the table in its context's LockTables, which takes a
+	// table lock for the rest of a transaction.
+	Lockable bool
+
 	// Relations are the Go-level links the model declared, kept because a
 	// foreign key alone cannot reconstruct them: it says users.org_id
 	// references orgs.id, not that the field is called Org, that Org has a
