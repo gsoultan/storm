@@ -3,6 +3,7 @@ package storm
 import (
 	"fmt"
 	"reflect"
+	"slices"
 
 	"github.com/gsoultan/storm/schema"
 )
@@ -323,12 +324,13 @@ func (b *JoinBuilder) joinCond(alias string, target *schema.Table, on any) (sche
 }
 
 // JoinOn is an explicit join condition: a column pair, and any more ANDed
-// with it.
+// with it. The pairs And added before this one hang off prev, a pointer rather
+// than a slice so a JoinOn stays comparable, as it was before And.
 type JoinOn struct {
 	leftAlias string
 	leftCol   string
 	rightFP   any
-	more      []JoinOn
+	prev      *JoinOn
 	err       error
 }
 
@@ -343,18 +345,26 @@ func (Exprs) OnCols(alias, column string, fieldPtr any) JoinOn {
 //
 //	j.OnCols("keys", "project_id", &d.Project).And("keys", "key", &d.Key)
 func (o JoinOn) And(alias, column string, fieldPtr any) JoinOn {
-	more := make([]JoinOn, len(o.more), len(o.more)+1)
-	copy(more, o.more)
-	o.more = append(more, JoinOn{leftAlias: alias, leftCol: column, rightFP: fieldPtr})
-	return o
+	return JoinOn{leftAlias: alias, leftCol: column, rightFP: fieldPtr, prev: &o, err: o.err}
+}
+
+// pairs is the condition's column pairs in the order they were declared.
+func (o JoinOn) pairs() []JoinOn {
+	var out []JoinOn
+	for p := &o; p != nil; p = p.prev {
+		out = append(out, *p)
+	}
+	slices.Reverse(out)
+	return out
 }
 
 func (b *JoinBuilder) resolveJoinOn(c JoinOn) (schema.Cond, error) {
 	if c.err != nil {
 		return schema.Cond{}, c.err
 	}
-	conds := make([]schema.Cond, 0, 1+len(c.more))
-	for _, p := range append([]JoinOn{c}, c.more...) {
+	pairs := c.pairs()
+	conds := make([]schema.Cond, 0, len(pairs))
+	for _, p := range pairs {
 		sc, ok := b.scope[p.leftAlias]
 		if !ok {
 			return schema.Cond{}, fmt.Errorf("%q is not in scope", p.leftAlias)
