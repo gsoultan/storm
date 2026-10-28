@@ -36,6 +36,18 @@ Three new operator ids shift the generated `op…` constants, so committed
 packages regenerate. The bind loop now skips every argument-less operator by
 reading the operator table, rather than naming `IsNull` and `IsNotNull`.
 
+### A bounded purge: `DeleteBatch`
+
+On a table that asks for `t.Takes()`, `Query.DeleteBatch(ctx, ex)` removes
+exactly the rows the query would read (its predicates, order, `Limit` and row
+lock) in one statement, and reports how many: `DELETE FROM "t" WHERE ctid =
+ANY(ARRAY(SELECT ctid FROM "t" WHERE … LIMIT $n))`. On a soft-delete table it
+is `HardDeleteBatch`, which, like `HardDeleteAll`, purges marked rows and live
+ones alike. A sweep repeats it until a run removes fewer than its limit, so no
+one statement holds a large table's locks for the whole purge. No predicate is
+`runtime.ErrUnfilteredWrite` and an `Offset` is `runtime.ErrPagedWrite`.
+PostgreSQL only for now.
+
 ## v1.7.0 — 2026-10-28
 
 ### A write after a step, in one statement

@@ -23,6 +23,7 @@ var optional = map[string]string{
 	"DropIndexConcurrently":   "ditto",
 	"LockHint":                "a back end whose lock is a suffix rather than a hint",
 	"TakeOpen":                "a back end that cannot lock and limit inside an UPDATE's subquery",
+	"TrimOpen":                "a back end with no bounded DELETE spelled yet",
 	"KeyFrom":                 "a back end with no INSERT … SELECT spelled yet",
 	"AddStepFrag":             "a back end with no data-modifying WITH",
 	"SubtractStepFrag":        "ditto",
