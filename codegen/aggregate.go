@@ -181,6 +181,16 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\treturn dst, rows.Err()")
 	g.p("}")
 	g.p("")
+	if len(agg.Params) == 0 {
+		g.p("// %sPieces is the %q aggregation's statement around its", name, name)
+		g.p("// predicates, for the context package to splice a composed read into:")
+		g.p("// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.")
+		g.p("func %sPieces() (prefix, suffix string) { return %sPrefix, %sSuffix + limitSuffix }", name, low, low)
+		g.p("")
+		g.p("// Scan%s decodes one row of the %q aggregation.", name, name)
+		g.p("func Scan%s(rv %s, r *%sRow, sl *runtime.Slab) error { return scan%s(rv, r, sl) }", name, g.dec.rowsType(), name, name)
+		g.p("")
+	}
 	g.p("var err%sLocked = errors.New(", name)
 	g.p("\t%q)", g.lw.LockRefusedGrouped())
 	g.p("")

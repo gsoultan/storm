@@ -470,6 +470,20 @@ soft delete applied as they are to every read of it:
 store.DeliveryHavingWebhook(delivery.New(), webhook.Active.Eq(true)).All(ctx, ex)
 ```
 
+A composer also runs each of the parent's declared aggregations that takes no
+parameter, so the probes decide which rows go into the groups:
+
+```go
+// Open incidents per instance, of the live instances in these projects.
+store.IncidentHavingInstance(
+    incident.New().Where(incident.Status.Eq("open"), incident.InstanceID.In(ids...)),
+    instance.ProjectID.In(projects...),
+).AllByInstance(ctx, ex)
+```
+
+As on the table's own, `Limit` pages the groups; an `Order`, an `Offset` or a
+row lock is `runtime.ErrGroupedRead`.
+
 ## 7. Declared reports: projections, aggregations, joins
 
 These are declared in the model rather than chained at the call site, and that is
