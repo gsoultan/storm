@@ -52,7 +52,8 @@ answers false and lets go of nothing. PostgreSQL only.
 works in, `pgstat.Sessions` lists the database's other sessions with what each
 waits for, who it waits behind and the relation locks it holds or waits for,
 and `pgstat.Terminate` ends one. For tests and diagnostics about concurrency.
-PostgreSQL only.
+`pgstat.DatabaseSize` and `pgstat.TableSizes` read what the database and each
+table of a schema take on disk, indexes and TOAST included. PostgreSQL only.
 
 ### Automigrate leaves other tables alone on request
 
