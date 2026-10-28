@@ -894,6 +894,22 @@ func (t *Table) InsertsPer(fieldPtr any) *Table {
 	return t
 }
 
+// Probes generates, in the context package, the semi-join through the owned
+// to-one reference fieldPtr: <Model>Having<Field> and <Model>NotHaving<Field>,
+// which narrow a query of this table to the rows whose referenced row matches
+// (or does not) the referenced table's own predicates, in one statement. A
+// to-many relation has them without asking; a to-one asks, because most
+// references are never asked about and their composers would be dead code.
+func (t *Table) Probes(fieldPtr any) *Table {
+	name, err := t.resolveRel(fieldPtr)
+	if err != nil {
+		t.errs.add(fmt.Errorf("%s: Probes: %w", t.out.Name, err))
+		return t
+	}
+	t.out.Probes = append(t.out.Probes, name)
+	return t
+}
+
 // UniqueAcrossDeleted declares uniqueness that a soft-delete table's marked
 // rows still take part in.
 //

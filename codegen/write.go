@@ -2343,6 +2343,12 @@ func (g *gen) writeHardDeleteAll(ex string) {
 	g.p("")
 }
 
+// takes says whether table t gets Take: it asked for it, the back end says
+// how, and one column keys its rows.
+func takes(lw lowering, t *schema.Table) bool {
+	return t.Takes && lw.TakeOpen != nil && len(t.PrimaryKey) == 1 && lw.canReturn() && !lw.ReturningPositional
+}
+
 // takeFn emits Take: an UPDATE of exactly the rows a read would return — its
 // predicate, order, limit and row lock — handing those rows back as written.
 // It is the queue claim in one statement: with ForUpdateSkipLocked, two
@@ -2352,7 +2358,7 @@ func (g *gen) writeHardDeleteAll(ex string) {
 // and the UPDATE can return rows. Elsewhere the method is absent, which is an
 // undefined-method compile error naming what is missing.
 func (g *gen) takeFn(upd, pk []colInfo) {
-	if !g.t.Takes || g.lw.TakeOpen == nil || len(pk) != 1 || !g.lw.canReturn() || g.lw.ReturningPositional {
+	if !takes(g.lw, g.t) {
 		return
 	}
 	hasVersion := versionCol(g.t) != nil
@@ -2364,14 +2370,12 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("// takeOpen narrows the UPDATE to the rows the read selects.")
 	g.p("const takeOpen = %s", lit(g.lw.TakeOpen(g.t.Name, pk[0].Name())))
 	g.p("")
-	g.p("// takeStmtFor compiles one (assignments, lock, read) triple, once.")
-	g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, toks []runtime.Tok) *runtime.Stmt {")
-	g.p("\tvar key [%d]runtime.Tok", keyBuf)
-	g.p("\tkey[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)")
-	g.p("\tkey[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)")
-	g.p("\tkey[4] = runtime.Tok(lock)")
-	g.p("\tn := 5 + copy(key[5:], toks)")
-	g.p("\tif st := takeCache.Get(key[:n]); st != nil {")
+	g.p("var takeHeadCache = runtime.NewMaskCache()")
+	g.p("")
+	g.p("// takeHead is the UPDATE … SET of one assignment mask, before the read")
+	g.p("// that narrows it.")
+	g.p("func takeHead(k runtime.MaskKey) *runtime.Stmt {")
+	g.p("\tif st := takeHeadCache.Get(k); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
 	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
@@ -2390,9 +2394,22 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	if hasVersion {
 		g.p("\tset = append(set, versionBump)")
 	}
-	g.p("\thead := %s(updatePrefix, []runtime.Section{", g.spliceFn())
+	g.p("\treturn takeHeadCache.Put(k, %s(updatePrefix, []runtime.Section{", g.spliceFn())
 	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
-	g.p("\t}, %s)", g.spliceTail())
+	g.p("\t}, %s))", g.spliceTail())
+	g.p("}")
+	g.p("")
+	g.p("// takeStmtFor compiles one (assignments, lock, read) triple, once.")
+	g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, toks []runtime.Tok) *runtime.Stmt {")
+	g.p("\tvar key [%d]runtime.Tok", keyBuf)
+	g.p("\tkey[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)")
+	g.p("\tkey[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)")
+	g.p("\tkey[4] = runtime.Tok(lock)")
+	g.p("\tn := 5 + copy(key[5:], toks)")
+	g.p("\tif st := takeCache.Get(key[:n]); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\thead := takeHead(k)")
 	g.p("\tif head.Err != nil {")
 	g.p("\t\treturn head")
 	g.p("\t}")
@@ -2440,19 +2457,7 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("\t}")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
-	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range upd {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
-	g.p("\targs = append(args, q.bind(b)...)")
+	g.p("\targs := append(m.takeArgs(make([]any, 0, st.NArg)), q.bind(b)...)")
 	g.p("\tvar sl runtime.Slab")
 	g.p("\tsl.Reserve(st.SlabHint())")
 	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
@@ -2468,6 +2473,37 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("\t}")
 	g.p("\tst.ObserveSlab(sl.Size())")
 	g.p("\treturn dst, rows.Err()")
+	g.p("}")
+	g.p("")
+	g.p("// takeArgs appends the values m assigns, in SET order.")
+	g.p("func (m Mut) takeArgs(args []any) []any {")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range upd {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\treturn args")
+	g.p("}")
+	g.p("")
+	g.p("// TakeHead is Take's statement without its read, for the context")
+	g.p("// package to narrow with a composed one: the UPDATE … SET, what opens")
+	g.p("// and closes the read (the lock q holds spelled in the close), the")
+	g.p("// identity a statement built from them is cached under, and the values")
+	g.p("// m assigns. ok is false when m assigns nothing.")
+	g.p("func (m Mut) TakeHead(q Query) (head *runtime.Stmt, open, close string, key [5]runtime.Tok, args []any, ok bool) {")
+	g.p("\tif m.dirty == 0 && m.expr == 0 {")
+	g.p("\t\treturn nil, \"\", \"\", key, nil, false")
+	g.p("\t}")
+	g.p("\tkey[0], key[1] = runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32)")
+	g.p("\tkey[2], key[3] = runtime.Tok(m.expr), runtime.Tok(m.expr>>32)")
+	g.p("\tkey[4] = runtime.Tok(q.lock)")
+	g.p("\treturn takeHead(m.key()), takeOpen, lockSuffix[q.lock] + %s + updReturning, key, m.takeArgs(nil), true", lit(g.lw.TakeClose))
 	g.p("}")
 	g.p("")
 }

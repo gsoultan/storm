@@ -342,8 +342,58 @@ func havingSpecs(lw lowering, s *schema.Schema, tables []string) ([]havingSpec, 
 				ParentTable: t.Name,
 			})
 		}
+		for _, field := range t.Probes {
+			spec, err := toOneProbe(lw, s, t, field)
+			if err != nil {
+				return nil, err
+			}
+			if in[spec.child] {
+				out = append(out, spec)
+			}
+		}
 	}
 	return out, nil
+}
+
+// toOneProbe is the composer through an owned to-one reference: the same
+// EXISTS, correlated the other way round. The referenced row's key equals
+// this row's foreign key, where a to-many's child key equals this row's key.
+func toOneProbe(lw lowering, s *schema.Schema, t *schema.Table, field string) (havingSpec, error) {
+	var rel *schema.Relation
+	for _, r := range t.Relations {
+		if r.Field == field {
+			rel = r
+		}
+	}
+	if rel == nil || !rel.Owner || rel.ToMany || rel.Column == "" || rel.Link != "" {
+		return havingSpec{}, fmt.Errorf("codegen: table %s: Probes names %s, and only an owned to-one reference can be probed that way", t.Name, field)
+	}
+	target := s.Table(rel.Target)
+	if target == nil || len(target.PrimaryKey) != 1 {
+		return havingSpec{}, fmt.Errorf("codegen: table %s: Probes names %s, whose table has no one-column key to correlate on", t.Name, field)
+	}
+	ppkg, err := PackageName(t.GoName, t.Name)
+	if err != nil {
+		return havingSpec{}, err
+	}
+	cpkg, err := PackageName(target.GoName, target.Name)
+	if err != nil {
+		return havingSpec{}, err
+	}
+	live := string(liveIn(lw, s, target.Name, ""))
+	parent, name := exportName(t.GoName), exportName(rel.Field)
+	return havingSpec{
+		Parent:      parent,
+		Rel:         name,
+		TypeName:    parent + name + "ProbeQuery",
+		ParentPkg:   ppkg,
+		ChildPkg:    cpkg,
+		child:       target.Name,
+		PosHeader:   lw.ExistsOpen(target.Name, target.PrimaryKey[0], t.Name, rel.Column, live),
+		NegHeader:   lw.NotExistsOpen(target.Name, target.PrimaryKey[0], t.Name, rel.Column, live),
+		ParentLive:  string(liveIn(lw, s, t.Name, "")),
+		ParentTable: t.Name,
+	}, nil
 }
 
 // INSERT … SELECT, composed in the context package as the semi-join is.
@@ -510,6 +560,82 @@ func (g *gen) emitProbeDeleteBatch(np havingSpec, lw lowering, s *schema.Schema)
 	g.p("		}")
 	g.p("	}()")
 	g.p("	return ex.Exec(ctx, st.SQL, args)")
+	g.p("}")
+	g.p("")
+}
+
+// emitProbeTake writes Take over a semi-join: the parent package's claim,
+// narrowed by the composed read instead of its own. The parent spells the
+// UPDATE and the lock (Mut.TakeHead); the composer splices its stream in
+// between, so the probe, the order, the Limit and the row lock all land in
+// the one subquery the UPDATE is bounded by.
+func (g *gen) emitProbeTake(np havingSpec, lw lowering, s *schema.Schema) {
+	parent := s.Table(np.ParentTable)
+	if parent == nil || !takes(lw, parent) {
+		return
+	}
+	q := np.TypeName
+	cache := lowerFirst(q) + "TakeCache"
+	g.p("var %s = runtime.NewTreeCache()", cache)
+	g.p("")
+	g.p("// Take is the %s package's Take over this semi-join: it writes m's", np.ParentPkg)
+	g.p("// assigned columns to the %s rows the composed read selects — its", np.ParentTable)
+	g.p("// predicates, probes, order, Limit and row lock — in ONE statement, and")
+	g.p("// returns them as they now stand. Nothing assigned issues no statement")
+	g.p("// and returns dst; an Offset is refused with runtime.ErrPagedWrite.")
+	g.p("func (h %s) Take(ctx context.Context, ex %s, m %s.Mut, dst []%s.Row) ([]%s.Row, error) {",
+		q, g.execType(), np.ParentPkg, np.ParentPkg, np.ParentPkg)
+	g.p("	if err := h.err(); err != nil {")
+	g.p("		return dst, err")
+	g.p("	}")
+	g.p("	if h.q.Paged() {")
+	g.p("		return dst, runtime.ErrPagedWrite")
+	g.p("	}")
+	g.p("	head, open, close, key, args, ok := m.TakeHead(h.q)")
+	g.p("	if !ok {")
+	g.p("		return dst, nil")
+	g.p("	}")
+	g.p("	var buf [%d]runtime.Tok", g.composedBuf()+5)
+	g.p("	toks := h.tokens(append(buf[:0], key[:]...), false)")
+	g.p("	st := %s.Get(toks)", cache)
+	g.p("	if st == nil {")
+	g.p("		if head.Err != nil {")
+	g.p("			return dst, head.Err")
+	g.p("		}")
+	g.p("		_, _, limitSfx := %s.StmtPieces()", np.ParentPkg)
+	if np.ParentLive != "" {
+		g.p("		st = %s.Put(toks, runtime.SpliceTreeWhereFrom(head.SQL+open, %s, toks[len(key):], %sLowering, limitSfx+close, head.NArg))",
+			cache, lit(np.ParentLive), lowerFirst(q))
+	} else {
+		g.p("		st = %s.Put(toks, runtime.SpliceTreeFrom(head.SQL+open, toks[len(key):], %sLowering, limitSfx+close, head.NArg))",
+			cache, lowerFirst(q))
+	}
+	g.p("	}")
+	g.p("	if st.Err != nil {")
+	g.p("		return dst, st.Err")
+	g.p("	}")
+	g.p("	pb := %s.GetBinder()", np.ParentPkg)
+	g.p("	defer %s.PutBinder(pb)", np.ParentPkg)
+	g.p("	read, cbs := h.bind(pb, true)")
+	g.p("	defer func() {")
+	g.p("		for _, cb := range cbs {")
+	g.p("			%s.PutBinder(cb)", np.ChildPkg)
+	g.p("		}")
+	g.p("	}()")
+	g.p("	args = append(args, read...)")
+	g.p("	rows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
+	g.p("	if err != nil {")
+	g.p("		return dst, err")
+	g.p("	}")
+	g.p("	defer rows.Close()")
+	g.p("	var sl runtime.Slab")
+	g.p("	for rows.Next() {")
+	g.p("		dst = append(dst, %s.Row{})", np.ParentPkg)
+	g.p("		if err := %s.Scan(rows.%s(), &dst[len(dst)-1], &sl); err != nil {", np.ParentPkg, g.dec.rowsAccessor())
+	g.p("			return dst, err")
+	g.p("		}")
+	g.p("	}")
+	g.p("	return dst, rows.Err()")
 	g.p("}")
 	g.p("")
 }

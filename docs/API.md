@@ -460,6 +460,16 @@ Two positive probes are satisfied by different child rows, so `AndHaving` reads
 as "wrote both of these". Chaining across two different relations is not
 offered: the composer type is per relation, so it does not compile.
 
+A to-many relation has its composers without asking. A to-one reference asks
+for them with `t.Probes(&d.Webhook)` in the referencing table's `Schema`,
+because most references are never asked about. The probe then reads "the
+deliveries whose webhook is active", with the webhook's own predicates and its
+soft delete applied as they are to every read of it:
+
+```go
+store.DeliveryHavingWebhook(delivery.New(), webhook.Active.Eq(true)).All(ctx, ex)
+```
+
 ## 7. Declared reports: projections, aggregations, joins
 
 These are declared in the model rather than chained at the call site, and that is
@@ -837,6 +847,19 @@ got, err := job.New().
 `Offset` is refused with `runtime.ErrPagedWrite`. A table asks for Take with
 `t.Takes()` in its `Schema`; it is generated on PostgreSQL for a table with a
 one-column key, and elsewhere the method is absent.
+
+The semi-join composer of such a table has `Take` as well, so a claim can be
+narrowed by the rows it references or is referenced by, and still be one
+statement whose read holds the probe, the order, the `Limit` and the lock:
+
+```go
+next := delivery.New().Where(delivery.Status.Eq("pending")).
+        Order(delivery.CreatedAt.Asc()).Limit(1).ForUpdateSkipLocked()
+got, err := store.DeliveryHavingWebhook(next, webhook.Active.Eq(true)).
+        Take(ctx, ex, m, nil)
+```
+
+The table package's `Mut.TakeHead(q)` is the seam it is built on.
 
 ### Purging in batches: `DELETE` of what a read selects
 

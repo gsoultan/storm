@@ -51,6 +51,22 @@ The semi-join composer of such a table has it too
 purging the parent rows the probes select; there a row lock is refused as
 well. PostgreSQL only for now.
 
+### A probe through a to-one reference, and `Take` over a probe
+
+`t.Probes(&d.Webhook)` gives an owned to-one reference the semi-join
+composers a to-many relation has without asking:
+`store.DeliveryHavingWebhook(q, webhook.Active.Eq(true))` and its
+`NotHaving` twin, correlated on the referenced table's key, with that table's
+soft delete applied. A to-many, link or unowned field named there is a
+generation error.
+
+Every semi-join composer of a table with `t.Takes()` gains `Take(ctx, ex, m,
+dst)`: the table package's claim, bounded by the composed read, so "the oldest
+pending delivery whose webhook is active, skipping locked rows" is one
+`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING …`. An
+`Offset` is `runtime.ErrPagedWrite`. The table package gains the seam
+`Mut.TakeHead(q)`. PostgreSQL only.
+
 ## v1.7.0 — 2026-10-28
 
 ### A write after a step, in one statement
