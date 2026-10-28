@@ -308,6 +308,13 @@ var ErrUnfilteredWrite = errors.New(
 var ErrPagedWrite = errors.New(
 	"storm: Limit, Offset and row locks shape a read; UpdateAll/DeleteAll would write every matching row regardless — drop them, or read the keys and write those")
 
+// ErrGroupedRead is returned by a grouped read composed around a query that
+// carries an Order, an Offset or a row lock. Its rows are groups: they are
+// ordered by the declaration, paged by Limit alone, and a row lock has no
+// rows to hold.
+var ErrGroupedRead = errors.New(
+	"storm: a grouped read takes no Order, Offset or row lock — its rows are groups, ordered as declared; drop them from the query it is composed around")
+
 // ErrConflict is returned by an insert that asked for DoNothing and found the
 // row already there.
 //

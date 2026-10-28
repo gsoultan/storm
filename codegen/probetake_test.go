@@ -37,6 +37,12 @@ func (d *ptDelivery) Schema(t *storm.Table) {
 	t.Probes(&d.Hook)
 }
 
+func (d *ptDelivery) Aggregates(a *storm.Aggregates) {
+	byHook := a.Named("ByHook")
+	byHook.By(&d.Hook)
+	byHook.Count("Total")
+}
+
 func TestTakeOverAToOneProbeAgainstPostgres(t *testing.T) {
 	if os.Getenv("STORM_DSN") == "" {
 		t.Skip("STORM_DSN unset")
@@ -85,6 +91,7 @@ func TestTakeOverAToOneProbeAgainstPostgres(t *testing.T) {
 		"TestTwoWorkersClaimTwoRows",
 		"TestTheAntiJoinClaimsTheRest",
 		"TestNothingAssignedOrAnOffset",
+		"TestTheGroupsCountWhatTheProbeSelects",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
@@ -145,6 +152,12 @@ func (d *ptDelivery) Schema(t *storm.Table) {
 	t.Col(&d.Status).Size(16)
 	t.Takes()
 	t.Probes(&d.Hook)
+}
+
+func (d *ptDelivery) Aggregates(a *storm.Aggregates) {
+	byHook := a.Named("ByHook")
+	byHook.By(&d.Hook)
+	byHook.Count("Total")
 }
 
 var (
@@ -317,6 +330,39 @@ func TestNothingAssignedOrAnOffset(t *testing.T) {
 	n, err := ptdelivery.New().Where(ptdelivery.Status.Eq("claimed")).Count(ctx, ex)
 	if err != nil || n != 0 {
 		t.Errorf("%d rows claimed by calls that should write nothing (%v)", n, err)
+	}
+}
+
+func TestTheGroupsCountWhatTheProbeSelects(t *testing.T) {
+	live, _ := seed(t)
+	ctx := context.Background()
+	got, err := store.PtDeliveryHavingHook(ptdelivery.New().Where(ptdelivery.Status.Eq("pending")),
+		pthook.Active.Eq(true)).AllByHook(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].HookID != live || got[0].Total != 2 {
+		t.Errorf("grouped %+v, want the live active hook's two", got)
+	}
+	all, err := store.PtDeliveryNotHavingHook(ptdelivery.New(), pthook.Active.Eq(true)).AllByHook(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int64
+	for _, g := range all {
+		n += g.Total
+	}
+	if len(all) != 2 || n != 3 {
+		t.Errorf("the anti-join grouped %+v, want two hooks and three deliveries", all)
+	}
+	for _, q := range []ptdelivery.Query{
+		ptdelivery.New().Order(ptdelivery.CreatedAt.Asc()),
+		ptdelivery.New().ForUpdate(),
+		ptdelivery.New().Offset(1),
+	} {
+		if _, err := store.PtDeliveryHavingHook(q).AllByHook(ctx, ex); !errors.Is(err, runtime.ErrGroupedRead) {
+			t.Errorf("returned %v, want ErrGroupedRead", err)
+		}
 	}
 }
 `

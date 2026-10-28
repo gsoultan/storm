@@ -67,6 +67,15 @@ pending delivery whose webhook is active, skipping locked rows" is one
 `Offset` is `runtime.ErrPagedWrite`. The table package gains the seam
 `Mut.TakeHead(q)`. PostgreSQL only.
 
+### A declared aggregation over a probe
+
+Every semi-join composer gains `All<Aggregate>(ctx, ex)` for each of the
+parent's declared aggregations that takes no parameter: the predicates and
+probes filter the rows that go into the groups, in one statement. An `Order`,
+`Offset` or row lock on the composed query is the new
+`runtime.ErrGroupedRead`. The table package gains the seams
+`<Aggregate>Pieces()`, `Scan<Aggregate>` and `Query.Ordered()`.
+
 ## v1.7.0 — 2026-10-28
 
 ### A write after a step, in one statement

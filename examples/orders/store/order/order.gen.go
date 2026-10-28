@@ -1341,6 +1341,10 @@ func (q Query) OrderToks(dst []runtime.Tok) []runtime.Tok {
 func (q Query) Locked() bool { return q.lock != 0 }
 func (q Query) Paged() bool  { return q.offset != 0 }
 
+// Ordered reports an Order(), which a grouped read composed around this
+// query's predicates has no place for.
+func (q Query) Ordered() bool { return q.no > 0 }
+
 // BindPreds binds this query's predicate values into b, appending to v.
 func (q Query) BindPreds(b *Binder, v []any) []any {
 	return append(v, q.bindPreds(b)...)
@@ -1854,6 +1858,16 @@ func (q Query) AllByStatusInto(ctx context.Context, ex runtime.Executor, dst []B
 	return dst, rows.Err()
 }
 
+// ByStatusPieces is the "ByStatus" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func ByStatusPieces() (prefix, suffix string) { return byStatusPrefix, byStatusSuffix + limitSuffix }
+
+// ScanByStatus decodes one row of the "ByStatus" aggregation.
+func ScanByStatus(rv [][]byte, r *ByStatusRow, sl *runtime.Slab) error {
+	return scanByStatus(rv, r, sl)
+}
+
 var errByStatusLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -1951,6 +1965,14 @@ func (q Query) AllDailyInto(ctx context.Context, ex runtime.Executor, dst []Dail
 	return dst, rows.Err()
 }
 
+// DailyPieces is the "Daily" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func DailyPieces() (prefix, suffix string) { return dailyPrefix, dailySuffix + limitSuffix }
+
+// ScanDaily decodes one row of the "Daily" aggregation.
+func ScanDaily(rv [][]byte, r *DailyRow, sl *runtime.Slab) error { return scanDaily(rv, r, sl) }
+
 var errDailyLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -2045,6 +2067,14 @@ func (q Query) AllFacetsInto(ctx context.Context, ex runtime.Executor, dst []Fac
 	return dst, rows.Err()
 }
 
+// FacetsPieces is the "Facets" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func FacetsPieces() (prefix, suffix string) { return facetsPrefix, facetsSuffix + limitSuffix }
+
+// ScanFacets decodes one row of the "Facets" aggregation.
+func ScanFacets(rv [][]byte, r *FacetsRow, sl *runtime.Slab) error { return scanFacets(rv, r, sl) }
+
 var errFacetsLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -2133,6 +2163,18 @@ func (q Query) AllTopCustomersInto(ctx context.Context, ex runtime.Executor, dst
 	}
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
+}
+
+// TopCustomersPieces is the "TopCustomers" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func TopCustomersPieces() (prefix, suffix string) {
+	return topCustomersPrefix, topCustomersSuffix + limitSuffix
+}
+
+// ScanTopCustomers decodes one row of the "TopCustomers" aggregation.
+func ScanTopCustomers(rv [][]byte, r *TopCustomersRow, sl *runtime.Slab) error {
+	return scanTopCustomers(rv, r, sl)
 }
 
 var errTopCustomersLocked = errors.New(
@@ -2245,6 +2287,14 @@ func (q Query) AllTrendInto(ctx context.Context, ex runtime.Executor, dst []Tren
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
 }
+
+// TrendPieces is the "Trend" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func TrendPieces() (prefix, suffix string) { return trendPrefix, trendSuffix + limitSuffix }
+
+// ScanTrend decodes one row of the "Trend" aggregation.
+func ScanTrend(rv [][]byte, r *TrendRow, sl *runtime.Slab) error { return scanTrend(rv, r, sl) }
 
 var errTrendLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
@@ -2434,6 +2484,18 @@ func (q Query) AllByCustomerInto(ctx context.Context, ex runtime.Executor, dst [
 	return dst, rows.Err()
 }
 
+// ByCustomerPieces is the "ByCustomer" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func ByCustomerPieces() (prefix, suffix string) {
+	return byCustomerPrefix, byCustomerSuffix + limitSuffix
+}
+
+// ScanByCustomer decodes one row of the "ByCustomer" aggregation.
+func ScanByCustomer(rv [][]byte, r *ByCustomerRow, sl *runtime.Slab) error {
+	return scanByCustomer(rv, r, sl)
+}
+
 var errByCustomerLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")
 
@@ -2519,6 +2581,14 @@ func (q Query) AllTotalsInto(ctx context.Context, ex runtime.Executor, dst []Tot
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
 }
+
+// TotalsPieces is the "Totals" aggregation's statement around its
+// predicates, for the context package to splice a composed read into:
+// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.
+func TotalsPieces() (prefix, suffix string) { return totalsPrefix, totalsSuffix + limitSuffix }
+
+// ScanTotals decodes one row of the "Totals" aggregation.
+func ScanTotals(rv [][]byte, r *TotalsRow, sl *runtime.Slab) error { return scanTotals(rv, r, sl) }
 
 var errTotalsLocked = errors.New(
 	"storm: a grouped read cannot be row-locked — the server refuses a row lock with a GROUP BY, and locking the rows a group summarises is not what the caller asked for; lock the base read instead")

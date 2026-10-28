@@ -1300,6 +1300,335 @@ func (h OrderLinesProbeQuery) Count(ctx context.Context, ex runtime.Executor) (i
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
+var orderLinesProbeQueryByStatusCache = runtime.NewTreeCache()
+
+// AllByStatus is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllByStatus(ctx context.Context, ex runtime.Executor) ([]order.ByStatusRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryByStatusCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.ByStatusPieces()
+		st = orderLinesProbeQueryByStatusCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.ByStatusRow
+	for rows.Next() {
+		out = append(out, order.ByStatusRow{})
+		if err := order.ScanByStatus(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryDailyCache = runtime.NewTreeCache()
+
+// AllDaily is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllDaily(ctx context.Context, ex runtime.Executor) ([]order.DailyRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryDailyCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.DailyPieces()
+		st = orderLinesProbeQueryDailyCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.DailyRow
+	for rows.Next() {
+		out = append(out, order.DailyRow{})
+		if err := order.ScanDaily(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryFacetsCache = runtime.NewTreeCache()
+
+// AllFacets is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllFacets(ctx context.Context, ex runtime.Executor) ([]order.FacetsRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryFacetsCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.FacetsPieces()
+		st = orderLinesProbeQueryFacetsCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.FacetsRow
+	for rows.Next() {
+		out = append(out, order.FacetsRow{})
+		if err := order.ScanFacets(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryTopCustomersCache = runtime.NewTreeCache()
+
+// AllTopCustomers is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllTopCustomers(ctx context.Context, ex runtime.Executor) ([]order.TopCustomersRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryTopCustomersCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.TopCustomersPieces()
+		st = orderLinesProbeQueryTopCustomersCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.TopCustomersRow
+	for rows.Next() {
+		out = append(out, order.TopCustomersRow{})
+		if err := order.ScanTopCustomers(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryTrendCache = runtime.NewTreeCache()
+
+// AllTrend is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllTrend(ctx context.Context, ex runtime.Executor) ([]order.TrendRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryTrendCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.TrendPieces()
+		st = orderLinesProbeQueryTrendCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.TrendRow
+	for rows.Next() {
+		out = append(out, order.TrendRow{})
+		if err := order.ScanTrend(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryByCustomerCache = runtime.NewTreeCache()
+
+// AllByCustomer is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllByCustomer(ctx context.Context, ex runtime.Executor) ([]order.ByCustomerRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryByCustomerCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.ByCustomerPieces()
+		st = orderLinesProbeQueryByCustomerCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.ByCustomerRow
+	for rows.Next() {
+		out = append(out, order.ByCustomerRow{})
+		if err := order.ScanByCustomer(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryTotalsCache = runtime.NewTreeCache()
+
+// AllTotals is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllTotals(ctx context.Context, ex runtime.Executor) ([]order.TotalsRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryTotalsCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.TotalsPieces()
+		st = orderLinesProbeQueryTotalsCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.TotalsRow
+	for rows.Next() {
+		out = append(out, order.TotalsRow{})
+		if err := order.ScanTotals(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
 // ActivityRow is the "Activity" union: 3 column(s) merged from 2 table(s).
 //
 // A column is nullable here when ANY branch can produce NULL for it,

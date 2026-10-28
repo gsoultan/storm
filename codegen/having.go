@@ -640,6 +640,80 @@ func (g *gen) emitProbeTake(np havingSpec, lw lowering, s *schema.Schema) {
 	g.p("")
 }
 
+// emitProbeAggregates writes, for each of the parent's declared aggregations
+// that takes no parameter, the same grouped read over the semi-join: the
+// rows that go into the groups are the ones the composed read selects.
+// "Open incidents per instance, of the instances this caller may see" is one
+// of these.
+func (g *gen) emitProbeAggregates(np havingSpec, s *schema.Schema) {
+	parent := s.Table(np.ParentTable)
+	if parent == nil {
+		return
+	}
+	q := np.TypeName
+	for _, agg := range parent.Aggregates {
+		if len(agg.Params) > 0 {
+			continue
+		}
+		name := agg.Name
+		cache := lowerFirst(q) + name + "Cache"
+		g.p("var %s = runtime.NewTreeCache()", cache)
+		g.p("")
+		g.p("// All%s is the %s package's aggregation of that name over this", name, np.ParentPkg)
+		g.p("// semi-join: the predicates and probes filter the rows that go into")
+		g.p("// the groups, and Limit pages the groups. An Order, a row lock or an")
+		g.p("// Offset is refused, as on the table's own.")
+		g.p("func (h %s) All%s(ctx context.Context, ex %s) ([]%s.%sRow, error) {", q, name, g.execType(), np.ParentPkg, name)
+		g.p("	if err := h.err(); err != nil {")
+		g.p("		return nil, err")
+		g.p("	}")
+		g.p("	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {")
+		g.p("		return nil, runtime.ErrGroupedRead")
+		g.p("	}")
+		g.p("	var buf [%d]runtime.Tok", g.composedBuf())
+		g.p("	toks := h.tokens(buf[:0], true)")
+		g.p("	st := %s.Get(toks)", cache)
+		g.p("	if st == nil {")
+		g.p("		prefix, suffix := %s.%sPieces()", np.ParentPkg, name)
+		// An aggregation declared AcrossDeleted counts the parent's marked
+		// rows; every other read of the parent leaves them out.
+		if np.ParentLive != "" && !agg.AcrossDeleted {
+			g.p("		st = %s.Put(toks, runtime.SpliceTreeWhere(prefix, %s, toks, %sLowering, suffix))",
+				cache, lit(np.ParentLive), lowerFirst(q))
+		} else {
+			g.p("		st = %s.Put(toks, runtime.SpliceTree(prefix, toks, %sLowering, suffix))", cache, lowerFirst(q))
+		}
+		g.p("	}")
+		g.p("	if st.Err != nil {")
+		g.p("		return nil, st.Err")
+		g.p("	}")
+		g.p("	pb := %s.GetBinder()", np.ParentPkg)
+		g.p("	defer %s.PutBinder(pb)", np.ParentPkg)
+		g.p("	args, cbs := h.bind(pb, true)")
+		g.p("	defer func() {")
+		g.p("		for _, cb := range cbs {")
+		g.p("			%s.PutBinder(cb)", np.ChildPkg)
+		g.p("		}")
+		g.p("	}()")
+		g.p("	rows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
+		g.p("	if err != nil {")
+		g.p("		return nil, err")
+		g.p("	}")
+		g.p("	defer rows.Close()")
+		g.p("	var sl runtime.Slab")
+		g.p("	var out []%s.%sRow", np.ParentPkg, name)
+		g.p("	for rows.Next() {")
+		g.p("		out = append(out, %s.%sRow{})", np.ParentPkg, name)
+		g.p("		if err := %s.Scan%s(rows.%s(), &out[len(out)-1], &sl); err != nil {", np.ParentPkg, name, g.dec.rowsAccessor())
+		g.p("			return nil, err")
+		g.p("		}")
+		g.p("	}")
+		g.p("	return out, rows.Err()")
+		g.p("}")
+		g.p("")
+	}
+}
+
 // emitProbeInsertSelect writes the same INSERT … SELECT over a semi-join of
 // the source, as a method of its composer.
 func (g *gen) emitProbeInsertSelect(np havingSpec, lw lowering, s *schema.Schema, t *schema.Table, rel *schema.Relation) error {
