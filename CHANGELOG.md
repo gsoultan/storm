@@ -46,7 +46,10 @@ is `HardDeleteBatch`, which, like `HardDeleteAll`, purges marked rows and live
 ones alike. A sweep repeats it until a run removes fewer than its limit, so no
 one statement holds a large table's locks for the whole purge. No predicate is
 `runtime.ErrUnfilteredWrite` and an `Offset` is `runtime.ErrPagedWrite`.
-PostgreSQL only for now.
+The semi-join composer of such a table has it too
+(`store.JobNotHavingIncidents(q, incident.Status.NotEq("resolved")).HardDeleteBatch(ctx, ex)`),
+purging the parent rows the probes select; there a row lock is refused as
+well. PostgreSQL only for now.
 
 ## v1.7.0 — 2026-10-28
 

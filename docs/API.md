@@ -858,8 +858,21 @@ for {
 ```
 
 It comes with `t.Takes()`. On a soft-delete table it is `HardDeleteBatch`,
-which, like `HardDeleteAll`, purges marked rows and live ones alike. No predicate is `runtime.ErrUnfilteredWrite`; `Offset` is
-`runtime.ErrPagedWrite`. PostgreSQL only for now.
+which, like `HardDeleteAll`, purges marked rows and live ones alike. No
+predicate is `runtime.ErrUnfilteredWrite`; `Offset` is
+`runtime.ErrPagedWrite`.
+
+The semi-join composer of such a table has the same method, so "the failed
+jobs no open incident names" is one statement a batch, with the `Limit` on
+the parent query:
+
+```go
+old := job.New().Where(job.Status.Eq("failed"), job.UpdatedAt.Lt(cutoff)).Limit(1000)
+n, err := store.JobNotHavingIncidents(old, incident.Status.NotEq("resolved")).
+        HardDeleteBatch(ctx, ex)
+```
+
+There a row lock is refused too. PostgreSQL only for now.
 
 ### Copying keys: `INSERT … SELECT`
 
