@@ -1505,7 +1505,9 @@ for _, s := range sessions {
 
 `WaitsFor` is a lock waited for and not yet granted, such as a `LOCK TABLE`
 queued behind another, and `Terminate` ends a session as
-`pg_terminate_backend` does. PostgreSQL only.
+`pg_terminate_backend` does. `DatabaseSize` and `TableSizes(ctx, ex, schema)`
+read what the database and each of a schema's tables take on disk, indexes and
+TOAST included. PostgreSQL only.
 
 ### Advisory locks
 
