@@ -2153,6 +2153,11 @@ func writeArg(c colInfo, expr string) string {
 	if isNullable(c.col) {
 		return expr + ".Arg()"
 	}
+	// A NOT NULL JSON column's Go value is a byte slice, which can be nil:
+	// that writes JSON null rather than the SQL NULL the column refuses.
+	if c.kind == kindJSONB && !c.col.Type.Array {
+		return expr + ".OrNull()"
+	}
 	return expr
 }
 
