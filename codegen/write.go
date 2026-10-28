@@ -165,6 +165,7 @@ func (g *gen) writes() {
 	g.deleteFn(pk)
 	g.writeAll(upd)
 	g.takeFn(upd, pk)
+	g.deleteBatchFn()
 	g.selectHeadFn(ins)
 	g.stepFns(upd, pk)
 }
@@ -2467,6 +2468,78 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("\t}")
 	g.p("\tst.ObserveSlab(sl.Size())")
 	g.p("\treturn dst, rows.Err()")
+	g.p("}")
+	g.p("")
+}
+
+// deleteBatchFn emits DeleteBatch: a DELETE of exactly the rows a read would
+// return — its predicate, order, limit and row lock — reporting how many it
+// removed. It is the bounded purge a sweep repeats until a run removes fewer
+// than its limit, so no one statement holds a long table's locks or WAL for
+// the whole sweep.
+//
+// On a table that asks for Take, where the back end says how
+// (Lowering.TrimOpen). On a soft-delete table it is HardDeleteBatch, and like
+// HardDeleteAll it reads marked rows and live ones alike: a purge of a table
+// whose rows are deliberately not kept removes them whether or not they were
+// marked, and a batch that left the marked ones out would never finish them.
+func (g *gen) deleteBatchFn() {
+	if !g.t.Takes || g.lw.TrimOpen == nil {
+		return
+	}
+	name, which := "DeleteBatch", "the rows the query would read"
+	if g.t.SoftDeletes() {
+		name, which = "HardDeleteBatch", "the rows the query would read, marked deleted or not,"
+	}
+	ex := g.execType()
+	keyBuf := 1 + g.streamBuf()
+
+	g.p("var trimCache = runtime.NewTreeCache()")
+	g.p("")
+	g.p("// trimStmtFor compiles one (lock, read) pair, once.")
+	g.p("func trimStmtFor(lock uint8, toks []runtime.Tok) *runtime.Stmt {")
+	g.p("\tvar key [%d]runtime.Tok", keyBuf)
+	g.p("\tkey[0] = runtime.Tok(lock)")
+	g.p("\tn := 1 + copy(key[1:], toks)")
+	g.p("\tif st := trimCache.Get(key[:n]); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\tsuffix := limitSuffix + lockSuffix[lock] + %s", lit(g.lw.TrimClose))
+	g.p("\treturn trimCache.Put(key[:n], runtime.SpliceTree(deletePrefix+%s, toks, lowering, suffix))", lit(g.lw.TrimOpen(g.t.Name)))
+	g.p("}")
+	g.p("")
+	g.p("// %s removes %s —", name, which)
+	g.p("// its predicates, order, Limit and row lock all apply — in ONE")
+	g.p("// statement, and reports how many it removed:")
+	g.p("//")
+	g.p("//\tfor {")
+	g.p("//\t\tn, err := New().Where(…).Limit(1000).%s(ctx, ex)", name)
+	g.p("//\t\tif err != nil || n < 1000 {")
+	g.p("//\t\t\tbreak")
+	g.p("//\t\t}")
+	g.p("//\t}")
+	g.p("//")
+	g.p("// That is the bounded purge: each run holds its locks for one batch.")
+	g.p("// The query must have a predicate — runtime.ErrUnfilteredWrite")
+	g.p("// otherwise — and Offset is refused with runtime.ErrPagedWrite.")
+	g.p("func (q Query) %s(ctx context.Context, ex %s) (int64, error) {", name, ex)
+	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\t\treturn 0, err")
+	g.p("\t}")
+	g.p("\tif q.nt == 0 {")
+	g.p("\t\treturn 0, runtime.ErrUnfilteredWrite")
+	g.p("\t}")
+	g.p("\tif q.offset != 0 {")
+	g.p("\t\treturn 0, runtime.ErrPagedWrite")
+	g.p("\t}")
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\tst := trimStmtFor(q.lock, q.stream(&buf))")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn 0, st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("\treturn ex.Exec(ctx, st.SQL, q.bind(b))")
 	g.p("}")
 	g.p("")
 }

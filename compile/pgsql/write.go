@@ -137,6 +137,20 @@ func TakeOpen(table, key string) string {
 // TakeClose ends what TakeOpen began.
 const TakeClose = ")"
 
+// TrimOpen narrows a DELETE to the rows a read selects, by their physical
+// address rather than a key: `ctid = ANY(ARRAY(SELECT ctid …))` runs the read
+// once and removes what it found with a TID scan, which is the bounded purge
+// a sweep repeats until a run removes less than its limit. `ctid IN (SELECT
+// …)` would read the same rows and then plan the outer side as a scan of the
+// whole table. A ctid is only stable within the statement, which is all this
+// needs.
+func TrimOpen(table string) string {
+	return " WHERE ctid = ANY(ARRAY(SELECT ctid FROM " + Ident(table)
+}
+
+// TrimClose ends what TrimOpen began.
+const TrimClose = "))"
+
 // InsertSelectMid is what an INSERT … SELECT has between its column list and
 // the selected values, where a plain insert has VALUES.
 const InsertSelectMid = ") SELECT "

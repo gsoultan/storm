@@ -838,6 +838,29 @@ got, err := job.New().
 `t.Takes()` in its `Schema`; it is generated on PostgreSQL for a table with a
 one-column key, and elsewhere the method is absent.
 
+### Purging in batches: `DELETE` of what a read selects
+
+`DeleteBatch` is `Take`'s purge: it removes the rows the query would read —
+predicates, order, `Limit` and row lock — and reports how many. A sweep
+repeats it until a run removes fewer than its limit, so each statement holds
+its locks for one batch, not the whole table's worth.
+
+```go
+for {
+        n, err := delivery.New().Where(delivery.CreatedAt.Lt(cutoff)).
+                Limit(1000).DeleteBatch(ctx, ex)
+        if err != nil || n < 1000 {
+                break
+        }
+}
+// DELETE FROM "deliveries" WHERE ctid = ANY(ARRAY(
+//   SELECT ctid FROM "deliveries" WHERE "created_at" < $1 LIMIT $2))
+```
+
+It comes with `t.Takes()`. On a soft-delete table it is `HardDeleteBatch`,
+which, like `HardDeleteAll`, purges marked rows and live ones alike. No predicate is `runtime.ErrUnfilteredWrite`; `Offset` is
+`runtime.ErrPagedWrite`. PostgreSQL only for now.
+
 ### Copying keys: `INSERT … SELECT`
 
 A to-one reference can be filled from the rows a query of the table it

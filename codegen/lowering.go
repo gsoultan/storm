@@ -134,6 +134,11 @@ type lowering struct {
 	// lock and limit inside the subquery, and Take is then not generated.
 	TakeOpen  func(table, key string) string
 	TakeClose string
+	// TrimOpen narrows a DELETE to the rows a read of the same table selects;
+	// TrimClose ends it. Nil where the back end has no form for it, and
+	// DeleteBatch is then not generated.
+	TrimOpen  func(table string) string
+	TrimClose string
 	// InsertSelectMid and KeyFrom spell INSERT … SELECT: the text between
 	// the column list and the selected values, and the selected key with its
 	// FROM. Empty and nil where the back end has none, and the context
@@ -381,6 +386,8 @@ func postgresLowering() lowering {
 		AddFrag:          pgsql.AddFrag,
 		TakeOpen:         pgsql.TakeOpen,
 		TakeClose:        pgsql.TakeClose,
+		TrimOpen:         pgsql.TrimOpen,
+		TrimClose:        pgsql.TrimClose,
 		InsertSelectMid:  pgsql.InsertSelectMid,
 		KeyFrom:          pgsql.KeyFrom,
 		StepOpen:         pgsql.StepOpen,
