@@ -27,7 +27,10 @@ type lowering struct {
 	Ident func(string) string
 	Frag  func(op, ident string, col *schema.Column) (a, b string, ok bool)
 
-	SelectPrefix      func(table string, cols []string) string
+	SelectPrefix func(table string, cols []string) string
+	// DistinctOn splits a select around the keys of DISTINCT ON. Nil where
+	// the back end has none, and AllDistinctOn is then not generated.
+	DistinctOn        func(table string, cols []string) (open, sep, tail string)
 	CountPrefix       func(string) string
 	ExistsPrefix      func(string) string
 	ExistsSuffix      func() string
@@ -308,6 +311,7 @@ func postgresLowering() lowering {
 			return pgsql.Frag(op, ident)
 		},
 		SelectPrefix:       pgsql.SelectPrefix,
+		DistinctOn:         pgsql.DistinctOn,
 		CountPrefix:        pgsql.CountPrefix,
 		ExistsPrefix:       pgsql.ExistsPrefix,
 		ExistsSuffix:       pgsql.ExistsSuffix,
