@@ -1507,6 +1507,27 @@ for _, s := range sessions {
 queued behind another, and `Terminate` ends a session as
 `pg_terminate_backend` does. PostgreSQL only.
 
+### Advisory locks
+
+Work that must have one owner across processes takes an advisory lock on a
+number it chooses. `pglock` runs each of PostgreSQL's lock functions as one
+statement. A session lock belongs to the session that took it, so hold one
+connection for the life of the lock:
+
+```go
+c, _ := pool.Acquire(ctx)
+defer c.Release()
+session := pgxdrv.Conn{C: c}
+if got, _ := pglock.TryLock(ctx, session, key); got {
+        defer pglock.Unlock(ctx, session, key)
+        // the one owner
+}
+```
+
+On a pool, `Unlock` would run on whichever session the pool lends, answer
+false, and leave the lock held. `TryLockXact` takes a lock that ends with its
+transaction instead. PostgreSQL only.
+
 ## What this costs you
 
 - **A generate step.** Change the model, run `storm generate`, commit the
