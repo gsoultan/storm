@@ -4529,7 +4529,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		case 7:
 			args = append(args, n.row.Status)
 		case 8:
-			args = append(args, n.row.Prefs)
+			args = append(args, n.row.Prefs.OrNull())
 		case 9:
 			args = append(args, n.row.Scopes)
 		case 10:
@@ -4592,7 +4592,7 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args = append(args, r.Email)
 	args = append(args, r.Name)
 	args = append(args, r.Status)
-	args = append(args, r.Prefs)
+	args = append(args, r.Prefs.OrNull())
 	args = append(args, r.Scopes)
 	args = append(args, r.Age.Arg())
 	args = append(args, r.LastIP.Arg())
@@ -4742,7 +4742,7 @@ func InsertOp(r Row) runtime.BatchOp {
 	args = append(args, r.Email)
 	args = append(args, r.Name)
 	args = append(args, r.Status)
-	args = append(args, r.Prefs)
+	args = append(args, r.Prefs.OrNull())
 	args = append(args, r.Scopes)
 	args = append(args, r.Age.Arg())
 	args = append(args, r.LastIP.Arg())
@@ -4801,7 +4801,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		case 7:
 			args = append(args, n.row.Status)
 		case 8:
-			args = append(args, n.row.Prefs)
+			args = append(args, n.row.Prefs.OrNull())
 		case 9:
 			args = append(args, n.row.Scopes)
 		case 10:
@@ -4884,7 +4884,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 		case 4:
 			args = append(args, m.row.Status)
 		case 5:
-			args = append(args, m.row.Prefs)
+			args = append(args, m.row.Prefs.OrNull())
 		case 6:
 			args = append(args, m.row.Scopes)
 		case 7:
@@ -5002,7 +5002,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		case 4:
 			args = append(args, m.row.Status)
 		case 5:
-			args = append(args, m.row.Prefs)
+			args = append(args, m.row.Prefs.OrNull())
 		case 6:
 			args = append(args, m.row.Scopes)
 		case 7:
@@ -5127,7 +5127,7 @@ func (m Mut) updateArgs(args []any) []any {
 		case 4:
 			args = append(args, m.row.Status)
 		case 5:
-			args = append(args, m.row.Prefs)
+			args = append(args, m.row.Prefs.OrNull())
 		case 6:
 			args = append(args, m.row.Scopes)
 		case 7:
@@ -5317,7 +5317,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 			case 4:
 				args = append(args, m.row.Status)
 			case 5:
-				args = append(args, m.row.Prefs)
+				args = append(args, m.row.Prefs.OrNull())
 			case 6:
 				args = append(args, m.row.Scopes)
 			case 7:

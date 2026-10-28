@@ -14,6 +14,13 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A nil value of a NOT NULL JSON column writes JSON null
+
+A NOT NULL json column's Go value is a byte slice, and a nil one bound as SQL
+NULL, which the column refused. It now writes the JSON document `null`
+(`runtime.JSON.OrNull`), which unmarshals as nil did. Nullable JSON columns
+are unchanged: nil is still SQL NULL.
+
 ### `FillNulls`: tightening a column that holds NULLs
 
 `t.Col(&m.F).FillNulls(expr)` says what the rows already NULL become when a
