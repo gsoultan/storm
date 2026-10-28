@@ -922,6 +922,13 @@ func (t *Table) Takes() *Table { t.out.Takes = true; return t }
 // from one never written) say so here.
 func (t *Table) ReadsDeleted() *Table { t.out.ReadsDeleted = true; return t }
 
+// Lockable puts this table in its context package's LockTables, as
+// Table<GoName>: a lock on the whole table for the rest of a transaction,
+// where the back end has one. A sweep that must not race the writers of the
+// rows it reads takes one, and waits for every transaction already writing
+// them; a table no sweep locks never needs it.
+func (t *Table) Lockable() *Table { t.out.Lockable = true; return t }
+
 // Tallies generates Tally and Query.UpdateAllAfter for this table: a write
 // that runs after another table's step in the same statement and moves this
 // table's counters by the rows the step had. Opt-in, for the same reason.
