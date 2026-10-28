@@ -382,6 +382,25 @@ newest, err := setting.New().
 It is PostgreSQL's `DISTINCT ON`, generated only there. `n` outside the explicit
 order, or a row lock, is refused; Limit and Offset count the rows kept.
 
+A table declared `t.TakesTurns(&j.Org)` gets `AllTurns`: its rows dealt out by
+that column, a turn at a time. Each group's first rows are numbered in the
+query's order, and every group's first turn comes ahead of anyone's second, so
+one tenant's backlog cannot starve the others in a queue claim:
+
+```go
+due := job.New().Where(job.Status.Eq("pending"), job.DueAt.Lte(now)).
+    Order(job.DueAt.Asc(), job.ID.Asc()).Limit(50)
+rows, err := due.AllTurns(ctx, ex, job.New().Where(job.Status.Eq("pending")), from, 1000, nil)
+// rows[i].Row is the job, rows[i].Turn its place in its organization's line
+```
+
+The second query's predicates choose the groups. They are found a seek at a time
+along the column, from the first at or after `from`, wrapping round to the
+start, at most `n` of them; an index on those predicates' columns and then the
+group column keeps each seek one. The limit caps each group's rows and the rows
+returned. A nullable column's rows with no group are one more group. One
+statement, PostgreSQL only; an Offset or a row lock is refused.
+
 ## 5. Dynamic filters — this is the whole thesis, and it looks boring
 
 ```go

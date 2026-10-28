@@ -14,6 +14,16 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `AllTurns`: a read that takes turns by group
+
+A table declared `t.TakesTurns(&f)` gets `Query.AllTurns(ctx, ex, groups, from,
+n, dst)`: each group's first rows, numbered in the query's order, every group's
+first turn ahead of anyone's second, in one statement. The groups are chosen by
+`groups`' predicates and found a seek at a time along the column from `from`,
+wrapping, at most `n`; a nullable column's rows with none are one more group.
+The fair queue claim, which was a recursive CTE written by hand. PostgreSQL
+only.
+
 ### Fixed: a list predicate with no values
 
 `In`, `NotIn`, `Contains`, `ContainedBy`, `Overlaps` and `TextLikeAny` called

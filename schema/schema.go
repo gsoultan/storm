@@ -98,6 +98,10 @@ type Table struct {
 	// table lock for the rest of a transaction.
 	Lockable bool
 
+	// Turns is the column AllTurns deals the rows out by, a turn per group
+	// (t.TakesTurns). Empty when the table does not.
+	Turns string
+
 	// Relations are the Go-level links the model declared, kept because a
 	// foreign key alone cannot reconstruct them: it says users.org_id
 	// references orgs.id, not that the field is called Org, that Org has a
