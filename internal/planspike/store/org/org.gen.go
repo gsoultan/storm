@@ -396,12 +396,14 @@ func (h UUIDCol) DescNullsLast() Sort {
 
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+func (h UUIDCol) NotIn(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+}
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
@@ -443,12 +445,12 @@ func (h TextCol) Lte(v string) Pred     { return Pred{col: h.c, op: opLte, str: 
 func (h TextCol) EqLower(v string) Pred { return Pred{col: h.c, op: opEqLower, str: v} }
 func (h TextCol) Like(v string) Pred    { return Pred{col: h.c, op: opLike, str: v} }
 func (h TextCol) ILike(v string) Pred   { return Pred{col: h.c, op: opILike, str: v} }
-func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: v} }
+func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
 
 // NullUUIDCol addresses a uuid column.
 type NullUUIDCol struct{ c uint8 }
@@ -464,14 +466,16 @@ func (h NullUUIDCol) DescNullsLast() Sort {
 
 func (h NullUUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h NullUUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h NullUUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+func (h NullUUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h NullUUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
-func (h NullUUIDCol) IsNull() Pred             { return Pred{col: h.c, op: opIsNull} }
-func (h NullUUIDCol) IsNotNull() Pred          { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullUUIDCol) NotIn(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+}
+func (h NullUUIDCol) IsNull() Pred    { return Pred{col: h.c, op: opIsNull} }
+func (h NullUUIDCol) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }
 
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {

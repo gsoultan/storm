@@ -505,12 +505,14 @@ func (h UUIDCol) DescNullsLast() Sort {
 
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+func (h UUIDCol) NotIn(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+}
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
@@ -549,12 +551,12 @@ func (h Int32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int
 func (h Int32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h Int32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h Int32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
-func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: v} }
+func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: v} }
+func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: runtime.List(v)} }
 
 // NullTimeCol addresses a timestamptz column.
 type NullTimeCol struct{ c uint8 }
@@ -598,12 +600,12 @@ func (h TextCol) Lte(v string) Pred     { return Pred{col: h.c, op: opLte, str: 
 func (h TextCol) EqLower(v string) Pred { return Pred{col: h.c, op: opEqLower, str: v} }
 func (h TextCol) Like(v string) Pred    { return Pred{col: h.c, op: opLike, str: v} }
 func (h TextCol) ILike(v string) Pred   { return Pred{col: h.c, op: opILike, str: v} }
-func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: v} }
+func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
 
 // JSONCol addresses a jsonb column.
 type JSONCol struct{ c uint8 }
@@ -621,15 +623,19 @@ func (h JSONCol) Contains(v runtime.JSON) Pred { return Pred{col: h.c, op: opJSO
 func (h JSONCol) ContainedBy(v runtime.JSON) Pred {
 	return Pred{col: h.c, op: opJSONContainedBy, jsn: v}
 }
-func (h JSONCol) HasAnyKey(v ...string) Pred  { return Pred{col: h.c, op: opHasAnyKey, anyStr: v} }
-func (h JSONCol) HasAllKeys(v ...string) Pred { return Pred{col: h.c, op: opHasAllKeys, anyStr: v} }
+func (h JSONCol) HasAnyKey(v ...string) Pred {
+	return Pred{col: h.c, op: opHasAnyKey, anyStr: runtime.List(v)}
+}
+func (h JSONCol) HasAllKeys(v ...string) Pred {
+	return Pred{col: h.c, op: opHasAllKeys, anyStr: runtime.List(v)}
+}
 
 // TextLikeAny matches the document's text against each LIKE
 // pattern in v. A NULL document reads as the empty string.
 // The patterns are the caller's: escape % and _ in what they
 // quote.
 func (h JSONCol) TextLikeAny(v ...string) Pred {
-	return Pred{col: h.c, op: opJSONTextLikeAny, anyStr: v}
+	return Pred{col: h.c, op: opJSONTextLikeAny, anyStr: runtime.List(v)}
 }
 func (h JSONCol) IsEmpty() Pred { return Pred{col: h.c, op: opJSONIsEmpty} }
 
@@ -649,17 +655,17 @@ func (h TextArrayCol) DescNullsLast() Sort {
 // An empty v is true for every row — every array contains
 // the empty one.
 func (h TextArrayCol) Contains(v ...string) Pred {
-	return Pred{col: h.c, op: opArrayContains, anyStr: v}
+	return Pred{col: h.c, op: opArrayContains, anyStr: runtime.List(v)}
 }
 
 // ContainedBy is `<@`: every element of the column is in v.
 func (h TextArrayCol) ContainedBy(v ...string) Pred {
-	return Pred{col: h.c, op: opArrayContainedBy, anyStr: v}
+	return Pred{col: h.c, op: opArrayContainedBy, anyStr: runtime.List(v)}
 }
 
 // Overlaps is `&&`: the column and v share an element.
 func (h TextArrayCol) Overlaps(v ...string) Pred {
-	return Pred{col: h.c, op: opArrayOverlaps, anyStr: v}
+	return Pred{col: h.c, op: opArrayOverlaps, anyStr: runtime.List(v)}
 }
 
 // NullInt16Col addresses a int2 column.
@@ -680,14 +686,16 @@ func (h NullInt16Col) Gt(v int16) Pred    { return Pred{col: h.c, op: opGt, num:
 func (h NullInt16Col) Gte(v int16) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h NullInt16Col) Lt(v int16) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h NullInt16Col) Lte(v int16) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
-func (h NullInt16Col) In(v ...int16) Pred { return Pred{col: h.c, op: opIn, anyI16: v} }
+func (h NullInt16Col) In(v ...int16) Pred { return Pred{col: h.c, op: opIn, anyI16: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h NullInt16Col) NotIn(v ...int16) Pred { return Pred{col: h.c, op: opNotIn, anyI16: v} }
-func (h NullInt16Col) IsNull() Pred          { return Pred{col: h.c, op: opIsNull} }
-func (h NullInt16Col) IsNotNull() Pred       { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullInt16Col) NotIn(v ...int16) Pred {
+	return Pred{col: h.c, op: opNotIn, anyI16: runtime.List(v)}
+}
+func (h NullInt16Col) IsNull() Pred    { return Pred{col: h.c, op: opIsNull} }
+func (h NullInt16Col) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }
 
 // NullTextCol addresses a text column.
 type NullTextCol struct{ c uint8 }
@@ -710,15 +718,17 @@ func (h NullTextCol) Lte(v string) Pred     { return Pred{col: h.c, op: opLte, s
 func (h NullTextCol) EqLower(v string) Pred { return Pred{col: h.c, op: opEqLower, str: v} }
 func (h NullTextCol) Like(v string) Pred    { return Pred{col: h.c, op: opLike, str: v} }
 func (h NullTextCol) ILike(v string) Pred   { return Pred{col: h.c, op: opILike, str: v} }
-func (h NullTextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: v} }
+func (h NullTextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h NullTextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
-func (h NullTextCol) IsNull() Pred           { return Pred{col: h.c, op: opIsNull} }
-func (h NullTextCol) IsNotNull() Pred        { return Pred{col: h.c, op: opIsNotNull} }
-func (h NullTextCol) IsNullOrEmpty() Pred    { return Pred{col: h.c, op: opNullOrEmpty} }
+func (h NullTextCol) NotIn(v ...string) Pred {
+	return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)}
+}
+func (h NullTextCol) IsNull() Pred        { return Pred{col: h.c, op: opIsNull} }
+func (h NullTextCol) IsNotNull() Pred     { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullTextCol) IsNullOrEmpty() Pred { return Pred{col: h.c, op: opNullOrEmpty} }
 
 // BoolCol addresses a bool column.
 type BoolCol struct{ c uint8 }
@@ -791,17 +801,17 @@ func (h NullDecimalArrayCol) DescNullsLast() Sort {
 // An empty v is true for every row — every array contains
 // the empty one.
 func (h NullDecimalArrayCol) Contains(v ...runtime.Decimal) Pred {
-	return Pred{col: h.c, op: opArrayContains, anyDec: v}
+	return Pred{col: h.c, op: opArrayContains, anyDec: runtime.List(v)}
 }
 
 // ContainedBy is `<@`: every element of the column is in v.
 func (h NullDecimalArrayCol) ContainedBy(v ...runtime.Decimal) Pred {
-	return Pred{col: h.c, op: opArrayContainedBy, anyDec: v}
+	return Pred{col: h.c, op: opArrayContainedBy, anyDec: runtime.List(v)}
 }
 
 // Overlaps is `&&`: the column and v share an element.
 func (h NullDecimalArrayCol) Overlaps(v ...runtime.Decimal) Pred {
-	return Pred{col: h.c, op: opArrayOverlaps, anyDec: v}
+	return Pred{col: h.c, op: opArrayOverlaps, anyDec: runtime.List(v)}
 }
 func (h NullDecimalArrayCol) IsNull() Pred    { return Pred{col: h.c, op: opIsNull} }
 func (h NullDecimalArrayCol) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }

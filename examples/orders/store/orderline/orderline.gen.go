@@ -416,12 +416,14 @@ func (h UUIDCol) DescNullsLast() Sort {
 
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+func (h UUIDCol) NotIn(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+}
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
@@ -460,12 +462,12 @@ func (h Int32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int
 func (h Int32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h Int32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h Int32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
-func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: v} }
+func (h Int32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: v} }
+func (h Int32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: runtime.List(v)} }
 
 // DecimalCol addresses a numeric(12,2) column.
 type DecimalCol struct{ c uint8 }

@@ -14,6 +14,14 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Fixed: a list predicate with no values
+
+`In`, `NotIn`, `Contains`, `ContainedBy`, `Overlaps` and `TextLikeAny` called
+with no values bound a nil slice, which the driver sends as NULL. `NotIn()` then
+matched no rows instead of every row, and `Contains()` none instead of all, as
+its doc comment says. The generated predicate now binds the empty array
+(`runtime.List`). Every package regenerates; no allocation is added.
+
 ### `UpsertWhere`: an upsert whose update is guarded
 
 A table declared `t.GuardsUpsert()` gets `Ins.UpsertWhere(ctx, ex, q)`: the

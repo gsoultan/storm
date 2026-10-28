@@ -170,7 +170,7 @@ func (g *gen) colHandles() {
 					g.p("// The patterns are the caller's: escape %% and _ in what they")
 					g.p("// quote.")
 				}
-				g.p("func (h %s) %s(v ...%s) Pred { return Pred{col: h.c, op: op%s, %s: v} }",
+				g.p("func (h %s) %s(v ...%s) Pred { return Pred{col: h.c, op: op%s, %s: runtime.List(v)} }",
 					ht, op.m(), listElem(c), op.name, slot)
 				continue
 			}
