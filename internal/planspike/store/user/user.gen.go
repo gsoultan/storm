@@ -65,14 +65,17 @@ const (
 	opJSONContainedBy  runtime.Op = 21
 	opHasAnyKey        runtime.Op = 22
 	opHasAllKeys       runtime.Op = 23
-	opIsNull           runtime.Op = 24
-	opIsNotNull        runtime.Op = 25
+	opJSONTextLikeAny  runtime.Op = 24
+	opIsNull           runtime.Op = 25
+	opIsNotNull        runtime.Op = 26
+	opJSONIsEmpty      runtime.Op = 27
+	opNullOrEmpty      runtime.Op = 28
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 26
-	opNotExists runtime.Op = 27
+	opExists    runtime.Op = 29
+	opNotExists runtime.Op = 30
 )
 
 const nCols = 17
@@ -616,6 +619,15 @@ func (h JSONCol) ContainedBy(v runtime.JSON) Pred {
 func (h JSONCol) HasAnyKey(v ...string) Pred  { return Pred{col: h.c, op: opHasAnyKey, anyStr: v} }
 func (h JSONCol) HasAllKeys(v ...string) Pred { return Pred{col: h.c, op: opHasAllKeys, anyStr: v} }
 
+// TextLikeAny matches the document's text against each LIKE
+// pattern in v. A NULL document reads as the empty string.
+// The patterns are the caller's: escape % and _ in what they
+// quote.
+func (h JSONCol) TextLikeAny(v ...string) Pred {
+	return Pred{col: h.c, op: opJSONTextLikeAny, anyStr: v}
+}
+func (h JSONCol) IsEmpty() Pred { return Pred{col: h.c, op: opJSONIsEmpty} }
+
 // TextArrayCol addresses a text[] column.
 type TextArrayCol struct{ c uint8 }
 
@@ -701,6 +713,7 @@ func (h NullTextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, an
 func (h NullTextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
 func (h NullTextCol) IsNull() Pred           { return Pred{col: h.c, op: opIsNull} }
 func (h NullTextCol) IsNotNull() Pred        { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullTextCol) IsNullOrEmpty() Pred    { return Pred{col: h.c, op: opNullOrEmpty} }
 
 // BoolCol addresses a bool column.
 type BoolCol struct{ c uint8 }
@@ -927,7 +940,7 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys {
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
 		case 0:
 			if int(q.nar) >= 3 {
@@ -1010,7 +1023,7 @@ func (q *Query) leaf(p Pred) {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
-	if p.op == opIsNull || p.op == opIsNotNull {
+	if p.op == opIsNull || p.op == opIsNotNull || p.op == opJSONIsEmpty || p.op == opNullOrEmpty {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
@@ -1201,6 +1214,8 @@ func (q Query) PrefsContains(v runtime.JSON) Query        { return q.Where(Prefs
 func (q Query) PrefsContainedBy(v runtime.JSON) Query     { return q.Where(Prefs.ContainedBy(v)) }
 func (q Query) PrefsHasAnyKey(v ...string) Query          { return q.Where(Prefs.HasAnyKey(v...)) }
 func (q Query) PrefsHasAllKeys(v ...string) Query         { return q.Where(Prefs.HasAllKeys(v...)) }
+func (q Query) PrefsTextLikeAny(v ...string) Query        { return q.Where(Prefs.TextLikeAny(v...)) }
+func (q Query) PrefsIsEmpty() Query                       { return q.Where(Prefs.IsEmpty()) }
 func (q Query) ScopesContains(v ...string) Query          { return q.Where(Scopes.Contains(v...)) }
 func (q Query) ScopesContainedBy(v ...string) Query       { return q.Where(Scopes.ContainedBy(v...)) }
 func (q Query) ScopesOverlaps(v ...string) Query          { return q.Where(Scopes.Overlaps(v...)) }
@@ -1227,6 +1242,7 @@ func (q Query) LastIPIn(v ...string) Query                { return q.Where(LastI
 func (q Query) LastIPNotIn(v ...string) Query             { return q.Where(LastIP.NotIn(v...)) }
 func (q Query) LastIPIsNull() Query                       { return q.Where(LastIP.IsNull()) }
 func (q Query) LastIPIsNotNull() Query                    { return q.Where(LastIP.IsNotNull()) }
+func (q Query) LastIPIsNullOrEmpty() Query                { return q.Where(LastIP.IsNullOrEmpty()) }
 func (q Query) ActiveEq(v bool) Query                     { return q.Where(Active.Eq(v)) }
 func (q Query) ActiveNotEq(v bool) Query                  { return q.Where(Active.NotEq(v)) }
 func (q Query) BalanceEq(v runtime.Decimal) Query         { return q.Where(Balance.Eq(v)) }
@@ -1448,7 +1464,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [18][28]runtime.Frag{
+var fragTable = [18][31]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -1478,6 +1494,9 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -1487,6 +1506,9 @@ var fragTable = [18][28]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1538,6 +1560,9 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // version
 		{}, // opNone
@@ -1557,6 +1582,9 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{A: "\"version\" = ANY($", B: ")"},
 		{A: "\"version\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1594,8 +1622,11 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"deleted_at\" IS NULL", B: ""},
 		{A: "\"deleted_at\" IS NOT NULL", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -1617,6 +1648,9 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{A: "\"email\" = ANY($", B: ")"},
 		{A: "\"email\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1658,6 +1692,9 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // status
 		{}, // opNone
@@ -1677,6 +1714,9 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{A: "\"status\" = ANY($", B: ")"},
 		{A: "\"status\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1714,7 +1754,10 @@ var fragTable = [18][28]runtime.Frag{
 		{A: "\"prefs\" <@ $", B: ""},
 		{A: "\"prefs\" ?| $", B: ""},
 		{A: "\"prefs\" ?& $", B: ""},
+		{A: "COALESCE(\"prefs\"::text, '') LIKE ANY($", B: ")"},
 		{},
+		{},
+		{A: "COALESCE(\"prefs\"::text, '') IN ('', 'null', '[]', '{}')", B: ""},
 		{},
 		{},
 		{},
@@ -1740,6 +1783,9 @@ var fragTable = [18][28]runtime.Frag{
 		{A: "\"scopes\" @> $", B: ""},
 		{A: "\"scopes\" <@ $", B: ""},
 		{A: "\"scopes\" && $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1774,8 +1820,11 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"age\" IS NULL", B: ""},
 		{A: "\"age\" IS NOT NULL", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -1804,8 +1853,11 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"last_ip\" IS NULL", B: ""},
 		{A: "\"last_ip\" IS NOT NULL", B: ""},
+		{},
+		{A: "COALESCE(\"last_ip\", '') = ''", B: ""},
 		{},
 		{},
 	},
@@ -1813,6 +1865,9 @@ var fragTable = [18][28]runtime.Frag{
 		{}, // opNone
 		{A: "\"active\" = $", B: ""},
 		{A: "\"active\" <> $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1868,6 +1923,9 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // credit
 		{}, // opNone
@@ -1894,8 +1952,11 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"credit\" IS NULL", B: ""},
 		{A: "\"credit\" IS NOT NULL", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -1924,8 +1985,11 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"splits\" IS NULL", B: ""},
 		{A: "\"splits\" IS NOT NULL", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -1958,9 +2022,15 @@ var fragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // relation Posts (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2256,9 +2326,9 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		}
 		switch runtime.Op(t.Op()) {
-		case opIsNull, opIsNotNull:
+		case opIsNull, opIsNotNull, opJSONIsEmpty, opNullOrEmpty:
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys:
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
 			case 0:
 				b.anyRaw[nar] = q.anyRaw[nar]
@@ -2784,7 +2854,7 @@ func (q Query) OneFin(ctx context.Context, ex runtime.Executor) (FinRow, bool, e
 }
 
 // joinFragTable is fragTable for a join: every column named with its table.
-var joinFragTable = [18][28]runtime.Frag{
+var joinFragTable = [18][31]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"users\".\"id\" = $", B: ""},
@@ -2814,6 +2884,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -2823,6 +2896,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{A: "\"users\".\"created_at\" >= $", B: ""},
 		{A: "\"users\".\"created_at\" < $", B: ""},
 		{A: "\"users\".\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2874,6 +2950,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // version
 		{}, // opNone
@@ -2893,6 +2972,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{A: "\"users\".\"version\" = ANY($", B: ")"},
 		{A: "\"users\".\"version\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2930,8 +3012,11 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"users\".\"deleted_at\" IS NULL", B: ""},
 		{A: "\"users\".\"deleted_at\" IS NOT NULL", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -2953,6 +3038,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{A: "\"users\".\"email\" = ANY($", B: ")"},
 		{A: "\"users\".\"email\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2994,6 +3082,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // status
 		{}, // opNone
@@ -3013,6 +3104,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{A: "\"users\".\"status\" = ANY($", B: ")"},
 		{A: "\"users\".\"status\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -3050,7 +3144,10 @@ var joinFragTable = [18][28]runtime.Frag{
 		{A: "\"users\".\"prefs\" <@ $", B: ""},
 		{A: "\"users\".\"prefs\" ?| $", B: ""},
 		{A: "\"users\".\"prefs\" ?& $", B: ""},
+		{A: "COALESCE(\"users\".\"prefs\"::text, '') LIKE ANY($", B: ")"},
 		{},
+		{},
+		{A: "COALESCE(\"users\".\"prefs\"::text, '') IN ('', 'null', '[]', '{}')", B: ""},
 		{},
 		{},
 		{},
@@ -3076,6 +3173,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{A: "\"users\".\"scopes\" @> $", B: ""},
 		{A: "\"users\".\"scopes\" <@ $", B: ""},
 		{A: "\"users\".\"scopes\" && $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -3110,8 +3210,11 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"users\".\"age\" IS NULL", B: ""},
 		{A: "\"users\".\"age\" IS NOT NULL", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -3140,8 +3243,11 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"users\".\"last_ip\" IS NULL", B: ""},
 		{A: "\"users\".\"last_ip\" IS NOT NULL", B: ""},
+		{},
+		{A: "COALESCE(\"users\".\"last_ip\", '') = ''", B: ""},
 		{},
 		{},
 	},
@@ -3149,6 +3255,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{}, // opNone
 		{A: "\"users\".\"active\" = $", B: ""},
 		{A: "\"users\".\"active\" <> $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -3204,6 +3313,9 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // credit
 		{}, // opNone
@@ -3230,8 +3342,11 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"users\".\"credit\" IS NULL", B: ""},
 		{A: "\"users\".\"credit\" IS NOT NULL", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -3260,8 +3375,11 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
 		{A: "\"users\".\"splits\" IS NULL", B: ""},
 		{A: "\"users\".\"splits\" IS NOT NULL", B: ""},
+		{},
+		{},
 		{},
 		{},
 	},
@@ -3294,9 +3412,15 @@ var joinFragTable = [18][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // relation Posts (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},

@@ -50,14 +50,17 @@ const (
 	opJSONContainedBy  runtime.Op = 21
 	opHasAnyKey        runtime.Op = 22
 	opHasAllKeys       runtime.Op = 23
-	opIsNull           runtime.Op = 24
-	opIsNotNull        runtime.Op = 25
+	opJSONTextLikeAny  runtime.Op = 24
+	opIsNull           runtime.Op = 25
+	opIsNotNull        runtime.Op = 26
+	opJSONIsEmpty      runtime.Op = 27
+	opNullOrEmpty      runtime.Op = 28
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 26
-	opNotExists runtime.Op = 27
+	opExists    runtime.Op = 29
+	opNotExists runtime.Op = 30
 )
 
 const nCols = 2
@@ -501,7 +504,7 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys {
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
 		case 0:
 			if int(q.nar) >= 3 {
@@ -521,7 +524,7 @@ func (q *Query) leaf(p Pred) {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
-	if p.op == opIsNull || p.op == opIsNotNull {
+	if p.op == opIsNull || p.op == opIsNotNull || p.op == opJSONIsEmpty || p.op == opNullOrEmpty {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
@@ -642,7 +645,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [2][28]runtime.Frag{
+var fragTable = [2][31]runtime.Frag{
 	{ // post_id
 		{}, // opNone
 		{A: "\"post_id\" = $", B: ""},
@@ -661,6 +664,9 @@ var fragTable = [2][28]runtime.Frag{
 		{},
 		{A: "\"post_id\" = ANY($", B: ")"},
 		{A: "\"post_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -691,6 +697,9 @@ var fragTable = [2][28]runtime.Frag{
 		{},
 		{A: "\"related_id\" = ANY($", B: ")"},
 		{A: "\"related_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -918,9 +927,9 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		}
 		switch runtime.Op(t.Op()) {
-		case opIsNull, opIsNotNull:
+		case opIsNull, opIsNotNull, opJSONIsEmpty, opNullOrEmpty:
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys:
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
 			case 0:
 				b.anyRaw[nar] = q.anyRaw[nar]

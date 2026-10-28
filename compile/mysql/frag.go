@@ -50,6 +50,8 @@ var frags = map[string]frag{
 	// same thing, or a model that is portable stops being portable at the
 	// first case-insensitive lookup.
 	"EqLower": {") = LOWER(" + Placeholder, ")"},
+
+	"NullOrEmpty": {", '') = ''", ""},
 }
 
 // wrapped are the operators that are FUNCTIONS in MySQL. They take the
@@ -70,12 +72,25 @@ var wrapped = map[string]struct{ open, close string }{
 	// is the one that runs on both.
 	"HasAnyKey":  {"JSON_OVERLAPS(JSON_KEYS(", "), " + Placeholder + ")"},
 	"HasAllKeys": {"JSON_CONTAINS(JSON_KEYS(", "), " + Placeholder + ")"},
+
+	// The document's text, missing read as empty. MySQL prints an empty
+	// array and object as PostgreSQL does. It has no LIKE ANY, so the
+	// patterns come out of the one bound array with JSON_TABLE, as In's
+	// values do, and the statement's shape still does not depend on how many
+	// there are.
+	"JSONTextLikeAny": {
+		"EXISTS (SELECT 1 FROM JSON_TABLE(" + Placeholder +
+			", '$[*]' COLUMNS (`p` TEXT PATH '$')) AS `_storm_l` WHERE COALESCE(CAST(",
+		" AS CHAR), '') LIKE `_storm_l`.`p`)",
+	},
+	"JSONIsEmpty": {"COALESCE(CAST(", " AS CHAR), '') IN ('', 'null', '[]', '{}')"},
 }
 
 // prefixes wrap the IDENTIFIER for operators whose left side is an expression
 // rather than the bare column. Absent means no prefix.
 var prefixes = map[string]string{
-	"EqLower": "LOWER(",
+	"EqLower":     "LOWER(",
+	"NullOrEmpty": "COALESCE(",
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is

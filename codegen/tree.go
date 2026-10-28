@@ -173,6 +173,31 @@ func listOpTest(v string) string {
 	return b.String()
 }
 
+// arglessOpTest and arglessOpCases name every operator that binds nothing.
+func arglessOpTest(v string) string {
+	var b strings.Builder
+	for _, op := range ops {
+		if op.args != 0 {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(" || ")
+		}
+		b.WriteString(v + " == op" + op.name)
+	}
+	return b.String()
+}
+
+func arglessOpCases() string {
+	var names []string
+	for _, op := range ops {
+		if op.args == 0 {
+			names = append(names, "op"+op.name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
 func listOpCases() string {
 	var names []string
 	for _, op := range ops {
@@ -797,7 +822,10 @@ func (g *gen) treePreds() {
 	// empty string to status and returned nothing — no error, no warning, just
 	// the wrong rows, and only when a null check preceded another predicate of
 	// the same type.
-	g.p("\tif p.op == opIsNull || p.op == opIsNotNull {")
+	//
+	// Every argless operator, from the ops table: naming the two here is how
+	// a third would have bound a value it does not have.
+	g.p("\tif %s {", arglessOpTest("p.op"))
 	g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
 	g.p("\t\treturn")
 	g.p("\t}")
@@ -946,7 +974,7 @@ func (g *gen) treeBind() {
 	g.p("\t\t\tcontinue")
 	g.p("\t\t}")
 	g.p("\t\tswitch runtime.Op(t.Op()) {")
-	g.p("\t\tcase opIsNull, opIsNotNull:")
+	g.p("\t\tcase %s:", arglessOpCases())
 	g.p("\t\t\tcontinue")
 	if len(ts.anyList) > 0 {
 		g.p("\t\tcase %s:", listOpCases())

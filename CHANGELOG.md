@@ -14,6 +14,30 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A JSON document read as its text
+
+A jsonb column gains `TextLikeAny(patterns...)` and `IsEmpty()`. The first
+matches the document's text against any of a list of `LIKE` patterns, with a
+missing document read as the empty string; the list is one bound value, so
+the number of patterns never changes the statement
+(`COALESCE("col"::text, '') LIKE ANY($1)` on PostgreSQL, `JSON_TABLE` on MySQL
+and MariaDB, `OPENJSON` on SQL Server). The second holds when the document is
+missing, the JSON null, or an empty array or object, and binds nothing. They
+are what a list of names kept as a JSON array is asked ("does it name this
+person", "does it name nobody") without raw SQL. Refused on Oracle, where the
+empty string is NULL.
+
+A nullable text column gains `IsNullOrEmpty()`: `COALESCE("col", '') = ''`,
+one predicate where `Any(IsNull(), Eq(""))` was two, so it fits inside an
+`And` group (which takes no disjunction). On Oracle, where the empty string is
+NULL, it is `IS NULL`.
+
+Three new operator ids shift the generated `op…` constants, so committed
+packages regenerate. The bind loop now skips every argument-less operator by
+reading the operator table, rather than naming `IsNull` and `IsNotNull`.
+
+## v1.7.0 — 2026-10-28
+
 ### A write after a step, in one statement
 
 `Query.UpdateAllStep(m)` and `Query.ExistsStep()` make a `runtime.Step`: a

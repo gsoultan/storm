@@ -47,8 +47,11 @@ var frags = map[string]frag{
 	// In and NotIn are NOT here: their lowering needs the column's SQL type.
 	// See InFrag.
 
-	"IsNull":    {" IS NULL", ""},
-	"IsNotNull": {" IS NOT NULL", ""},
+	"IsNull": {" IS NULL", ""},
+	// Oracle stores the empty string as NULL, so a text column holding
+	// nothing is exactly a NULL one.
+	"NullOrEmpty": {" IS NULL", ""},
+	"IsNotNull":   {" IS NOT NULL", ""},
 
 	// Case-insensitive equality written as the expression a function-based
 	// index can be built on. Must exist and must mean the same thing as
@@ -91,7 +94,15 @@ const noDynamicKey = "Oracle's JSON path must be a literal — JSON_EXISTS(doc, 
 	"ORA-00907 — and it has no function that enumerates a document's keys, so a key " +
 	"list that arrives as a bound value cannot be looked up"
 
+// Oracle stores the empty string as NULL, so "a missing document reads as the
+// empty string" has no meaning here, and a document is a CLOB, which IN cannot
+// compare.
+const noEmptyText = "Oracle reads the empty string as NULL, so a missing document " +
+	"cannot read as empty text, and a CLOB document cannot be compared with IN"
+
 var refused = map[string]string{
+	"JSONTextLikeAny": noEmptyText,
+	"JSONIsEmpty":     noEmptyText,
 	"JSONContains":    noContainment,
 	"JSONContainedBy": noContainment,
 	"HasAnyKey":       noDynamicKey,

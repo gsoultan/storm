@@ -402,7 +402,7 @@ func (o opDef) m() string {
 func (o opDef) list() bool {
 	switch o.name {
 	case "In", "NotIn", "ArrayContains", "ArrayContainedBy", "ArrayOverlaps",
-		"HasAnyKey", "HasAllKeys":
+		"HasAnyKey", "HasAllKeys", "JSONTextLikeAny":
 		return true
 	}
 	return false
@@ -533,8 +533,25 @@ var ops = []opDef{
 	// rather than an arena, exactly like In on a text column.
 	{name: "HasAnyKey", args: 1},
 	{name: "HasAllKeys", args: 1},
+	// The document read as its TEXT: does it match any of these LIKE
+	// patterns. A missing document reads as the empty string. A list, so a
+	// variable number of patterns is still one placeholder and one statement.
+	//
+	// Not a substitute for @> or ?|. It is what a column that was stored as
+	// the characters of a JSON array is asked until it can be converted, and
+	// the question it answers survives that conversion.
+	{name: "JSONTextLikeAny", method: "TextLikeAny", args: 1},
 	{name: "IsNull", args: 0},
 	{name: "IsNotNull", args: 0},
+	// The document holds nothing: missing, the JSON null, or an empty array
+	// or object. Argless, so "names nobody" spends no list slot, and asked of
+	// the text, so it holds whether the column is jsonb or the characters of
+	// one.
+	{name: "JSONIsEmpty", method: "IsEmpty", args: 0},
+	// A nullable text column holding nothing: NULL or the empty string. One
+	// predicate rather than Any(IsNull(), Eq("")), so it can sit inside an
+	// And group, which takes no disjunction.
+	{name: "NullOrEmpty", method: "IsNullOrEmpty", args: 0},
 }
 
 const opNone = 0 // nibble 0 means "no predicate on this column"
