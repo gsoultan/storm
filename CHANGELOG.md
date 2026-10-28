@@ -14,6 +14,14 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Aggregations over a joined table and a JSON array's elements
+
+An aggregation can `Join(&model, &m.Relation)` the table a foreign key
+references, range over a JSON array column with `Elements(alias, &m.Col)`, read
+an element's field with `Field(alias, key)`, and filter on all of them with a
+declared `Where`, ANDed with the call site's predicates. One statement, as
+before. PostgreSQL only; the other back ends refuse the declaration.
+
 ### Joins: narrowed CTEs, composite keys, self-joins
 
 `WithWhere(alias, model, aggregate)` declares a CTE the call site narrows. A

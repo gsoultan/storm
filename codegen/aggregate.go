@@ -57,6 +57,14 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 		return
 	}
 	g.p("const %sSuffix = %s", low, lit(suf))
+	if composite(agg) {
+		declared, err := aggDeclared(g.lw, g.s, g.t, agg)
+		if err != nil {
+			g.err = fmt.Errorf("codegen: aggregate %s: %w", agg.Name, err)
+			return
+		}
+		g.p("const %sWhere = %s", low, lit(declared))
+	}
 	g.p("")
 	g.p("var (")
 	g.p("\t%sCache       = runtime.NewTreeCache()", low)
@@ -75,6 +83,16 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	// table that leaves the predicate out, because its model said so.
 	soft := g.t.SoftDeletes() && !agg.AcrossDeleted
 	switch {
+	case composite(agg):
+		// Joined tables or a declared Where: the predicate is the declared one
+		// and the marked rows', and with a join every call-site column is
+		// qualified by this table.
+		lowered := "lowering"
+		if len(agg.Joins) > 0 {
+			lowered = "joinLowering"
+		}
+		g.p("\treturn c.Put(toks, runtime.SpliceTreeWhereFrom(%sPrefix, %sWhere, toks, %s, suffix, %d))",
+			low, low, lowered, len(agg.Params))
 	case len(agg.Params) > 0 && soft:
 		g.p("\t// The declared parameters spell $1..$%d in the prefix, so the", len(agg.Params))
 		g.p("\t// call-site predicates are numbered from there — and the marked")
@@ -181,7 +199,7 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\treturn dst, rows.Err()")
 	g.p("}")
 	g.p("")
-	if len(agg.Params) == 0 {
+	if len(agg.Params) == 0 && !composite(agg) {
 		g.p("// %sPieces is the %q aggregation's statement around its", name, name)
 		g.p("// predicates, for the context package to splice a composed read into:")
 		g.p("// the SELECT … FROM, and the GROUP BY, ORDER BY and LIMIT after it.")
@@ -340,4 +358,27 @@ func pargs2(agg *schema.Aggregate) string {
 		s += ", " + lowerFirst(p.Name)
 	}
 	return s
+}
+
+// composite reports an aggregation that reads joined tables or an array's
+// elements, or declares its own Where: its statement has a declared predicate
+// and, with a join, qualified columns, so no composer can splice it.
+func composite(agg *schema.Aggregate) bool { return len(agg.Joins) > 0 || agg.Where != nil }
+
+// aggDeclared is the predicate an aggregation reads its rows through: its
+// declared Where and, unless it is AcrossDeleted, its table's live rows —
+// qualified when it joins, because then a bare column is ambiguous.
+func aggDeclared(lw lowering, s *schema.Schema, t *schema.Table, agg *schema.Aggregate) (string, error) {
+	where, err := lw.AggregateWhere(agg)
+	if err != nil {
+		return "", err
+	}
+	if agg.AcrossDeleted || !t.SoftDeletes() {
+		return where, nil
+	}
+	alias := ""
+	if len(agg.Joins) > 0 {
+		alias = t.Name
+	}
+	return liveIn(lw, s, t.Name, alias).And(where), nil
 }

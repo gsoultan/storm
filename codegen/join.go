@@ -9,7 +9,13 @@ import (
 )
 
 func (g *gen) joins() {
-	if len(g.t.Joins) == 0 {
+	joinedAgg := false
+	for _, a := range g.t.Aggregates {
+		if len(a.Joins) > 0 {
+			joinedAgg = true
+		}
+	}
+	if len(g.t.Joins) == 0 && !joinedAgg {
 		return
 	}
 	g.joinLowering()
@@ -265,10 +271,12 @@ func (g *gen) cteSQL(c schema.CTE) (string, string) {
 		}
 		// The aggregation's own read leaves the marked rows out, and so does
 		// the CTE made of it: a join is not a way round the soft delete.
-		if !a.AcrossDeleted {
-			sel += liveIn(g.lw, g.s, t.Name, "").Clause()
+		declared, err := aggDeclared(g.lw, g.s, t, a)
+		if err != nil {
+			g.err = err
+			return "", ""
 		}
-		return sel, suf
+		return sel + pgsql.Live(declared).Clause(), suf
 	}
 	g.err = fmt.Errorf("codegen: CTE %s names aggregate %s.%s, which does not exist",
 		c.Alias, c.Table, c.Aggregate)
@@ -375,9 +383,9 @@ func (g *gen) emitNarrowedJoin(lw lowering, s *schema.Schema, nj narrowedJoin) (
 				if err == nil {
 					err = perr
 				}
-				declared := ""
-				if !a.AcrossDeleted {
-					declared = string(liveIn(lw, s, ct.Name, ""))
+				declared, derr := aggDeclared(lw, s, ct, a)
+				if err == nil {
+					err = derr
 				}
 				ctes = append(ctes, cte{c: c, pkg: cpkg, declared: declared})
 				if err == nil {

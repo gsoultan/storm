@@ -34,6 +34,60 @@ func AggregateSelect(table string, agg *schema.Aggregate) string {
 	}
 	b.WriteString(" FROM ")
 	b.WriteString(Ident(table))
+	for _, j := range agg.Joins {
+		writeAggJoin(&b, j)
+	}
+	return b.String()
+}
+
+// writeAggJoin renders one of an aggregation's sources: a joined table, or a
+// range over a jsonb array's elements.
+//
+// The elements are read through a CASE because jsonb_array_elements raises on
+// anything that is not an array, and one row holding an object or a scalar
+// would fail the whole read; such a row contributes no elements instead.
+func writeAggJoin(b *strings.Builder, j schema.JoinTable) {
+	if j.Kind == schema.JoinElements {
+		if j.Of == nil {
+			return
+		}
+		b.WriteString(" CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(")
+		writeJSONB(b, *j.Of)
+		b.WriteString(") = 'array' THEN ")
+		writeJSONB(b, *j.Of)
+		b.WriteString(" ELSE '[]'::jsonb END) AS ")
+		b.WriteString(Ident(j.Alias))
+		return
+	}
+	if j.Kind == schema.JoinLeft {
+		b.WriteString(" LEFT JOIN ")
+	} else {
+		b.WriteString(" JOIN ")
+	}
+	b.WriteString(Ident(j.Table))
+	if j.Alias != "" && j.Alias != j.Table {
+		b.WriteString(" AS ")
+		b.WriteString(Ident(j.Alias))
+	}
+	b.WriteString(" ON ")
+	writeCond(b, j.On)
+}
+
+// writeJSONB renders a JSON column as jsonb, which is what the element
+// functions take. Cast whatever the declared type: a no-op on a jsonb column,
+// and what reads a column the database still holds as json or text.
+func writeJSONB(b *strings.Builder, e schema.Expr) {
+	writeExpr(b, e)
+	b.WriteString("::jsonb")
+}
+
+// AggregateWhere is the aggregation's declared predicate, or empty.
+func AggregateWhere(agg *schema.Aggregate) string {
+	if agg.Where == nil {
+		return ""
+	}
+	var b strings.Builder
+	writeCond(&b, *agg.Where)
 	return b.String()
 }
 

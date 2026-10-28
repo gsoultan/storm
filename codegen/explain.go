@@ -63,9 +63,17 @@ func ExplainQueries(s *schema.Schema, tables []string) ([]ExplainQuery, error) {
 			})
 		}
 		for _, a := range t.Aggregates {
+			declared, err := aggDeclared(postgresLowering(), s, t, a)
+			if err != nil {
+				return nil, err
+			}
+			sql := pgsql.AggregateSelect(t.Name, a)
+			if composite(a) && declared != "" {
+				sql += pgsql.WhereLead + declared
+			}
 			out = append(out, ExplainQuery{
 				Label: t.Name + " → " + a.Name + " (aggregate)",
-				SQL:   pgsql.AggregateSelect(t.Name, a) + pgsql.AggregateSuffix(a),
+				SQL:   sql + pgsql.AggregateSuffix(a),
 			})
 		}
 		for _, j := range t.Joins {
@@ -151,7 +159,12 @@ func joinExplainSQL(s *schema.Schema, t *schema.Table, j *schema.Join) (string, 
 		}
 		for _, a := range ct.Aggregates {
 			if a.Name == c.Aggregate {
-				return pgsql.AggregateSelect(ct.Name, a), pgsql.AggregateSuffix(a)
+				declared, err := aggDeclared(postgresLowering(), s, ct, a)
+				if err != nil {
+					cteErr = err
+					return "", ""
+				}
+				return pgsql.AggregateSelect(ct.Name, a) + pgsql.Live(declared).Clause(), pgsql.AggregateSuffix(a)
 			}
 		}
 		cteErr = &cteRefError{alias: c.Alias, table: c.Table, agg: c.Aggregate}

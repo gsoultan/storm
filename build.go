@@ -748,7 +748,7 @@ func (b *builder) callAggregates(mi *modelInfo) {
 	if !ok {
 		return
 	}
-	a.Aggregates(&Aggregates{t: mi.tbl, out: &mi.tbl.out.Aggregates})
+	a.Aggregates(&Aggregates{t: mi.tbl, out: &mi.tbl.out.Aggregates, bld: b})
 
 	// Validated after the whole declaration is read, because "is this column
 	// grouped?" cannot be answered until every By has been seen — a chain

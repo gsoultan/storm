@@ -11,6 +11,10 @@ const (
 	// and typing those columns as non-null would decode a missing match as a
 	// zero value.
 	JoinLeft
+	// JoinElements ranges an alias over a jsonb array column's elements:
+	// one row per element, and none for a row whose column is no array.
+	// Only an aggregation reads one.
+	JoinElements
 )
 
 // Join is one named read that projects across tables.
@@ -65,6 +69,8 @@ type JoinTable struct {
 	Alias string
 	// On is the join condition.
 	On Cond
+	// Of is the jsonb array column a JoinElements alias ranges over.
+	Of *Expr
 }
 
 // JoinCol is one output column.

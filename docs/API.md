@@ -623,6 +623,32 @@ the group's counts. The ordering is all it takes, and `OrderByAscNullsFirst` /
 `OrderByDescNullsLast` place the NULLs where PostgreSQL would not. PostgreSQL
 only.
 
+An aggregation can read more than its own table. `Join(&d, &i.Definition)`
+joins the table a relation field references, inner, its marked rows matching
+nothing; `Elements("t", &i.Tokens)` ranges over a JSON array column, one row per
+element, none for a row holding no array; `a.Field("t", "node_id")` reads an
+element's field as text; and `Where(cond)` filters on any of them, ANDed with
+the call site's predicates on the table's own columns. Sources come before
+anything that reads, because with them every column is qualified:
+
+```go
+func (i *Instance) Aggregates(a *storm.Aggregates) {
+    var d Definition
+    w := a.Named("Waiting").Join(&d, &i.Definition).Elements("t", &i.Tokens).
+        Where(a.Ne(a.Coalesce(a.Field("t", "status"), a.Lit("")), a.Lit("completed")))
+    w.By(&d.Key)
+    node := w.ByExpr("Node", a.Field("t", "node_id"))
+    w.Sets([]string{"Key", "Node"}, []string{"Key"})
+    w.FirstOf(&d.Name, "Name", a.Over().OrderByDesc(&d.Version))
+    w.Count("Waiting")
+    w.CountDistinct(&i.ID, "Instances")
+    w.GroupingOf("Total", node)
+}
+// instance.New().Where(instance.Status.In("active", "suspended")).AllWaiting(ctx, ex)
+```
+
+PostgreSQL only; the other back ends refuse the declaration.
+
 **Unions** — several tables merged into one stream. A union has no driving
 table, so unlike everything else here it is declared as a package-level var
 rather than a method ([ADR-0008](adr/0008-union-has-no-driving-table.md)):
