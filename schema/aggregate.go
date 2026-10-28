@@ -11,6 +11,10 @@ const (
 	AggAvg   AggFunc = "avg"
 	AggMin   AggFunc = "min"
 	AggMax   AggFunc = "max"
+	// AggFirst is the group's first value in a declared order: what a row
+	// with the smallest sort key says. It carries its ordering in
+	// Expr.Within, and nothing else reads that field.
+	AggFirst AggFunc = "first"
 )
 
 // Aggregate is one named grouped read: a GROUP BY and the aggregates over it.
@@ -145,6 +149,12 @@ func AggregateResult(fn AggFunc, in Type) (out Type, nullable bool, err error) {
 		// count never returns NULL: no rows is 0 rows.
 		return Type{Name: TypeInt8}, false, nil
 
+	case AggFirst:
+		// One of the group's values, so the type is the input's. Nullable even
+		// over a NOT NULL column: a FILTER can leave a group with no rows to
+		// take the first of.
+		return in, true, nil
+
 	case AggMin, AggMax:
 		// Order-based, so the type is preserved exactly — including numeric's
 		// precision and scale, which a Decimal decode depends on.
@@ -231,3 +241,9 @@ func AggregatableSumAvg(in Type) bool {
 	}
 	return false
 }
+
+// AggregatableFirst reports whether a first value can be taken of this type.
+// Everything but an array: PostgreSQL collects the group's values into an
+// array and reads its first element, and arrays of arrays are one wider
+// array, whose first element is not the first value.
+func AggregatableFirst(in Type) bool { return !in.Array }

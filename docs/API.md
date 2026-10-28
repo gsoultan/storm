@@ -617,6 +617,12 @@ Also available: `Min`/`Max`/`Avg`, `Sum`/`Min`/`Max`Over, `RowNumber`, `Rank`,
 `DenseRank`, `CumeDist`, `Lag`, `Lead`, `FirstValue`, `LastValue`, and
 `Rollup`/`Cube`/`Sets` with `GROUPING()`.
 
+`FirstOf(x, "As", a.Over().OrderByAsc(...))` is the group's first value of `x`
+in that order: the column read off the row a `DISTINCT ON` would keep, next to
+the group's counts. The ordering is all it takes, and `OrderByAscNullsFirst` /
+`OrderByDescNullsLast` place the NULLs where PostgreSQL would not. PostgreSQL
+only.
+
 **Unions** — several tables merged into one stream. A union has no driving
 table, so unlike everything else here it is declared as a package-level var
 rather than a method ([ADR-0008](adr/0008-union-has-no-driving-table.md)):

@@ -47,6 +47,12 @@ var ErrNoFilterClause = errors.New(
 		"as SUM(CASE WHEN ... END) changes what count(*) counts rather than how it is " +
 		"spelled\n      write the CASE yourself if that is what you mean")
 
+// ErrNoFirstOf is why a first-value aggregate cannot be lowered. PostgreSQL's
+// spelling collects the group into an array, and Oracle has no array to
+// collect into; its own ways of saying it are not written yet.
+var ErrNoFirstOf = errors.New(
+	"compile/oracle: a first value in a declared order is PostgreSQL-only for now")
+
 // ErrNoRangeOffset is why a numeric RANGE frame bound cannot be lowered.
 //
 // Oracle accepts `RANGE BETWEEN 3 PRECEDING` only when the ORDER BY key is a
@@ -128,6 +134,10 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 		w.b.WriteByte(')')
 
 	case schema.ExprAgg:
+		if e.Fn == string(schema.AggFirst) {
+			w.fail(ErrNoFirstOf)
+			return
+		}
 		w.b.WriteString(e.Fn)
 		w.b.WriteByte('(')
 		if e.Distinct {

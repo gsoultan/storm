@@ -40,6 +40,12 @@ var ErrNoFilterClause = errors.New(
 		"SUM(CASE WHEN … THEN … END), which changes what the aggregate counts rather than " +
 		"how it is spelled, so storm will not do it silently")
 
+// ErrNoFirstOf is why a first-value aggregate cannot be lowered. PostgreSQL's
+// spelling collects the group into an array, and SQL Server has no array to
+// collect into; its own ways of saying it are not written yet.
+var ErrNoFirstOf = errors.New(
+	"compile/mssql: a first value in a declared order is PostgreSQL-only for now")
+
 // ErrNoRangeOffset is why a numeric RANGE frame cannot be lowered.
 var ErrNoRangeOffset = errors.New(
 	"compile/mssql: SQL Server's RANGE frame accepts only UNBOUNDED and CURRENT ROW, not a " +
@@ -115,6 +121,10 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 		w.b.WriteByte(')')
 
 	case schema.ExprAgg:
+		if e.Fn == string(schema.AggFirst) {
+			w.fail(ErrNoFirstOf)
+			return
+		}
 		w.b.WriteString(e.Fn)
 		w.b.WriteByte('(')
 		if e.Distinct {

@@ -100,6 +100,11 @@ func (o Out) OverWindow(w *WindowSpec) Out {
 		b.fail("OverWindow applies to an aggregate; %q is not one", o.name)
 		return o
 	}
+	if t.Expr.Fn == string(schema.AggFirst) {
+		b.fail("%q is a first value and cannot take a window — use FirstValue for "+
+			"the first row of a window", o.name)
+		return o
+	}
 	if t.Expr.Distinct {
 		b.fail("%q is a count(DISTINCT ...) and cannot take a window — PostgreSQL "+
 			"rejects DISTINCT in an aggregate used as a window function", o.name)
@@ -355,6 +360,60 @@ func (b *AggregateBuilder) Min(x any, as string) Out {
 }
 func (b *AggregateBuilder) Max(x any, as string) Out {
 	return b.agged(schema.AggMax, toTerm(x), as)
+}
+
+// FirstOf adds the group's first value of x, first in the order `by` gives:
+//
+//	b.FirstOf(&e.Seq, "FirstSeq", a.Over().OrderByAsc(&e.CreatedAt).OrderByAscNullsFirst(&e.Seq))
+//
+// It is the column read off the row a DISTINCT ON would keep, next to a count
+// of every row — which a window over the rows and a filter on its row number
+// otherwise have to say in two levels of query. `by` is only an ordering: a
+// partition is the grouping already, and a frame has nothing to count along.
+// The ordering should leave no ties, or which tied row is first is up to the
+// server. Nullable whatever x is, because a Filter can leave a group nothing to
+// take the first of.
+func (b *AggregateBuilder) FirstOf(x any, as string, by *WindowSpec) Out {
+	if b.dead {
+		return b.none()
+	}
+	if !isExportedIdent(as) {
+		b.fail("first(...) is named %q, which must be a valid exported Go identifier", as)
+		return b.none()
+	}
+	if by == nil || len(by.order) == 0 {
+		b.fail("first %q has no ordering — the first of an unordered group is "+
+			"whichever row the server reads first", as)
+		return b.none()
+	}
+	if len(by.partition) > 0 || by.frame != nil {
+		b.fail("first %q orders its group and takes nothing else — a partition is "+
+			"the grouping already, and a frame has nothing to count along", as)
+		return b.none()
+	}
+	e, err := b.resolveTerm(toTerm(x))
+	if err != nil {
+		b.fail("first %q: %w", as, err)
+		return b.none()
+	}
+	if !schema.AggregatableFirst(e.Type) {
+		b.fail("first %q: the first value of an array is not something storm can take", as)
+		return b.none()
+	}
+	win, err := b.resolveWindow(by)
+	if err != nil {
+		b.fail("first %q: %w", as, err)
+		return b.none()
+	}
+	rt, nullable, err := schema.AggregateResult(schema.AggFirst, e.Type)
+	if err != nil {
+		b.fail("first %q: %w", as, err)
+		return b.none()
+	}
+	return b.push(as, schema.Expr{
+		Kind: schema.ExprAgg, Fn: string(schema.AggFirst),
+		Args: []schema.Expr{e}, Within: win.OrderBy, Type: rt, Nullable: nullable,
+	})
 }
 
 // GroupingOf adds GROUPING(cols...) — 1 when the row is a subtotal over those
@@ -1003,7 +1062,7 @@ func (b *AggregateBuilder) resolveWindow(w *WindowSpec) (*schema.Window, error) 
 		if err != nil {
 			return nil, err
 		}
-		out.OrderBy = append(out.OrderBy, schema.OrderTerm{Expr: e, Desc: o.desc})
+		out.OrderBy = append(out.OrderBy, schema.OrderTerm{Expr: e, Desc: o.desc, NullsFirst: o.nullsFirst})
 	}
 	return out, nil
 }
