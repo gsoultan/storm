@@ -14,6 +14,19 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A guarded increment: `IncWhen`
+
+`t.Col(&j.Retries).IncWhen(&j.Status)` gives the generated `Mut` an
+`IncRetriesWhenStatus(v)`: `retries = retries + CASE WHEN status = $n THEN 1
+ELSE 0 END`, which counts only when the row, as it stands before the write,
+holds `v`. A claim that counts taking over a running job as an attempt is then
+one `UPDATE`, rather than raw SQL or a read and a write. Every back end spells
+it; `Update`, `UpdateOp`, `UpdateAll`, `Take` and the composed writes bind it.
+
+Each guard takes an expression bit above the columns' in the statement key, so
+a table without one generates byte-for-byte what it did, and a table's
+updatable columns plus its guards must fit the 64-bit mask.
+
 ### A JSON document read as its text
 
 A jsonb column gains `TextLikeAny(patterns...)` and `IsEmpty()`. The first

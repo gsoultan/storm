@@ -364,6 +364,11 @@ func (b *ColBuilder) Named(n string) *ColBuilder {
 // A rename under an expression that mentions the old column is a build failure
 // against the scratch schema, which is where it belongs.
 func renameCol(t *schema.Table, old, n string) {
+	for _, c := range t.Columns {
+		if c.IncWhen == old {
+			c.IncWhen = n
+		}
+	}
 	for i, c := range t.PrimaryKey {
 		if c == old {
 			t.PrimaryKey[i] = n
@@ -443,6 +448,34 @@ func (b *ColBuilder) Version() *ColBuilder         { b.c.sc.Version = true; retu
 func (b *ColBuilder) Comment(s string) *ColBuilder { b.c.sc.Comment = s; return b }
 func (b *ColBuilder) NotNull() *ColBuilder         { b.c.sc.NotNull = true; return b }
 func (b *ColBuilder) Nullable() *ColBuilder        { b.c.sc.NotNull = false; return b }
+
+// IncWhen gives a counter a guarded increment: Inc<Counter>When<Field>(v)
+// on the generated Mut adds one to the counter when the field, as the row
+// stands before the write, equals v, and adds nothing otherwise.
+//
+// The test reads the row inside the same statement that writes it, so it
+// sees the value the write replaces. A claim that takes over a job whose
+// worker died, and counts that as an attempt, says it in one UPDATE: the
+// job's status is set to running and the attempt counts only if it already
+// was. Read first and decide in Go, and two claimants racing for one job
+// both see the old status.
+//
+// The counter is a NOT NULL integer; the field is a scalar the database can
+// compare with =, so not json and not an array. The generator refuses both
+// otherwise, naming the column.
+func (b *ColBuilder) IncWhen(fieldPtr any) *ColBuilder {
+	c, err := b.t.columnOf(fieldPtr)
+	switch {
+	case err != nil:
+		b.t.errs.add(fmt.Errorf("%s.%s: IncWhen: %w", b.t.out.Name, b.c.sc.Name, err))
+	case c == b.c.sc.Name:
+		b.t.errs.add(fmt.Errorf("%s.%s: IncWhen names the counter itself; a guard reads another column",
+			b.t.out.Name, b.c.sc.Name))
+	default:
+		b.c.sc.IncWhen = c
+	}
+	return b
+}
 
 // ConvertFrom says how to read the value the column held before its type
 // changed, for a change PostgreSQL has no cast for. JSONText reads a text

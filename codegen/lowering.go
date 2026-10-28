@@ -133,6 +133,9 @@ type lowering struct {
 	SetFrag         func(string) (string, string)
 	BumpFrag        func(string) (string, string)
 	AddFrag         func(string) (string, string)
+	// IncWhenFrag is a counter's guarded increment: one when the named
+	// column equals the bound value, as the row stands, and none otherwise.
+	IncWhenFrag func(col, cond string) (string, string)
 	// TakeOpen narrows an UPDATE to the rows a read of the same table
 	// selects, by key; TakeClose ends it. Nil where the back end cannot
 	// lock and limit inside the subquery, and Take is then not generated.
@@ -394,6 +397,7 @@ func postgresLowering() lowering {
 		SetFrag:          pgsql.SetFrag,
 		BumpFrag:         pgsql.BumpFrag,
 		AddFrag:          pgsql.AddFrag,
+		IncWhenFrag:      pgsql.IncWhenFrag,
 		TakeOpen:         pgsql.TakeOpen,
 		TakeClose:        pgsql.TakeClose,
 		TrimOpen:         pgsql.TrimOpen,
@@ -524,6 +528,7 @@ func mysqlLowering() lowering {
 		SetFrag:         mysql.SetFrag,
 		BumpFrag:        mysql.BumpFrag,
 		AddFrag:         mysql.AddFrag,
+		IncWhenFrag:     mysql.IncWhenFrag,
 		NowFrag:         mysql.NowFrag,
 		SetLead:         mysql.SetLead,
 		SetSep:          mysql.SetSep,
@@ -708,6 +713,7 @@ func mssqlLowering() lowering {
 		SetFrag:             mssql.SetFrag,
 		BumpFrag:            mssql.BumpFrag,
 		AddFrag:             mssql.AddFrag,
+		IncWhenFrag:         mssql.IncWhenFrag,
 		NowFrag:             mssql.NowFrag,
 		SetLead:             mssql.SetLead,
 		SetSep:              mssql.SetSep,
@@ -863,6 +869,7 @@ func oracleLowering() lowering {
 		SetFrag:         oracle.SetFrag,
 		BumpFrag:        oracle.BumpFrag,
 		AddFrag:         oracle.AddFrag,
+		IncWhenFrag:     oracle.IncWhenFrag,
 		NowFrag:         oracle.NowFrag,
 		SetLead:         oracle.SetLead,
 		SetSep:          oracle.SetSep,

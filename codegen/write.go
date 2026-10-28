@@ -91,6 +91,134 @@ func hasAddable(upd []colInfo) bool {
 	return false
 }
 
+// guarded is the counters that carry a guarded increment, in SET order.
+// Counter j takes the expression bit nUpdatable+j, above every column's: a
+// guarded increment is then a statement key of its own, and the loops over
+// the columns pass it by.
+func guarded(upd []colInfo) []colInfo {
+	var out []colInfo
+	for _, c := range upd {
+		if c.col.IncWhen != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// guardOf is the column a counter's guard reads.
+func (g *gen) guardOf(c colInfo) colInfo {
+	sc := g.t.Column(c.col.IncWhen)
+	return colInfo{col: sc, kind: goKind(sc), goBase: baseGoType(sc)}
+}
+
+// checkGuards refuses a guarded increment the generator cannot write,
+// naming the column.
+func (g *gen) checkGuards(upd []colInfo) error {
+	gs := guarded(upd)
+	for _, c := range g.t.Columns {
+		if c.IncWhen != "" && !containsCol(gs, c.Name) {
+			return fmt.Errorf("codegen: table %s: %s has a guarded increment but is not updatable", g.t.Name, c.Name)
+		}
+	}
+	if len(gs) == 0 {
+		return nil
+	}
+	if len(upd)+len(gs) > maxDirty {
+		return fmt.Errorf("codegen: table %s has %d updatable columns and %d guarded increments; the masks hold %d",
+			g.t.Name, len(upd), len(gs), maxDirty)
+	}
+	if g.lw.IncWhenFrag == nil {
+		return fmt.Errorf("codegen: table %s: the %s back end has no guarded increment", g.t.Name, g.lw.name)
+	}
+	for _, c := range gs {
+		if !addableCol(c) {
+			return fmt.Errorf("codegen: table %s: IncWhen on %s: the counter must be a NOT NULL integer", g.t.Name, c.Name())
+		}
+		sc := g.t.Column(c.col.IncWhen)
+		if sc == nil {
+			return fmt.Errorf("codegen: table %s: IncWhen on %s reads %s, which is not a column", g.t.Name, c.Name(), c.col.IncWhen)
+		}
+		switch goKind(sc) {
+		case kindBool, kindInt2, kindInt4, kindInt8, kindText, kindUUID:
+		default:
+			return fmt.Errorf("codegen: table %s: IncWhen on %s reads %s, which = cannot compare: a guard reads a bool, an integer, text or a uuid",
+				g.t.Name, c.Name(), sc.Name)
+		}
+	}
+	return nil
+}
+
+func containsCol(cs []colInfo, name string) bool {
+	for _, c := range cs {
+		if c.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// guardSet emits the guarded increments' assignments, after the columns'.
+func (g *gen) guardSet() {
+	if len(guarded(updatable(g.t))) > 0 {
+		g.p("	set = withGuards(k.Expr, set)")
+	}
+}
+
+// guardArgs emits their arguments, after the columns', in the same order.
+func (g *gen) guardArgs(indent string) {
+	if len(guarded(updatable(g.t))) > 0 {
+		g.p("%sargs = m.guardArgs(args)", indent)
+	}
+}
+
+// guardDecls emits the guarded increments' bits, assignments and binding.
+func (g *gen) guardDecls(upd []colInfo) {
+	gs := guarded(upd)
+	if len(gs) == 0 {
+		return
+	}
+	g.p("// Guarded increments. Each takes an expression bit above every")
+	g.p("// column's, so it is a statement key of its own and the loops over")
+	g.p("// the columns pass it by.")
+	g.p("const (")
+	for j, c := range gs {
+		g.p("	guard%s uint64 = 1 << (nUpdatable + %d)", exportName(c.Name()), j)
+	}
+	g.p(")")
+	g.p("")
+	g.p("// guardFrags adds one to a counter when another column, as the row")
+	g.p("// stands before the write, equals the bound value.")
+	g.p("var guardFrags = [%d]runtime.Frag{", len(gs))
+	for _, c := range gs {
+		a, b := g.lw.IncWhenFrag(c.Name(), c.col.IncWhen)
+		g.p("	{A: %q, B: %q}, // %s + 1 when %s matches", a, b, c.Name(), c.col.IncWhen)
+	}
+	g.p("}")
+	g.p("")
+	g.p("// withGuards appends the guarded increments expr carries, in order.")
+	g.p("func withGuards(expr uint64, set []runtime.Frag) []runtime.Frag {")
+	g.p("	for j := range guardFrags {")
+	g.p("		if expr&(1<<uint(nUpdatable+j)) != 0 {")
+	g.p("			set = append(set, guardFrags[j])")
+	g.p("		}")
+	g.p("	}")
+	g.p("	return set")
+	g.p("}")
+	g.p("")
+	g.p("// guardArgs appends the values the guarded increments compare with,")
+	g.p("// in the order withGuards writes them.")
+	g.p("func (m Mut) guardArgs(args []any) []any {")
+	for _, c := range gs {
+		n := exportName(c.Name())
+		g.p("	if m.expr&guard%s != 0 {", n)
+		g.p("		args = append(args, m.when%s)", n)
+		g.p("	}")
+	}
+	g.p("	return args")
+	g.p("}")
+	g.p("")
+}
+
 // colExpr reports which expression a column admits, if any.
 func colExpr(c *schema.Column) setExpr {
 	switch goKind(c) {
@@ -155,7 +283,13 @@ func (g *gen) writes() {
 		return
 	}
 
+	if err := g.checkGuards(upd); err != nil {
+		g.err = err
+		return
+	}
+
 	g.writeConsts(ins, upd, pk)
+	g.guardDecls(upd)
 	g.mutType(upd, pk)
 	g.insType(ins)
 	g.insertFn(ins)
@@ -373,6 +507,10 @@ func (g *gen) mutType(upd, pk []colInfo) {
 	g.p("\trow   Row")
 	g.p("\tdirty uint64")
 	g.p("\texpr  uint64")
+	for _, c := range guarded(upd) {
+		g.p("\t// when%s is what Inc%sWhen%s compares %s with.", exportName(c.Name()), exportName(c.Name()), exportName(c.col.IncWhen), c.col.IncWhen)
+		g.p("\twhen%s %s", exportName(c.Name()), g.guardOf(c).goBase)
+	}
 	g.p("}")
 	g.p("")
 	g.p("// Mutate stages a row read from the database.")
@@ -429,6 +567,13 @@ func (g *gen) mutType(upd, pk []colInfo) {
 	g.p("// the enforcement, so misuse does not compile rather than failing later.")
 	for _, c := range upd {
 		n := exportName(c.Name())
+		// Every other assignment to a guarded counter drops its guard: the
+		// last setter called is the one the write carries.
+		clearGuard := func() {
+			if c.col.IncWhen != "" {
+				g.p("\tm.expr &^= guard%s", n)
+			}
+		}
 		// The setter takes the bare T even when the column is nullable:
 		// requiring a caller to build a Null[T] to assign a value that is
 		// definitely present is ceremony for nothing.
@@ -436,6 +581,7 @@ func (g *gen) mutType(upd, pk []colInfo) {
 		g.p("\tm.row.%s = %s", n, mutAssign(c))
 		g.p("\tm.dirty |= d%s", n)
 		g.p("\tm.expr &^= d%s", n)
+		clearGuard()
 		g.p("}")
 		g.p("")
 		// The server-side form, where the column has one. It takes no argument
@@ -463,6 +609,7 @@ func (g *gen) mutType(upd, pk []colInfo) {
 			g.p("func (m *Mut) Inc%s() {", n)
 			g.p("\tm.expr |= d%s", n)
 			g.p("\tm.dirty &^= d%s", n)
+			clearGuard()
 			g.p("}")
 			g.p("")
 			if addableCol(c) {
@@ -475,6 +622,24 @@ func (g *gen) mutType(upd, pk []colInfo) {
 				g.p("\tm.row.%s = n", n)
 				g.p("\tm.dirty |= d%s", n)
 				g.p("\tm.expr |= d%s", n)
+				clearGuard()
+				g.p("}")
+				g.p("")
+			}
+			if c.col.IncWhen != "" {
+				w := g.guardOf(c)
+				wn := exportName(w.Name())
+				g.p("// Inc%sWhen%s adds one to the column's OWN value when %s, as", n, wn, w.Name())
+				g.p("// the row stands before the write, equals v, and adds nothing")
+				g.p("// otherwise. The test and the write are one statement, so it")
+				g.p("// reads the value this write replaces: two writers racing see")
+				g.p("// one outcome each, not the same old value twice. It replaces")
+				g.p("// any other assignment to the column staged on m.")
+				g.p("func (m *Mut) Inc%sWhen%s(v %s) {", n, wn, w.goBase)
+				g.p("\tm.when%s = v", n)
+				g.p("\tm.dirty &^= d%s", n)
+				g.p("\tm.expr &^= d%s", n)
+				g.p("\tm.expr |= guard%s", n)
 				g.p("}")
 				g.p("")
 			}
@@ -489,6 +654,7 @@ func (g *gen) mutType(upd, pk []colInfo) {
 			g.p("\tm.row.%s = runtime.Null[%s]{}", n, c.goBase)
 			g.p("\tm.dirty |= d%s", n)
 			g.p("\tm.expr &^= d%s", n)
+			clearGuard()
 			g.p("}")
 			g.p("")
 		}
@@ -1440,6 +1606,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 	g.p("\t\t\tset = append(set, setFrags[i])")
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardSet()
 	if hasVersion {
 		g.p("\tset = append(set, versionBump)")
 	}
@@ -1538,6 +1705,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 	}
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardArgs("\t")
 	for _, c := range pk {
 		g.p("\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
 	}
@@ -1851,6 +2019,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	}
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardArgs("\t")
 	for _, c := range pk {
 		g.p("\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
 	}
@@ -2162,6 +2331,7 @@ func (g *gen) writeAll(upd []colInfo) {
 	}
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardArgs("\t")
 	g.p("\treturn args")
 	g.p("}")
 	g.p("")
@@ -2207,6 +2377,7 @@ func (g *gen) writeAll(upd []colInfo) {
 	g.p("\t\t\tset = append(set, setFrags[i])")
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardSet()
 	if hasVersion {
 		g.p("\t// Every row written moves its version on, so a reader holding one")
 		g.p("\t// of them loses its optimistic lock — exactly as if Update had run.")
@@ -2729,6 +2900,7 @@ func (g *gen) stepFns(upd, pk []colInfo) {
 	}
 	g.p("\t\t\t}")
 	g.p("\t\t}")
+	g.guardArgs("\t\t")
 	g.p("\t\treturn run(st.SQL, append(args, q.bindPreds(b)...))")
 	g.p("\t}")
 	g.p("}")
@@ -2888,6 +3060,7 @@ func (g *gen) stepFns(upd, pk []colInfo) {
 	g.p("\t\t\tset = append(set, setFrags[i])")
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardSet()
 	if hasVersion {
 		g.p("\tset = append(set, versionBump)")
 	}
@@ -2957,6 +3130,7 @@ func (g *gen) stepFns(upd, pk []colInfo) {
 	g.p("\t\t\t\targs = append(args, m.arg(i))")
 	g.p("\t\t\t}")
 	g.p("\t\t}")
+	g.guardArgs("\t\t")
 	g.p("\t\targs = append(args, q.bindPreds(b)...)")
 	g.p("\t\tn, err := ex.Exec(ctx, st.SQL, args)")
 	g.p("\t\twritten = n")
