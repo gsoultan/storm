@@ -14,6 +14,13 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `UpsertWhere`: an upsert whose update is guarded
+
+A table declared `t.GuardsUpsert()` gets `Ins.UpsertWhere(ctx, ex, q)`: the
+`ON CONFLICT … DO UPDATE` carries a `WHERE` from `q`, read from the row already
+there with every column qualified by the table, so a heartbeat that rewrites a
+row only when it is stale is one statement. PostgreSQL only.
+
 ### `LockTables` and `LockTimeout`
 
 A table declared `t.Lockable()` gets a `Table<Name>` in its context package,

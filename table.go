@@ -922,6 +922,13 @@ func (t *Table) Takes() *Table { t.out.Takes = true; return t }
 // from one never written) say so here.
 func (t *Table) ReadsDeleted() *Table { t.out.ReadsDeleted = true; return t }
 
+// GuardsUpsert generates Ins.UpsertWhere: an upsert on one of the table's
+// unique keys whose update applies only when the row already there matches a
+// query, and otherwise leaves it alone. "Record the worker, but rewrite its
+// row only when it is stale or says another version" is then one statement.
+// PostgreSQL only.
+func (t *Table) GuardsUpsert() *Table { t.out.GuardsUpsert = true; return t }
+
 // Lockable puts this table in its context package's LockTables, as
 // Table<GoName>: a lock on the whole table for the rest of a transaction,
 // where the back end has one. A sweep that must not race the writers of the

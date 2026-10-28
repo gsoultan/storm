@@ -811,6 +811,19 @@ err := m.Update(ctx, ex)
 One compiled statement per distinct dirty mask, so a hundred call sites that set
 the same two columns share one statement.
 
+A table declared `t.GuardsUpsert()` also gets `UpsertWhere(ctx, ex, q)`: the
+upsert's update applies only when the row already there matches `q`, and
+otherwise the row is left alone. It reports the rows written.
+
+```go
+n := worker.Create()
+n.SetTopic(topic); n.SetWorkerID(id); n.SetVersion(v); n.SetLastSeenAt(now)
+n.OnConflictTopicWorkerID()
+_, err := n.UpsertWhere(ctx, ex, worker.New().
+    Any(worker.LastSeenAt.Lt(now.Add(-10*time.Second)), worker.Version.NotEq(v), worker.Version.IsNull()))
+// … ON CONFLICT (…) DO UPDATE SET … WHERE "workers"."last_seen_at" < $6 OR …
+```
+
 ### Assignments the database computes
 
 Some values must not come from Go. A timestamp bound from `time.Now()` records

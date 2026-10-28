@@ -90,6 +90,10 @@ type Table struct {
 	// it does for an aggregation AcrossDeleted.
 	ReadsDeleted bool
 
+	// GuardsUpsert gives the insert UpsertWhere: an upsert whose update
+	// applies only to an existing row a query matches.
+	GuardsUpsert bool
+
 	// Lockable puts the table in its context's LockTables, which takes a
 	// table lock for the rest of a transaction.
 	Lockable bool

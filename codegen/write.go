@@ -1381,6 +1381,7 @@ func (g *gen) insType(ins []colInfo) {
 	}
 
 	g.upsertTargets(ins)
+	g.guardedUpsert(ins)
 	g.stmtForInsertHead("stmtForInsert", "insCache", len(adds) > 0)
 	g.p("\tcols := make([]string, 0, nInsertable)")
 	g.p("\tfor i := 0; i < nInsertable; i++ {")
@@ -3161,4 +3162,100 @@ func (g *gen) declaredLive() string {
 		return ""
 	}
 	return g.lw.SoftDeleteWhere(g.t.SoftDelete)
+}
+
+// guardedUpsert emits Ins.UpsertWhere, where the model asks for it: the
+// upsert's DO UPDATE with a WHERE over the row already there, from a query of
+// this table. Its columns are qualified by the table, because EXCLUDED has the
+// same names and a bare one is ambiguous there.
+func (g *gen) guardedUpsert(ins []colInfo) {
+	if !g.t.GuardsUpsert {
+		return
+	}
+	if g.lw.Upsert == nil || len(conflictTargets(g.t)) == 0 {
+		g.err = fmt.Errorf("codegen: table %s: GuardsUpsert needs a unique key and a back end whose upsert is a clause (%s)",
+			g.t.Name, g.lw.name)
+		return
+	}
+	table := g.lw.Ident(g.t.Name)
+	g.p("// guardFragTable is fragTable with every column named with its table,")
+	g.p("// for UpsertWhere's WHERE, where EXCLUDED carries the same names.")
+	g.fragTable("guardFragTable", func(col string) string { return table + "." + g.lw.Ident(col) })
+	g.p("func guardFragOf(op, col uint32) runtime.Frag {")
+	g.p("\tif int(col) >= len(guardFragTable) || int(op) >= len(guardFragTable[0]) {")
+	g.p("\t\treturn runtime.Frag{}")
+	g.p("\t}")
+	g.p("\treturn guardFragTable[col][op]")
+	g.p("}")
+	g.p("")
+	g.p("var guardLowering = func() runtime.Lowering {")
+	g.p("\tl := lowering")
+	g.p("\tl.Frag = guardFragOf")
+	g.p("\treturn l")
+	g.p("}()")
+	g.p("")
+	g.p("var guardedUpsertCache = runtime.NewTreeCache()")
+	g.p("")
+	g.p("var errUnguardedUpsert = errors.New(%q)", "storm: UpsertWhere guards the update of an upsert: "+
+		"name its unique key with OnConflict…, without DoNothing, and pass a query with no Limit, Offset or lock")
+	g.p("")
+	g.p("// UpsertWhere inserts the row or, on a conflict on the key OnConflict…")
+	g.p("// named, updates the row already there only when q matches it, and")
+	g.p("// otherwise leaves it alone. It reports the rows written: one inserted")
+	g.p("// or updated, or none.")
+	g.p("//")
+	g.p("//\tn.OnConflictWorker().UpsertWhere(ctx, ex, New().Any(LastSeenAt.Lt(stale), Version.NotEq(v)))")
+	g.p("//")
+	g.p("// q's predicates read the row already there; ordering is ignored.")
+	g.p("func (n *Ins) UpsertWhere(ctx context.Context, ex %s, q Query) (int64, error) {", g.execType())
+	g.p("\tif n.set == 0 {")
+	g.p("\t\treturn 0, runtime.ErrNothingAssigned")
+	g.p("\t}")
+	g.p("\tif n.conflict < 2 || n.conflict%%2 == 1 || q.Shaped() {")
+	g.p("\t\treturn 0, errUnguardedUpsert")
+	g.p("\t}")
+	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\t\treturn 0, err")
+	g.p("\t}")
+	add := g.insAddArg("n")
+	addKey := "0"
+	if add != "" {
+		addKey = "runtime.Tok(n.add)"
+	}
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\ttoks := q.preds(&buf)")
+	g.p("\tif len(assignable((n.conflict-2)/2, n.set)) == 0 {")
+	g.p("\t\ttoks = nil // DO NOTHING: there is no update to guard")
+	g.p("\t}")
+	g.p("\tvar kb [%d]runtime.Tok", g.streamBuf()+4)
+	g.p("\tkey := kb[:4+copy(kb[4:], toks)]")
+	g.p("\tkey[0], key[1], key[2], key[3] = runtime.Tok(n.set), runtime.Tok(n.set>>32), runtime.Tok(n.conflict), %s", addKey)
+	g.p("\tst := guardedUpsertCache.Get(key)")
+	g.p("\tif st == nil {")
+	g.p("\t\thead := stmtForInsertNoReturn(n.set, n.conflict%s)", add)
+	g.p("\t\tst = guardedUpsertCache.Put(key, runtime.SpliceTreeFrom(head.SQL, toks, guardLowering, \"\", head.NArg))")
+	g.p("\t}")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn 0, st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\tfor i := 0; i < nInsertable; i++ {")
+	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range ins {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tif toks != nil {")
+	g.p("\t\targs = append(args, q.bindPreds(b)...)")
+	g.p("\t}")
+	g.p("\treturn ex.Exec(ctx, st.SQL, args)")
+	g.p("}")
+	g.p("")
 }
