@@ -461,6 +461,59 @@ func (g *gen) emitInsertSelect(lw lowering, s *schema.Schema, t *schema.Table, r
 	return nil
 }
 
+// emitProbeDeleteBatch writes DeleteBatch over a semi-join of the parent:
+// the bounded purge of the parent rows the probes select. HardDeleteBatch on
+// a soft-delete parent, which reads its marked rows too, as the table's own
+// does. Only where the parent asks for Take and the back end can spell it.
+func (g *gen) emitProbeDeleteBatch(np havingSpec, lw lowering, s *schema.Schema) {
+	parent := s.Table(np.ParentTable)
+	if parent == nil || !parent.Takes || lw.TrimOpen == nil {
+		return
+	}
+	name := "DeleteBatch"
+	if parent.SoftDeletes() {
+		name = "HardDeleteBatch"
+	}
+	q := np.TypeName
+	cache := lowerFirst(q) + name + "Cache"
+	g.p("var %s = runtime.NewTreeCache()", cache)
+	g.p("")
+	g.p("// %s is the %s package's method of that name over this", name, np.ParentPkg)
+	g.p("// semi-join: it removes the %s rows the composed read selects —", np.ParentTable)
+	g.p("// its predicates, probes, order and Limit — in ONE statement, and")
+	g.p("// reports how many. A row lock or an Offset is refused with")
+	g.p("// runtime.ErrPagedWrite.")
+	g.p("func (h %s) %s(ctx context.Context, ex %s) (int64, error) {", q, name, g.execType())
+	g.p("	if err := h.err(); err != nil {")
+	g.p("		return 0, err")
+	g.p("	}")
+	g.p("	if h.q.Locked() || h.q.Paged() {")
+	g.p("		return 0, runtime.ErrPagedWrite")
+	g.p("	}")
+	g.p("	var buf [%d]runtime.Tok", g.composedBuf())
+	g.p("	toks := h.tokens(buf[:0], false)")
+	g.p("	st := %s.Get(toks)", cache)
+	g.p("	if st == nil {")
+	g.p("		_, _, limitSfx := %s.StmtPieces()", np.ParentPkg)
+	g.p("		st = %s.Put(toks, runtime.SpliceTree(%s, toks, %sLowering, limitSfx+%s))",
+		cache, lit(lw.DeletePrefix(parent.Name)+lw.TrimOpen(parent.Name)), lowerFirst(q), lit(lw.TrimClose))
+	g.p("	}")
+	g.p("	if st.Err != nil {")
+	g.p("		return 0, st.Err")
+	g.p("	}")
+	g.p("	pb := %s.GetBinder()", np.ParentPkg)
+	g.p("	defer %s.PutBinder(pb)", np.ParentPkg)
+	g.p("	args, cbs := h.bind(pb, true)")
+	g.p("	defer func() {")
+	g.p("		for _, cb := range cbs {")
+	g.p("			%s.PutBinder(cb)", np.ChildPkg)
+	g.p("		}")
+	g.p("	}()")
+	g.p("	return ex.Exec(ctx, st.SQL, args)")
+	g.p("}")
+	g.p("")
+}
+
 // emitProbeInsertSelect writes the same INSERT … SELECT over a semi-join of
 // the source, as a method of its composer.
 func (g *gen) emitProbeInsertSelect(np havingSpec, lw lowering, s *schema.Schema, t *schema.Table, rel *schema.Relation) error {

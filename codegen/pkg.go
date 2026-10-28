@@ -218,6 +218,7 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	}
 	for _, h := range having {
 		body.emitHaving(h)
+		body.emitProbeDeleteBatch(h, lw, s)
 		if err := insertSelects(lw, s, names, func(t *schema.Table, rel *schema.Relation) error {
 			if rel.Target != h.ParentTable {
 				return nil
