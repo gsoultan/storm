@@ -44,6 +44,8 @@ var frags = map[string]frag{
 	// exist and mean the same thing or a portable model stops being portable at
 	// the first case-insensitive lookup.
 	"EqLower": {") = LOWER(" + Placeholder, ")"},
+
+	"NullOrEmpty": {", N'') = N''", ""},
 }
 
 // wrapped are the operators that are FUNCTIONS here. They take the identifier
@@ -62,6 +64,17 @@ var wrapped = map[string]struct{ open, close string }{
 		") AS [_storm_k] JOIN OPENJSON(" + Placeholder +
 			") AS [_storm_v] ON [_storm_k].[key] = [_storm_v].[value])",
 	},
+
+	// The document's text, missing read as empty. A document here IS its
+	// text, an NVARCHAR(MAX), so only the NULL needs answering, and an empty
+	// document is the spelling that was stored. The bound patterns unpack
+	// from one array with OPENJSON, so the fragment keeps its one parameter
+	// whatever their number.
+	"JSONTextLikeAny": {
+		"EXISTS (SELECT 1 FROM OPENJSON(" + Placeholder + ") AS [_storm_l] WHERE COALESCE(",
+		", N'') LIKE [_storm_l].[value])",
+	},
+	"JSONIsEmpty": {"COALESCE(", ", N'') IN (N'', N'null', N'[]', N'{}')"},
 }
 
 // refused are the operators this back end has no honest lowering for, each with
@@ -87,7 +100,8 @@ var refused = map[string]string{
 // prefixes wrap the IDENTIFIER for operators whose left side is an expression
 // rather than the bare column. Absent means no prefix.
 var prefixes = map[string]string{
-	"EqLower": "LOWER(",
+	"EqLower":     "LOWER(",
+	"NullOrEmpty": "COALESCE(",
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is

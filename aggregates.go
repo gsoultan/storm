@@ -3,6 +3,7 @@ package storm
 import (
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/gsoultan/storm/schema"
 )
@@ -36,6 +37,7 @@ type Aggregates struct {
 
 	t   *Table
 	out *[]*schema.Aggregate
+	bld *builder
 }
 
 // Aggregator is implemented by models that declare aggregations. Optional.
@@ -100,6 +102,11 @@ func (o Out) OverWindow(w *WindowSpec) Out {
 		b.fail("OverWindow applies to an aggregate; %q is not one", o.name)
 		return o
 	}
+	if t.Expr.Fn == string(schema.AggFirst) {
+		b.fail("%q is a first value and cannot take a window — use FirstValue for "+
+			"the first row of a window", o.name)
+		return o
+	}
 	if t.Expr.Distinct {
 		b.fail("%q is a count(DISTINCT ...) and cannot take a window — PostgreSQL "+
 			"rejects DISTINCT in an aggregate used as a window function", o.name)
@@ -138,6 +145,10 @@ type AggregateBuilder struct {
 	// second error about the same line.
 	dead bool
 	seen map[string]bool
+	// bases resolve field pointers into the tables Join added, and ranges
+	// are the aliases Elements declared.
+	bases  []joinBase
+	ranges map[string]bool
 }
 
 // Named starts an aggregation. The generated type is this name plus "Row", so
@@ -162,6 +173,169 @@ func (a *Aggregates) Named(name string) *AggregateBuilder {
 	return b
 }
 
+// ---- sources ----------------------------------------------------------------
+
+// Join reads another table alongside the aggregation's own, so its columns can
+// be grouped by, aggregated and filtered on. `on` is a relation field pointer
+// on this model — the foreign key says how the two join — and the joined model
+// is a local variable whose field pointers name its columns:
+//
+//	var d Definition
+//	w := a.Named("Waiting").Join(&d, &i.Definition)
+//	w.By(&d.Key)
+//
+// An inner join: a row with no match is not read, and the joined table's
+// marked rows match nothing. Declared before anything the aggregation reads,
+// because once there is a join every column is qualified by its table.
+// PostgreSQL only.
+func (b *AggregateBuilder) Join(model any, on any) *AggregateBuilder {
+	if !b.source("Join") {
+		return b
+	}
+	if b.a.bld == nil {
+		b.fail("Join: no model registry to find %T in", model)
+		return b
+	}
+	mi := b.a.bld.infoFor(model)
+	if mi == nil {
+		b.fail("Join: %T is not a registered model", model)
+		return b
+	}
+	alias := mi.tbl.out.Name
+	if alias == b.a.t.out.Name || b.ranges[alias] {
+		b.fail("Join: %s is already read under that name", alias)
+		return b
+	}
+	for _, jb := range b.bases {
+		if jb.alias == alias {
+			b.fail("Join: %s is joined twice", alias)
+			return b
+		}
+	}
+	c, err := b.a.t.resolve(on)
+	if err != nil {
+		b.fail("Join %s wants a relation field pointer like &m.Customer: %w", alias, err)
+		return b
+	}
+	fk := b.a.t.fkFor(c.sc.Name)
+	if fk == nil || fk.RefTable != alias {
+		b.fail("Join: %s is not a foreign key to %s", c.sc.Name, alias)
+		return b
+	}
+	on2 := schema.Cond{
+		Kind: schema.CondCmp, Op: schema.OpEq,
+		Left:  schema.Expr{Kind: schema.ExprCol, Tbl: b.a.t.out.Name, Col: c.sc.Name, Type: c.sc.Type},
+		Right: schema.Expr{Kind: schema.ExprCol, Tbl: alias, Col: fk.RefColumns[0]},
+	}
+	if sd := mi.tbl.out.SoftDelete; sd != "" {
+		on2 = schema.Cond{Kind: schema.CondAnd, Args: []schema.Cond{on2, {
+			Kind: schema.CondIsNull, Left: schema.Expr{Kind: schema.ExprCol, Tbl: alias, Col: sd},
+		}}}
+	}
+	b.bases = append(b.bases, joinBase{
+		base: reflect.ValueOf(model).Pointer(), size: reflect.TypeOf(model).Elem().Size(),
+		tbl: mi.tbl, alias: alias,
+	})
+	b.agg.Joins = append(b.agg.Joins, schema.JoinTable{
+		Kind: schema.JoinInner, Table: alias, Alias: alias, On: on2})
+	return b
+}
+
+// Elements ranges alias over the elements of a jsonb array column of this
+// table: one row per element, and none for a row whose column holds no array.
+// a.Field(alias, key) reads an element's field:
+//
+//	w.Elements("t", &i.Tokens).ByExpr("Node", a.Field("t", "node_id"))
+//
+// A count then counts elements, and CountDistinct of the key counts rows.
+// Declared before anything the aggregation reads, as Join is. PostgreSQL only.
+func (b *AggregateBuilder) Elements(alias string, fieldPtr any) *AggregateBuilder {
+	if !b.source("Elements") {
+		return b
+	}
+	if !isSQLAlias(alias) {
+		b.fail("Elements: %q is not a lower-case SQL identifier", alias)
+		return b
+	}
+	if alias == b.a.t.out.Name || b.ranges[alias] {
+		b.fail("Elements: %q is already read under that name", alias)
+		return b
+	}
+	c, err := b.a.t.resolve(fieldPtr)
+	if err != nil {
+		b.fail("Elements %q: %w", alias, err)
+		return b
+	}
+	if c.sc.Type.Name != schema.TypeJSONB && c.sc.Type.Name != schema.TypeJSON {
+		b.fail("Elements %q: %s is %s, and only a JSON column has elements", alias, c.sc.Name, c.sc.Type.Name)
+		return b
+	}
+	if b.ranges == nil {
+		b.ranges = map[string]bool{}
+	}
+	b.ranges[alias] = true
+	b.agg.Joins = append(b.agg.Joins, schema.JoinTable{
+		Kind: schema.JoinElements, Alias: alias,
+		Of: &schema.Expr{Kind: schema.ExprCol, Tbl: b.a.t.out.Name, Col: c.sc.Name, Type: c.sc.Type},
+	})
+	return b
+}
+
+// source reports whether a Join or Elements may still be declared: before
+// anything the aggregation reads, whose columns it would have to qualify.
+func (b *AggregateBuilder) source(what string) bool {
+	if b.dead {
+		return false
+	}
+	if len(b.agg.By) > 0 || len(b.agg.Terms) > 0 || b.agg.Where != nil || b.agg.Having != nil {
+		b.fail("declares %s after what it reads — declare the tables and elements first, "+
+			"because with them every column is qualified", what)
+		return false
+	}
+	return true
+}
+
+// Where declares a predicate over the rows the aggregation reads, ANDed with
+// the call site's. The call site filters this table's own columns; Where is
+// how an aggregation filters on a joined table or an element's field.
+func (b *AggregateBuilder) Where(c Cond) *AggregateBuilder {
+	if b.dead {
+		return b
+	}
+	if b.agg.Where != nil {
+		b.fail("declares Where twice — combine them with And")
+		return b
+	}
+	sc, err := b.resolveCond(c)
+	if err != nil {
+		b.fail("where: %w", err)
+		return b
+	}
+	b.agg.Where = &sc
+	return b
+}
+
+// joinedCol resolves a field pointer into a table Join added.
+func (b *AggregateBuilder) joinedCol(fieldPtr any) (schema.Expr, bool, error) {
+	v := reflect.ValueOf(fieldPtr)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return schema.Expr{}, false, nil
+	}
+	got := v.Pointer()
+	for _, jb := range b.bases {
+		if got < jb.base || got >= jb.base+jb.size {
+			continue
+		}
+		c, ok := jb.tbl.off[got-jb.base]
+		if !ok {
+			return schema.Expr{}, true, fmt.Errorf("no column at field offset %d of %s", got-jb.base, jb.alias)
+		}
+		return schema.Expr{Kind: schema.ExprCol, Tbl: jb.alias, Col: c.sc.Name,
+			Type: c.sc.Type, Nullable: !c.sc.NotNull}, true, nil
+	}
+	return schema.Expr{}, false, nil
+}
+
 // ---- grouping ---------------------------------------------------------------
 
 // By groups by columns. The field name is derived from the column name.
@@ -170,12 +344,18 @@ func (b *AggregateBuilder) By(fieldPtrs ...any) *AggregateBuilder {
 		if b.dead {
 			return b
 		}
-		c, err := b.a.t.resolve(fp)
+		e, ok, err := b.joinedCol(fp)
+		if !ok && err == nil {
+			var c *col
+			if c, err = b.a.t.resolve(fp); err == nil {
+				e.Col = c.sc.Name
+			}
+		}
 		if err != nil {
 			b.fail("%w", err)
 			return b
 		}
-		b.addGroup(exportIdent(c.sc.Name), toTerm(fp))
+		b.addGroup(exportIdent(e.Col), toTerm(fp))
 	}
 	return b
 }
@@ -355,6 +535,60 @@ func (b *AggregateBuilder) Min(x any, as string) Out {
 }
 func (b *AggregateBuilder) Max(x any, as string) Out {
 	return b.agged(schema.AggMax, toTerm(x), as)
+}
+
+// FirstOf adds the group's first value of x, first in the order `by` gives:
+//
+//	b.FirstOf(&e.Seq, "FirstSeq", a.Over().OrderByAsc(&e.CreatedAt).OrderByAscNullsFirst(&e.Seq))
+//
+// It is the column read off the row a DISTINCT ON would keep, next to a count
+// of every row — which a window over the rows and a filter on its row number
+// otherwise have to say in two levels of query. `by` is only an ordering: a
+// partition is the grouping already, and a frame has nothing to count along.
+// The ordering should leave no ties, or which tied row is first is up to the
+// server. Nullable whatever x is, because a Filter can leave a group nothing to
+// take the first of.
+func (b *AggregateBuilder) FirstOf(x any, as string, by *WindowSpec) Out {
+	if b.dead {
+		return b.none()
+	}
+	if !isExportedIdent(as) {
+		b.fail("first(...) is named %q, which must be a valid exported Go identifier", as)
+		return b.none()
+	}
+	if by == nil || len(by.order) == 0 {
+		b.fail("first %q has no ordering — the first of an unordered group is "+
+			"whichever row the server reads first", as)
+		return b.none()
+	}
+	if len(by.partition) > 0 || by.frame != nil {
+		b.fail("first %q orders its group and takes nothing else — a partition is "+
+			"the grouping already, and a frame has nothing to count along", as)
+		return b.none()
+	}
+	e, err := b.resolveTerm(toTerm(x))
+	if err != nil {
+		b.fail("first %q: %w", as, err)
+		return b.none()
+	}
+	if !schema.AggregatableFirst(e.Type) {
+		b.fail("first %q: the first value of an array is not something storm can take", as)
+		return b.none()
+	}
+	win, err := b.resolveWindow(by)
+	if err != nil {
+		b.fail("first %q: %w", as, err)
+		return b.none()
+	}
+	rt, nullable, err := schema.AggregateResult(schema.AggFirst, e.Type)
+	if err != nil {
+		b.fail("first %q: %w", as, err)
+		return b.none()
+	}
+	return b.push(as, schema.Expr{
+		Kind: schema.ExprAgg, Fn: string(schema.AggFirst),
+		Args: []schema.Expr{e}, Within: win.OrderBy, Type: rt, Nullable: nullable,
+	})
 }
 
 // GroupingOf adds GROUPING(cols...) — 1 when the row is a subtotal over those
@@ -800,12 +1034,31 @@ func (b *AggregateBuilder) resolveTerm(t Term) (schema.Expr, error) {
 			Type: schema.Type{Name: t.lit.Kind}}, nil
 
 	case schema.ExprCol:
+		if t.scope != "" {
+			return schema.Expr{}, fmt.Errorf("ColOf(%q, %q) names a join's scope, and an aggregation has none", t.scope, t.key)
+		}
+		if len(b.bases) > 0 {
+			if e, ok, err := b.joinedCol(t.fp); ok || err != nil {
+				return e, err
+			}
+		}
 		c, err := b.a.t.resolve(t.fp)
 		if err != nil {
 			return schema.Expr{}, err
 		}
-		return schema.Expr{Kind: schema.ExprCol, Col: c.sc.Name,
-			Type: c.sc.Type, Nullable: !c.sc.NotNull}, nil
+		e := schema.Expr{Kind: schema.ExprCol, Col: c.sc.Name,
+			Type: c.sc.Type, Nullable: !c.sc.NotNull}
+		if len(b.agg.Joins) > 0 {
+			e.Tbl = b.a.t.out.Name
+		}
+		return e, nil
+
+	case schema.ExprField:
+		if !b.ranges[t.scope] {
+			return schema.Expr{}, fmt.Errorf("Field(%q, %q): %q ranges over nothing — declare it with Elements", t.scope, t.key, t.scope)
+		}
+		return schema.Expr{Kind: schema.ExprField, Tbl: t.scope, Col: t.key,
+			Type: schema.Type{Name: schema.TypeText}, Nullable: true}, nil
 
 	case schema.ExprGrouping:
 		args, _, anyNull, err := b.resolveArgs(t.args)
@@ -831,39 +1084,49 @@ func (b *AggregateBuilder) resolveTerm(t Term) (schema.Expr, error) {
 		}, nil
 
 	case schema.ExprFunc:
-		sig, ok := schema.Funcs[t.fn]
-		if !ok {
-			return schema.Expr{}, fmt.Errorf("unknown function %q", t.fn)
-		}
-		args, in, anyNull, err := b.resolveArgs(t.args)
+		args, _, _, err := b.resolveArgs(t.args)
 		if err != nil {
 			return schema.Expr{}, err
 		}
-		if sig.Args >= 0 && len(args) != sig.Args {
-			return schema.Expr{}, fmt.Errorf("%s wants %d argument(s), got %d", t.fn, sig.Args, len(args))
-		}
-		rt, err := sig.Result(in)
-		if err != nil {
-			return schema.Expr{}, fmt.Errorf("%s: %w", t.fn, err)
-		}
-		nullable := sig.NullableIfAnyArgIs && anyNull
-		switch t.fn {
-		case "nullif":
-			nullable = true // its entire purpose
-		case "coalesce":
-			// Non-null exactly when some argument cannot be null.
-			nullable = true
-			for _, a := range args {
-				if !a.Nullable {
-					nullable = false
-					break
-				}
-			}
-		}
-		return schema.Expr{Kind: schema.ExprFunc, Fn: t.fn, Args: args,
-			Type: rt, Nullable: nullable}, nil
+		return funcExpr(t.fn, args)
 	}
 	return schema.Expr{}, fmt.Errorf("unsupported expression")
+}
+
+// funcExpr types a scalar function call over resolved arguments.
+func funcExpr(fn string, args []schema.Expr) (schema.Expr, error) {
+	sig, ok := schema.Funcs[fn]
+	if !ok {
+		return schema.Expr{}, fmt.Errorf("unknown function %q", fn)
+	}
+	if sig.Args >= 0 && len(args) != sig.Args {
+		return schema.Expr{}, fmt.Errorf("%s wants %d argument(s), got %d", fn, sig.Args, len(args))
+	}
+	in := make([]schema.Type, 0, len(args))
+	anyNull := false
+	for _, a := range args {
+		in = append(in, a.Type)
+		anyNull = anyNull || a.Nullable
+	}
+	rt, err := sig.Result(in)
+	if err != nil {
+		return schema.Expr{}, fmt.Errorf("%s: %w", fn, err)
+	}
+	nullable := sig.NullableIfAnyArgIs && anyNull
+	switch fn {
+	case "nullif":
+		nullable = true // its entire purpose
+	case "coalesce":
+		// Non-null exactly when some argument cannot be null.
+		nullable = true
+		for _, a := range args {
+			if !a.Nullable {
+				nullable = false
+				break
+			}
+		}
+	}
+	return schema.Expr{Kind: schema.ExprFunc, Fn: fn, Args: args, Type: rt, Nullable: nullable}, nil
 }
 
 func (b *AggregateBuilder) resolveArgs(ts []Term) ([]schema.Expr, []schema.Type, bool, error) {
@@ -1003,7 +1266,7 @@ func (b *AggregateBuilder) resolveWindow(w *WindowSpec) (*schema.Window, error) 
 		if err != nil {
 			return nil, err
 		}
-		out.OrderBy = append(out.OrderBy, schema.OrderTerm{Expr: e, Desc: o.desc})
+		out.OrderBy = append(out.OrderBy, schema.OrderTerm{Expr: e, Desc: o.desc, NullsFirst: o.nullsFirst})
 	}
 	return out, nil
 }

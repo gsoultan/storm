@@ -164,8 +164,13 @@ func (g *gen) colHandles() {
 					g.p("// ContainedBy is `<@`: every element of the column is in v.")
 				case "ArrayOverlaps":
 					g.p("// Overlaps is `&&`: the column and v share an element.")
+				case "JSONTextLikeAny":
+					g.p("// TextLikeAny matches the document's text against each LIKE")
+					g.p("// pattern in v. A NULL document reads as the empty string.")
+					g.p("// The patterns are the caller's: escape %% and _ in what they")
+					g.p("// quote.")
 				}
-				g.p("func (h %s) %s(v ...%s) Pred { return Pred{col: h.c, op: op%s, %s: v} }",
+				g.p("func (h %s) %s(v ...%s) Pred { return Pred{col: h.c, op: op%s, %s: runtime.List(v)} }",
 					ht, op.m(), listElem(c), op.name, slot)
 				continue
 			}

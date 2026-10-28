@@ -3,6 +3,7 @@ package planspike_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/gsoultan/storm"
@@ -282,3 +283,44 @@ func TestArray_NullElementIsAnError(t *testing.T) {
 // which the operator set does not have, and equality on an array is
 // order-sensitive in a way almost nobody means.
 // testdata/compilefail/array_equality.go pins it.
+
+// A nullable text column holding nothing is NULL or the empty string, and
+// IsNullOrEmpty asks for both in one predicate — the shape an And group needs,
+// since it takes no disjunction.
+func TestNullOrEmpty_MatchesNullAndEmptyOnly(t *testing.T) {
+	ctx := context.Background()
+	ex, _ := db(t)
+
+	var ids [][16]byte
+	for i, ip := range []*string{nil, ptr(""), ptr("10.0.0.1")} {
+		r := mustCreateWith(t, ctx, ex, fmt.Sprintf("noe%d@example.com", i), dec(t, "0.0000"))
+		t.Cleanup(func() { _ = user.Delete(ctx, ex, r.ID) })
+		m := user.Mutate(r)
+		if ip == nil {
+			m.SetLastIPNull()
+		} else {
+			m.SetLastIP(*ip)
+		}
+		if err := m.Update(ctx, ex); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, r.ID)
+	}
+	mine := user.ID.In(ids...)
+	n, err := user.New().Where(mine, user.LastIP.IsNullOrEmpty()).Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("IsNullOrEmpty matched %d rows, want the NULL and the empty one", n)
+	}
+	n, err = user.New().Where(mine).Not(user.LastIP.IsNullOrEmpty()).Count(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("not IsNullOrEmpty matched %d rows, want the one with an address", n)
+	}
+}
+
+func ptr(s string) *string { return &s }

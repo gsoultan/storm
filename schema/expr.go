@@ -41,6 +41,9 @@ const (
 	// does not mean the same thing in every dialect, which is exactly why the
 	// IR must not carry the character.
 	ExprBinary
+	// ExprField is a text field of a JSON element: Tbl names the element range
+	// and Col the key. NULL when the element has no such key.
+	ExprField
 )
 
 // Expr is a typed expression tree.
@@ -79,6 +82,9 @@ type Expr struct {
 	Filter *Cond
 	// Over is the window. Valid on ExprAgg and required on ExprWindow.
 	Over *Window
+	// Within is an aggregate's own ORDER BY: which of the group's rows is
+	// first. Only the first-value aggregate has one, and it always does.
+	Within []OrderTerm
 
 	// Type and Nullable are resolved when the expression is built, so codegen
 	// never has to re-derive them and the two cannot disagree.

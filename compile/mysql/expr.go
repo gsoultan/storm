@@ -42,6 +42,12 @@ var ErrNoFilterClause = errors.New(
 		"SUM(CASE WHEN … THEN … END), which changes what the aggregate counts rather than " +
 		"how it is spelled, so storm will not do it silently")
 
+// ErrNoFirstOf is why a first-value aggregate cannot be lowered. PostgreSQL's
+// spelling collects the group into an array, and MySQL has no array to
+// collect into; its own ways of saying it are not written yet.
+var ErrNoFirstOf = errors.New(
+	"compile/mysql: a first value in a declared order is PostgreSQL-only for now")
+
 // ErrRepeatedParam is why a declared parameter used twice cannot be lowered.
 var ErrRepeatedParam = errors.New(
 	"compile/mysql: MySQL binds parameters by position, so a declared parameter used more " +
@@ -111,6 +117,9 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 	case schema.ExprBinary:
 		w.writeBinary(e)
 
+	case schema.ExprField:
+		w.fail(ErrNoAggregateJoin)
+
 	case schema.ExprGrouping:
 		// GROUPING() belongs to GROUPING SETS / ROLLUP, and MySQL has only
 		// WITH ROLLUP. Refused with the grouping form itself, in GroupBy.
@@ -119,6 +128,10 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 		w.b.WriteByte(')')
 
 	case schema.ExprAgg:
+		if e.Fn == string(schema.AggFirst) {
+			w.fail(ErrNoFirstOf)
+			return
+		}
 		// No round() wrapper here. PostgreSQL needs one because its numeric
 		// division picks a scale wide enough to overflow a Decimal; MySQL's
 		// avg() returns a DECIMAL whose scale it derives from the input, and

@@ -140,6 +140,10 @@ migrate.AutoOptions{Accept: func(c migrate.Change) bool {
 }}
 ```
 
+A schema the model shares with tables something else owns sets
+`DeclaredOnly`: a table the model does not declare is then neither dropped nor
+compared, rather than a destructive step that refuses the plan.
+
 A type change PostgreSQL has no cast for, such as JSON kept in a text column
 becoming an array or jsonb, says how to read the old value with
 `t.Col(&m.Tags).ConvertFrom(storm.JSONText)`; automigrate and `storm diff`
@@ -225,6 +229,25 @@ func (d *Definition) Aggregates(a *storm.Aggregates) {
 the table still leaves the marked rows out. A table without `SoftDelete`
 refuses the declaration, since it would say nothing.
 
+A table whose call sites must find a marked row by something other than its
+key (restore the entry removed last under a name, tell a removed row from one
+never written) declares it with `t.ReadsDeleted()`. Its package then has
+`Query.WithDeleted()`, which `All`, `One`, `Count`, `Exists`, `Take` and the declared projections
+honour:
+
+```go
+var m connector.Mut
+m.SetDeletedAtNull()
+got, err := connector.New().WithDeleted().
+        Where(connector.Key.Eq(key), connector.DeletedAt.IsNotNull()).
+        Order(connector.DeletedAt.Desc()).Limit(1).
+        Take(ctx, ex, m, nil)
+```
+
+Every other terminal refuses a widened query rather than quietly answering
+about the live rows only, and a table that does not declare it has no way to
+widen a read at all.
+
 ### Cross-table reads
 
 Declared joins, aggregates, fetch plans, unions, top-N batch loads, `EXISTS`
@@ -276,10 +299,10 @@ article.Titel.Eq("x")                // compile error: undefined
 | `TimeCol`, `DecimalCol`, numeric | `Eq` `NotEq` `Gt` `Gte` `Lt` `Lte` |
 | `BoolCol` | `Eq` `NotEq` |
 | `BytesCol` | `Eq` `NotEq` |
-| nullable (`NullTimeCol`, …) | + `IsNull` `IsNotNull` |
+| nullable (`NullTimeCol`, …) | + `IsNull` `IsNotNull` (and `IsNullOrEmpty` on `NullTextCol`) |
 | `TSVectorCol` | `Matches` `WebSearch` |
 | array (`TextArrayCol`, …) | `Contains` `ContainedBy` `Overlaps` |
-| jsonb (`JSONCol`) | `Contains` `ContainedBy` `HasAnyKey` `HasAllKeys` |
+| jsonb (`JSONCol`) | `Contains` `ContainedBy` `HasAnyKey` `HasAllKeys` `TextLikeAny` `IsEmpty` |
 | `TstzRangeCol` | `Eq` `NotEq` `Overlaps` `ContainsRange` `ContainedBy` |
 
 There is no `Between`, no `HasPrefix`/`HasSuffix`, and no jsonb `Path` — the
@@ -292,6 +315,14 @@ that one identifier moves; the `Row` field is still `Query`, the setter still
 `SetQuery`, the shorthand still `QueryEq`. Every generated identifier comes
 from the column name, not the Go field name, so pinning a column with
 `t.Col(&m.Field).Named("...")` is how you choose a different one.
+
+`TextLikeAny` and `IsEmpty` read a jsonb document as its text, with a missing
+document as the empty string: ``Assignees.TextLikeAny(`%"ada"%`)`` asks whether a
+JSON array names ada, and `Assignees.IsEmpty()` whether it names nobody
+(missing, `null`, `[]` or `{}`). The patterns are one placeholder however many
+there are, and they are the caller's, so escape `%` and `_` in what they
+quote. Prefer `HasAnyKey` on a real jsonb
+column; these are for the questions it cannot ask.
 
 `EqLower` is case-insensitive equality lowered as `lower(col) = lower($1)`,
 which is the shape that matches an index declared with `storm.Lower`. It is a
@@ -341,6 +372,38 @@ page1, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
 page2, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
     After(page1[len(page1)-1]).Limit(2).All(ctx, ex, nil)
 ```
+
+`AllDistinctOn(ctx, ex, n, dst)` keeps one row for each distinct value of the
+query's first `n` ORDER BY terms: the first, in the query's order. Order by the
+key and then by what picks the row:
+
+```go
+newest, err := setting.New().
+    Order(setting.ProjectID.Asc(), setting.Key.Asc(), setting.CreatedAt.Desc()).
+    AllDistinctOn(ctx, ex, 2, nil) // SELECT DISTINCT ON ("project_id", "key") …
+```
+
+It is PostgreSQL's `DISTINCT ON`, generated only there. `n` outside the explicit
+order, or a row lock, is refused; Limit and Offset count the rows kept.
+
+A table declared `t.TakesTurns(&j.Org)` gets `AllTurns`: its rows dealt out by
+that column, a turn at a time. Each group's first rows are numbered in the
+query's order, and every group's first turn comes ahead of anyone's second, so
+one tenant's backlog cannot starve the others in a queue claim:
+
+```go
+due := job.New().Where(job.Status.Eq("pending"), job.DueAt.Lte(now)).
+    Order(job.DueAt.Asc(), job.ID.Asc()).Limit(50)
+rows, err := due.AllTurns(ctx, ex, job.New().Where(job.Status.Eq("pending")), from, 1000, nil)
+// rows[i].Row is the job, rows[i].Turn its place in its organization's line
+```
+
+The second query's predicates choose the groups. They are found a seek at a time
+along the column, from the first at or after `from`, wrapping round to the
+start, at most `n` of them; an index on those predicates' columns and then the
+group column keeps each seek one. The limit caps each group's rows and the rows
+returned. A nullable column's rows with no group are one more group. One
+statement, PostgreSQL only; an Offset or a row lock is refused.
 
 ## 5. Dynamic filters — this is the whole thesis, and it looks boring
 
@@ -452,6 +515,50 @@ Two positive probes are satisfied by different child rows, so `AndHaving` reads
 as "wrote both of these". Chaining across two different relations is not
 offered: the composer type is per relation, so it does not compile.
 
+A to-many relation has its composers without asking. A to-one reference asks
+for them with `t.Probes(&d.Webhook)` in the referencing table's `Schema`,
+because most references are never asked about. The probe then reads "the
+deliveries whose webhook is active", with the webhook's own predicates and its
+soft delete applied as they are to every read of it:
+
+```go
+store.DeliveryHavingWebhook(delivery.New(), webhook.Active.Eq(true)).All(ctx, ex)
+```
+
+A semi-join no foreign key describes (two tables that share a run and a step,
+say) is declared with `t.ProbesOn`, the target named by a local instance so
+both sides are field pointers:
+
+```go
+func (e *ExternalTask) Schema(t *storm.Table) {
+    var i Incident
+    t.ProbesOn("StepIncidents", &i, &e.Instance, &i.Instance, &e.NodeID, &i.NodeID)
+}
+
+store.ExternalTaskNotHavingStepIncidents(
+    externaltask.New().Where(externaltask.Retries.Lte(0)),
+    incident.Status.Eq("open"),
+).UpdateAll(ctx, ex, m)
+```
+
+Every composer also has `UpdateAll`, the table's set-based write bounded by
+the composed predicates and probes; a `Limit`, `Offset` or row lock is
+`runtime.ErrPagedWrite`. `ProbesOn` is PostgreSQL only for now.
+
+A composer also runs each of the parent's declared aggregations that takes no
+parameter, so the probes decide which rows go into the groups:
+
+```go
+// Open incidents per instance, of the live instances in these projects.
+store.IncidentHavingInstance(
+    incident.New().Where(incident.Status.Eq("open"), incident.InstanceID.In(ids...)),
+    instance.ProjectID.In(projects...),
+).AllByInstance(ctx, ex)
+```
+
+As on the table's own, `Limit` pages the groups; an `Order`, an `Offset` or a
+row lock is `runtime.ErrGroupedRead`.
+
 ## 7. Declared reports: projections, aggregations, joins
 
 These are declared in the model rather than chained at the call site, and that is
@@ -513,6 +620,38 @@ aggregated over. `GroupingOf` tells that NULL from one that was in the data.
 Also available: `Min`/`Max`/`Avg`, `Sum`/`Min`/`Max`Over, `RowNumber`, `Rank`,
 `DenseRank`, `CumeDist`, `Lag`, `Lead`, `FirstValue`, `LastValue`, and
 `Rollup`/`Cube`/`Sets` with `GROUPING()`.
+
+`FirstOf(x, "As", a.Over().OrderByAsc(...))` is the group's first value of `x`
+in that order: the column read off the row a `DISTINCT ON` would keep, next to
+the group's counts. The ordering is all it takes, and `OrderByAscNullsFirst` /
+`OrderByDescNullsLast` place the NULLs where PostgreSQL would not. PostgreSQL
+only.
+
+An aggregation can read more than its own table. `Join(&d, &i.Definition)`
+joins the table a relation field references, inner, its marked rows matching
+nothing; `Elements("t", &i.Tokens)` ranges over a JSON array column, one row per
+element, none for a row holding no array; `a.Field("t", "node_id")` reads an
+element's field as text; and `Where(cond)` filters on any of them, ANDed with
+the call site's predicates on the table's own columns. Sources come before
+anything that reads, because with them every column is qualified:
+
+```go
+func (i *Instance) Aggregates(a *storm.Aggregates) {
+    var d Definition
+    w := a.Named("Waiting").Join(&d, &i.Definition).Elements("t", &i.Tokens).
+        Where(a.Ne(a.Coalesce(a.Field("t", "status"), a.Lit("")), a.Lit("completed")))
+    w.By(&d.Key)
+    node := w.ByExpr("Node", a.Field("t", "node_id"))
+    w.Sets([]string{"Key", "Node"}, []string{"Key"})
+    w.FirstOf(&d.Name, "Name", a.Over().OrderByDesc(&d.Version))
+    w.Count("Waiting")
+    w.CountDistinct(&i.ID, "Instances")
+    w.GroupingOf("Total", node)
+}
+// instance.New().Where(instance.Status.In("active", "suspended")).AllWaiting(ctx, ex)
+```
+
+PostgreSQL only; the other back ends refuse the declaration.
 
 **Unions** — several tables merged into one stream. A union has no driving
 table, so unlike everything else here it is declared as a package-level var
@@ -579,6 +718,38 @@ func (o *Order) Joins(j *storm.Joins) {
 `With(alias, model, aggregate)` materialises a declared aggregation as a CTE and
 joins against it — once, rather than a correlated subquery per row. Anything
 taken through a `Left` join comes back nullable, including a count.
+
+`WithWhere(alias, model, aggregate)` is the same CTE narrowed at the call site.
+A join with one runs through the context package's composer, which takes the
+join's own query and one query per narrowed CTE, and has `All` and `Count`:
+
+```go
+func (d *Definition) Joins(j *storm.Joins) {
+    var r Release
+    var lv Definition                                  // the same table again
+    j.Named("Shown").
+        WithWhere("keys", d, "Keys").                 // By project, key: Max version "Newest"
+        WithWhere("live", &r, "Live").                // By project, key: FirstOf version
+        InnerWith("keys", j.OnCols("keys", "project_id", &d.Project).And("keys", "key", &d.Key)).
+        LeftWith("live", j.OnCols("live", "project_id", &d.Project).And("live", "key", &d.Key)).
+        LeftAs("lv", &lv, j.OnCols("definitions", "project_id", &lv.Project).
+            And("definitions", "key", &lv.Key).And("live", "version", &lv.Version)).
+        Where(j.Eq(&d.Version, j.Coalesce(&lv.Version, j.ColOf("keys", "newest")))).
+        Take(&d.Name, "Name").
+        OrderAsc(&d.Key)
+}
+
+rows, err := store.DefinitionShown(
+    definition.New().Where(definition.Project.Eq(p)).Limit(50),
+    definition.New().Where(definition.Project.Eq(p)),
+    release.New().Where(release.Project.Eq(p), release.ActivateAt.Lte(now)),
+).All(ctx, ex)
+```
+
+`OnCols(...).And(...)` joins on several columns; `InnerAs`/`LeftAs` attach a
+table under an alias, which is how a table joins itself; `ColOf(alias, column)`
+names a CTE's column in a condition, and `Coalesce` and the other scalar
+functions work there too. Narrowed CTEs are PostgreSQL only.
 
 ## 8. Writes
 
@@ -727,6 +898,19 @@ err := m.Update(ctx, ex)
 One compiled statement per distinct dirty mask, so a hundred call sites that set
 the same two columns share one statement.
 
+A table declared `t.GuardsUpsert()` also gets `UpsertWhere(ctx, ex, q)`: the
+upsert's update applies only when the row already there matches `q`, and
+otherwise the row is left alone. It reports the rows written.
+
+```go
+n := worker.Create()
+n.SetTopic(topic); n.SetWorkerID(id); n.SetVersion(v); n.SetLastSeenAt(now)
+n.OnConflictTopicWorkerID()
+_, err := n.UpsertWhere(ctx, ex, worker.New().
+    Any(worker.LastSeenAt.Lt(now.Add(-10*time.Second)), worker.Version.NotEq(v), worker.Version.IsNull()))
+// … ON CONFLICT (…) DO UPDATE SET … WHERE "workers"."last_seen_at" < $6 OR …
+```
+
 ### Assignments the database computes
 
 Some values must not come from Go. A timestamp bound from `time.Now()` records
@@ -758,6 +942,23 @@ var m batch.Mut
 m.AddSucceeded(int64(len(done)))  // succeeded = succeeded + $1
 m.AddSkipped(-1)                  // skipped = skipped + $2
 ```
+
+A counter can also carry a guarded increment, declared in the model with
+`t.Col(&j.Retries).IncWhen(&j.Status)`. The `Mut` then has
+`IncRetriesWhenStatus(v)`, which adds one when the status, as the row stands
+before the write, equals `v`, and adds nothing otherwise. The test is read in
+the statement that writes, so it sees the value the write replaces:
+
+```go
+var m job.Mut
+m.SetStatus("running")
+m.IncRetriesWhenStatus("running") // retries = retries + CASE WHEN status = $2 THEN 1 ELSE 0 END
+```
+
+A claim that takes over a job whose worker died counts as an attempt; a claim
+of a pending job does not; and both are one `UPDATE`. The counter is a
+`NOT NULL` integer, the guarded column a bool, integer, text or uuid. Any other
+setter on the counter drops the guard, as the setters clear each other.
 
 `Update` reads the row back in the same statement when an expression was used,
 so `m.Row()` is the row that now exists rather than the one that used to. The
@@ -829,6 +1030,55 @@ got, err := job.New().
 `Offset` is refused with `runtime.ErrPagedWrite`. A table asks for Take with
 `t.Takes()` in its `Schema`; it is generated on PostgreSQL for a table with a
 one-column key, and elsewhere the method is absent.
+
+The semi-join composer of such a table has `Take` as well, so a claim can be
+narrowed by the rows it references or is referenced by, and still be one
+statement whose read holds the probe, the order, the `Limit` and the lock:
+
+```go
+next := delivery.New().Where(delivery.Status.Eq("pending")).
+        Order(delivery.CreatedAt.Asc()).Limit(1).ForUpdateSkipLocked()
+got, err := store.DeliveryHavingWebhook(next, webhook.Active.Eq(true)).
+        Take(ctx, ex, m, nil)
+```
+
+The table package's `Mut.TakeHead(q)` is the seam it is built on.
+
+### Purging in batches: `DELETE` of what a read selects
+
+`DeleteBatch` is `Take`'s purge: it removes the rows the query would read —
+predicates, order, `Limit` and row lock — and reports how many. A sweep
+repeats it until a run removes fewer than its limit, so each statement holds
+its locks for one batch, not the whole table's worth.
+
+```go
+for {
+        n, err := delivery.New().Where(delivery.CreatedAt.Lt(cutoff)).
+                Limit(1000).DeleteBatch(ctx, ex)
+        if err != nil || n < 1000 {
+                break
+        }
+}
+// DELETE FROM "deliveries" WHERE ctid = ANY(ARRAY(
+//   SELECT ctid FROM "deliveries" WHERE "created_at" < $1 LIMIT $2))
+```
+
+It comes with `t.Takes()`. On a soft-delete table it is `HardDeleteBatch`,
+which, like `HardDeleteAll`, purges marked rows and live ones alike. No
+predicate is `runtime.ErrUnfilteredWrite`; `Offset` is
+`runtime.ErrPagedWrite`.
+
+The semi-join composer of such a table has the same method, so "the failed
+jobs no open incident names" is one statement a batch, with the `Limit` on
+the parent query:
+
+```go
+old := job.New().Where(job.Status.Eq("failed"), job.UpdatedAt.Lt(cutoff)).Limit(1000)
+n, err := store.JobNotHavingIncidents(old, incident.Status.NotEq("resolved")).
+        HardDeleteBatch(ctx, ex)
+```
+
+There a row lock is refused too. PostgreSQL only for now.
 
 ### Copying keys: `INSERT … SELECT`
 
@@ -945,6 +1195,26 @@ for range 3 {
     if !storm.Retryable(err) { break }
 }
 ```
+
+A table the model declares `t.Lockable()` can be locked whole for the rest of a
+transaction, from the context package, and any transaction can bound how long
+its statements wait for a lock (PostgreSQL):
+
+```go
+err := storm.InTx(ctx, db, func(ex storm.Executor) error {
+    // waits for every transaction writing either table, and holds new ones off
+    if err := store.LockTables(ctx, ex, store.LockShare, store.TableRetentionHold, store.TableRetentionPeriod); err != nil {
+        return err
+    }
+    ...
+})
+
+err := store.LockTimeout(ctx, tx, 2*time.Second) // a later wait past 2s fails with ErrLockNotAvailable
+```
+
+`LockTables` locks in the order named, in one statement. `LockTimeout` is
+`set_config('lock_timeout', …, true)`: it ends with the transaction, so it
+cannot leak onto a pooled connection.
 
 Isolation levels are the driver's. `sqldrv` gives you `BeginTx` with
 `*sql.TxOptions` and `sqldrv.NewTx` to wrap the result; pgx gives you

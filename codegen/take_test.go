@@ -78,6 +78,7 @@ func TestTakeClaimsTheRowsAReadWouldReturnAgainstPostgres(t *testing.T) {
 		"TestTakeFollowsTheReadsOrderAndLimit",
 		"TestTakeLeavesADeletedRowAlone",
 		"TestTakeRefusesAnOffset",
+		"TestHardDeleteBatchPurgesMarkedRowsToo",
 	} {
 		if !strings.Contains(string(out), "--- PASS: "+name) {
 			t.Errorf("%s did not run:\n%s", name, out)
@@ -261,6 +262,21 @@ func TestTakeLeavesADeletedRowAlone(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != ids[1] {
 		t.Errorf("took %+v, want the live row", got)
+	}
+}
+
+func TestHardDeleteBatchPurgesMarkedRowsToo(t *testing.T) {
+	ids := seed(t, 3)
+	ctx := context.Background()
+	if err := tkjob.Delete(ctx, ex, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	n, err := tkjob.New().Where(tkjob.Status.Eq("queued")).Limit(10).HardDeleteBatch(ctx, ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("purged %d rows, want the marked one and the two live ones", n)
 	}
 }
 

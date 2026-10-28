@@ -1,6 +1,7 @@
 package mssql
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/gsoultan/storm/schema"
@@ -25,6 +26,9 @@ import (
 
 // AggregateSelect is everything before the WHERE clause of a grouped read.
 func AggregateSelect(table string, agg *schema.Aggregate) (string, error) {
+	if len(agg.Joins) > 0 || agg.Where != nil {
+		return "", ErrNoAggregateJoin
+	}
 	var b strings.Builder
 	var w exprWriter
 	for i, g := range agg.By {
@@ -209,3 +213,9 @@ func isGrouping(agg *schema.Aggregate, as string) bool {
 	}
 	return false
 }
+
+// ErrNoAggregateJoin is why an aggregation over joined tables or a JSON
+// array's elements, or with a declared Where, cannot be lowered: those are
+// PostgreSQL-only for now.
+var ErrNoAggregateJoin = errors.New(
+	"compile/mssql: an aggregation's Join, Elements and Where are PostgreSQL-only for now")

@@ -135,11 +135,21 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.callPlans(mi)
 		b.callAggregates(mi)
+		if t := mi.tbl.out; t.ReadsDeleted && !t.SoftDeletes() {
+			b.errs.add(fmt.Errorf("%s: ReadsDeleted, but the table does not soft-delete — "+
+				"every row it holds is already read, so the declaration says nothing", t.Name))
+		}
 	}
 	// Joins last: they reference other tables' columns and other tables'
 	// declared aggregations, so every table has to be complete first.
 	for _, mi := range b.ordered {
 		b.callJoins(mi)
+	}
+	// Probes on matching columns, once every table's references are wired.
+	for _, mi := range b.ordered {
+		for _, m := range mi.tbl.matches {
+			m(b)
+		}
 	}
 	// Unions after the joins, for the same reason and one more: a union reads
 	// several tables and belongs to none, so it is the only declaration that
@@ -738,7 +748,7 @@ func (b *builder) callAggregates(mi *modelInfo) {
 	if !ok {
 		return
 	}
-	a.Aggregates(&Aggregates{t: mi.tbl, out: &mi.tbl.out.Aggregates})
+	a.Aggregates(&Aggregates{t: mi.tbl, out: &mi.tbl.out.Aggregates, bld: b})
 
 	// Validated after the whole declaration is read, because "is this column
 	// grouped?" cannot be answered until every By has been seen — a chain

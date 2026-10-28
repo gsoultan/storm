@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"time"
 
@@ -1087,6 +1088,47 @@ func (h CustomerOrdersProbeQuery) Count(ctx context.Context, ex runtime.Executor
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
+var customerOrdersProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the customer package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every customers row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h CustomerOrdersProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m customer.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := customerOrdersProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = customerOrdersProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], customerOrdersProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := customer.GetBinder()
+	defer customer.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			order.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
+}
+
 // OrderLinesProbeQuery is a parent query with one or more existence probes against
 // order_lines, combined with AND. Build it with OrderHavingLines or
 // OrderNotHavingLines and extend it with AndHaving/AndNotHaving.
@@ -1300,6 +1342,376 @@ func (h OrderLinesProbeQuery) Count(ctx context.Context, ex runtime.Executor) (i
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
+var orderLinesProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the order package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every orders row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h OrderLinesProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m order.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := orderLinesProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = orderLinesProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], orderLinesProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
+}
+
+var orderLinesProbeQueryByStatusCache = runtime.NewTreeCache()
+
+// AllByStatus is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllByStatus(ctx context.Context, ex runtime.Executor) ([]order.ByStatusRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryByStatusCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.ByStatusPieces()
+		st = orderLinesProbeQueryByStatusCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.ByStatusRow
+	for rows.Next() {
+		out = append(out, order.ByStatusRow{})
+		if err := order.ScanByStatus(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryDailyCache = runtime.NewTreeCache()
+
+// AllDaily is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllDaily(ctx context.Context, ex runtime.Executor) ([]order.DailyRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryDailyCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.DailyPieces()
+		st = orderLinesProbeQueryDailyCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.DailyRow
+	for rows.Next() {
+		out = append(out, order.DailyRow{})
+		if err := order.ScanDaily(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryFacetsCache = runtime.NewTreeCache()
+
+// AllFacets is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllFacets(ctx context.Context, ex runtime.Executor) ([]order.FacetsRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryFacetsCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.FacetsPieces()
+		st = orderLinesProbeQueryFacetsCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.FacetsRow
+	for rows.Next() {
+		out = append(out, order.FacetsRow{})
+		if err := order.ScanFacets(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryTopCustomersCache = runtime.NewTreeCache()
+
+// AllTopCustomers is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllTopCustomers(ctx context.Context, ex runtime.Executor) ([]order.TopCustomersRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryTopCustomersCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.TopCustomersPieces()
+		st = orderLinesProbeQueryTopCustomersCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.TopCustomersRow
+	for rows.Next() {
+		out = append(out, order.TopCustomersRow{})
+		if err := order.ScanTopCustomers(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryTrendCache = runtime.NewTreeCache()
+
+// AllTrend is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllTrend(ctx context.Context, ex runtime.Executor) ([]order.TrendRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryTrendCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.TrendPieces()
+		st = orderLinesProbeQueryTrendCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.TrendRow
+	for rows.Next() {
+		out = append(out, order.TrendRow{})
+		if err := order.ScanTrend(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryByCustomerCache = runtime.NewTreeCache()
+
+// AllByCustomer is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllByCustomer(ctx context.Context, ex runtime.Executor) ([]order.ByCustomerRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryByCustomerCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.ByCustomerPieces()
+		st = orderLinesProbeQueryByCustomerCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.ByCustomerRow
+	for rows.Next() {
+		out = append(out, order.ByCustomerRow{})
+		if err := order.ScanByCustomer(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
+var orderLinesProbeQueryTotalsCache = runtime.NewTreeCache()
+
+// AllTotals is the order package's aggregation of that name over this
+// semi-join: the predicates and probes filter the rows that go into
+// the groups, and Limit pages the groups. An Order, a row lock or an
+// Offset is refused, as on the table's own.
+func (h OrderLinesProbeQuery) AllTotals(ctx context.Context, ex runtime.Executor) ([]order.TotalsRow, error) {
+	if err := h.err(); err != nil {
+		return nil, err
+	}
+	if h.q.Ordered() || h.q.Locked() || h.q.Paged() {
+		return nil, runtime.ErrGroupedRead
+	}
+	var buf [44]runtime.Tok
+	toks := h.tokens(buf[:0], true)
+	st := orderLinesProbeQueryTotalsCache.Get(toks)
+	if st == nil {
+		prefix, suffix := order.TotalsPieces()
+		st = orderLinesProbeQueryTotalsCache.Put(toks, runtime.SpliceTree(prefix, toks, orderLinesProbeQueryLowering, suffix))
+	}
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	args, cbs := h.bind(pb, true)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	rows, err := ex.Query(ctx, st.SQL, args)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	var out []order.TotalsRow
+	for rows.Next() {
+		out = append(out, order.TotalsRow{})
+		if err := order.ScanTotals(rows.RawValues(), &out[len(out)-1], &sl); err != nil {
+			return nil, err
+		}
+	}
+	return out, rows.Err()
+}
+
 // ActivityRow is the "Activity" union: 3 column(s) merged from 2 table(s).
 //
 // A column is nullable here when ANY branch can produce NULL for it,
@@ -1385,4 +1797,22 @@ func scanDailyRevenueRow(rv [][]byte, r *model.DailyRevenueRow, sl *runtime.Slab
 		return decErr
 	}
 	return nil
+}
+
+const lockTimeoutSQL = "SELECT set_config('lock_timeout', $1, true)"
+
+// LockTimeout bounds how long each later statement of this transaction
+// waits for a lock: past it the statement fails rather than waits. Zero
+// or less waits for ever. It ends with the transaction, and outside one
+// with the statement, so it cannot leak onto a pooled connection.
+func LockTimeout(ctx context.Context, ex runtime.Executor, d time.Duration) error {
+	ms := d.Milliseconds()
+	if d > 0 && ms == 0 {
+		ms = 1 // a positive wait shorter than the unit is not "for ever"
+	}
+	if ms < 0 {
+		ms = 0
+	}
+	_, err := ex.Exec(ctx, lockTimeoutSQL, []any{strconv.FormatInt(ms, 10)})
+	return err
 }

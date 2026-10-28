@@ -91,6 +91,134 @@ func hasAddable(upd []colInfo) bool {
 	return false
 }
 
+// guarded is the counters that carry a guarded increment, in SET order.
+// Counter j takes the expression bit nUpdatable+j, above every column's: a
+// guarded increment is then a statement key of its own, and the loops over
+// the columns pass it by.
+func guarded(upd []colInfo) []colInfo {
+	var out []colInfo
+	for _, c := range upd {
+		if c.col.IncWhen != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// guardOf is the column a counter's guard reads.
+func (g *gen) guardOf(c colInfo) colInfo {
+	sc := g.t.Column(c.col.IncWhen)
+	return colInfo{col: sc, kind: goKind(sc), goBase: baseGoType(sc)}
+}
+
+// checkGuards refuses a guarded increment the generator cannot write,
+// naming the column.
+func (g *gen) checkGuards(upd []colInfo) error {
+	gs := guarded(upd)
+	for _, c := range g.t.Columns {
+		if c.IncWhen != "" && !containsCol(gs, c.Name) {
+			return fmt.Errorf("codegen: table %s: %s has a guarded increment but is not updatable", g.t.Name, c.Name)
+		}
+	}
+	if len(gs) == 0 {
+		return nil
+	}
+	if len(upd)+len(gs) > maxDirty {
+		return fmt.Errorf("codegen: table %s has %d updatable columns and %d guarded increments; the masks hold %d",
+			g.t.Name, len(upd), len(gs), maxDirty)
+	}
+	if g.lw.IncWhenFrag == nil {
+		return fmt.Errorf("codegen: table %s: the %s back end has no guarded increment", g.t.Name, g.lw.name)
+	}
+	for _, c := range gs {
+		if !addableCol(c) {
+			return fmt.Errorf("codegen: table %s: IncWhen on %s: the counter must be a NOT NULL integer", g.t.Name, c.Name())
+		}
+		sc := g.t.Column(c.col.IncWhen)
+		if sc == nil {
+			return fmt.Errorf("codegen: table %s: IncWhen on %s reads %s, which is not a column", g.t.Name, c.Name(), c.col.IncWhen)
+		}
+		switch goKind(sc) {
+		case kindBool, kindInt2, kindInt4, kindInt8, kindText, kindUUID:
+		default:
+			return fmt.Errorf("codegen: table %s: IncWhen on %s reads %s, which = cannot compare: a guard reads a bool, an integer, text or a uuid",
+				g.t.Name, c.Name(), sc.Name)
+		}
+	}
+	return nil
+}
+
+func containsCol(cs []colInfo, name string) bool {
+	for _, c := range cs {
+		if c.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// guardSet emits the guarded increments' assignments, after the columns'.
+func (g *gen) guardSet() {
+	if len(guarded(updatable(g.t))) > 0 {
+		g.p("	set = withGuards(k.Expr, set)")
+	}
+}
+
+// guardArgs emits their arguments, after the columns', in the same order.
+func (g *gen) guardArgs(indent string) {
+	if len(guarded(updatable(g.t))) > 0 {
+		g.p("%sargs = m.guardArgs(args)", indent)
+	}
+}
+
+// guardDecls emits the guarded increments' bits, assignments and binding.
+func (g *gen) guardDecls(upd []colInfo) {
+	gs := guarded(upd)
+	if len(gs) == 0 {
+		return
+	}
+	g.p("// Guarded increments. Each takes an expression bit above every")
+	g.p("// column's, so it is a statement key of its own and the loops over")
+	g.p("// the columns pass it by.")
+	g.p("const (")
+	for j, c := range gs {
+		g.p("	guard%s uint64 = 1 << (nUpdatable + %d)", exportName(c.Name()), j)
+	}
+	g.p(")")
+	g.p("")
+	g.p("// guardFrags adds one to a counter when another column, as the row")
+	g.p("// stands before the write, equals the bound value.")
+	g.p("var guardFrags = [%d]runtime.Frag{", len(gs))
+	for _, c := range gs {
+		a, b := g.lw.IncWhenFrag(c.Name(), c.col.IncWhen)
+		g.p("	{A: %q, B: %q}, // %s + 1 when %s matches", a, b, c.Name(), c.col.IncWhen)
+	}
+	g.p("}")
+	g.p("")
+	g.p("// withGuards appends the guarded increments expr carries, in order.")
+	g.p("func withGuards(expr uint64, set []runtime.Frag) []runtime.Frag {")
+	g.p("	for j := range guardFrags {")
+	g.p("		if expr&(1<<uint(nUpdatable+j)) != 0 {")
+	g.p("			set = append(set, guardFrags[j])")
+	g.p("		}")
+	g.p("	}")
+	g.p("	return set")
+	g.p("}")
+	g.p("")
+	g.p("// guardArgs appends the values the guarded increments compare with,")
+	g.p("// in the order withGuards writes them.")
+	g.p("func (m Mut) guardArgs(args []any) []any {")
+	for _, c := range gs {
+		n := exportName(c.Name())
+		g.p("	if m.expr&guard%s != 0 {", n)
+		g.p("		args = append(args, m.when%s)", n)
+		g.p("	}")
+	}
+	g.p("	return args")
+	g.p("}")
+	g.p("")
+}
+
 // colExpr reports which expression a column admits, if any.
 func colExpr(c *schema.Column) setExpr {
 	switch goKind(c) {
@@ -155,7 +283,13 @@ func (g *gen) writes() {
 		return
 	}
 
+	if err := g.checkGuards(upd); err != nil {
+		g.err = err
+		return
+	}
+
 	g.writeConsts(ins, upd, pk)
+	g.guardDecls(upd)
 	g.mutType(upd, pk)
 	g.insType(ins)
 	g.insertFn(ins)
@@ -165,6 +299,7 @@ func (g *gen) writes() {
 	g.deleteFn(pk)
 	g.writeAll(upd)
 	g.takeFn(upd, pk)
+	g.deleteBatchFn()
 	g.selectHeadFn(ins)
 	g.stepFns(upd, pk)
 }
@@ -372,6 +507,10 @@ func (g *gen) mutType(upd, pk []colInfo) {
 	g.p("\trow   Row")
 	g.p("\tdirty uint64")
 	g.p("\texpr  uint64")
+	for _, c := range guarded(upd) {
+		g.p("\t// when%s is what Inc%sWhen%s compares %s with.", exportName(c.Name()), exportName(c.Name()), exportName(c.col.IncWhen), c.col.IncWhen)
+		g.p("\twhen%s %s", exportName(c.Name()), g.guardOf(c).goBase)
+	}
 	g.p("}")
 	g.p("")
 	g.p("// Mutate stages a row read from the database.")
@@ -428,6 +567,13 @@ func (g *gen) mutType(upd, pk []colInfo) {
 	g.p("// the enforcement, so misuse does not compile rather than failing later.")
 	for _, c := range upd {
 		n := exportName(c.Name())
+		// Every other assignment to a guarded counter drops its guard: the
+		// last setter called is the one the write carries.
+		clearGuard := func() {
+			if c.col.IncWhen != "" {
+				g.p("\tm.expr &^= guard%s", n)
+			}
+		}
 		// The setter takes the bare T even when the column is nullable:
 		// requiring a caller to build a Null[T] to assign a value that is
 		// definitely present is ceremony for nothing.
@@ -435,6 +581,7 @@ func (g *gen) mutType(upd, pk []colInfo) {
 		g.p("\tm.row.%s = %s", n, mutAssign(c))
 		g.p("\tm.dirty |= d%s", n)
 		g.p("\tm.expr &^= d%s", n)
+		clearGuard()
 		g.p("}")
 		g.p("")
 		// The server-side form, where the column has one. It takes no argument
@@ -462,6 +609,7 @@ func (g *gen) mutType(upd, pk []colInfo) {
 			g.p("func (m *Mut) Inc%s() {", n)
 			g.p("\tm.expr |= d%s", n)
 			g.p("\tm.dirty &^= d%s", n)
+			clearGuard()
 			g.p("}")
 			g.p("")
 			if addableCol(c) {
@@ -474,6 +622,24 @@ func (g *gen) mutType(upd, pk []colInfo) {
 				g.p("\tm.row.%s = n", n)
 				g.p("\tm.dirty |= d%s", n)
 				g.p("\tm.expr |= d%s", n)
+				clearGuard()
+				g.p("}")
+				g.p("")
+			}
+			if c.col.IncWhen != "" {
+				w := g.guardOf(c)
+				wn := exportName(w.Name())
+				g.p("// Inc%sWhen%s adds one to the column's OWN value when %s, as", n, wn, w.Name())
+				g.p("// the row stands before the write, equals v, and adds nothing")
+				g.p("// otherwise. The test and the write are one statement, so it")
+				g.p("// reads the value this write replaces: two writers racing see")
+				g.p("// one outcome each, not the same old value twice. It replaces")
+				g.p("// any other assignment to the column staged on m.")
+				g.p("func (m *Mut) Inc%sWhen%s(v %s) {", n, wn, w.goBase)
+				g.p("\tm.when%s = v", n)
+				g.p("\tm.dirty &^= d%s", n)
+				g.p("\tm.expr &^= d%s", n)
+				g.p("\tm.expr |= guard%s", n)
 				g.p("}")
 				g.p("")
 			}
@@ -488,6 +654,7 @@ func (g *gen) mutType(upd, pk []colInfo) {
 			g.p("\tm.row.%s = runtime.Null[%s]{}", n, c.goBase)
 			g.p("\tm.dirty |= d%s", n)
 			g.p("\tm.expr &^= d%s", n)
+			clearGuard()
 			g.p("}")
 			g.p("")
 		}
@@ -1214,6 +1381,7 @@ func (g *gen) insType(ins []colInfo) {
 	}
 
 	g.upsertTargets(ins)
+	g.guardedUpsert(ins)
 	g.stmtForInsertHead("stmtForInsert", "insCache", len(adds) > 0)
 	g.p("\tcols := make([]string, 0, nInsertable)")
 	g.p("\tfor i := 0; i < nInsertable; i++ {")
@@ -1439,6 +1607,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 	g.p("\t\t\tset = append(set, setFrags[i])")
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardSet()
 	if hasVersion {
 		g.p("\tset = append(set, versionBump)")
 	}
@@ -1537,6 +1706,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 	}
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardArgs("\t")
 	for _, c := range pk {
 		g.p("\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
 	}
@@ -1850,6 +2020,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	}
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardArgs("\t")
 	for _, c := range pk {
 		g.p("\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
 	}
@@ -2135,6 +2306,42 @@ func (g *gen) writeAll(upd []colInfo) {
 	}
 	g.p(")")
 	g.p("")
+	g.p("// UpdateHead is UpdateAll's statement without its predicates, for the")
+	g.p("// context package to narrow with a composed read: the UPDATE … SET, the")
+	g.p("// identity a statement built from it is cached under, and the values m")
+	g.p("// assigns. ok is false when m assigns nothing.")
+	g.p("func (m Mut) UpdateHead() (head *runtime.Stmt, key [4]runtime.Tok, args []any, ok bool) {")
+	g.p("\tif m.dirty == 0 && m.expr == 0 {")
+	g.p("\t\treturn nil, key, nil, false")
+	g.p("\t}")
+	g.p("\tkey[0], key[1] = runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32)")
+	g.p("\tkey[2], key[3] = runtime.Tok(m.expr), runtime.Tok(m.expr>>32)")
+	g.p("\treturn updHead(m.key()), key, m.updateArgs(nil), true")
+	g.p("}")
+	g.p("")
+	g.p("// updateArgs appends the values m assigns, in SET order.")
+	g.p("func (m Mut) updateArgs(args []any) []any {")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range upd {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.guardArgs("\t")
+	g.p("\treturn args")
+	g.p("}")
+	g.p("")
+	g.p("// Shaped reports a Limit, Offset or row lock, which shape a read and")
+	g.p("// which a set-based write composed around this query has no place for.")
+	g.p("func (q Query) Shaped() bool {")
+	g.p("\treturn q.limit != %d || q.offset != 0 || q.lock != 0", defaultLimit)
+	g.p("}")
+	g.p("")
 	g.p("// writeAllErr is what UpdateAll and DeleteAll refuse.")
 	g.p("func (q Query) writeAllErr() error {")
 	g.p("\tif err := q.Err(); err != nil {")
@@ -2147,6 +2354,39 @@ func (g *gen) writeAll(upd []colInfo) {
 	g.p("\t\treturn runtime.ErrPagedWrite")
 	g.p("\t}")
 	g.p("\treturn nil")
+	g.p("}")
+	g.p("")
+
+	g.p("var updHeadCache = runtime.NewMaskCache()")
+	g.p("")
+	g.p("// updHead is the UPDATE … SET of one assignment mask, before the")
+	g.p("// predicates or the read that narrow it.")
+	g.p("func updHead(k runtime.MaskKey) *runtime.Stmt {")
+	g.p("\tif st := updHeadCache.Get(k); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
+	g.p("\tfor i := 0; i < nUpdatable; i++ {")
+	g.p("\t\tswitch {")
+	if hasAddable(upd) {
+		g.p("\t\tcase k.Expr&k.Dirty&(1<<uint(i)) != 0:")
+		g.p("\t\t\tset = append(set, addFrags[i])")
+	}
+	g.p("\t\tcase k.Expr&(1<<uint(i)) != 0:")
+	g.p("\t\t\tset = append(set, exprFrags[i])")
+	g.p("\t\tcase k.Dirty&(1<<uint(i)) != 0:")
+	g.p("\t\t\tset = append(set, setFrags[i])")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.guardSet()
+	if hasVersion {
+		g.p("\t// Every row written moves its version on, so a reader holding one")
+		g.p("\t// of them loses its optimistic lock — exactly as if Update had run.")
+		g.p("\tset = append(set, versionBump)")
+	}
+	g.p("\treturn updHeadCache.Put(k, %s(updatePrefix, []runtime.Section{", g.spliceFn())
+	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
+	g.p("\t}, %s))", g.spliceTail())
 	g.p("}")
 	g.p("")
 
@@ -2175,27 +2415,7 @@ func (g *gen) writeAll(upd []colInfo) {
 	g.p("\tif st := %s.Get(key[:n]); st != nil {", cache)
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
-	g.p("\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\tswitch {")
-	if hasAddable(upd) {
-		g.p("\t\tcase k.Expr&k.Dirty&(1<<uint(i)) != 0:")
-		g.p("\t\t\tset = append(set, addFrags[i])")
-	}
-	g.p("\t\tcase k.Expr&(1<<uint(i)) != 0:")
-	g.p("\t\t\tset = append(set, exprFrags[i])")
-	g.p("\t\tcase k.Dirty&(1<<uint(i)) != 0:")
-	g.p("\t\t\tset = append(set, setFrags[i])")
-	g.p("\t\t}")
-	g.p("\t}")
-	if hasVersion {
-		g.p("\t// Every row written moves its version on, so a reader holding one")
-		g.p("\t// of them loses its optimistic lock — exactly as if Update had run.")
-		g.p("\tset = append(set, versionBump)")
-	}
-	g.p("\thead := %s(updatePrefix, []runtime.Section{", g.spliceFn())
-	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
-	g.p("\t}, %s)", g.spliceTail())
+	g.p("\thead := updHead(k)")
 	g.p("\tif head.Err != nil {")
 	g.p("\t\treturn head")
 	g.p("\t}")
@@ -2242,19 +2462,7 @@ func (g *gen) writeAll(upd []colInfo) {
 	g.p("\t}")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
-	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range upd {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
-	g.p("\targs = append(args, q.bindPreds(b)...)")
+	g.p("\targs := append(m.updateArgs(make([]any, 0, st.NArg)), q.bindPreds(b)...)")
 	g.p("\treturn ex.Exec(ctx, st.SQL, args)")
 	g.p("}")
 	g.p("")
@@ -2342,6 +2550,12 @@ func (g *gen) writeHardDeleteAll(ex string) {
 	g.p("")
 }
 
+// takes says whether table t gets Take: it asked for it, the back end says
+// how, and one column keys its rows.
+func takes(lw lowering, t *schema.Table) bool {
+	return t.Takes && lw.TakeOpen != nil && len(t.PrimaryKey) == 1 && lw.canReturn() && !lw.ReturningPositional
+}
+
 // takeFn emits Take: an UPDATE of exactly the rows a read would return — its
 // predicate, order, limit and row lock — handing those rows back as written.
 // It is the queue claim in one statement: with ForUpdateSkipLocked, two
@@ -2351,7 +2565,7 @@ func (g *gen) writeHardDeleteAll(ex string) {
 // and the UPDATE can return rows. Elsewhere the method is absent, which is an
 // undefined-method compile error naming what is missing.
 func (g *gen) takeFn(upd, pk []colInfo) {
-	if !g.t.Takes || g.lw.TakeOpen == nil || len(pk) != 1 || !g.lw.canReturn() || g.lw.ReturningPositional {
+	if !takes(g.lw, g.t) {
 		return
 	}
 	hasVersion := versionCol(g.t) != nil
@@ -2364,39 +2578,35 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("const takeOpen = %s", lit(g.lw.TakeOpen(g.t.Name, pk[0].Name())))
 	g.p("")
 	g.p("// takeStmtFor compiles one (assignments, lock, read) triple, once.")
-	g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, toks []runtime.Tok) *runtime.Stmt {")
+	if g.widens() {
+		g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, deleted bool, toks []runtime.Tok) *runtime.Stmt {")
+	} else {
+		g.p("func takeStmtFor(k runtime.MaskKey, lock uint8, toks []runtime.Tok) *runtime.Stmt {")
+	}
 	g.p("\tvar key [%d]runtime.Tok", keyBuf)
 	g.p("\tkey[0], key[1] = runtime.Tok(k.Dirty), runtime.Tok(k.Dirty>>32)")
 	g.p("\tkey[2], key[3] = runtime.Tok(k.Expr), runtime.Tok(k.Expr>>32)")
 	g.p("\tkey[4] = runtime.Tok(lock)")
+	if g.widens() {
+		g.p("\tif deleted {")
+		g.p("\t\tkey[4] |= 1 << 8")
+		g.p("\t}")
+	}
 	g.p("\tn := 5 + copy(key[5:], toks)")
 	g.p("\tif st := takeCache.Get(key[:n]); st != nil {")
 	g.p("\t\treturn st")
 	g.p("\t}")
-	g.p("\tset := make([]runtime.Frag, 0, nUpdatable+1)")
-	g.p("\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\tswitch {")
-	if hasAddable(upd) {
-		g.p("\t\tcase k.Expr&k.Dirty&(1<<uint(i)) != 0:")
-		g.p("\t\t\tset = append(set, addFrags[i])")
-	}
-	g.p("\t\tcase k.Expr&(1<<uint(i)) != 0:")
-	g.p("\t\t\tset = append(set, exprFrags[i])")
-	g.p("\t\tcase k.Dirty&(1<<uint(i)) != 0:")
-	g.p("\t\t\tset = append(set, setFrags[i])")
-	g.p("\t\t}")
-	g.p("\t}")
-	if hasVersion {
-		g.p("\tset = append(set, versionBump)")
-	}
-	g.p("\thead := %s(updatePrefix, []runtime.Section{", g.spliceFn())
-	g.p("\t\t{Lead: %q, Sep: %q, Frags: set},", g.lw.SetLead, g.lw.SetSep)
-	g.p("\t}, %s)", g.spliceTail())
+	g.p("\thead := updHead(k)")
 	g.p("\tif head.Err != nil {")
 	g.p("\t\treturn head")
 	g.p("\t}")
 	g.p("\tsuffix := limitSuffix + lockSuffix[lock] + %s + updReturning", lit(g.lw.TakeClose))
 	if g.t.SoftDeletes() {
+		if g.widens() {
+			g.p("\tif deleted {")
+			g.p("\t\treturn takeCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL+takeOpen, toks, lowering, suffix, head.NArg))")
+			g.p("\t}")
+		}
 		g.p("\treturn takeCache.Put(key[:n], runtime.SpliceTreeWhereFrom(head.SQL+takeOpen, softDeleteWhere, toks, lowering, suffix, head.NArg))")
 	} else {
 		g.p("\treturn takeCache.Put(key[:n], runtime.SpliceTreeFrom(head.SQL+takeOpen, toks, lowering, suffix, head.NArg))")
@@ -2423,7 +2633,7 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 		g.p("// The version column is bumped on every row taken.")
 	}
 	g.p("func (q Query) Take(ctx context.Context, ex %s, m Mut, dst []Row) ([]Row, error) {", ex)
-	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\tif err := q.readErr(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
 	g.p("\tif q.offset != 0 {")
@@ -2433,25 +2643,17 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("\t\treturn dst, nil")
 	g.p("\t}")
 	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
-	g.p("\tst := takeStmtFor(m.key(), q.lock, q.stream(&buf))")
+	if g.widens() {
+		g.p("\tst := takeStmtFor(m.key(), q.lock, q.deleted, q.stream(&buf))")
+	} else {
+		g.p("\tst := takeStmtFor(m.key(), q.lock, q.stream(&buf))")
+	}
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn dst, st.Err")
 	g.p("\t}")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
-	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range upd {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
-	g.p("\targs = append(args, q.bind(b)...)")
+	g.p("\targs := append(m.updateArgs(make([]any, 0, st.NArg)), q.bind(b)...)")
 	g.p("\tvar sl runtime.Slab")
 	g.p("\tsl.Reserve(st.SlabHint())")
 	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
@@ -2467,6 +2669,93 @@ func (g *gen) takeFn(upd, pk []colInfo) {
 	g.p("\t}")
 	g.p("\tst.ObserveSlab(sl.Size())")
 	g.p("\treturn dst, rows.Err()")
+	g.p("}")
+	g.p("")
+	g.p("// TakeHead is Take's statement without its read, for the context")
+	g.p("// package to narrow with a composed one: the UPDATE … SET, what opens")
+	g.p("// and closes the read (the lock q holds spelled in the close), the")
+	g.p("// identity a statement built from them is cached under, and the values")
+	g.p("// m assigns. ok is false when m assigns nothing.")
+	g.p("func (m Mut) TakeHead(q Query) (head *runtime.Stmt, open, close string, key [5]runtime.Tok, args []any, ok bool) {")
+	g.p("\tif m.dirty == 0 && m.expr == 0 {")
+	g.p("\t\treturn nil, \"\", \"\", key, nil, false")
+	g.p("\t}")
+	g.p("\tkey[0], key[1] = runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32)")
+	g.p("\tkey[2], key[3] = runtime.Tok(m.expr), runtime.Tok(m.expr>>32)")
+	g.p("\tkey[4] = runtime.Tok(q.lock)")
+	g.p("\treturn updHead(m.key()), takeOpen, lockSuffix[q.lock] + %s + updReturning, key, m.updateArgs(nil), true", lit(g.lw.TakeClose))
+	g.p("}")
+	g.p("")
+}
+
+// deleteBatchFn emits DeleteBatch: a DELETE of exactly the rows a read would
+// return — its predicate, order, limit and row lock — reporting how many it
+// removed. It is the bounded purge a sweep repeats until a run removes fewer
+// than its limit, so no one statement holds a long table's locks or WAL for
+// the whole sweep.
+//
+// On a table that asks for Take, where the back end says how
+// (Lowering.TrimOpen). On a soft-delete table it is HardDeleteBatch, and like
+// HardDeleteAll it reads marked rows and live ones alike: a purge of a table
+// whose rows are deliberately not kept removes them whether or not they were
+// marked, and a batch that left the marked ones out would never finish them.
+func (g *gen) deleteBatchFn() {
+	if !g.t.Takes || g.lw.TrimOpen == nil {
+		return
+	}
+	name, which := "DeleteBatch", "the rows the query would read"
+	if g.t.SoftDeletes() {
+		name, which = "HardDeleteBatch", "the rows the query would read, marked deleted or not,"
+	}
+	ex := g.execType()
+	keyBuf := 1 + g.streamBuf()
+
+	g.p("var trimCache = runtime.NewTreeCache()")
+	g.p("")
+	g.p("// trimStmtFor compiles one (lock, read) pair, once.")
+	g.p("func trimStmtFor(lock uint8, toks []runtime.Tok) *runtime.Stmt {")
+	g.p("\tvar key [%d]runtime.Tok", keyBuf)
+	g.p("\tkey[0] = runtime.Tok(lock)")
+	g.p("\tn := 1 + copy(key[1:], toks)")
+	g.p("\tif st := trimCache.Get(key[:n]); st != nil {")
+	g.p("\t\treturn st")
+	g.p("\t}")
+	g.p("\tsuffix := limitSuffix + lockSuffix[lock] + %s", lit(g.lw.TrimClose))
+	g.p("\treturn trimCache.Put(key[:n], runtime.SpliceTree(deletePrefix+%s, toks, lowering, suffix))", lit(g.lw.TrimOpen(g.t.Name)))
+	g.p("}")
+	g.p("")
+	g.p("// %s removes %s —", name, which)
+	g.p("// its predicates, order, Limit and row lock all apply — in ONE")
+	g.p("// statement, and reports how many it removed:")
+	g.p("//")
+	g.p("//\tfor {")
+	g.p("//\t\tn, err := New().Where(…).Limit(1000).%s(ctx, ex)", name)
+	g.p("//\t\tif err != nil || n < 1000 {")
+	g.p("//\t\t\tbreak")
+	g.p("//\t\t}")
+	g.p("//\t}")
+	g.p("//")
+	g.p("// That is the bounded purge: each run holds its locks for one batch.")
+	g.p("// The query must have a predicate — runtime.ErrUnfilteredWrite")
+	g.p("// otherwise — and Offset is refused with runtime.ErrPagedWrite.")
+	g.p("func (q Query) %s(ctx context.Context, ex %s) (int64, error) {", name, ex)
+	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\t\treturn 0, err")
+	g.p("\t}")
+	g.p("\tif q.nt == 0 {")
+	g.p("\t\treturn 0, runtime.ErrUnfilteredWrite")
+	g.p("\t}")
+	g.p("\tif q.offset != 0 {")
+	g.p("\t\treturn 0, runtime.ErrPagedWrite")
+	g.p("\t}")
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\tst := trimStmtFor(q.lock, q.stream(&buf))")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn 0, st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("\treturn ex.Exec(ctx, st.SQL, q.bind(b))")
 	g.p("}")
 	g.p("")
 }
@@ -2612,6 +2901,7 @@ func (g *gen) stepFns(upd, pk []colInfo) {
 	}
 	g.p("\t\t\t}")
 	g.p("\t\t}")
+	g.guardArgs("\t\t")
 	g.p("\t\treturn run(st.SQL, append(args, q.bindPreds(b)...))")
 	g.p("\t}")
 	g.p("}")
@@ -2771,6 +3061,7 @@ func (g *gen) stepFns(upd, pk []colInfo) {
 	g.p("\t\t\tset = append(set, setFrags[i])")
 	g.p("\t\t}")
 	g.p("\t}")
+	g.guardSet()
 	if hasVersion {
 		g.p("\tset = append(set, versionBump)")
 	}
@@ -2840,6 +3131,7 @@ func (g *gen) stepFns(upd, pk []colInfo) {
 	g.p("\t\t\t\targs = append(args, m.arg(i))")
 	g.p("\t\t\t}")
 	g.p("\t\t}")
+	g.guardArgs("\t\t")
 	g.p("\t\targs = append(args, q.bindPreds(b)...)")
 	g.p("\t\tn, err := ex.Exec(ctx, st.SQL, args)")
 	g.p("\t\twritten = n")
@@ -2870,4 +3162,100 @@ func (g *gen) declaredLive() string {
 		return ""
 	}
 	return g.lw.SoftDeleteWhere(g.t.SoftDelete)
+}
+
+// guardedUpsert emits Ins.UpsertWhere, where the model asks for it: the
+// upsert's DO UPDATE with a WHERE over the row already there, from a query of
+// this table. Its columns are qualified by the table, because EXCLUDED has the
+// same names and a bare one is ambiguous there.
+func (g *gen) guardedUpsert(ins []colInfo) {
+	if !g.t.GuardsUpsert {
+		return
+	}
+	if g.lw.Upsert == nil || len(conflictTargets(g.t)) == 0 {
+		g.err = fmt.Errorf("codegen: table %s: GuardsUpsert needs a unique key and a back end whose upsert is a clause (%s)",
+			g.t.Name, g.lw.name)
+		return
+	}
+	table := g.lw.Ident(g.t.Name)
+	g.p("// guardFragTable is fragTable with every column named with its table,")
+	g.p("// for UpsertWhere's WHERE, where EXCLUDED carries the same names.")
+	g.fragTable("guardFragTable", func(col string) string { return table + "." + g.lw.Ident(col) })
+	g.p("func guardFragOf(op, col uint32) runtime.Frag {")
+	g.p("\tif int(col) >= len(guardFragTable) || int(op) >= len(guardFragTable[0]) {")
+	g.p("\t\treturn runtime.Frag{}")
+	g.p("\t}")
+	g.p("\treturn guardFragTable[col][op]")
+	g.p("}")
+	g.p("")
+	g.p("var guardLowering = func() runtime.Lowering {")
+	g.p("\tl := lowering")
+	g.p("\tl.Frag = guardFragOf")
+	g.p("\treturn l")
+	g.p("}()")
+	g.p("")
+	g.p("var guardedUpsertCache = runtime.NewTreeCache()")
+	g.p("")
+	g.p("var errUnguardedUpsert = errors.New(%q)", "storm: UpsertWhere guards the update of an upsert: "+
+		"name its unique key with OnConflict…, without DoNothing, and pass a query with no Limit, Offset or lock")
+	g.p("")
+	g.p("// UpsertWhere inserts the row or, on a conflict on the key OnConflict…")
+	g.p("// named, updates the row already there only when q matches it, and")
+	g.p("// otherwise leaves it alone. It reports the rows written: one inserted")
+	g.p("// or updated, or none.")
+	g.p("//")
+	g.p("//\tn.OnConflictWorker().UpsertWhere(ctx, ex, New().Any(LastSeenAt.Lt(stale), Version.NotEq(v)))")
+	g.p("//")
+	g.p("// q's predicates read the row already there; ordering is ignored.")
+	g.p("func (n *Ins) UpsertWhere(ctx context.Context, ex %s, q Query) (int64, error) {", g.execType())
+	g.p("\tif n.set == 0 {")
+	g.p("\t\treturn 0, runtime.ErrNothingAssigned")
+	g.p("\t}")
+	g.p("\tif n.conflict < 2 || n.conflict%%2 == 1 || q.Shaped() {")
+	g.p("\t\treturn 0, errUnguardedUpsert")
+	g.p("\t}")
+	g.p("\tif err := q.Err(); err != nil {")
+	g.p("\t\treturn 0, err")
+	g.p("\t}")
+	add := g.insAddArg("n")
+	addKey := "0"
+	if add != "" {
+		addKey = "runtime.Tok(n.add)"
+	}
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\ttoks := q.preds(&buf)")
+	g.p("\tif len(assignable((n.conflict-2)/2, n.set)) == 0 {")
+	g.p("\t\ttoks = nil // DO NOTHING: there is no update to guard")
+	g.p("\t}")
+	g.p("\tvar kb [%d]runtime.Tok", g.streamBuf()+4)
+	g.p("\tkey := kb[:4+copy(kb[4:], toks)]")
+	g.p("\tkey[0], key[1], key[2], key[3] = runtime.Tok(n.set), runtime.Tok(n.set>>32), runtime.Tok(n.conflict), %s", addKey)
+	g.p("\tst := guardedUpsertCache.Get(key)")
+	g.p("\tif st == nil {")
+	g.p("\t\thead := stmtForInsertNoReturn(n.set, n.conflict%s)", add)
+	g.p("\t\tst = guardedUpsertCache.Put(key, runtime.SpliceTreeFrom(head.SQL, toks, guardLowering, \"\", head.NArg))")
+	g.p("\t}")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn 0, st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("\targs := make([]any, 0, st.NArg)")
+	g.p("\tfor i := 0; i < nInsertable; i++ {")
+	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range ins {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tif toks != nil {")
+	g.p("\t\targs = append(args, q.bindPreds(b)...)")
+	g.p("\t}")
+	g.p("\treturn ex.Exec(ctx, st.SQL, args)")
+	g.p("}")
+	g.p("")
 }

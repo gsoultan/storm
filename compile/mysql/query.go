@@ -188,6 +188,13 @@ func AddFrag(col string) (a, b string) {
 	return Ident(col) + " = " + Ident(col) + " + " + Placeholder, ""
 }
 
+// IncWhenFrag adds one to a counter when another column, as the row stands
+// before the write, equals a bound value, and nothing otherwise. The test is
+// read in the statement that writes, so it sees the value the write replaces.
+func IncWhenFrag(col, cond string) (a, b string) {
+	return Ident(col) + " = " + Ident(col) + " + CASE WHEN " + Ident(cond) + " = " + Placeholder, " THEN 1 ELSE 0 END"
+}
+
 // NowFrag assigns a column the database's clock rather than the caller's.
 //
 // The explicit (6) is not decoration: bare CURRENT_TIMESTAMP carries zero

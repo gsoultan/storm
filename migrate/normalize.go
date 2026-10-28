@@ -117,6 +117,12 @@ type Options struct {
 	// writers. Each such change is marked NoTransaction, because that form
 	// cannot run inside a transaction block.
 	Concurrently bool
+
+	// DeclaredOnly leaves alone every table the model does not declare: it is
+	// neither dropped nor compared. For a model that shares its schema with
+	// tables something else owns, where "not in the model" means "not ours",
+	// not "deleted".
+	DeclaredOnly bool
 }
 
 // ForWith is For with Options.
@@ -128,6 +134,9 @@ func ForWith(ctx context.Context, c *pgx.Conn, target string, want *schema.Schem
 	cur, err := schemapg.Introspect(ctx, c, target)
 	if err != nil {
 		return Plan{}, fmt.Errorf("introspect %s: %w", target, err)
+	}
+	if o.DeclaredOnly {
+		cur = declaredOnly(cur, norm)
 	}
 	plan := Diff(cur, norm)
 	if o.Concurrently {
@@ -162,4 +171,16 @@ func validIdent(s string) error {
 		}
 	}
 	return nil
+}
+
+// declaredOnly is cur without the tables want does not declare.
+func declaredOnly(cur, want *schema.Schema) *schema.Schema {
+	out := *cur
+	out.Tables = nil
+	for _, t := range cur.Tables {
+		if want.Table(t.Name) != nil {
+			out.Tables = append(out.Tables, t)
+		}
+	}
+	return &out
 }

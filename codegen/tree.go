@@ -173,6 +173,31 @@ func listOpTest(v string) string {
 	return b.String()
 }
 
+// arglessOpTest and arglessOpCases name every operator that binds nothing.
+func arglessOpTest(v string) string {
+	var b strings.Builder
+	for _, op := range ops {
+		if op.args != 0 {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(" || ")
+		}
+		b.WriteString(v + " == op" + op.name)
+	}
+	return b.String()
+}
+
+func arglessOpCases() string {
+	var names []string
+	for _, op := range ops {
+		if op.args == 0 {
+			names = append(names, "op"+op.name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
 func listOpCases() string {
 	var names []string
 	for _, op := range ops {
@@ -396,6 +421,11 @@ func (g *gen) treeQuery() {
 	g.p("\t// noOrder suppresses the default ordering. See Unordered.")
 	g.p("\tnoOrder bool")
 	g.p("\tbadAfter bool")
+	if g.widens() {
+		g.p("")
+		g.p("\t// deleted reads the marked rows as well. See WithDeleted.")
+		g.p("\tdeleted bool")
+	}
 	g.p("}")
 	g.p("")
 	g.p("// New starts a query.")
@@ -540,6 +570,16 @@ func (g *gen) treeQuery() {
 	g.p("")
 	g.p("// Err reports a query that outgrew its buffers.")
 	g.p("func (q Query) Err() error {")
+	if g.widens() {
+		g.p("\tif q.deleted {")
+		g.p("\t\treturn errWithDeleted")
+		g.p("\t}")
+	}
+	g.p("\treturn q.readErr()")
+	g.p("}")
+	g.p("")
+	g.p("// readErr is Err for the terminals that can read the marked rows too.")
+	g.p("func (q Query) readErr() error {")
 	g.p("\tif q.over {")
 	g.p("\t\treturn errTooComplex")
 	g.p("\t}")
@@ -552,6 +592,13 @@ func (g *gen) treeQuery() {
 	g.p("\treturn nil")
 	g.p("}")
 	g.p("")
+	if g.widens() {
+		g.p("var errWithDeleted = errors.New(")
+		g.p("\t%q)", "storm: WithDeleted() reaches All, One, Count, Exists, Take and the declared projections; "+
+			"every other terminal keeps the marked rows out, and running it as if it did not "+
+			"would answer a different question than the one asked")
+		g.p("")
+	}
 	g.p("var errAfterUnordered = errors.New(")
 	g.p("\t%q)", "storm: After() on an Unordered() query with no explicit Order — "+
 		"a keyset cursor without an ordering is a position in nothing")
@@ -797,7 +844,10 @@ func (g *gen) treePreds() {
 	// empty string to status and returned nothing — no error, no warning, just
 	// the wrong rows, and only when a null check preceded another predicate of
 	// the same type.
-	g.p("\tif p.op == opIsNull || p.op == opIsNotNull {")
+	//
+	// Every argless operator, from the ops table: naming the two here is how
+	// a third would have bound a value it does not have.
+	g.p("\tif %s {", arglessOpTest("p.op"))
 	g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
 	g.p("\t\treturn")
 	g.p("\t}")
@@ -946,7 +996,7 @@ func (g *gen) treeBind() {
 	g.p("\t\t\tcontinue")
 	g.p("\t\t}")
 	g.p("\t\tswitch runtime.Op(t.Op()) {")
-	g.p("\t\tcase opIsNull, opIsNotNull:")
+	g.p("\t\tcase %s:", arglessOpCases())
 	g.p("\t\t\tcontinue")
 	if len(ts.anyList) > 0 {
 		g.p("\t\tcase %s:", listOpCases())

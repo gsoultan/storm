@@ -86,6 +86,13 @@ func AddFrag(col string) (a, b string) {
 	return Ident(col) + " = " + Ident(col) + " + " + Placeholder, ""
 }
 
+// IncWhenFrag adds one to a counter when another column, as the row stands
+// before the write, equals a bound value, and nothing otherwise. The test is
+// read in the statement that writes, so it sees the value the write replaces.
+func IncWhenFrag(col, cond string) (a, b string) {
+	return Ident(col) + " = " + Ident(col) + " + CASE WHEN " + Ident(cond) + " = " + Placeholder, " THEN 1 ELSE 0 END"
+}
+
 // stepName is the step's name inside a statement that writes after it.
 const stepName = `"_storm_step"`
 
@@ -136,6 +143,20 @@ func TakeOpen(table, key string) string {
 
 // TakeClose ends what TakeOpen began.
 const TakeClose = ")"
+
+// TrimOpen narrows a DELETE to the rows a read selects, by their physical
+// address rather than a key: `ctid = ANY(ARRAY(SELECT ctid …))` runs the read
+// once and removes what it found with a TID scan, which is the bounded purge
+// a sweep repeats until a run removes less than its limit. `ctid IN (SELECT
+// …)` would read the same rows and then plan the outer side as a scan of the
+// whole table. A ctid is only stable within the statement, which is all this
+// needs.
+func TrimOpen(table string) string {
+	return " WHERE ctid = ANY(ARRAY(SELECT ctid FROM " + Ident(table)
+}
+
+// TrimClose ends what TrimOpen began.
+const TrimClose = "))"
 
 // InsertSelectMid is what an INSERT … SELECT has between its column list and
 // the selected values, where a plain insert has VALUES.
@@ -436,3 +457,20 @@ func LockSuffix(m LockMode) string {
 	}
 	return ""
 }
+
+// LockTables takes a table lock on each table, in the order named, held to
+// the end of the transaction: the text before the tables, their separator,
+// and the clause each mode ends with, by mode from ACCESS SHARE (0) to
+// ACCESS EXCLUSIVE (7).
+func LockTables() (open, sep string, modes []string) {
+	return "LOCK TABLE ", ", ", []string{
+		" IN ACCESS SHARE MODE", " IN ROW SHARE MODE", " IN ROW EXCLUSIVE MODE",
+		" IN SHARE UPDATE EXCLUSIVE MODE", " IN SHARE MODE", " IN SHARE ROW EXCLUSIVE MODE",
+		" IN EXCLUSIVE MODE", " IN ACCESS EXCLUSIVE MODE",
+	}
+}
+
+// LockTimeout bounds how long any statement waits for a lock, for the rest
+// of the transaction. set_config rather than SET LOCAL, because SET takes no
+// bound value; the value is milliseconds, as text.
+func LockTimeout() string { return "SELECT set_config('lock_timeout', $1, true)" }

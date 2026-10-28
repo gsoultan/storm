@@ -427,3 +427,63 @@ func TestJSONBArenaAndListSlotInOneQuery(t *testing.T) {
 		t.Fatalf("arena and list predicates together returned %d rows", len(rows))
 	}
 }
+
+// A jsonb column read as its TEXT. What a column that holds a list of names as
+// the characters of a JSON array is asked: does it name this person, and does
+// it name nobody. A missing document reads as the empty string.
+func TestJSONBTextPredicates(t *testing.T) {
+	ctx := context.Background()
+	add := func(sku, doc string) {
+		t.Helper()
+		n := product.Create()
+		n.SetSku(sku)
+		n.SetName("Widget " + sku)
+		n.SetPrice(mustDec(t, "1.00"))
+		n.SetTags([]string{})
+		n.SetAttrs(runtime.JSON(doc))
+		if _, err := n.Insert(ctx, ex); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("SKU-T-NAMED", `["ada", "bo_b"]`)
+	add("SKU-T-EMPTY", `[]`)
+	add("SKU-T-NULL", `null`)
+	add("SKU-T-OBJECT", `{}`)
+
+	find := func(name string, preds ...product.Pred) map[string]bool {
+		t.Helper()
+		rows, err := product.New().Where(append(preds, product.Sku.Like("SKU-T-%"))...).All(ctx, ex, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		m := map[string]bool{}
+		for _, r := range rows {
+			m[r.Sku] = true
+		}
+		return m
+	}
+	same := func(name string, got map[string]bool, want ...string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Errorf("%s matched %v, want %v", name, got, want)
+			return
+		}
+		for _, w := range want {
+			if !got[w] {
+				t.Errorf("%s matched %v, want %v", name, got, want)
+				return
+			}
+		}
+	}
+
+	// Any one pattern is enough, and quoting keeps "ad" from matching "ada".
+	same("TextLikeAny", find("like any", product.Attrs.TextLikeAny(`%"zed"%`, `%"ada"%`)), "SKU-T-NAMED")
+	same("TextLikeAny partial", find("like partial", product.Attrs.TextLikeAny(`%"ad"%`)))
+	// An escaped underscore is a literal one.
+	same("TextLikeAny escaped", find("like escaped", product.Attrs.TextLikeAny(`%"bo\_b"%`)), "SKU-T-NAMED")
+	// Holds nothing: the empty list, the JSON null and the empty object.
+	same("IsEmpty", find("empty", product.Attrs.IsEmpty()), "SKU-T-EMPTY", "SKU-T-NULL", "SKU-T-OBJECT")
+	// Two list operators on one column in one query take two list slots.
+	same("TextLikeAny and HasAnyKey",
+		find("two lists", product.Attrs.TextLikeAny(`%"ada"%`), product.Attrs.HasAnyKey("ada")), "SKU-T-NAMED")
+}

@@ -42,12 +42,29 @@ type Term struct {
 	// param is the 1-based union parameter index; 0 is "not a parameter", so
 	// the zero Term stays meaningless rather than meaning parameter 0.
 	param int
+	// scope is the join scope ColOf or the element range Field names, and
+	// key the column or field in it.
+	scope string
+	key   string
 	err   error
 }
 
 // Col is an explicit column reference. Rarely needed: a field pointer is
 // accepted directly wherever a Term is.
 func (Exprs) Col(fieldPtr any) Term { return Term{kind: schema.ExprCol, fp: fieldPtr} }
+
+// ColOf is a column of a join's named scope — a CTE's output, or a table
+// joined under an alias — where no field pointer can say which: a CTE has no
+// model. Only a join's declarations have scopes.
+func (Exprs) ColOf(alias, column string) Term {
+	return Term{kind: schema.ExprCol, scope: alias, key: column}
+}
+
+// Field is a text field of a JSON element an aggregation's Elements ranges
+// over: `alias->>'key'`, NULL when the element has no such key.
+func (Exprs) Field(alias, key string) Term {
+	return Term{kind: schema.ExprField, scope: alias, key: key}
+}
 
 // star is `*`. Unexported because there is no call site for it: Count already
 // means count(*), CountOf takes the column, and every other position refuses a
@@ -272,8 +289,9 @@ type WindowSpec struct {
 }
 
 type windowOrder struct {
-	term Term
-	desc bool
+	term       Term
+	desc       bool
+	nullsFirst *bool
 }
 
 // Over starts a window.
@@ -379,9 +397,26 @@ func (w *WindowSpec) PartitionBy(xs ...any) *WindowSpec {
 func (w *WindowSpec) OrderByAsc(xs ...any) *WindowSpec  { return w.orderBy(false, xs) }
 func (w *WindowSpec) OrderByDesc(xs ...any) *WindowSpec { return w.orderBy(true, xs) }
 
+// OrderByAscNullsFirst and OrderByDescNullsLast are the two orderings that put
+// the NULLs where PostgreSQL would not: it sorts them last going up and first
+// going down.
+func (w *WindowSpec) OrderByAscNullsFirst(xs ...any) *WindowSpec {
+	return w.orderNulls(false, true, xs)
+}
+func (w *WindowSpec) OrderByDescNullsLast(xs ...any) *WindowSpec {
+	return w.orderNulls(true, false, xs)
+}
+
 func (w *WindowSpec) orderBy(desc bool, xs []any) *WindowSpec {
 	for _, x := range xs {
 		w.order = append(w.order, windowOrder{term: toTerm(x), desc: desc})
+	}
+	return w
+}
+
+func (w *WindowSpec) orderNulls(desc, first bool, xs []any) *WindowSpec {
+	for _, x := range xs {
+		w.order = append(w.order, windowOrder{term: toTerm(x), desc: desc, nullsFirst: &first})
 	}
 	return w
 }

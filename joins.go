@@ -3,6 +3,7 @@ package storm
 import (
 	"fmt"
 	"reflect"
+	"slices"
 
 	"github.com/gsoultan/storm/schema"
 )
@@ -115,6 +116,27 @@ func (j *Joins) Named(name string) *JoinBuilder {
 // One pass over the aggregated table, reused by the join, instead of a
 // correlated subquery per row.
 func (b *JoinBuilder) With(alias string, model any, aggregate string) *JoinBuilder {
+	return b.with(alias, model, aggregate, false)
+}
+
+// WithWhere is With, narrowed at the call site: the CTE aggregates the rows a
+// query of the aggregated table chooses, rather than the whole table.
+//
+//	var r Release
+//	j.Named("Shown").WithWhere("live", &r, "Live")
+//
+// A join with one runs through the context package's composer, which takes
+// the main query and one query per narrowed CTE, in declaration order:
+//
+//	store.DefinitionShown(definition.New(), release.New().Where(release.ActivateAt.Lte(now))).All(ctx, ex)
+//
+// One statement, each CTE's predicates bound where its WHERE is. PostgreSQL
+// only.
+func (b *JoinBuilder) WithWhere(alias string, model any, aggregate string) *JoinBuilder {
+	return b.with(alias, model, aggregate, true)
+}
+
+func (b *JoinBuilder) with(alias string, model any, aggregate string, narrowed bool) *JoinBuilder {
 	if b.dead {
 		return b
 	}
@@ -137,7 +159,11 @@ func (b *JoinBuilder) With(alias string, model any, aggregate string) *JoinBuild
 		b.fail("With %q: the alias is already in scope", alias)
 		return b
 	}
-	cte := schema.CTE{Alias: alias, Table: mi.tbl.out.Name, Aggregate: aggregate}
+	if narrowed && len(agg.Params) > 0 {
+		b.fail("WithWhere %q: %s.%s takes parameters, and a narrowed CTE has its call site's predicates instead", alias, mi.tbl.out.Name, aggregate)
+		return b
+	}
+	cte := schema.CTE{Alias: alias, Table: mi.tbl.out.Name, Aggregate: aggregate, Narrowed: narrowed}
 	b.join.CTEs = append(b.join.CTEs, cte)
 	b.scope[alias] = &scopeEntry{table: mi.tbl.out, cte: &cte, agg: agg}
 	return b
@@ -202,7 +228,29 @@ func (b *JoinBuilder) attachCTE(kind schema.JoinKind, alias string, on JoinOn) *
 	return b
 }
 
+// InnerAs and LeftAs attach a table under an alias, which is how a table is
+// joined twice — to itself, say, for another row of the same key:
+//
+//	var lv Definition
+//	j.Named("Shown").
+//	    LeftAs("lv", &lv, j.OnCols("definitions", "key", &lv.Key).And("live", "version", &lv.Version))
+//
+// The model is its own local variable, so its field pointers say which of the
+// two the declaration means.
+func (b *JoinBuilder) InnerAs(alias string, model any, on JoinOn) *JoinBuilder {
+	return b.attachAs(schema.JoinInner, alias, model, on)
+}
+
+// LeftAs is InnerAs for a LEFT join.
+func (b *JoinBuilder) LeftAs(alias string, model any, on JoinOn) *JoinBuilder {
+	return b.attachAs(schema.JoinLeft, alias, model, on)
+}
+
 func (b *JoinBuilder) attach(kind schema.JoinKind, model any, on any) *JoinBuilder {
+	return b.attachAs(kind, "", model, on)
+}
+
+func (b *JoinBuilder) attachAs(kind schema.JoinKind, alias string, model any, on any) *JoinBuilder {
 	if b.dead {
 		return b
 	}
@@ -211,9 +259,19 @@ func (b *JoinBuilder) attach(kind schema.JoinKind, model any, on any) *JoinBuild
 		b.fail("joins %T, which is not a registered model", model)
 		return b
 	}
-	alias := mi.tbl.out.Name
+	if alias == "" {
+		alias = mi.tbl.out.Name
+	} else if !isSQLAlias(alias) {
+		b.fail("joins %s as %q, which is not a lower-case SQL identifier", mi.tbl.out.Name, alias)
+		return b
+	}
 	if _, dup := b.scope[alias]; dup {
-		b.fail("joins %s twice; storm does not alias a table to itself yet", alias)
+		b.fail("joins %s twice under one name — give the second its own with InnerAs or LeftAs", alias)
+		return b
+	}
+	if reflect.ValueOf(model).Pointer() == uintptr(b.j.t.base) {
+		b.fail("joins %s as %q through the declaring model itself — declare a local "+
+			"variable of its type and take pointers into that", mi.tbl.out.Name, alias)
 		return b
 	}
 	// Register the LOCAL instance so field pointers into it resolve.
@@ -265,11 +323,14 @@ func (b *JoinBuilder) joinCond(alias string, target *schema.Table, on any) (sche
 	}, nil
 }
 
-// JoinOn is an explicit join condition.
+// JoinOn is an explicit join condition: a column pair, and any more ANDed
+// with it. The pairs And added before this one hang off prev, a pointer rather
+// than a slice so a JoinOn stays comparable, as it was before And.
 type JoinOn struct {
 	leftAlias string
 	leftCol   string
 	rightFP   any
+	prev      *JoinOn
 	err       error
 }
 
@@ -279,27 +340,53 @@ func (Exprs) OnCols(alias, column string, fieldPtr any) JoinOn {
 	return JoinOn{leftAlias: alias, leftCol: column, rightFP: fieldPtr}
 }
 
+// And adds another pair to the condition: a composite key, or a row of the
+// same key at a version another scope names.
+//
+//	j.OnCols("keys", "project_id", &d.Project).And("keys", "key", &d.Key)
+func (o JoinOn) And(alias, column string, fieldPtr any) JoinOn {
+	return JoinOn{leftAlias: alias, leftCol: column, rightFP: fieldPtr, prev: &o, err: o.err}
+}
+
+// pairs is the condition's column pairs in the order they were declared.
+func (o JoinOn) pairs() []JoinOn {
+	var out []JoinOn
+	for p := &o; p != nil; p = p.prev {
+		out = append(out, *p)
+	}
+	slices.Reverse(out)
+	return out
+}
+
 func (b *JoinBuilder) resolveJoinOn(c JoinOn) (schema.Cond, error) {
 	if c.err != nil {
 		return schema.Cond{}, c.err
 	}
-	sc, ok := b.scope[c.leftAlias]
-	if !ok {
-		return schema.Cond{}, fmt.Errorf("%q is not in scope", c.leftAlias)
+	pairs := c.pairs()
+	conds := make([]schema.Cond, 0, len(pairs))
+	for _, p := range pairs {
+		sc, ok := b.scope[p.leftAlias]
+		if !ok {
+			return schema.Cond{}, fmt.Errorf("%q is not in scope", p.leftAlias)
+		}
+		col, ty, err := b.scopeColumn(sc, p.leftAlias, p.leftCol)
+		if err != nil {
+			return schema.Cond{}, err
+		}
+		rcol, ralias, rty, err := b.resolveAcross(p.rightFP)
+		if err != nil {
+			return schema.Cond{}, err
+		}
+		conds = append(conds, schema.Cond{
+			Kind: schema.CondCmp, Op: schema.OpEq,
+			Left:  schema.Expr{Kind: schema.ExprCol, Tbl: p.leftAlias, Col: col, Type: ty},
+			Right: schema.Expr{Kind: schema.ExprCol, Tbl: ralias, Col: rcol, Type: rty},
+		})
 	}
-	col, ty, err := b.scopeColumn(sc, c.leftAlias, c.leftCol)
-	if err != nil {
-		return schema.Cond{}, err
+	if len(conds) == 1 {
+		return conds[0], nil
 	}
-	rcol, ralias, rty, err := b.resolveAcross(c.rightFP)
-	if err != nil {
-		return schema.Cond{}, err
-	}
-	return schema.Cond{
-		Kind: schema.CondCmp, Op: schema.OpEq,
-		Left:  schema.Expr{Kind: schema.ExprCol, Tbl: c.leftAlias, Col: col, Type: ty},
-		Right: schema.Expr{Kind: schema.ExprCol, Tbl: ralias, Col: rcol, Type: rty},
-	}, nil
+	return schema.Cond{Kind: schema.CondAnd, Args: conds}, nil
 }
 
 // scopeColumn finds a column in an alias's scope. A CTE's columns are its
@@ -505,13 +592,38 @@ func (b *JoinBuilder) termAcross(t Term) (schema.Expr, error) {
 		return schema.Expr{Kind: schema.ExprLit, Lit: t.lit,
 			Type: schema.Type{Name: t.lit.Kind}}, nil
 	case schema.ExprCol:
+		if t.scope != "" {
+			sc, ok := b.scope[t.scope]
+			if !ok {
+				return schema.Expr{}, fmt.Errorf("%q is not in scope", t.scope)
+			}
+			col, ty, err := b.scopeColumn(sc, t.scope, t.key)
+			if err != nil {
+				return schema.Expr{}, err
+			}
+			return schema.Expr{Kind: schema.ExprCol, Tbl: t.scope, Col: col, Type: ty, Nullable: true}, nil
+		}
 		col, alias, ty, err := b.resolveAcross(t.fp)
 		if err != nil {
 			return schema.Expr{}, err
 		}
-		return schema.Expr{Kind: schema.ExprCol, Tbl: alias, Col: col, Type: ty}, nil
+		nullable := b.nullable[alias]
+		if c := b.scope[alias].table.Column(col); c != nil && !c.NotNull {
+			nullable = true
+		}
+		return schema.Expr{Kind: schema.ExprCol, Tbl: alias, Col: col, Type: ty, Nullable: nullable}, nil
+	case schema.ExprFunc:
+		args := make([]schema.Expr, 0, len(t.args))
+		for _, a := range t.args {
+			e, err := b.termAcross(a)
+			if err != nil {
+				return schema.Expr{}, err
+			}
+			args = append(args, e)
+		}
+		return funcExpr(t.fn, args)
 	}
-	return schema.Expr{}, fmt.Errorf("only columns and literals are supported in a join predicate")
+	return schema.Expr{}, fmt.Errorf("only columns, literals and scalar functions are supported in a join predicate")
 }
 
 func (b *JoinBuilder) fail(format string, a ...any) {
@@ -544,3 +656,18 @@ func colName(field string) string {
 }
 
 func isLowerByte(c byte) bool { return c >= 'a' && c <= 'z' }
+
+// isSQLAlias is a name that needs no quoting to mean itself: lower case,
+// letters, digits and underscores, not starting with a digit.
+func isSQLAlias(s string) bool {
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !isLowerByte(c) && c != '_' && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}

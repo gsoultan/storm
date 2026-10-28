@@ -218,6 +218,10 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	}
 	for _, h := range having {
 		body.emitHaving(h)
+		body.emitProbeDeleteBatch(h, lw, s)
+		body.emitProbeTake(h, lw, s)
+		body.emitProbeUpdateAll(h, s)
+		body.emitProbeAggregates(h, s)
 		if err := insertSelects(lw, s, names, func(t *schema.Table, rel *schema.Relation) error {
 			if rel.Target != h.ParentTable {
 				return nil
@@ -225,6 +229,18 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 			return body.emitProbeInsertSelect(h, lw, s, t, rel)
 		}); err != nil {
 			return nil, err
+		}
+	}
+
+	joined := narrowedJoins(s, names)
+	joinPkgs := map[string]bool{}
+	for _, nj := range joined {
+		pkgs, err := body.emitNarrowedJoin(lw, s, nj)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range pkgs {
+			joinPkgs[p] = true
 		}
 	}
 
@@ -287,9 +303,13 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 		body.emitUnion(u)
 	}
 	body.emitRawScanners(rawScanners, sortedUnique(o.RawStatements))
+	locks, lockable := body.emitTableLocks(lw, s, names)
 	for _, h := range having {
 		arcPkgs[h.ParentPkg] = true
 		arcPkgs[h.ChildPkg] = true
+	}
+	for p := range joinPkgs {
+		arcPkgs[p] = true
 	}
 	if body.err != nil {
 		return nil, body.err
@@ -303,16 +323,22 @@ func contextFile(s *schema.Schema, o PackageOptions, names []string) ([]byte, er
 	g.p("package %s", o.Package)
 	g.p("")
 	g.p("import (")
-	if len(plans) > 0 || len(named) > 0 || arcOwners > 0 || len(having) > 0 || len(s.Unions) > 0 {
+	if len(plans) > 0 || len(named) > 0 || arcOwners > 0 || len(having) > 0 || len(s.Unions) > 0 || locks || len(joined) > 0 {
 		g.p("\t%q", "context")
+		if lockable || len(joined) > 0 {
+			g.p("\t%q", "errors")
+		}
 		if anyToOne(plans) || anyNamedToOne(named) {
 			g.p("\t%q", "fmt")
+		}
+		if locks {
+			g.p("\t%q", "strconv")
 		}
 		g.p("")
 	}
 	// A union's row is scalars, so the context package can need "time" for a
 	// timestamp column even when nothing else there does.
-	if unionsNeedTime(s.Unions) {
+	if unionsNeedTime(s.Unions) || locks {
 		g.p("\t%q", "time")
 		g.p("")
 	}
@@ -585,4 +611,116 @@ func batchTopColumns(s *schema.Schema, table string, in []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// emitTableLocks emits LockTimeout, on a back end whose lock timeout is a
+// statement inside the transaction, and LockTables over the tables the model
+// declares Lockable, and reports whether it emitted each.
+//
+// A sweep that must not race the writers of two tables locks both, in one
+// statement and in the order named, so it waits for every transaction already
+// writing them and holds new ones off until it commits. A queue that would
+// rather fail than wait bounds the wait instead.
+func (g *gen) emitTableLocks(lw lowering, s *schema.Schema, names []string) (timeout, tables bool) {
+	if lw.LockTables == nil || lw.LockTimeout == nil {
+		return false, false
+	}
+	g.p("const lockTimeoutSQL = %q", lw.LockTimeout())
+	g.p("")
+	g.p("// LockTimeout bounds how long each later statement of this transaction")
+	g.p("// waits for a lock: past it the statement fails rather than waits. Zero")
+	g.p("// or less waits for ever. It ends with the transaction, and outside one")
+	g.p("// with the statement, so it cannot leak onto a pooled connection.")
+	g.p("func LockTimeout(ctx context.Context, ex %s, d time.Duration) error {", g.execType())
+	g.p("\tms := d.Milliseconds()")
+	g.p("\tif d > 0 && ms == 0 {")
+	g.p("\t\tms = 1 // a positive wait shorter than the unit is not \"for ever\"")
+	g.p("\t}")
+	g.p("\tif ms < 0 {")
+	g.p("\t\tms = 0")
+	g.p("\t}")
+	g.p("\t_, err := ex.Exec(ctx, lockTimeoutSQL, []any{strconv.FormatInt(ms, 10)})")
+	g.p("\treturn err")
+	g.p("}")
+	g.p("")
+	var lockable []*schema.Table
+	for _, n := range names {
+		if t := s.Table(n); t != nil && t.Lockable {
+			lockable = append(lockable, t)
+		}
+	}
+	if len(lockable) == 0 {
+		return true, false
+	}
+	open, sep, modes := lw.LockTables()
+	g.p("// Table names a table this context's model declares Lockable.")
+	g.p("type Table uint8")
+	g.p("")
+	g.p("const (")
+	for i, t := range lockable {
+		if i == 0 {
+			g.p("\tTable%s Table = iota + 1", exportName(t.GoName))
+			continue
+		}
+		g.p("\tTable%s", exportName(t.GoName))
+	}
+	g.p(")")
+	g.p("")
+	g.p("var tableIdents = [...]string{")
+	g.p("\t\"\",")
+	for _, t := range lockable {
+		g.p("\t%q,", lw.Ident(t.Name))
+	}
+	g.p("}")
+	g.p("")
+	g.p("// TableLock is the mode LockTables takes, weakest first.")
+	g.p("type TableLock uint8")
+	g.p("")
+	g.p("const (")
+	for i, m := range []string{"AccessShare", "RowShare", "RowExclusive", "ShareUpdateExclusive",
+		"Share", "ShareRowExclusive", "Exclusive", "AccessExclusive"}[:len(modes)] {
+		if i == 0 {
+			g.p("\tLock%s TableLock = iota + 1", m)
+			continue
+		}
+		g.p("\tLock%s", m)
+	}
+	g.p(")")
+	g.p("")
+	g.p("const (")
+	g.p("\tlockTablesOpen = %q", open)
+	g.p("\tlockTablesSep  = %q", sep)
+	g.p(")")
+	g.p("")
+	g.p("var tableLockModes = [...]string{")
+	for _, m := range modes {
+		g.p("\t%q,", m)
+	}
+	g.p("}")
+	g.p("")
+	g.p("var errLockTables = errors.New(%q)", "storm: LockTables wants a mode and at least one table of this context")
+	g.p("")
+	g.p("// LockTables locks each table in mode, in the order named, until the")
+	g.p("// transaction ends: it waits for every transaction holding a lock that")
+	g.p("// conflicts, and holds off every one that asks for one after it. Run it")
+	g.p("// inside a transaction; outside one the lock ends with the statement.")
+	g.p("func LockTables(ctx context.Context, ex %s, mode TableLock, tables ...Table) error {", g.execType())
+	g.p("\tif mode == 0 || int(mode) > len(tableLockModes) || len(tables) == 0 {")
+	g.p("\t\treturn errLockTables")
+	g.p("\t}")
+	g.p("\tsql := lockTablesOpen")
+	g.p("\tfor i, t := range tables {")
+	g.p("\t\tif t == 0 || int(t) >= len(tableIdents) {")
+	g.p("\t\t\treturn errLockTables")
+	g.p("\t\t}")
+	g.p("\t\tif i > 0 {")
+	g.p("\t\t\tsql += lockTablesSep")
+	g.p("\t\t}")
+	g.p("\t\tsql += tableIdents[t]")
+	g.p("\t}")
+	g.p("\t_, err := ex.Exec(ctx, sql+tableLockModes[mode-1], nil)")
+	g.p("\treturn err")
+	g.p("}")
+	g.p("")
+	return true, true
 }
