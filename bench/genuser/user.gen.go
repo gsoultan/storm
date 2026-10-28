@@ -427,12 +427,14 @@ func (h UUIDCol) DescNullsLast() Sort {
 
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+func (h UUIDCol) NotIn(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+}
 
 // TextCol addresses a text column.
 type TextCol struct{ c uint8 }
@@ -455,12 +457,12 @@ func (h TextCol) Lte(v string) Pred     { return Pred{col: h.c, op: opLte, str: 
 func (h TextCol) EqLower(v string) Pred { return Pred{col: h.c, op: opEqLower, str: v} }
 func (h TextCol) Like(v string) Pred    { return Pred{col: h.c, op: opLike, str: v} }
 func (h TextCol) ILike(v string) Pred   { return Pred{col: h.c, op: opILike, str: v} }
-func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: v} }
+func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: v} }
+func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
 
 // NullInt32Col addresses a int4 column.
 type NullInt32Col struct{ c uint8 }
@@ -480,14 +482,16 @@ func (h NullInt32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num:
 func (h NullInt32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
 func (h NullInt32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
 func (h NullInt32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
-func (h NullInt32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: v} }
+func (h NullInt32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h NullInt32Col) NotIn(v ...int32) Pred { return Pred{col: h.c, op: opNotIn, anyI32: v} }
-func (h NullInt32Col) IsNull() Pred          { return Pred{col: h.c, op: opIsNull} }
-func (h NullInt32Col) IsNotNull() Pred       { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullInt32Col) NotIn(v ...int32) Pred {
+	return Pred{col: h.c, op: opNotIn, anyI32: runtime.List(v)}
+}
+func (h NullInt32Col) IsNull() Pred    { return Pred{col: h.c, op: opIsNull} }
+func (h NullInt32Col) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }

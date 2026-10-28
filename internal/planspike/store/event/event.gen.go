@@ -430,12 +430,14 @@ func (h UUIDCol) DescNullsLast() Sort {
 
 func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
 func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
 
 // NotIn is `<> ALL($1)`. A NULL anywhere in v makes the
 // comparison NULL for every row and the result empty —
 // PostgreSQL's rule for NOT IN, not storm's.
-func (h UUIDCol) NotIn(v ...[16]byte) Pred { return Pred{col: h.c, op: opNotIn, anyRaw: v} }
+func (h UUIDCol) NotIn(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+}
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
@@ -561,17 +563,17 @@ func (h Int64ArrayCol) DescNullsLast() Sort {
 // An empty v is true for every row — every array contains
 // the empty one.
 func (h Int64ArrayCol) Contains(v ...int64) Pred {
-	return Pred{col: h.c, op: opArrayContains, anyI64: v}
+	return Pred{col: h.c, op: opArrayContains, anyI64: runtime.List(v)}
 }
 
 // ContainedBy is `<@`: every element of the column is in v.
 func (h Int64ArrayCol) ContainedBy(v ...int64) Pred {
-	return Pred{col: h.c, op: opArrayContainedBy, anyI64: v}
+	return Pred{col: h.c, op: opArrayContainedBy, anyI64: runtime.List(v)}
 }
 
 // Overlaps is `&&`: the column and v share an element.
 func (h Int64ArrayCol) Overlaps(v ...int64) Pred {
-	return Pred{col: h.c, op: opArrayOverlaps, anyI64: v}
+	return Pred{col: h.c, op: opArrayOverlaps, anyI64: runtime.List(v)}
 }
 
 // Where applies predicates, ANDed together.
