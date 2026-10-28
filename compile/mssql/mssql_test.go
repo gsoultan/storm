@@ -413,3 +413,24 @@ func TestMergePunctuation(t *testing.T) {
 		t.Error("an empty returning list produced a clause")
 	}
 }
+
+// A document here is its NVARCHAR text, so only the NULL needs answering; the
+// list unpacks from one bound array with OPENJSON.
+func TestJSONTextOperatorsUnpackTheList(t *testing.T) {
+	for op, want := range map[string]string{
+		"JSONTextLikeAny": "EXISTS (SELECT 1 FROM OPENJSON(@) AS [_storm_l] WHERE COALESCE([doc], N'') LIKE [_storm_l].[value])",
+		"JSONIsEmpty":     "COALESCE([doc], N'') IN (N'', N'null', N'[]', N'{}')",
+		"NullOrEmpty":     "COALESCE([doc], N'') = N''",
+	} {
+		if !mssql.Supported(op) {
+			t.Errorf("%s has a lowering and should report supported", op)
+		}
+		a, b, ok := mssql.Frag(op, "[doc]")
+		if !ok {
+			t.Fatalf("no lowering for %s", op)
+		}
+		if got := a + b; got != want {
+			t.Errorf("%s = %s\nwant %s", op, got, want)
+		}
+	}
+}

@@ -152,6 +152,14 @@ var frags = map[string]struct{ a, b string }{
 	"JSONContainedBy": {" <@ " + Placeholder, ""},
 	"HasAnyKey":       {" ?| " + Placeholder, ""},
 	"HasAllKeys":      {" ?& " + Placeholder, ""},
+	// The document's text. COALESCE (see prefixes) makes a missing document
+	// the empty string rather than NULL, so a negation of either never meets
+	// a NULL. LIKE ANY keeps every pattern in one bound text[]. The empty
+	// spellings are what jsonb prints and what json.Marshal writes, so they
+	// hold for a text column holding a document's characters too.
+	"JSONTextLikeAny": {"::text, '') LIKE ANY(" + Placeholder, ")"},
+	"JSONIsEmpty":     {"::text, '') IN ('', 'null', '[]', '{}')", ""},
+	"NullOrEmpty":     {", '') = ''", ""},
 	"IsNull":          {" IS NULL", ""},
 	"IsNotNull":       {" IS NOT NULL", ""},
 	// Case-insensitive equality, spelled the way the INDEX is. A unique index
@@ -170,7 +178,10 @@ var frags = map[string]struct{ a, b string }{
 // trees, so the query has to say lower(username) — not username, and not
 // upper(), and not a collation.
 var prefixes = map[string]string{
-	"EqLower": "lower(",
+	"EqLower":         "lower(",
+	"JSONTextLikeAny": "COALESCE(",
+	"JSONIsEmpty":     "COALESCE(",
+	"NullOrEmpty":     "COALESCE(",
 }
 
 // Frag lowers one operator applied to one already-quoted identifier. ok is

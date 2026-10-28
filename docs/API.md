@@ -276,10 +276,10 @@ article.Titel.Eq("x")                // compile error: undefined
 | `TimeCol`, `DecimalCol`, numeric | `Eq` `NotEq` `Gt` `Gte` `Lt` `Lte` |
 | `BoolCol` | `Eq` `NotEq` |
 | `BytesCol` | `Eq` `NotEq` |
-| nullable (`NullTimeCol`, …) | + `IsNull` `IsNotNull` |
+| nullable (`NullTimeCol`, …) | + `IsNull` `IsNotNull` (and `IsNullOrEmpty` on `NullTextCol`) |
 | `TSVectorCol` | `Matches` `WebSearch` |
 | array (`TextArrayCol`, …) | `Contains` `ContainedBy` `Overlaps` |
-| jsonb (`JSONCol`) | `Contains` `ContainedBy` `HasAnyKey` `HasAllKeys` |
+| jsonb (`JSONCol`) | `Contains` `ContainedBy` `HasAnyKey` `HasAllKeys` `TextLikeAny` `IsEmpty` |
 | `TstzRangeCol` | `Eq` `NotEq` `Overlaps` `ContainsRange` `ContainedBy` |
 
 There is no `Between`, no `HasPrefix`/`HasSuffix`, and no jsonb `Path` — the
@@ -292,6 +292,14 @@ that one identifier moves; the `Row` field is still `Query`, the setter still
 `SetQuery`, the shorthand still `QueryEq`. Every generated identifier comes
 from the column name, not the Go field name, so pinning a column with
 `t.Col(&m.Field).Named("...")` is how you choose a different one.
+
+`TextLikeAny` and `IsEmpty` read a jsonb document as its text, with a missing
+document as the empty string: ``Assignees.TextLikeAny(`%"ada"%`)`` asks whether a
+JSON array names ada, and `Assignees.IsEmpty()` whether it names nobody
+(missing, `null`, `[]` or `{}`). The patterns are one placeholder however many
+there are, and they are the caller's, so escape `%` and `_` in what they
+quote. Prefer `HasAnyKey` on a real jsonb
+column; these are for the questions it cannot ask.
 
 `EqLower` is case-insensitive equality lowered as `lower(col) = lower($1)`,
 which is the shape that matches an index declared with `storm.Lower`. It is a

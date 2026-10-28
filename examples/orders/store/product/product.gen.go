@@ -57,14 +57,17 @@ const (
 	opJSONContainedBy  runtime.Op = 21
 	opHasAnyKey        runtime.Op = 22
 	opHasAllKeys       runtime.Op = 23
-	opIsNull           runtime.Op = 24
-	opIsNotNull        runtime.Op = 25
+	opJSONTextLikeAny  runtime.Op = 24
+	opIsNull           runtime.Op = 25
+	opIsNotNull        runtime.Op = 26
+	opJSONIsEmpty      runtime.Op = 27
+	opNullOrEmpty      runtime.Op = 28
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 26
-	opNotExists runtime.Op = 27
+	opExists    runtime.Op = 29
+	opNotExists runtime.Op = 30
 )
 
 const nCols = 10
@@ -562,6 +565,15 @@ func (h JSONCol) ContainedBy(v runtime.JSON) Pred {
 func (h JSONCol) HasAnyKey(v ...string) Pred  { return Pred{col: h.c, op: opHasAnyKey, anyStr: v} }
 func (h JSONCol) HasAllKeys(v ...string) Pred { return Pred{col: h.c, op: opHasAllKeys, anyStr: v} }
 
+// TextLikeAny matches the document's text against each LIKE
+// pattern in v. A NULL document reads as the empty string.
+// The patterns are the caller's: escape % and _ in what they
+// quote.
+func (h JSONCol) TextLikeAny(v ...string) Pred {
+	return Pred{col: h.c, op: opJSONTextLikeAny, anyStr: v}
+}
+func (h JSONCol) IsEmpty() Pred { return Pred{col: h.c, op: opJSONIsEmpty} }
+
 // TSVectorCol addresses a tsvector column.
 type TSVectorCol struct{ c uint8 }
 
@@ -716,7 +728,7 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 // leaf records one predicate: its value goes to the arena for its type,
 // its structure to the token stream.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys {
+	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
 		case 0:
 			if int(q.nar) >= 3 {
@@ -757,7 +769,7 @@ func (q *Query) leaf(p Pred) {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
-	if p.op == opIsNull || p.op == opIsNotNull {
+	if p.op == opIsNull || p.op == opIsNotNull || p.op == opJSONIsEmpty || p.op == opNullOrEmpty {
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
 	}
@@ -883,6 +895,8 @@ func (q Query) AttrsContains(v runtime.JSON) Query    { return q.Where(Attrs.Con
 func (q Query) AttrsContainedBy(v runtime.JSON) Query { return q.Where(Attrs.ContainedBy(v)) }
 func (q Query) AttrsHasAnyKey(v ...string) Query      { return q.Where(Attrs.HasAnyKey(v...)) }
 func (q Query) AttrsHasAllKeys(v ...string) Query     { return q.Where(Attrs.HasAllKeys(v...)) }
+func (q Query) AttrsTextLikeAny(v ...string) Query    { return q.Where(Attrs.TextLikeAny(v...)) }
+func (q Query) AttrsIsEmpty() Query                   { return q.Where(Attrs.IsEmpty()) }
 func (q Query) SearchMatches(v string) Query          { return q.Where(Search.Matches(v)) }
 func (q Query) SearchWebSearch(v string) Query        { return q.Where(Search.WebSearch(v)) }
 
@@ -1030,7 +1044,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [10][28]runtime.Frag{
+var fragTable = [10][31]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -1060,6 +1074,9 @@ var fragTable = [10][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -1069,6 +1086,9 @@ var fragTable = [10][28]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1120,6 +1140,9 @@ var fragTable = [10][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // sku
 		{}, // opNone
@@ -1139,6 +1162,9 @@ var fragTable = [10][28]runtime.Frag{
 		{},
 		{A: "\"sku\" = ANY($", B: ")"},
 		{A: "\"sku\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1180,6 +1206,9 @@ var fragTable = [10][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // price
 		{}, // opNone
@@ -1210,11 +1239,17 @@ var fragTable = [10][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // active
 		{}, // opNone
 		{A: "\"active\" = $", B: ""},
 		{A: "\"active\" <> $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1270,6 +1305,9 @@ var fragTable = [10][28]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // attrs
 		{}, // opNone
@@ -1296,7 +1334,10 @@ var fragTable = [10][28]runtime.Frag{
 		{A: "\"attrs\" <@ $", B: ""},
 		{A: "\"attrs\" ?| $", B: ""},
 		{A: "\"attrs\" ?& $", B: ""},
+		{A: "COALESCE(\"attrs\"::text, '') LIKE ANY($", B: ")"},
 		{},
+		{},
+		{A: "COALESCE(\"attrs\"::text, '') IN ('', 'null', '[]', '{}')", B: ""},
 		{},
 		{},
 		{},
@@ -1314,6 +1355,9 @@ var fragTable = [10][28]runtime.Frag{
 		{},
 		{A: "\"search\" @@ plainto_tsquery($", B: ")"},
 		{A: "\"search\" @@ websearch_to_tsquery($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1571,9 +1615,9 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		}
 		switch runtime.Op(t.Op()) {
-		case opIsNull, opIsNotNull:
+		case opIsNull, opIsNotNull, opJSONIsEmpty, opNullOrEmpty:
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys:
+		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
 			case 0:
 				b.anyRaw[nar] = q.anyRaw[nar]

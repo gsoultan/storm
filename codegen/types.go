@@ -392,11 +392,14 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 		return false
 	case "IsNull", "IsNotNull":
 		return !c.NotNull
+	case "NullOrEmpty":
+		return k == kindText && !c.NotNull
 	case "Matches", "WebSearch":
 		return k == kindTSVector
 	case "Overlaps", "ContainsRange", "ContainedBy":
 		return k == kindTstzRange
-	case "JSONContains", "JSONContainedBy", "HasAnyKey", "HasAllKeys":
+	case "JSONContains", "JSONContainedBy", "HasAnyKey", "HasAllKeys",
+		"JSONTextLikeAny", "JSONIsEmpty":
 		// What makes a jsonb column queryable. It used to offer only
 		// IS [NOT] NULL — storable, not filterable — so any question about the
 		// document went through raw SQL.
