@@ -67,6 +67,15 @@ type Aggregate struct {
 	// rather than bound.
 	Having *Cond
 
+	// Joins are the tables and element ranges the aggregation reads besides
+	// its own table, in declaration order. With any, every column is
+	// qualified by its table or alias.
+	Joins []JoinTable
+
+	// Where is the declared predicate over the rows, ANDed with the call
+	// site's: the one way to filter on a joined table or an element.
+	Where *Cond
+
 	// AcrossDeleted reads the soft-deleted rows too. Every other read of a
 	// soft-delete table leaves them out and no call site can widen it; this
 	// is the one place a model says, once and in review, that a count or a

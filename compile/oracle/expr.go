@@ -125,6 +125,9 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 	case schema.ExprBinary:
 		w.writeBinary(e)
 
+	case schema.ExprField:
+		w.fail(ErrNoAggregateJoin)
+
 	case schema.ExprGrouping:
 		// GROUPING() is real here — Oracle has GROUPING SETS, CUBE and ROLLUP
 		// in full, measured in internal/oraclespike — so unlike MySQL there is

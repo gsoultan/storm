@@ -54,6 +54,12 @@ func writeExpr(b *strings.Builder, e schema.Expr) {
 	case schema.ExprBinary:
 		writeBinary(b, e)
 
+	case schema.ExprField:
+		// The element's field as text: NULL when it has no such key.
+		b.WriteString(Ident(e.Tbl))
+		b.WriteString("->>")
+		b.WriteString(schema.Literal{Kind: schema.TypeText, S: e.Col}.SQL())
+
 	case schema.ExprGrouping:
 		b.WriteString("GROUPING(")
 		writeArgs(b, e.Args)

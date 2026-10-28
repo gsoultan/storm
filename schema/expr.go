@@ -41,6 +41,9 @@ const (
 	// does not mean the same thing in every dialect, which is exactly why the
 	// IR must not carry the character.
 	ExprBinary
+	// ExprField is a text field of a JSON element: Tbl names the element range
+	// and Col the key. NULL when the element has no such key.
+	ExprField
 )
 
 // Expr is a typed expression tree.

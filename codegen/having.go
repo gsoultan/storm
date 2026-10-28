@@ -755,7 +755,7 @@ func (g *gen) emitProbeAggregates(np havingSpec, s *schema.Schema) {
 	}
 	q := np.TypeName
 	for _, agg := range parent.Aggregates {
-		if len(agg.Params) > 0 {
+		if len(agg.Params) > 0 || composite(agg) {
 			continue
 		}
 		name := agg.Name

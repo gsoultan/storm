@@ -587,7 +587,7 @@ func (b *JoinBuilder) termAcross(t Term) (schema.Expr, error) {
 			if !ok {
 				return schema.Expr{}, fmt.Errorf("%q is not in scope", t.scope)
 			}
-			col, ty, err := b.scopeColumn(sc, t.scope, t.out)
+			col, ty, err := b.scopeColumn(sc, t.scope, t.key)
 			if err != nil {
 				return schema.Expr{}, err
 			}

@@ -42,8 +42,10 @@ type Term struct {
 	// param is the 1-based union parameter index; 0 is "not a parameter", so
 	// the zero Term stays meaningless rather than meaning parameter 0.
 	param int
-	// scope is the join scope ColOf names; out is then its column.
+	// scope is the join scope ColOf or the element range Field names, and
+	// key the column or field in it.
 	scope string
+	key   string
 	err   error
 }
 
@@ -55,7 +57,13 @@ func (Exprs) Col(fieldPtr any) Term { return Term{kind: schema.ExprCol, fp: fiel
 // joined under an alias — where no field pointer can say which: a CTE has no
 // model. Only a join's declarations have scopes.
 func (Exprs) ColOf(alias, column string) Term {
-	return Term{kind: schema.ExprCol, scope: alias, out: column}
+	return Term{kind: schema.ExprCol, scope: alias, key: column}
+}
+
+// Field is a text field of a JSON element an aggregation's Elements ranges
+// over: `alias->>'key'`, NULL when the element has no such key.
+func (Exprs) Field(alias, key string) Term {
+	return Term{kind: schema.ExprField, scope: alias, key: key}
 }
 
 // star is `*`. Unexported because there is no call site for it: Count already

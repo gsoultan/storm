@@ -112,6 +112,9 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 	case schema.ExprBinary:
 		w.writeBinary(e)
 
+	case schema.ExprField:
+		w.fail(ErrNoAggregateJoin)
+
 	case schema.ExprGrouping:
 		// GROUPING() is real here — SQL Server has GROUPING SETS, CUBE and
 		// ROLLUP in full, so unlike MySQL there is nothing to refuse alongside

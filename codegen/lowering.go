@@ -93,6 +93,9 @@ type lowering struct {
 	// different spelling.
 	AggregateSelect func(table string, agg *schema.Aggregate) (string, error)
 	AggregateSuffix func(agg *schema.Aggregate) (string, error)
+	// AggregateWhere is the declared predicate an aggregation reads its rows
+	// through, or empty.
+	AggregateWhere func(agg *schema.Aggregate) (string, error)
 
 	// KeyType spells a column's type for the places a lowering has to NAME one
 	// — the JSON_TABLE COLUMNS declaration a bound key list is unpacked
@@ -375,6 +378,9 @@ func postgresLowering() lowering {
 		AggregateSelect: func(t string, a *schema.Aggregate) (string, error) {
 			return pgsql.AggregateSelect(t, a), nil
 		},
+		AggregateWhere: func(a *schema.Aggregate) (string, error) {
+			return pgsql.AggregateWhere(a), nil
+		},
 		AggregateSuffix: func(a *schema.Aggregate) (string, error) {
 			return pgsql.AggregateSuffix(a), nil
 		},
@@ -515,8 +521,10 @@ func mysqlLowering() lowering {
 			}
 			return mysql.UnionSuffix(u), nil
 		},
-		AggregateSelect:   mysql.AggregateSelect,
-		AggregateSuffix:   mysql.AggregateSuffix,
+		AggregateSelect: mysql.AggregateSelect,
+		AggregateSuffix: mysql.AggregateSuffix,
+		// Refused with the select, which is called first.
+		AggregateWhere:    noAggregateWhere,
 		KeyType:           mysql.ColumnType,
 		RecursiveMaxDepth: mysql.MaxRecursionDepth,
 		KeysAreClientSide: true,
@@ -697,6 +705,8 @@ func mssqlLowering() lowering {
 		},
 		AggregateSelect: mssql.AggregateSelect,
 		AggregateSuffix: mssql.AggregateSuffix,
+		// Refused with the select, which is called first.
+		AggregateWhere: noAggregateWhere,
 
 		KeyType:           mssql.ColumnType,
 		RecursiveMaxDepth: mssql.MaxRecursionDepth,
@@ -854,6 +864,8 @@ func oracleLowering() lowering {
 		},
 		AggregateSelect: oracle.AggregateSelect,
 		AggregateSuffix: oracle.AggregateSuffix,
+		// Refused with the select, which is called first.
+		AggregateWhere: noAggregateWhere,
 
 		KeyType:           oracle.ColumnType,
 		RecursiveMaxDepth: oracle.MaxRecursionDepth,
@@ -935,3 +947,7 @@ func oracleLowering() lowering {
 // same method mean different things.
 func pgsqlLockName(m int) string { return pgsql.LockName(pgsql.LockMode(m)) }
 func pgsqlLockDoc(m int) string  { return pgsql.LockDoc(pgsql.LockMode(m)) }
+
+// noAggregateWhere is the declared-predicate seam of a back end whose
+// AggregateSelect already refuses an aggregation that has one.
+func noAggregateWhere(*schema.Aggregate) (string, error) { return "", nil }

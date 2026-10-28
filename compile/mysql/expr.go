@@ -117,6 +117,9 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 	case schema.ExprBinary:
 		w.writeBinary(e)
 
+	case schema.ExprField:
+		w.fail(ErrNoAggregateJoin)
+
 	case schema.ExprGrouping:
 		// GROUPING() belongs to GROUPING SETS / ROLLUP, and MySQL has only
 		// WITH ROLLUP. Refused with the grouping form itself, in GroupBy.
