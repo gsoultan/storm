@@ -272,8 +272,9 @@ type WindowSpec struct {
 }
 
 type windowOrder struct {
-	term Term
-	desc bool
+	term       Term
+	desc       bool
+	nullsFirst *bool
 }
 
 // Over starts a window.
@@ -379,9 +380,26 @@ func (w *WindowSpec) PartitionBy(xs ...any) *WindowSpec {
 func (w *WindowSpec) OrderByAsc(xs ...any) *WindowSpec  { return w.orderBy(false, xs) }
 func (w *WindowSpec) OrderByDesc(xs ...any) *WindowSpec { return w.orderBy(true, xs) }
 
+// OrderByAscNullsFirst and OrderByDescNullsLast are the two orderings that put
+// the NULLs where PostgreSQL would not: it sorts them last going up and first
+// going down.
+func (w *WindowSpec) OrderByAscNullsFirst(xs ...any) *WindowSpec {
+	return w.orderNulls(false, true, xs)
+}
+func (w *WindowSpec) OrderByDescNullsLast(xs ...any) *WindowSpec {
+	return w.orderNulls(true, false, xs)
+}
+
 func (w *WindowSpec) orderBy(desc bool, xs []any) *WindowSpec {
 	for _, x := range xs {
 		w.order = append(w.order, windowOrder{term: toTerm(x), desc: desc})
+	}
+	return w
+}
+
+func (w *WindowSpec) orderNulls(desc, first bool, xs []any) *WindowSpec {
+	for _, x := range xs {
+		w.order = append(w.order, windowOrder{term: toTerm(x), desc: desc, nullsFirst: &first})
 	}
 	return w
 }

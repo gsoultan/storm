@@ -14,6 +14,14 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `FirstOf`: a group's first value in a declared order
+
+An aggregation can take `FirstOf(&f, "As", a.Over().OrderByAsc(...))`: the
+group's value of `f` from its first row in that order, nullable, and filterable
+like any aggregate. PostgreSQL spells it `(array_agg(f ORDER BY …))[1]`; the
+other back ends refuse it. Windows and first values gain
+`OrderByAscNullsFirst` and `OrderByDescNullsLast`.
+
 ### `AllTurns`: a read that takes turns by group
 
 A table declared `t.TakesTurns(&f)` gets `Query.AllTurns(ctx, ex, groups, from,
