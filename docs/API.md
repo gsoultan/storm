@@ -1482,6 +1482,26 @@ svc := NewService(tx)
 `examples/blog` and `examples/orders` are both structured this way — a real
 server, a namespace per test, `-race -shuffle=on` in CI.
 
+### Seeing one session wait for another
+
+A test about a race has to know it made the interleaving it is about: that the
+second request is waiting behind the first, not merely slow. `pgstat` reads it
+from PostgreSQL's own catalogs, through any `Executor`:
+
+```go
+pid, schema, _ := pgstat.Backend(ctx, pgxdrv.Tx{T: holder}) // the session holding the row
+sessions, _ := pgstat.Sessions(ctx, pgxdrv.Pool{P: pool})
+for _, s := range sessions {
+        if s.WaitsBehind(pid) && s.LocksOn("tuple", schema, "tasks") {
+                // queued for a row of this test's tasks table
+        }
+}
+```
+
+`WaitsFor` is a lock waited for and not yet granted, such as a `LOCK TABLE`
+queued behind another, and `Terminate` ends a session as
+`pg_terminate_backend` does. PostgreSQL only.
+
 ## What this costs you
 
 - **A generate step.** Change the model, run `storm generate`, commit the
