@@ -28,6 +28,24 @@ migration makes the column NOT NULL. The plan sets it on them and then adds
 the constraint, in one transaction, so the step is no longer destructive.
 Declaring it on a nullable column is a build error.
 
+### `ForNoKeyUpdate`: a row lock that leaves a child insert alone
+
+`FOR UPDATE` on a parent row blocks every insert of a child that names it,
+because the child's foreign key takes `FOR KEY SHARE` on the parent. A
+transaction that locks a parent to change it while another adds a child
+deadlocks the moment either then waits on the other. `ForNoKeyUpdate()` takes
+the lock PostgreSQL's own `UPDATE` takes when no key changes: writers still
+queue, the child insert does not. MySQL, SQL Server and Oracle have no such
+lock and take their update lock.
+
+### `pglock`: advisory locks, one statement each
+
+`pglock.TryLock`, `Lock`, `Unlock`, `UnlockAll` and `TryLockXact` run
+PostgreSQL's advisory lock functions through any `Executor`. A session lock is
+the session's, so run them on a connection held for the life of the lock
+(`pgxdrv.Conn`), not on a pool: on a pool, `Unlock` lands on another session,
+answers false and lets go of nothing. PostgreSQL only.
+
 ### `pgstat`: which session waits behind which
 
 `pgstat.Backend` names the session an `Executor` runs on and the schema it
