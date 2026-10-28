@@ -86,9 +86,9 @@ func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schem
 	return norm, nil
 }
 
-// carryConversions copies each column's ConvertFrom from the model onto its
-// normalised form. The catalogue has no place for it, so the round trip
-// through the scratch namespace would otherwise lose it.
+// carryConversions copies each column's ConvertFrom and FillNulls from the
+// model onto its normalised form. The catalogue has no place for either, so
+// the round trip through the scratch namespace would otherwise lose them.
 func carryConversions(norm, model *schema.Schema) {
 	for _, t := range model.Tables {
 		nt := norm.Table(t.Name)
@@ -96,8 +96,13 @@ func carryConversions(norm, model *schema.Schema) {
 			continue
 		}
 		for _, c := range t.Columns {
-			if nc := nt.Column(c.Name); c.ConvertFrom != "" && nc != nil {
-				nc.ConvertFrom = c.ConvertFrom
+			if nc := nt.Column(c.Name); nc != nil {
+				if c.ConvertFrom != "" {
+					nc.ConvertFrom = c.ConvertFrom
+				}
+				if c.FillNulls != "" {
+					nc.FillNulls = c.FillNulls
+				}
 			}
 		}
 	}

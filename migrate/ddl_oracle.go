@@ -41,6 +41,8 @@ func oracleDDL(enums map[string]*schema.Enum) ddl {
 	d := ddl{
 		Ident: q,
 
+		FillNulls: func(t *schema.Table, c *schema.Column) string { return fillNulls(q, t, c) + "" },
+
 		CreateTable: func(t *schema.Table) (string, error) {
 			def, err := oraddl.CreateTable(t, enums)
 			if err != nil {

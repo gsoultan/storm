@@ -215,6 +215,16 @@ func Build(models ...any) (*schema.Schema, error) {
 	// caught.
 	b.validateShardKeys()
 
+	// FillNulls on a column that ends up nullable would never do anything.
+	for _, mi := range b.ordered {
+		for _, c := range mi.tbl.out.Columns {
+			if c.FillNulls != "" && !c.NotNull {
+				b.errs.add(fmt.Errorf("%s.%s: FillNulls on a nullable column, which no migration would ever fill",
+					mi.tbl.out.Name, c.Name))
+			}
+		}
+	}
+
 	if err := b.errs.err(); err != nil {
 		return nil, err
 	}

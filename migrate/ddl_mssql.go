@@ -47,6 +47,8 @@ func mssqlDDL(enums map[string]*schema.Enum) ddl {
 	d := ddl{
 		Ident: q,
 
+		FillNulls: func(t *schema.Table, c *schema.Column) string { return fillNulls(q, t, c) + ";" },
+
 		// The table AND its indexes, because msddl.CreateTable is only the
 		// CREATE TABLE: msddl.Create emits the indexes in a second pass over
 		// the schema, which a diff building one table at a time never reaches.
