@@ -351,8 +351,51 @@ func havingSpecs(lw lowering, s *schema.Schema, tables []string) ([]havingSpec, 
 				out = append(out, spec)
 			}
 		}
+		for _, m := range t.Matches {
+			spec, err := matchProbe(lw, s, t, m)
+			if err != nil {
+				return nil, err
+			}
+			if in[spec.child] {
+				out = append(out, spec)
+			}
+		}
 	}
 	return out, nil
+}
+
+// matchProbe is the composer of a declared probe on matching columns
+// (t.ProbesOn): the EXISTS correlated on every pair rather than a key.
+func matchProbe(lw lowering, s *schema.Schema, t *schema.Table, m *schema.Match) (havingSpec, error) {
+	if lw.ExistsOnOpen == nil {
+		return havingSpec{}, fmt.Errorf("codegen: table %s: ProbesOn %s: this back end has no multi-column probe yet", t.Name, m.Name)
+	}
+	target := s.Table(m.Target)
+	if target == nil {
+		return havingSpec{}, fmt.Errorf("codegen: table %s: ProbesOn %s names %s, which is not in the schema", t.Name, m.Name, m.Target)
+	}
+	ppkg, err := PackageName(t.GoName, t.Name)
+	if err != nil {
+		return havingSpec{}, err
+	}
+	cpkg, err := PackageName(target.GoName, target.Name)
+	if err != nil {
+		return havingSpec{}, err
+	}
+	live := string(liveIn(lw, s, target.Name, ""))
+	parent := exportName(t.GoName)
+	return havingSpec{
+		Parent:      parent,
+		Rel:         m.Name,
+		TypeName:    parent + m.Name + "ProbeQuery",
+		ParentPkg:   ppkg,
+		ChildPkg:    cpkg,
+		child:       target.Name,
+		PosHeader:   lw.ExistsOnOpen(target.Name, m.TargetColumns, t.Name, m.Columns, live),
+		NegHeader:   lw.NotExistsOnOpen(target.Name, m.TargetColumns, t.Name, m.Columns, live),
+		ParentLive:  string(liveIn(lw, s, t.Name, "")),
+		ParentTable: t.Name,
+	}, nil
 }
 
 // toOneProbe is the composer through an owned to-one reference: the same
@@ -636,6 +679,66 @@ func (g *gen) emitProbeTake(np havingSpec, lw lowering, s *schema.Schema) {
 	g.p("		}")
 	g.p("	}")
 	g.p("	return dst, rows.Err()")
+	g.p("}")
+	g.p("")
+}
+
+// emitProbeUpdateAll writes UpdateAll over a semi-join: the parent package's
+// set-based write, bounded by the composed predicates and probes instead of
+// its own. "Put back on offer every task with no open incident at its step"
+// is one of these.
+func (g *gen) emitProbeUpdateAll(np havingSpec, s *schema.Schema) {
+	parent := s.Table(np.ParentTable)
+	if parent == nil || len(parent.PrimaryKey) == 0 {
+		return
+	}
+	q := np.TypeName
+	cache := lowerFirst(q) + "UpdateAllCache"
+	g.p("var %s = runtime.NewTreeCache()", cache)
+	g.p("")
+	g.p("// UpdateAll is the %s package's UpdateAll over this semi-join: it", np.ParentPkg)
+	g.p("// writes m's assigned columns to every %s row the predicates and", np.ParentTable)
+	g.p("// probes select, in ONE statement, and reports how many. Nothing")
+	g.p("// assigned issues no statement; a Limit, Offset or row lock is")
+	g.p("// runtime.ErrPagedWrite.")
+	g.p("func (h %s) UpdateAll(ctx context.Context, ex %s, m %s.Mut) (int64, error) {", q, g.execType(), np.ParentPkg)
+	g.p("	if err := h.err(); err != nil {")
+	g.p("		return 0, err")
+	g.p("	}")
+	g.p("	if h.q.Shaped() {")
+	g.p("		return 0, runtime.ErrPagedWrite")
+	g.p("	}")
+	g.p("	head, key, args, ok := m.UpdateHead()")
+	g.p("	if !ok {")
+	g.p("		return 0, nil")
+	g.p("	}")
+	g.p("	var buf [%d]runtime.Tok", g.composedBuf()+4)
+	g.p("	toks := h.tokens(append(buf[:0], key[:]...), true)")
+	g.p("	st := %s.Get(toks)", cache)
+	g.p("	if st == nil {")
+	g.p("		if head.Err != nil {")
+	g.p("			return 0, head.Err")
+	g.p("		}")
+	if np.ParentLive != "" {
+		g.p("		st = %s.Put(toks, runtime.SpliceTreeWhereFrom(head.SQL, %s, toks[len(key):], %sLowering, \"\", head.NArg))",
+			cache, lit(np.ParentLive), lowerFirst(q))
+	} else {
+		g.p("		st = %s.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], %sLowering, \"\", head.NArg))",
+			cache, lowerFirst(q))
+	}
+	g.p("	}")
+	g.p("	if st.Err != nil {")
+	g.p("		return 0, st.Err")
+	g.p("	}")
+	g.p("	pb := %s.GetBinder()", np.ParentPkg)
+	g.p("	defer %s.PutBinder(pb)", np.ParentPkg)
+	g.p("	read, cbs := h.bind(pb, false)")
+	g.p("	defer func() {")
+	g.p("		for _, cb := range cbs {")
+	g.p("			%s.PutBinder(cb)", np.ChildPkg)
+	g.p("		}")
+	g.p("	}()")
+	g.p("	return ex.Exec(ctx, st.SQL, append(args, read...))")
 	g.p("}")
 	g.p("")
 }

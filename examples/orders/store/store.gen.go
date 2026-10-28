@@ -1087,6 +1087,47 @@ func (h CustomerOrdersProbeQuery) Count(ctx context.Context, ex runtime.Executor
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
 }
 
+var customerOrdersProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the customer package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every customers row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h CustomerOrdersProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m customer.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := customerOrdersProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = customerOrdersProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], customerOrdersProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := customer.GetBinder()
+	defer customer.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			order.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
+}
+
 // OrderLinesProbeQuery is a parent query with one or more existence probes against
 // order_lines, combined with AND. Build it with OrderHavingLines or
 // OrderNotHavingLines and extend it with AndHaving/AndNotHaving.
@@ -1298,6 +1339,47 @@ func (h OrderLinesProbeQuery) Count(ctx context.Context, ex runtime.Executor) (i
 		return 0, rows.Err()
 	}
 	return runtime.Int8(rows.RawValues()[0]), rows.Err()
+}
+
+var orderLinesProbeQueryUpdateAllCache = runtime.NewTreeCache()
+
+// UpdateAll is the order package's UpdateAll over this semi-join: it
+// writes m's assigned columns to every orders row the predicates and
+// probes select, in ONE statement, and reports how many. Nothing
+// assigned issues no statement; a Limit, Offset or row lock is
+// runtime.ErrPagedWrite.
+func (h OrderLinesProbeQuery) UpdateAll(ctx context.Context, ex runtime.Executor, m order.Mut) (int64, error) {
+	if err := h.err(); err != nil {
+		return 0, err
+	}
+	if h.q.Shaped() {
+		return 0, runtime.ErrPagedWrite
+	}
+	head, key, args, ok := m.UpdateHead()
+	if !ok {
+		return 0, nil
+	}
+	var buf [48]runtime.Tok
+	toks := h.tokens(append(buf[:0], key[:]...), true)
+	st := orderLinesProbeQueryUpdateAllCache.Get(toks)
+	if st == nil {
+		if head.Err != nil {
+			return 0, head.Err
+		}
+		st = orderLinesProbeQueryUpdateAllCache.Put(toks, runtime.SpliceTreeFrom(head.SQL, toks[len(key):], orderLinesProbeQueryLowering, "", head.NArg))
+	}
+	if st.Err != nil {
+		return 0, st.Err
+	}
+	pb := order.GetBinder()
+	defer order.PutBinder(pb)
+	read, cbs := h.bind(pb, false)
+	defer func() {
+		for _, cb := range cbs {
+			orderline.PutBinder(cb)
+		}
+	}()
+	return ex.Exec(ctx, st.SQL, append(args, read...))
 }
 
 var orderLinesProbeQueryByStatusCache = runtime.NewTreeCache()

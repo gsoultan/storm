@@ -82,6 +82,9 @@ type Table struct {
 	// composes an existence probe through, as it does for every to-many:
 	// <Model>Having<Field>.
 	Probes []string
+	// Matches are the declared probes on matching columns (t.ProbesOn).
+	Matches []*Match
+
 	// ReadsDeleted lets a call site widen a read of this soft-delete table
 	// past the marked rows (Query.WithDeleted). The model says so once, as
 	// it does for an aggregation AcrossDeleted.

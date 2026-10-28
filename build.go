@@ -145,6 +145,12 @@ func Build(models ...any) (*schema.Schema, error) {
 	for _, mi := range b.ordered {
 		b.callJoins(mi)
 	}
+	// Probes on matching columns, once every table's references are wired.
+	for _, mi := range b.ordered {
+		for _, m := range mi.tbl.matches {
+			m(b)
+		}
+	}
 	// Unions after the joins, for the same reason and one more: a union reads
 	// several tables and belongs to none, so it is the only declaration that
 	// cannot run until ALL of them are complete.
