@@ -78,6 +78,11 @@ type AutoOptions struct {
 	// time, and a failure there leaves the transactional steps applied.
 	Concurrently bool
 
+	// DeclaredOnly leaves alone every table the model does not declare, as
+	// Options.DeclaredOnly does: such a table is not a step, destructive or
+	// otherwise.
+	DeclaredOnly bool
+
 	// LockTimeout bounds how long any one step waits for a lock it needs.
 	// Zero means DefaultLockTimeout; negative means no bound (PostgreSQL's own
 	// default, which is to wait forever).
@@ -263,7 +268,7 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 	// AFTER the lock. A replica that waited its turn must diff against what the
 	// winner just applied, or it applies the same plan a second time — and
 	// CREATE TABLE is not idempotent.
-	plan, err := ForWith(ctx, c, ns, want, Options{Concurrently: o.Concurrently})
+	plan, err := ForWith(ctx, c, ns, want, Options{Concurrently: o.Concurrently, DeclaredOnly: o.DeclaredOnly})
 	if err != nil {
 		return res, err
 	}

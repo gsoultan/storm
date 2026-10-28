@@ -14,6 +14,13 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Automigrate leaves other tables alone on request
+
+`AutoOptions.DeclaredOnly` (and `Options.DeclaredOnly` for `ForWith`) leaves
+every table the model does not declare out of the plan: not dropped, not
+compared. For a model that shares its schema with tables it does not own,
+which without it were a DROP that refused the whole plan.
+
 ### Aggregations over a joined table and a JSON array's elements
 
 An aggregation can `Join(&model, &m.Relation)` the table a foreign key

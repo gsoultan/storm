@@ -140,6 +140,10 @@ migrate.AutoOptions{Accept: func(c migrate.Change) bool {
 }}
 ```
 
+A schema the model shares with tables something else owns sets
+`DeclaredOnly`: a table the model does not declare is then neither dropped nor
+compared, rather than a destructive step that refuses the plan.
+
 A type change PostgreSQL has no cast for, such as JSON kept in a text column
 becoming an array or jsonb, says how to read the old value with
 `t.Col(&m.Tags).ConvertFrom(storm.JSONText)`; automigrate and `storm diff`
