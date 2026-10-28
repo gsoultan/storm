@@ -1313,6 +1313,86 @@ func (q Query) readStmt(toks []runtime.Tok) *runtime.Stmt {
 func (q Query) countStmt(toks []runtime.Tok) *runtime.Stmt  { return countStmtFor(toks) }
 func (q Query) existsStmt(toks []runtime.Tok) *runtime.Stmt { return existsStmtFor(toks) }
 
+const (
+	distinctOpen = "SELECT DISTINCT ON ("
+	distinctSep  = ", "
+	distinctTail = ") \"id\", \"created_at\", \"updated_at\", \"updated_by\", \"customer_id\", \"status\", \"total\", \"placed_at\" FROM \"orders\""
+)
+
+// distinctCaches are AllDistinctOn's, without and with an offset. The
+// key is the stream and then n, which the stream alone does not carry.
+var distinctCaches = [2]*runtime.TreeCache{runtime.NewTreeCache(), runtime.NewTreeCache()}
+
+var errDistinctOn = errors.New(
+	"storm: AllDistinctOn keeps the first row of each run of the query's first n order terms; n must be between one and the number of terms Order set, and the query must not lock rows")
+
+// distinctStmtFor compiles one (stream, n), once.
+func distinctStmtFor(key, toks []runtime.Tok, n int, withOffset bool) *runtime.Stmt {
+	i, suffix := 0, limitSuffix
+	if withOffset {
+		i, suffix = 1, limitOffsetSuffix
+	}
+	c := distinctCaches[i]
+	if st := c.Get(key); st != nil {
+		return st
+	}
+	prefix := distinctOpen
+	for _, t := range toks {
+		if t.Kind() != runtime.KOrder || n == 0 {
+			continue
+		}
+		if prefix != distinctOpen {
+			prefix += distinctSep
+		}
+		prefix += identTable[t.Col()]
+		n--
+	}
+	return c.Put(key, runtime.SpliceTree(prefix+distinctTail, toks, lowering, suffix))
+}
+
+// AllDistinctOn runs the query keeping one row for each distinct value
+// of its first n order terms: the first, in the query's order. Order
+// by the key and then by what picks the row:
+//
+//	q.Order(Project.Asc(), Key.Asc(), CreatedAt.Desc()).AllDistinctOn(ctx, ex, 2, nil)
+//
+// is each project's and key's newest row. Limit and Offset count the
+// rows kept. n outside the explicit order, or a row lock, is refused.
+func (q Query) AllDistinctOn(ctx context.Context, ex runtime.Executor, n int, dst []Row) ([]Row, error) {
+	if err := q.Err(); err != nil {
+		return dst, err
+	}
+	if n < 1 || n > int(q.no) || q.lock != 0 {
+		return dst, errDistinctOn
+	}
+	var buf [21]runtime.Tok
+	toks := q.stream(&buf)
+	var kb [22]runtime.Tok
+	key := kb[:copy(kb[:], toks)+1]
+	key[len(key)-1] = runtime.Tok(n)
+	st := distinctStmtFor(key, toks, n, q.offset > 0)
+	if st.Err != nil {
+		return dst, st.Err
+	}
+	var sl runtime.Slab
+	sl.Reserve(st.SlabHint())
+	b := binders.Get()
+	defer putBinder(b)
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return dst, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		dst = append(dst, Row{})
+		if err := scan(rows.RawValues(), &dst[len(dst)-1], &sl); err != nil {
+			return dst, err
+		}
+	}
+	st.ObserveSlab(sl.Size())
+	return dst, rows.Err()
+}
+
 // Composition seams, for the generated CONTEXT package and it alone:
 // cross-table statements (a filtered semi-join spans two packages) are
 // assembled there from each side's tokens, fragments and bindings. Ids
