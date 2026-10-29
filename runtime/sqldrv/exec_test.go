@@ -28,9 +28,12 @@ type fakeDriver struct {
 	cols     []string
 	rows     [][]driver.Value
 	affected int64
-	stmts    []string // every statement it was given, in order
-	args     [][]driver.Value
-	failOn   string
+	// affectedErr, when set, is what every Result's RowsAffected answers: a
+	// driver that will not count.
+	affectedErr error
+	stmts       []string // every statement it was given, in order
+	args        [][]driver.Value
+	failOn      string
 
 	// Transactions: how each ended, and whether starting one is refused.
 	commits, rollbacks int
@@ -88,7 +91,7 @@ func (s *fakeStmt) Exec(args []driver.Value) (driver.Result, error) {
 	if err := s.record(args); err != nil {
 		return nil, err
 	}
-	return fakeResult{n: s.d.affected}, nil
+	return fakeResult{n: s.d.affected, err: s.d.affectedErr}, nil
 }
 
 func (s *fakeStmt) Query(args []driver.Value) (driver.Rows, error) {
@@ -98,10 +101,13 @@ func (s *fakeStmt) Query(args []driver.Value) (driver.Rows, error) {
 	return &fakeDriverRows{cols: s.d.cols, rows: s.d.rows}, nil
 }
 
-type fakeResult struct{ n int64 }
+type fakeResult struct {
+	n   int64
+	err error // what RowsAffected answers, for a driver that will not count
+}
 
 func (r fakeResult) LastInsertId() (int64, error) { return 0, errors.New("unsupported") }
-func (r fakeResult) RowsAffected() (int64, error) { return r.n, nil }
+func (r fakeResult) RowsAffected() (int64, error) { return r.n, r.err }
 
 type fakeDriverRows struct {
 	cols []string
@@ -188,10 +194,7 @@ func TestQueryHandsOverTheValueShape(t *testing.T) {
 	}
 }
 
-// RowsAffected is optional in database/sql and several drivers refuse it. A
-// refusal is zero rather than an error: the statement RAN, and failing the call
-// would turn a driver's limitation into a data error.
-func TestExecReportsZeroWhenTheDriverWillNotCount(t *testing.T) {
+func TestExecReportsTheAffectedCount(t *testing.T) {
 	d := &fakeDriver{affected: 3}
 	db, done := open(t, d)
 	defer done()
@@ -201,6 +204,24 @@ func TestExecReportsZeroWhenTheDriverWillNotCount(t *testing.T) {
 	}
 	if n != 3 {
 		t.Errorf("affected = %d, want 3", n)
+	}
+}
+
+// RowsAffected is optional in database/sql and a driver may refuse it. The
+// refusal is the driver's error, not a zero: generated writes read zero as
+// ErrStaleWrite or ErrNoRow, which would report a write that succeeded as a
+// row that changed underneath the caller.
+func TestExecReportsADriverThatWillNotCount(t *testing.T) {
+	refused := errors.New("this driver does not count")
+	d := &fakeDriver{affectedErr: refused}
+	db, done := open(t, d)
+	defer done()
+	n, err := New(db).Exec(context.Background(), "UPDATE t SET a = 1", nil)
+	if !errors.Is(err, refused) {
+		t.Fatalf("err = %v, want the driver's refusal", err)
+	}
+	if n != 0 {
+		t.Errorf("affected = %d alongside an error, want 0", n)
 	}
 }
 

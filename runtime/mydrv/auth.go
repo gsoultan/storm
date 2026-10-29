@@ -100,6 +100,20 @@ type Config struct {
 	// means DefaultMaxPreparedStmts.
 	MaxPreparedStmts int
 
+	// MaxKillConns caps how many SIDE connections a Pool has open at once to
+	// deliver KILL QUERY for cancelled statements. Zero means
+	// DefaultMaxKillConns; a negative value means no cap.
+	//
+	// Cancelling a statement opens a second connection, because the one running
+	// it cannot be spoken to until it answers. Unbounded, a burst of timeouts —
+	// a slow server is exactly when every in-flight statement's deadline
+	// expires together — minted one connection per cancellation OUTSIDE
+	// MaxConns, against a server whose max_connections defaults to 151. Past
+	// the cap a cancellation falls back to breaking its own socket, which costs
+	// that one connection and nothing else. Ignored by Open, whose single
+	// connection kills from at most one side connection anyway.
+	MaxKillConns int
+
 	// AcquireTimeout bounds how long a caller waits for a pooled connection.
 	// Zero means DefaultAcquireTimeout; a negative value waits forever.
 	//

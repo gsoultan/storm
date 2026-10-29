@@ -413,3 +413,59 @@ func TestTextRowThatOverrunsItsPacketIsAnError(t *testing.T) {
 	}
 	<-serverDone
 }
+
+// A pool's KILL QUERY side connections are capped. A watcher that finds every
+// slot taken does not open another connection: it falls back to breaking its
+// own socket, which costs that one connection and reports the caller's own
+// cancellation — the same outcome as a kill that could not be delivered.
+func TestCancellationPastTheKillCapBreaksTheSocketInstead(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{} // another cancellation holds the only slot
+	x := &Conn{c: newConn(client), cfg: Config{Addr: "127.0.0.1:1"}, killGate: gate}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := x.watch(ctx)
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		x.mu.Lock()
+		broken := x.broken
+		x.mu.Unlock()
+		if broken {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the watcher neither killed nor broke the socket")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := stop(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop() = %v, want the caller's own cancellation", err)
+	}
+	if len(gate) != 1 {
+		t.Fatal("the watcher took or released a slot it was refused")
+	}
+}
+
+// With a slot free the gate is taken for the kill and given back after it,
+// whether or not the kill could be delivered — otherwise one failed kill would
+// shrink the cap for the life of the pool.
+func TestTheKillGateIsReleasedAfterAFailedKill(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	gate := make(chan struct{}, 1)
+	// An address nothing listens on: the side connection cannot be opened,
+	// so kill fails after taking its slot.
+	x := &Conn{c: newConn(client), cfg: Config{Addr: "127.0.0.1:1"}, killGate: gate}
+	x.c.id = 7
+	if err := x.kill(); err == nil {
+		t.Fatal("a kill against a closed port succeeded")
+	}
+	if len(gate) != 0 {
+		t.Fatal("the slot was not given back after the kill failed")
+	}
+}

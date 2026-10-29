@@ -2332,10 +2332,25 @@ func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) 
 // plausible zero, and a row scanner is the last place that can tell.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("id", "uuid", 16, rv[0])
+	}
 	copy(r.ID[:], rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("created_at", "timestamptz", 8, rv[1])
+	}
 	r.CreatedAt = runtime.Timestamptz(rv[1])
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("updated_at", "timestamptz", 8, rv[2])
+	}
 	r.UpdatedAt = runtime.Timestamptz(rv[2])
+	if len(rv[3]) != 4 {
+		return runtime.ShapeErr("version", "int4", 4, rv[3])
+	}
 	r.Version = runtime.Int4(rv[3])
+	if b := rv[4]; b != nil && len(b) != 8 {
+		return runtime.ShapeErr("deleted_at", "timestamptz", 8, b)
+	}
 	r.DeletedAt = runtime.Nullable(rv[4], runtime.Timestamptz)
 	r.Email = sl.Str(rv[5])
 	r.Name = sl.Str(rv[6])
@@ -2345,8 +2360,14 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	if decErr != nil {
 		return decErr
 	}
+	if b := rv[10]; b != nil && len(b) != 2 {
+		return runtime.ShapeErr("age", "int2", 2, b)
+	}
 	r.Age = runtime.Nullable(rv[10], runtime.Int2)
 	r.LastIP = runtime.NullText(rv[11], sl)
+	if len(rv[12]) != 1 {
+		return runtime.ShapeErr("active", "bool", 1, rv[12])
+	}
 	r.Active = runtime.Bool(rv[12])
 	r.Balance, decErr = runtime.NumericErr(rv[13])
 	if decErr != nil {
@@ -2359,6 +2380,9 @@ func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	r.Splits, decErr = runtime.DecimalArray(rv[15])
 	if decErr != nil {
 		return decErr
+	}
+	if len(rv[16]) != 16 {
+		return runtime.ShapeErr("org_id", "uuid", 16, rv[16])
 	}
 	copy(r.OrgID[:], rv[16])
 	return decErr
@@ -2911,6 +2935,9 @@ func scanFin(rv [][]byte, r *FinRow, sl *runtime.Slab) error {
 	r.Balance, decErr = runtime.NumericErr(rv[1])
 	if decErr != nil {
 		return decErr
+	}
+	if b := rv[2]; b != nil && len(b) != 2 {
+		return runtime.ShapeErr("age", "int2", 2, b)
 	}
 	r.Age = runtime.Nullable(rv[2], runtime.Int2)
 	return nil
@@ -3609,6 +3636,9 @@ func withOrgStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 }
 
 func scanWithOrg(rv [][]byte, r *WithOrgRow, sl *runtime.Slab) error {
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("user_id", "uuid", 16, rv[0])
+	}
 	copy(r.UserID[:], rv[0])
 	r.Email = sl.Str(rv[1])
 	r.OrgName = sl.Str(rv[2])
@@ -3692,6 +3722,9 @@ func maybeOrgStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 }
 
 func scanMaybeOrg(rv [][]byte, r *MaybeOrgRow, sl *runtime.Slab) error {
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("user_id", "uuid", 16, rv[0])
+	}
 	copy(r.UserID[:], rv[0])
 	r.OrgName = runtime.NullText(rv[1], sl)
 	return nil

@@ -54,9 +54,19 @@ type Pool struct {
 	idle chan *Conn
 	sem  chan struct{} // one token per connection permitted to exist
 
+	// killGate bounds the side connections cancellation opens, across every
+	// connection this pool hands out. Nil when Config.MaxKillConns is negative.
+	killGate chan struct{}
+
 	mu     sync.Mutex
 	closed bool
 }
+
+// DefaultMaxKillConns is the cap on concurrent KILL QUERY side connections when
+// Config.MaxKillConns is zero. Two: one cancellation in flight while another
+// is delivered, which is as many as a healthy server ever needs, and few
+// enough that a timeout storm cannot turn into a connection storm.
+const DefaultMaxKillConns = 2
 
 // NewPool creates a pool and opens one connection, so that a bad address or a
 // bad password is an error HERE rather than on the first query.
@@ -69,6 +79,12 @@ func NewPool(ctx context.Context, cfg Config) (*Pool, error) {
 		cfg:  cfg,
 		idle: make(chan *Conn, n),
 		sem:  make(chan struct{}, n),
+	}
+	if k := cfg.MaxKillConns; k >= 0 {
+		if k == 0 {
+			k = DefaultMaxKillConns
+		}
+		p.killGate = make(chan struct{}, k)
 	}
 	c, err := p.acquire(ctx)
 	if err != nil {
@@ -110,6 +126,7 @@ func (p *Pool) acquire(ctx context.Context) (*Conn, error) {
 			<-p.sem
 			return nil, err
 		}
+		c.killGate = p.killGate
 		return c, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
