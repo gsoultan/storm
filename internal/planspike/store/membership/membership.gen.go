@@ -1166,9 +1166,18 @@ func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) 
 // numeric past 18 significant digits, or a NaN. Those must not become a
 // plausible zero, and a row scanner is the last place that can tell.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("user_id", "uuid", 16, rv[0])
+	}
 	copy(r.UserID[:], rv[0])
+	if len(rv[1]) != 16 {
+		return runtime.ShapeErr("org_id", "uuid", 16, rv[1])
+	}
 	copy(r.OrgID[:], rv[1])
 	r.Role = sl.Str(rv[2])
+	if len(rv[3]) != 8 {
+		return runtime.ShapeErr("joined_at", "timestamptz", 8, rv[3])
+	}
 	r.JoinedAt = runtime.Timestamptz(rv[3])
 	return nil
 }

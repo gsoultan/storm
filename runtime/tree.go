@@ -134,17 +134,17 @@ func (t Tok) Arity() int   { return int(uint32(t) & 0xfff) }
 // resident again. A cache that is flushing is a call site that outgrew its
 // review, and Flushes reports it.
 type TreeCache struct {
-	last atomic.Pointer[hotTree]
+	// last is the entry the previous hit returned, published as the pointer the
+	// map already holds. It used to be a separate struct allocated on every
+	// hit that was not already `last`, so a call site alternating between two
+	// shapes — paged and unpaged, say — paid one allocation per query on what
+	// is supposed to be the zero-allocation path.
+	last atomic.Pointer[treeEntry]
 
 	mu      sync.RWMutex
 	entries map[uint64][]*treeEntry
 	n       int
 	flushes int64
-}
-
-type hotTree struct {
-	toks []Tok
-	stmt *Stmt
 }
 
 type treeEntry struct {
@@ -226,7 +226,7 @@ func (c *TreeCache) Get(toks []Tok) *Stmt {
 	c.mu.RUnlock()
 	for _, e := range bucket {
 		if sameToks(e.toks, toks) {
-			c.last.Store(&hotTree{toks: e.toks, stmt: e.stmt})
+			c.last.Store(e)
 			return e.stmt
 		}
 	}
@@ -246,7 +246,8 @@ func (c *TreeCache) Put(toks []Tok, st *Stmt) *Stmt {
 	}
 	owned := make([]Tok, len(toks))
 	copy(owned, toks)
-	c.entries[key] = append(c.entries[key], &treeEntry{toks: owned, stmt: st})
+	e := &treeEntry{toks: owned, stmt: st}
+	c.entries[key] = append(c.entries[key], e)
 	c.n++
 	if max := int(shapeCap.Load()); max > 0 && c.n > max {
 		// Drop everything, including what was just inserted: `last` still
@@ -257,7 +258,7 @@ func (c *TreeCache) Put(toks []Tok, st *Stmt) *Stmt {
 		c.n = 0
 		c.flushes++
 	}
-	c.last.Store(&hotTree{toks: owned, stmt: st})
+	c.last.Store(e)
 	return st
 }
 

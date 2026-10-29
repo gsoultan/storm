@@ -1482,13 +1482,28 @@ func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) 
 // numeric past 18 significant digits, or a NaN. Those must not become a
 // plausible zero, and a row scanner is the last place that can tell.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("id", "uuid", 16, rv[0])
+	}
 	copy(r.ID[:], rv[0])
+	if len(rv[1]) != 16 {
+		return runtime.ShapeErr("org_id", "uuid", 16, rv[1])
+	}
 	copy(r.OrgID[:], rv[1])
 	r.Email = sl.Str(rv[2])
 	r.Name = sl.Str(rv[3])
+	if b := rv[4]; b != nil && len(b) != 4 {
+		return runtime.ShapeErr("age", "int4", 4, b)
+	}
 	r.Age = runtime.Nullable(rv[4], runtime.Int4)
 	r.Status = sl.Str(rv[5])
+	if len(rv[6]) != 8 {
+		return runtime.ShapeErr("created_at", "timestamptz", 8, rv[6])
+	}
 	r.CreatedAt = runtime.Timestamptz(rv[6])
+	if len(rv[7]) != 8 {
+		return runtime.ShapeErr("updated_at", "timestamptz", 8, rv[7])
+	}
 	r.UpdatedAt = runtime.Timestamptz(rv[7])
 	return nil
 }
@@ -1982,10 +1997,16 @@ func byStatusStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 func scanByStatus(rv [][]byte, r *ByStatusRow, sl *runtime.Slab) error {
 	var decErr error
 	r.Status = sl.Str(rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("users", "int8", 8, rv[1])
+	}
 	r.Users = runtime.Int8(rv[1])
 	r.AvgAge, decErr = runtime.NullNumeric(rv[2])
 	if decErr != nil {
 		return decErr
+	}
+	if b := rv[3]; b != nil && len(b) != 8 {
+		return runtime.ShapeErr("newest", "timestamptz", 8, b)
 	}
 	r.Newest = runtime.Nullable(rv[3], runtime.Timestamptz)
 	return nil

@@ -722,6 +722,9 @@ type FeedRow struct {
 const feedSQL = `(SELECT "created_at" AS "at", "name" AS "text", 'author' AS "kind" FROM "authors" WHERE "id" = $1) UNION ALL (SELECT "created_at" AS "at", "title" AS "text", 'article' AS "kind" FROM "articles" WHERE ("published_at" IS NOT NULL AND "author_id" = $1)) ORDER BY "at" DESC LIMIT $2`
 
 func scanFeed(rv [][]byte, r *FeedRow, sl *runtime.Slab) error {
+	if len(rv[0]) != 8 {
+		return runtime.ShapeErr("at", "timestamptz", 8, rv[0])
+	}
 	r.At = runtime.Timestamptz(rv[0])
 	r.Text = sl.Str(rv[1])
 	r.Kind = sl.Str(rv[2])

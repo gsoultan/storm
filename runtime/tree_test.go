@@ -334,3 +334,23 @@ func TestSpliceLeavesNumberedSigilsAlone(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", st.SQL, want)
 	}
 }
+
+// A call site that alternates between two shapes — the paged and the unpaged
+// form of one query, say — hits the cache on every call and never on `last`.
+// That path allocated a fresh hot-entry struct per hit, which is one
+// allocation per query on the path the README calls zero-allocation. The
+// entry the map already holds is what gets published now.
+func TestTreeCacheGetDoesNotAllocateWhenShapesAlternate(t *testing.T) {
+	c := runtime.NewTreeCache()
+	a := []runtime.Tok{runtime.MakeLeaf(1, 1)}
+	b := []runtime.Tok{runtime.MakeLeaf(1, 2)}
+	c.Put(a, &runtime.Stmt{SQL: "a"})
+	c.Put(b, &runtime.Stmt{SQL: "b"})
+	if n := testing.AllocsPerRun(1000, func() {
+		if c.Get(a).SQL != "a" || c.Get(b).SQL != "b" {
+			t.Fatal("the cache returned the wrong statement")
+		}
+	}); n != 0 {
+		t.Fatalf("Get allocated %v times per alternating pair, want 0", n)
+	}
+}

@@ -45,7 +45,7 @@ func (c *conn) prepare(sql string) (*stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p[0] == 0xff {
+	if len(p) > 0 && p[0] == 0xff {
 		return nil, parseError(p)
 	}
 	if len(p) < 9 {
@@ -180,6 +180,9 @@ func (s *stmt) header() error {
 	if err != nil {
 		return err
 	}
+	if len(p) == 0 {
+		return errShortPacket
+	}
 	if p[0] == 0xff {
 		return parseError(p)
 	}
@@ -227,6 +230,9 @@ func (s *stmt) nextRow() ([][]byte, error) {
 		p, err := s.c.readPacket()
 		if err != nil {
 			return nil, err
+		}
+		if len(p) == 0 {
+			return nil, errShortPacket
 		}
 		if p[0] == 0xfe && len(p) < 9 {
 			s.types = s.types[:0]

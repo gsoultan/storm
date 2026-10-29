@@ -1644,14 +1644,26 @@ func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) 
 // plausible zero, and a row scanner is the last place that can tell.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("id", "uuid", 16, rv[0])
+	}
 	copy(r.ID[:], rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("created_at", "timestamptz", 8, rv[1])
+	}
 	r.CreatedAt = runtime.Timestamptz(rv[1])
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("updated_at", "timestamptz", 8, rv[2])
+	}
 	r.UpdatedAt = runtime.Timestamptz(rv[2])
 	r.Sku = sl.Str(rv[3])
 	r.Name = sl.Str(rv[4])
 	r.Price, decErr = runtime.NumericErr(rv[5])
 	if decErr != nil {
 		return decErr
+	}
+	if len(rv[6]) != 1 {
+		return runtime.ShapeErr("active", "bool", 1, rv[6])
 	}
 	r.Active = runtime.Bool(rv[6])
 	r.Tags, decErr = runtime.TextArray(rv[7], sl)

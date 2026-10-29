@@ -8,6 +8,7 @@ import (
 
 	"github.com/gsoultan/storm/codegen"
 	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/schema/pg"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -37,6 +38,12 @@ func explain(dsn, ns string, model *schema.Schema, maxSeqRows int) error {
 		return err
 	}
 
+	// SET takes no parameter, so the namespace reaches SQL text here. It is a
+	// flag the operator typed, not request data, but it is held to the rule
+	// Introspect holds it to rather than trusted.
+	if err := schemapg.ValidNamespace(ns); err != nil {
+		return err
+	}
 	c, ctx, done, err := connect(dsn)
 	if err != nil {
 		return err
