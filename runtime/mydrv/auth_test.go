@@ -337,3 +337,79 @@ func TestAMalformedAddressIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// A length-encoded integer whose prefix promises more bytes than the packet
+// holds is the server's mistake (or design), and the reader must answer it
+// with ok=false rather than indexing past the slice. These are the exact
+// inputs that panicked before lenEncInt checked its own length.
+func TestLenEncIntRefusesATruncatedPrefix(t *testing.T) {
+	for _, b := range [][]byte{nil, {}, {0xfc}, {0xfc, 1}, {0xfd, 1, 2}, {0xfe, 1, 2, 3, 4, 5, 6, 7}} {
+		if _, _, ok := lenEncInt(b); ok {
+			t.Errorf("lenEncInt(% x) = ok, want a refusal", b)
+		}
+	}
+	for _, c := range []struct {
+		in []byte
+		v  uint64
+		w  int
+	}{
+		{[]byte{0x05}, 5, 1},
+		{[]byte{0xfc, 0x01, 0x02}, 0x0201, 3},
+		{[]byte{0xfd, 0x01, 0x02, 0x03}, 0x030201, 4},
+		{[]byte{0xfe, 1, 0, 0, 0, 0, 0, 0, 0}, 1, 9},
+	} {
+		v, w, ok := lenEncInt(c.in)
+		if !ok || v != c.v || w != c.w {
+			t.Errorf("lenEncInt(% x) = %d, %d, %v; want %d, %d, true", c.in, v, w, ok, c.v, c.w)
+		}
+	}
+}
+
+// A text-protocol row whose columns do not fit inside the packet is an error,
+// not an index past the buffer: the same contract the binary row reader holds.
+func TestTextRowThatOverrunsItsPacketIsAnError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		s, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer s.Close()
+		// Read the client's COM_QUERY, then answer: one column, its (skipped)
+		// definition, an EOF, and a row claiming 200 bytes in a 3-byte packet.
+		var h [4]byte
+		if _, err := s.Read(h[:]); err != nil {
+			return
+		}
+		n := int(h[0]) | int(h[1])<<8 | int(h[2])<<16
+		body := make([]byte, n)
+		if _, err := s.Read(body); err != nil {
+			return
+		}
+		write := func(seq byte, p []byte) {
+			s.Write([]byte{byte(len(p)), byte(len(p) >> 8), byte(len(p) >> 16), seq})
+			s.Write(p)
+		}
+		write(1, []byte{0x01})                // column count
+		write(2, []byte{0x03, 'd', 'e', 'f'}) // a column definition, skipped
+		write(3, []byte{0xfe, 0, 0, 0, 0})    // EOF
+		write(4, []byte{0xfc, 200, 0})        // row: length prefix says 200 bytes; none follow
+	}()
+	nc, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	c := newConn(nc)
+	err = c.query("SELECT 1", func([][]byte) error { return nil })
+	if !errors.Is(err, errShortRow) {
+		t.Fatalf("err = %v, want errShortRow", err)
+	}
+	<-serverDone
+}

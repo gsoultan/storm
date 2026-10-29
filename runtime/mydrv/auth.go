@@ -369,6 +369,9 @@ func (c *conn) authResult(cfg Config, g greeting, tlsOn bool) error {
 		if err != nil {
 			return err
 		}
+		if len(p) == 0 {
+			return errShortPacket
+		}
 		switch p[0] {
 		case 0x00: // OK
 			return nil
