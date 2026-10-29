@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/netip"
 	"time"
@@ -15,6 +16,41 @@ import (
 
 // PGEpoch is Postgres' timestamp origin.
 var PGEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// ErrShape is returned when a fixed-width column arrives with a width the model
+// does not describe: NULL where the model says NOT NULL, or four bytes where
+// the model says int8. Both mean the database has drifted from the model —
+// an ALTER by hand, or a generate that was not followed by a deploy — and
+// `storm verify` is what finds it before a request does.
+//
+// It exists because the alternative was a panic. The fixed-width decoders
+// read exactly their width, and a scanner handed fewer bytes indexed past the
+// slice inside a request handler. The check that replaced the panic is the
+// same bounds check the decoder already paid for, moved one line up and given
+// an error path, so it costs nothing on a row that is the shape it should be.
+var ErrShape = errors.New("storm: a column arrived in a shape the model does not describe")
+
+// ShapeErr is the error a generated scanner returns for column, declared as
+// typ and expected to be want bytes wide, that arrived as got. Called only on
+// the error path: a row of the right shape never reaches it.
+func ShapeErr(column, typ string, want int, got []byte) error {
+	var arrived string
+	if got == nil {
+		arrived = "NULL"
+	} else {
+		arrived = itoa(len(got)) + " byte(s)"
+	}
+	return fmt.Errorf("%w: column %s arrived as %s where the model declares %s (%d bytes%s)"+
+		" — the database has drifted from the model; run 'storm verify'",
+		ErrShape, column, arrived, typ, want, notNull(got))
+}
+
+func notNull(got []byte) string {
+	if got == nil {
+		return ", NOT NULL"
+	}
+	return ""
+}
 
 func Bool(b []byte) bool  { return len(b) > 0 && b[0] != 0 }
 func Int2(b []byte) int16 { return int16(binary.BigEndian.Uint16(b)) }

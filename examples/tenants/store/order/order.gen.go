@@ -1428,12 +1428,30 @@ func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) 
 // numeric past 18 significant digits, or a NaN. Those must not become a
 // plausible zero, and a row scanner is the last place that can tell.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("id", "uuid", 16, rv[0])
+	}
 	copy(r.ID[:], rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("created_at", "timestamptz", 8, rv[1])
+	}
 	r.CreatedAt = runtime.Timestamptz(rv[1])
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("updated_at", "timestamptz", 8, rv[2])
+	}
 	r.UpdatedAt = runtime.Timestamptz(rv[2])
+	if len(rv[3]) != 16 {
+		return runtime.ShapeErr("tenant_id", "uuid", 16, rv[3])
+	}
 	copy(r.TenantID[:], rv[3])
+	if b := rv[4]; b != nil && len(b) != 16 {
+		return runtime.ShapeErr("currency_id", "uuid", 16, b)
+	}
 	r.CurrencyID = runtime.Nullable(rv[4], runtime.UUID)
 	r.Status = sl.Str(rv[5])
+	if len(rv[6]) != 4 {
+		return runtime.ShapeErr("total", "int4", 4, rv[6])
+	}
 	r.Total = runtime.Int4(rv[6])
 	return nil
 }

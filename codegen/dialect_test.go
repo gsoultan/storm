@@ -197,3 +197,49 @@ func regexpField(body, name, typ string) bool {
 	}
 	return false
 }
+
+// A PostgreSQL scanner checks a fixed-width column's width before decoding it,
+// and returns runtime.ErrShape naming the column instead of indexing past the
+// slice when the database has drifted from the model: NULL where the model says
+// NOT NULL, or four bytes where it says eight. The MySQL family's values carry
+// their own length and its decoders already report a mismatch, so it emits no
+// such guard.
+func TestPostgresScannersRefuseADriftedColumnWidth(t *testing.T) {
+	s := portableSchema()
+	s.Tables[0].Columns = append(s.Tables[0].Columns,
+		&schema.Column{Name: "age", Type: schema.Type{Name: schema.TypeInt4}})
+	src, err := codegen.File(s, codegen.Options{
+		Package: "user", Import: "github.com/gsoultan/storm", Table: "users",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(src)
+	for _, want := range []string{
+		// NOT NULL: any width but the type's is drift, NULL included.
+		`if len(rv[1]) != 8 {
+		return runtime.ShapeErr("n", "int8", 8, rv[1])`,
+		`if len(rv[2]) != 8 {
+		return runtime.ShapeErr("created_at", "timestamptz", 8, rv[2])`,
+		`if len(rv[0]) != 16 {
+		return runtime.ShapeErr("id", "uuid", 16, rv[0])`,
+		// Nullable: NULL is a value here, so only a present value is checked.
+		`if b := rv[4]; b != nil && len(b) != 4 {
+		return runtime.ShapeErr("age", "int4", 4, b)`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the PostgreSQL scanner lacks the guard:\n%s", want)
+		}
+	}
+
+	my, err := codegen.File(s, codegen.Options{
+		Package: "user", Import: "github.com/gsoultan/storm", Table: "users",
+		Dialect: codegen.DialectMySQL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(my), "runtime.ShapeErr(") {
+		t.Error("a MySQL scanner guards a width its decoders already check")
+	}
+}

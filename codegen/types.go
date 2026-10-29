@@ -233,6 +233,7 @@ func decodeExpr(c *schema.Column, i int) string {
 func decodeExprIn(c *schema.Column, i int, d decoders) string {
 	f := exportName(c.Name)
 	k := goKind(c)
+	guard := shapeGuard(c, i, d, k)
 
 	if k == kindBytes {
 		return fmt.Sprintf("r.%s = "+d.q("Bytes")+"(rv[%d])", f, i)
@@ -248,9 +249,9 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 			return fmt.Sprintf("r.%s, decErr = "+d.q("NullDate")+"(rv[%d])", f, i)
 		}
 		if c.NotNull {
-			return fmt.Sprintf("r.%s = "+d.q("Date")+"(rv[%d])", f, i)
+			return guard + fmt.Sprintf("r.%s = "+d.q("Date")+"(rv[%d])", f, i)
 		}
-		return fmt.Sprintf("r.%s = "+d.q("Nullable")+"(rv[%d], "+d.q("Date")+")", f, i)
+		return guard + fmt.Sprintf("r.%s = "+d.q("Nullable")+"(rv[%d], "+d.q("Date")+")", f, i)
 	}
 	if k == kindInt8Array {
 		return fmt.Sprintf("r.%s, decErr = "+d.q("Int8Array")+"(rv[%d])", f, i)
@@ -338,7 +339,7 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 			if d.uuid != nil {
 				return d.uuid(f, i)
 			}
-			return fmt.Sprintf("copy(r.%s[:], rv[%d])", f, i)
+			return guard + fmt.Sprintf("copy(r.%s[:], rv[%d])", f, i)
 		}
 		// A family whose decoder for this kind returns an error has to be
 		// called as one. MySQL's temporal types read a leading length and can
@@ -348,14 +349,41 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 		if d.fallible[k] {
 			return fmt.Sprintf("r.%s, decErr = %s(rv[%d])", f, dec, i)
 		}
-		return fmt.Sprintf("r.%s = %s(rv[%d])", f, dec, i)
+		return guard + fmt.Sprintf("r.%s = %s(rv[%d])", f, dec, i)
 	}
 	// Nullable takes a decoder that cannot fail. A fallible one needs the
 	// family's own Null wrapper, which pairs the NULL test with the error.
 	if d.fallible[k] {
 		return fmt.Sprintf("r.%s, decErr = %s(rv[%d])", f, d.q(nullName(k)), i)
 	}
-	return fmt.Sprintf("r.%s = "+d.q("Nullable")+"(rv[%d], %s)", f, i, dec)
+	return guard + fmt.Sprintf("r.%s = "+d.q("Nullable")+"(rv[%d], %s)", f, i, dec)
+}
+
+// shapeGuard is the check a scanner makes before decoding a fixed-width column,
+// or "" for a kind this family reads no fixed width for.
+//
+// The PostgreSQL decoders read exactly their width and nothing else: a NULL
+// where the model says NOT NULL, or an int4 where the model says int8, indexed
+// past the slice and PANICKED inside the request that ran the query. The check
+// is the bounds check the decoder was already paying for, moved one line up
+// and given an error path — the compiler proves the later one away — so a row
+// of the right shape costs the same as before and a drifted one is
+// runtime.ErrShape naming the column.
+//
+// Only the WIDTH is checked. Two types of the same width — int8 and float8,
+// say — still decode each other's bytes into a plausible number; that drift
+// is `storm verify`'s to find, and this check does not claim otherwise.
+func shapeGuard(c *schema.Column, i int, d decoders, k kind) string {
+	w, ok := d.width[k]
+	if !ok {
+		return ""
+	}
+	if c.NotNull {
+		return fmt.Sprintf("if len(rv[%d]) != %d {\n\t\treturn runtime.ShapeErr(%q, %q, %d, rv[%d])\n\t}\n\t",
+			i, w, c.Name, c.Type.SQL(), w, i)
+	}
+	return fmt.Sprintf("if b := rv[%d]; b != nil && len(b) != %d {\n\t\treturn runtime.ShapeErr(%q, %q, %d, b)\n\t}\n\t",
+		i, w, c.Name, c.Type.SQL(), w)
 }
 
 // nullName is the family's nullable wrapper for a kind whose decoder is

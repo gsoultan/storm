@@ -31,6 +31,11 @@ type Conn struct {
 	killed bool // a watcher killed the statement now in flight
 	broken bool // the socket is in an unknown state; the pool must not reuse it
 
+	// killGate, when set by a Pool, bounds how many KILL QUERY side connections
+	// the pool's connections have open between them. A watcher that cannot
+	// take a slot breaks its own socket instead of opening another connection.
+	killGate chan struct{}
+
 	// busy is set while a streaming result set is open. MySQL is strictly
 	// request/response: the unread rows are still on the socket, so a second
 	// statement would read them as its own answer. Without this the failure is
@@ -137,10 +142,12 @@ func (x *Conn) watch(ctx context.Context) func() error {
 			return
 		default:
 		}
-		if err := killQuery(x.cfg, x.c.id); err != nil {
-			// No second connection to be had. Break the socket instead: it
-			// stops this process waiting, and costs the connection, because
-			// what arrives on it next is the tail of a statement nobody read.
+		if err := x.kill(); err != nil {
+			// No second connection to be had — none could be opened, or the
+			// pool's cap on side connections is spent. Break the socket
+			// instead: it stops this process waiting, and costs the
+			// connection, because what arrives on it next is the tail of a
+			// statement nobody read.
 			x.broken = true
 			_ = x.c.c.SetDeadline(time.Unix(1, 0))
 			return
@@ -161,6 +168,25 @@ func (x *Conn) watch(ctx context.Context) func() error {
 		return nil
 	}
 }
+
+// kill delivers KILL QUERY for the statement in flight, taking a slot on the
+// pool's gate first when there is one. errKillGateFull is the refusal when
+// every slot is taken: the caller falls back to breaking the socket rather
+// than waiting, because a cancellation that queues behind other cancellations
+// is a statement still running on a server that is already struggling.
+func (x *Conn) kill() error {
+	if x.killGate != nil {
+		select {
+		case x.killGate <- struct{}{}:
+			defer func() { <-x.killGate }()
+		default:
+			return errKillGateFull
+		}
+	}
+	return killQuery(x.cfg, x.c.id)
+}
+
+var errKillGateFull = errors.New("mydrv: every KILL QUERY side connection the pool allows is in use")
 
 // killQuery aborts the statement running under thread id on a second
 // connection. KILL QUERY, not KILL: it ends the statement, not the session.
