@@ -423,7 +423,8 @@ func TestCancellationPastTheKillCapBreaksTheSocketInstead(t *testing.T) {
 	defer client.Close()
 	defer server.Close()
 	gate := make(chan struct{}, 1)
-	gate <- struct{}{} // another cancellation holds the only slot
+	gate <- struct{}{} // another cancellation holds the only slot, and keeps it
+	shortenKillGateWait(t, 20*time.Millisecond)
 	x := &Conn{c: newConn(client), cfg: Config{Addr: "127.0.0.1:1"}, killGate: gate}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -448,6 +449,71 @@ func TestCancellationPastTheKillCapBreaksTheSocketInstead(t *testing.T) {
 	if len(gate) != 1 {
 		t.Fatal("the watcher took or released a slot it was refused")
 	}
+}
+
+// A full gate is a queue, not a refusal: a slot that frees within the wait is
+// taken and the kill goes ahead. Breaking the socket at once would cost a
+// reconnect for every cancellation past the cap under a timeout storm, and
+// leave each of those statements running on the server.
+func TestAKillWaitsForASlotRatherThanBreakingTheSocket(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	shortenKillGateWait(t, time.Second)
+	// An address nothing listens on, so a kill that gets its slot fails on the
+	// dial — which is a different error from being refused a slot.
+	x := &Conn{c: newConn(client), cfg: Config{Addr: "127.0.0.1:1"}, killGate: gate}
+	x.c.id = 7
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		<-gate // the other cancellation finishes
+	}()
+	err := x.kill()
+	if err == nil || errors.Is(err, errKillGateFull) {
+		t.Fatalf("kill() = %v, want the dial's error after taking the freed slot", err)
+	}
+	if len(gate) != 0 {
+		t.Fatal("the slot was not given back after the kill")
+	}
+}
+
+// A connect that fails because the caller's ctx ran out reports the caller's
+// own deadline, not the socket's. A Pool dials under the statement's ctx when
+// it has no idle connection, so without this a statement whose connection was
+// discarded by an earlier cancellation would time out as "i/o timeout" and the
+// caller could not recognise their own context.DeadlineExceeded.
+func TestOpenUnderAnExpiredContextReportsTheCallersDeadline(t *testing.T) {
+	// A listener that accepts and says nothing: the dial succeeds and the
+	// handshake waits on a greeting that never comes.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err = Open(ctx, Config{Addr: ln.Addr().String(), User: "u"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Open() = %v, want the caller's context.DeadlineExceeded", err)
+	}
+}
+
+func shortenKillGateWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	was := killGateWait
+	killGateWait = d
+	t.Cleanup(func() { killGateWait = was })
 }
 
 // With a slot free the gate is taken for the kill and given back after it,
