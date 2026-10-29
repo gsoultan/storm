@@ -108,10 +108,12 @@ type Config struct {
 	// it cannot be spoken to until it answers. Unbounded, a burst of timeouts —
 	// a slow server is exactly when every in-flight statement's deadline
 	// expires together — minted one connection per cancellation OUTSIDE
-	// MaxConns, against a server whose max_connections defaults to 151. Past
-	// the cap a cancellation falls back to breaking its own socket, which costs
-	// that one connection and nothing else. Ignored by Open, whose single
-	// connection kills from at most one side connection anyway.
+	// MaxConns, against a server whose max_connections defaults to 151. At
+	// the cap a cancellation queues briefly for a slot — a kill is one short
+	// round trip — and one that cannot get a slot in time falls back to
+	// breaking its own socket, which costs that one connection and nothing
+	// else. Ignored by Open, whose single connection kills from at most one
+	// side connection anyway.
 	MaxKillConns int
 
 	// AcquireTimeout bounds how long a caller waits for a pooled connection.

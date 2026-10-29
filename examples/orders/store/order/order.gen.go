@@ -1487,15 +1487,30 @@ func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) 
 // plausible zero, and a row scanner is the last place that can tell.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("id", "uuid", 16, rv[0])
+	}
 	copy(r.ID[:], rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("created_at", "timestamptz", 8, rv[1])
+	}
 	r.CreatedAt = runtime.Timestamptz(rv[1])
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("updated_at", "timestamptz", 8, rv[2])
+	}
 	r.UpdatedAt = runtime.Timestamptz(rv[2])
 	r.UpdatedBy = sl.Str(rv[3])
+	if len(rv[4]) != 16 {
+		return runtime.ShapeErr("customer_id", "uuid", 16, rv[4])
+	}
 	copy(r.CustomerID[:], rv[4])
 	r.Status = sl.Str(rv[5])
 	r.Total, decErr = runtime.NumericErr(rv[6])
 	if decErr != nil {
 		return decErr
+	}
+	if len(rv[7]) != 8 {
+		return runtime.ShapeErr("placed_at", "timestamptz", 8, rv[7])
 	}
 	r.PlacedAt = runtime.Timestamptz(rv[7])
 	return decErr
@@ -1900,7 +1915,13 @@ func byStatusStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 func scanByStatus(rv [][]byte, r *ByStatusRow, sl *runtime.Slab) error {
 	var decErr error
 	r.Status = sl.Str(rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("orders", "int8", 8, rv[1])
+	}
 	r.Orders = runtime.Int8(rv[1])
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("big_orders", "int8", 8, rv[2])
+	}
 	r.BigOrders = runtime.Int8(rv[2])
 	r.Revenue, decErr = runtime.NullNumeric(rv[3])
 	if decErr != nil {
@@ -1910,7 +1931,13 @@ func scanByStatus(rv [][]byte, r *ByStatusRow, sl *runtime.Slab) error {
 	if decErr != nil {
 		return decErr
 	}
+	if b := rv[5]; b != nil && len(b) != 8 {
+		return runtime.ShapeErr("first_order_at", "timestamptz", 8, b)
+	}
 	r.FirstOrderAt = runtime.Nullable(rv[5], runtime.Timestamptz)
+	if b := rv[6]; b != nil && len(b) != 8 {
+		return runtime.ShapeErr("last_order_at", "timestamptz", 8, b)
+	}
 	r.LastOrderAt = runtime.Nullable(rv[6], runtime.Timestamptz)
 	return nil
 }
@@ -2008,11 +2035,20 @@ func dailyStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 
 func scanDaily(rv [][]byte, r *DailyRow, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 8 {
+		return runtime.ShapeErr("day", "timestamptz", 8, rv[0])
+	}
 	r.Day = runtime.Timestamptz(rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("orders", "int8", 8, rv[1])
+	}
 	r.Orders = runtime.Int8(rv[1])
 	r.Revenue, decErr = runtime.NullNumeric(rv[2])
 	if decErr != nil {
 		return decErr
+	}
+	if len(rv[3]) != 8 {
+		return runtime.ShapeErr("rank", "int8", 8, rv[3])
 	}
 	r.Rank = runtime.Int8(rv[3])
 	r.PrevRevenue, decErr = runtime.NullNumeric(rv[4])
@@ -2114,11 +2150,20 @@ func facetsStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 func scanFacets(rv [][]byte, r *FacetsRow, sl *runtime.Slab) error {
 	var decErr error
 	r.Status = runtime.NullText(rv[0], sl)
+	if b := rv[1]; b != nil && len(b) != 8 {
+		return runtime.ShapeErr("day", "timestamptz", 8, b)
+	}
 	r.Day = runtime.Nullable(rv[1], runtime.Timestamptz)
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("orders", "int8", 8, rv[2])
+	}
 	r.Orders = runtime.Int8(rv[2])
 	r.Revenue, decErr = runtime.NullNumeric(rv[3])
 	if decErr != nil {
 		return decErr
+	}
+	if len(rv[4]) != 4 {
+		return runtime.ShapeErr("status_is_subtotal", "int4", 4, rv[4])
 	}
 	r.StatusIsSubtotal = runtime.Int4(rv[4])
 	return nil
@@ -2213,10 +2258,16 @@ func topCustomersStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 
 func scanTopCustomers(rv [][]byte, r *TopCustomersRow, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("customer_id", "uuid", 16, rv[0])
+	}
 	copy(r.CustomerID[:], rv[0])
 	r.Spend, decErr = runtime.NullNumeric(rv[1])
 	if decErr != nil {
 		return decErr
+	}
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("orders", "int8", 8, rv[2])
 	}
 	r.Orders = runtime.Int8(rv[2])
 	return nil
@@ -2321,9 +2372,21 @@ func trendStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 
 func scanTrend(rv [][]byte, r *TrendRow, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 8 {
+		return runtime.ShapeErr("day", "timestamptz", 8, rv[0])
+	}
 	r.Day = runtime.Timestamptz(rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("orders", "int8", 8, rv[1])
+	}
 	r.Orders = runtime.Int8(rv[1])
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("buyers", "int8", 8, rv[2])
+	}
 	r.Buyers = runtime.Int8(rv[2])
+	if len(rv[3]) != 8 {
+		return runtime.ShapeErr("paid", "int8", 8, rv[3])
+	}
 	r.Paid = runtime.Int8(rv[3])
 	r.Revenue, decErr = runtime.NullNumeric(rv[4])
 	if decErr != nil {
@@ -2340,6 +2403,9 @@ func scanTrend(rv [][]byte, r *TrendRow, sl *runtime.Slab) error {
 	r.RevenueToDate, decErr = runtime.NullNumeric(rv[7])
 	if decErr != nil {
 		return decErr
+	}
+	if len(rv[8]) != 8 {
+		return runtime.ShapeErr("revenue_pct", "float8", 8, rv[8])
 	}
 	r.RevenuePct = runtime.Float8(rv[8])
 	return nil
@@ -2438,7 +2504,13 @@ func paidRateStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 func scanPaidRate(rv [][]byte, r *PaidRateRow, sl *runtime.Slab) error {
 	var decErr error
 	r.Status = sl.Str(rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("recent", "int8", 8, rv[1])
+	}
 	r.Recent = runtime.Int8(rv[1])
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("recent_paid", "int8", 8, rv[2])
+	}
 	r.RecentPaid = runtime.Int8(rv[2])
 	r.RecentRevenue, decErr = runtime.NullNumeric(rv[3])
 	if decErr != nil {
@@ -2532,7 +2604,13 @@ func byCustomerStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 
 func scanByCustomer(rv [][]byte, r *ByCustomerRow, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("customer_id", "uuid", 16, rv[0])
+	}
 	copy(r.CustomerID[:], rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("orders", "int8", 8, rv[1])
+	}
 	r.Orders = runtime.Int8(rv[1])
 	r.Lifetime, decErr = runtime.NullNumeric(rv[2])
 	if decErr != nil {
@@ -2631,6 +2709,9 @@ func totalsStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 
 func scanTotals(rv [][]byte, r *TotalsRow, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 8 {
+		return runtime.ShapeErr("orders", "int8", 8, rv[0])
+	}
 	r.Orders = runtime.Int8(rv[0])
 	r.Revenue, decErr = runtime.NullNumeric(rv[1])
 	if decErr != nil {
@@ -3057,11 +3138,17 @@ func withCustomerStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 
 func scanWithCustomer(rv [][]byte, r *WithCustomerRow, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("order_id", "uuid", 16, rv[0])
+	}
 	copy(r.OrderID[:], rv[0])
 	r.Status = sl.Str(rv[1])
 	r.Total, decErr = runtime.NumericErr(rv[2])
 	if decErr != nil {
 		return decErr
+	}
+	if len(rv[3]) != 8 {
+		return runtime.ShapeErr("placed_at", "timestamptz", 8, rv[3])
 	}
 	r.PlacedAt = runtime.Timestamptz(rv[3])
 	r.CustomerEmail = sl.Str(rv[4])
@@ -3150,6 +3237,9 @@ func vsLifetimeStmtFor(toks []runtime.Tok, withOffset bool) *runtime.Stmt {
 
 func scanVsLifetime(rv [][]byte, r *VsLifetimeRow, sl *runtime.Slab) error {
 	var decErr error
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("order_id", "uuid", 16, rv[0])
+	}
 	copy(r.OrderID[:], rv[0])
 	r.Total, decErr = runtime.NumericErr(rv[1])
 	if decErr != nil {
@@ -3159,6 +3249,9 @@ func scanVsLifetime(rv [][]byte, r *VsLifetimeRow, sl *runtime.Slab) error {
 	r.Lifetime, decErr = runtime.NullNumeric(rv[3])
 	if decErr != nil {
 		return decErr
+	}
+	if b := rv[4]; b != nil && len(b) != 8 {
+		return runtime.ShapeErr("lifetime_orders", "int8", 8, b)
 	}
 	r.LifetimeOrders = runtime.Nullable(rv[4], runtime.Int8)
 	return nil

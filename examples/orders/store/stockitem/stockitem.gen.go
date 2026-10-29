@@ -1469,13 +1469,34 @@ func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) 
 // numeric past 18 significant digits, or a NaN. Those must not become a
 // plausible zero, and a row scanner is the last place that can tell.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("id", "uuid", 16, rv[0])
+	}
 	copy(r.ID[:], rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("created_at", "timestamptz", 8, rv[1])
+	}
 	r.CreatedAt = runtime.Timestamptz(rv[1])
+	if len(rv[2]) != 8 {
+		return runtime.ShapeErr("updated_at", "timestamptz", 8, rv[2])
+	}
 	r.UpdatedAt = runtime.Timestamptz(rv[2])
 	r.UpdatedBy = sl.Str(rv[3])
+	if len(rv[4]) != 16 {
+		return runtime.ShapeErr("product_id", "uuid", 16, rv[4])
+	}
 	copy(r.ProductID[:], rv[4])
+	if len(rv[5]) != 4 {
+		return runtime.ShapeErr("on_hand", "int4", 4, rv[5])
+	}
 	r.OnHand = runtime.Int4(rv[5])
+	if len(rv[6]) != 4 {
+		return runtime.ShapeErr("reserved", "int4", 4, rv[6])
+	}
 	r.Reserved = runtime.Int4(rv[6])
+	if len(rv[7]) != 4 {
+		return runtime.ShapeErr("version", "int4", 4, rv[7])
+	}
 	r.Version = runtime.Int4(rv[7])
 	return nil
 }

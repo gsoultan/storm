@@ -1726,6 +1726,9 @@ type ActivityRow struct {
 const activitySQL = `(SELECT "placed_at" AS "at", "updated_by" AS "actor", 'order' AS "kind" FROM "orders" WHERE ("status" <> 'cancelled' AND "updated_by" = $1)) UNION ALL (SELECT "created_at" AS "at", "guest" AS "actor", 'booking' AS "kind" FROM "bookings" WHERE "guest" = $1) ORDER BY "at" DESC LIMIT $2`
 
 func scanActivity(rv [][]byte, r *ActivityRow, sl *runtime.Slab) error {
+	if len(rv[0]) != 8 {
+		return runtime.ShapeErr("at", "timestamptz", 8, rv[0])
+	}
 	r.At = runtime.Timestamptz(rv[0])
 	r.Actor = sl.Str(rv[1])
 	r.Kind = sl.Str(rv[2])
@@ -1791,6 +1794,9 @@ func init() {
 func scanDailyRevenueRow(rv [][]byte, r *model.DailyRevenueRow, sl *runtime.Slab) error {
 	var decErr error
 	r.Day = sl.Str(rv[0])
+	if len(rv[1]) != 8 {
+		return runtime.ShapeErr("Orders", "int8", 8, rv[1])
+	}
 	r.Orders = runtime.Int8(rv[1])
 	r.Revenue, decErr = runtime.NumericErr(rv[2])
 	if decErr != nil {
