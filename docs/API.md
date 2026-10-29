@@ -140,6 +140,11 @@ migrate.AutoOptions{Accept: func(c migrate.Change) bool {
 }}
 ```
 
+A column the model makes NOT NULL that a live database still holds NULLs in
+says what they become with `t.Col(&m.Title).FillNulls("''")`: the plan sets it
+on those rows and then tightens the column, in the same transaction, and the
+step is no longer destructive. Without it a NULL row fails the migration.
+
 A schema the model shares with tables something else owns sets
 `DeclaredOnly`: a table the model does not declare is then neither dropped nor
 compared, rather than a destructive step that refuses the plan.
@@ -1481,6 +1486,49 @@ svc := NewService(tx)
 
 `examples/blog` and `examples/orders` are both structured this way — a real
 server, a namespace per test, `-race -shuffle=on` in CI.
+
+### Seeing one session wait for another
+
+A test about a race has to know it made the interleaving it is about: that the
+second request is waiting behind the first, not merely slow. `pgstat` reads it
+from PostgreSQL's own catalogs, through any `Executor`:
+
+```go
+pid, schema, _ := pgstat.Backend(ctx, pgxdrv.Tx{T: holder}) // the session holding the row
+sessions, _ := pgstat.Sessions(ctx, pgxdrv.Pool{P: pool})
+for _, s := range sessions {
+        if s.WaitsBehind(pid) && s.LocksOn("tuple", schema, "tasks") {
+                // queued for a row of this test's tasks table
+        }
+}
+```
+
+`WaitsFor` is a lock waited for and not yet granted, such as a `LOCK TABLE`
+queued behind another, and `Terminate` ends a session as
+`pg_terminate_backend` does. `DatabaseSize` and `TableSizes(ctx, ex, schema)`
+read what the database and each of a schema's tables take on disk, indexes and
+TOAST included. PostgreSQL only.
+
+### Advisory locks
+
+Work that must have one owner across processes takes an advisory lock on a
+number it chooses. `pglock` runs each of PostgreSQL's lock functions as one
+statement. A session lock belongs to the session that took it, so hold one
+connection for the life of the lock:
+
+```go
+c, _ := pool.Acquire(ctx)
+defer c.Release()
+session := pgxdrv.Conn{C: c}
+if got, _ := pglock.TryLock(ctx, session, key); got {
+        defer pglock.Unlock(ctx, session, key)
+        // the one owner
+}
+```
+
+On a pool, `Unlock` would run on whichever session the pool lends, answer
+false, and leave the lock held. `TryLockXact` takes a lock that ends with its
+transaction instead. PostgreSQL only.
 
 ## What this costs you
 

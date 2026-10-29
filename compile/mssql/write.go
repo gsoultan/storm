@@ -106,6 +106,10 @@ const (
 	LockShare
 	LockShareNoWait
 	LockShareSkipLocked
+	// LockNoKeyUpdate is the update lock. SQL Server's foreign-key checks take
+	// a shared lock, which an update lock admits, so the deadlock the weaker
+	// lock avoids on PostgreSQL does not arise here to begin with.
+	LockNoKeyUpdate
 	numLockModes
 )
 
@@ -126,7 +130,7 @@ func LockSuffix(int) string { return "" }
 // asked for and a much bigger blocking surface.
 func LockHint(m int) string {
 	switch m {
-	case LockUpdate:
+	case LockUpdate, LockNoKeyUpdate:
 		return " WITH (UPDLOCK, ROWLOCK)"
 	case LockUpdateNoWait:
 		return " WITH (UPDLOCK, ROWLOCK, NOWAIT)"

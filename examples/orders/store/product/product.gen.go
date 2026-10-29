@@ -262,10 +262,11 @@ func (q Query) Unordered() Query { q.noOrder = true; return q }
 // nullable side of an outer join; refusing at the call site names the
 // rule, where the server would name a SQLSTATE.
 //
-// The two weakest strengths are deliberately absent. They exist for the
-// deadlock between updating a parent row and inserting a child that
-// references it, which is real and rare, and a caller who has it knows
-// the exact SQL they want — storm.SQL gives it to them typed.
+// ForUpdate also blocks a foreign-key check on the row, so a transaction
+// that holds it and then waits on anything deadlocks with one that
+// inserted a child of the row first. ForNoKeyUpdate serialises writers
+// the same way and lets the check through; prefer it unless the row's
+// key is about to change or the row about to go.
 
 // ForUpdate locks the rows this query returns, and takes the strongest row lock, waiting for anyone who already holds it.
 func (q Query) ForUpdate() Query { q.lock = 1; return q }
@@ -284,6 +285,9 @@ func (q Query) ForShareNoWait() Query { q.lock = 5; return q }
 
 // ForShareSkipLocked locks the rows this query returns, and is the shared lock, stepping over rows another transaction holds.
 func (q Query) ForShareSkipLocked() Query { q.lock = 6; return q }
+
+// ForNoKeyUpdate locks the rows this query returns, and takes the exclusive row lock that leaves the key alone: writers wait for it as for ForUpdate, but a foreign-key check on the row — another transaction inserting a child of it — does not. Use it to serialise changes to a row other tables point at. A back end with no such lock takes ForUpdate's.
+func (q Query) ForNoKeyUpdate() Query { q.lock = 7; return q }
 
 // Sort is one ORDER BY term, produced by a column handle: Email.Asc().
 type Sort runtime.Tok
@@ -921,7 +925,7 @@ const limitOffsetSuffix = ` LIMIT $ OFFSET $`
 // lockSuffix is the row-lock clause per mode, indexed by Query.lock.
 // It goes at the very END of the statement — after LIMIT and OFFSET,
 // which is what the grammar requires.
-var lockSuffix = [7]string{
+var lockSuffix = [8]string{
 	``,
 	` FOR UPDATE`,
 	` FOR UPDATE NOWAIT`,
@@ -929,14 +933,15 @@ var lockSuffix = [7]string{
 	` FOR SHARE`,
 	` FOR SHARE NOWAIT`,
 	` FOR SHARE SKIP LOCKED`,
+	` FOR NO KEY UPDATE`,
 }
 
 // lockCaches holds one compiled-statement cache per (lock, offset)
 // pair. The lock is part of the STATEMENT, so it has to be part of the
 // key; a program that never locks never touches the locked entries and
 // they stay the empty maps they start as.
-var lockCaches = func() [7][2]*runtime.TreeCache {
-	var cs [7][2]*runtime.TreeCache
+var lockCaches = func() [8][2]*runtime.TreeCache {
+	var cs [8][2]*runtime.TreeCache
 	for i := range cs {
 		cs[i][0], cs[i][1] = runtime.NewTreeCache(), runtime.NewTreeCache()
 	}
@@ -2540,7 +2545,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		case 7:
 			args = append(args, n.row.Tags)
 		case 8:
-			args = append(args, n.row.Attrs)
+			args = append(args, n.row.Attrs.OrNull())
 		}
 	}
 	var out Row
@@ -2587,7 +2592,7 @@ func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args = append(args, r.Price)
 	args = append(args, r.Active)
 	args = append(args, r.Tags)
-	args = append(args, r.Attrs)
+	args = append(args, r.Attrs.OrNull())
 	rows, err := ex.Query(ctx, insertSQL, args)
 	if err != nil {
 		return err
@@ -2705,7 +2710,7 @@ func InsertOp(r Row) runtime.BatchOp {
 	args = append(args, r.Price)
 	args = append(args, r.Active)
 	args = append(args, r.Tags)
-	args = append(args, r.Attrs)
+	args = append(args, r.Attrs.OrNull())
 	return runtime.BatchOp{SQL: st.SQL, Args: args}
 }
 
@@ -2756,7 +2761,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		case 7:
 			args = append(args, n.row.Tags)
 		case 8:
-			args = append(args, n.row.Attrs)
+			args = append(args, n.row.Attrs.OrNull())
 		}
 	}
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
@@ -2825,7 +2830,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 		case 5:
 			args = append(args, m.row.Tags)
 		case 6:
-			args = append(args, m.row.Attrs)
+			args = append(args, m.row.Attrs.OrNull())
 		}
 	}
 	args = append(args, m.row.ID)
@@ -2921,7 +2926,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		case 5:
 			args = append(args, m.row.Tags)
 		case 6:
-			args = append(args, m.row.Attrs)
+			args = append(args, m.row.Attrs.OrNull())
 		}
 	}
 	args = append(args, m.row.ID)
@@ -3030,7 +3035,7 @@ func (m Mut) updateArgs(args []any) []any {
 		case 5:
 			args = append(args, m.row.Tags)
 		case 6:
-			args = append(args, m.row.Attrs)
+			args = append(args, m.row.Attrs.OrNull())
 		}
 	}
 	return args
@@ -3200,7 +3205,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 			case 5:
 				args = append(args, m.row.Tags)
 			case 6:
-				args = append(args, m.row.Attrs)
+				args = append(args, m.row.Attrs.OrNull())
 			}
 		}
 		return run(st.SQL, append(args, q.bindPreds(b)...))

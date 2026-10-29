@@ -214,10 +214,11 @@ func (q Query) Unordered() Query { q.noOrder = true; return q }
 // nullable side of an outer join; refusing at the call site names the
 // rule, where the server would name a SQLSTATE.
 //
-// The two weakest strengths are deliberately absent. They exist for the
-// deadlock between updating a parent row and inserting a child that
-// references it, which is real and rare, and a caller who has it knows
-// the exact SQL they want — storm.SQL gives it to them typed.
+// ForUpdate also blocks a foreign-key check on the row, so a transaction
+// that holds it and then waits on anything deadlocks with one that
+// inserted a child of the row first. ForNoKeyUpdate serialises writers
+// the same way and lets the check through; prefer it unless the row's
+// key is about to change or the row about to go.
 
 // ForUpdate locks the rows this query returns, and takes the strongest row lock, waiting for anyone who already holds it.
 func (q Query) ForUpdate() Query { q.lock = 1; return q }
@@ -236,6 +237,9 @@ func (q Query) ForShareNoWait() Query { q.lock = 5; return q }
 
 // ForShareSkipLocked locks the rows this query returns, and is the shared lock, stepping over rows another transaction holds.
 func (q Query) ForShareSkipLocked() Query { q.lock = 6; return q }
+
+// ForNoKeyUpdate locks the rows this query returns, and takes the exclusive row lock that leaves the key alone: writers wait for it as for ForUpdate, but a foreign-key check on the row — another transaction inserting a child of it — does not. Use it to serialise changes to a row other tables point at. A back end with no such lock takes ForUpdate's.
+func (q Query) ForNoKeyUpdate() Query { q.lock = 7; return q }
 
 // Sort is one ORDER BY term, produced by a column handle: Email.Asc().
 type Sort runtime.Tok
@@ -574,7 +578,7 @@ const limitOffsetSuffix = ` LIMIT $ OFFSET $`
 // lockSuffix is the row-lock clause per mode, indexed by Query.lock.
 // It goes at the very END of the statement — after LIMIT and OFFSET,
 // which is what the grammar requires.
-var lockSuffix = [7]string{
+var lockSuffix = [8]string{
 	``,
 	` FOR UPDATE`,
 	` FOR UPDATE NOWAIT`,
@@ -582,14 +586,15 @@ var lockSuffix = [7]string{
 	` FOR SHARE`,
 	` FOR SHARE NOWAIT`,
 	` FOR SHARE SKIP LOCKED`,
+	` FOR NO KEY UPDATE`,
 }
 
 // lockCaches holds one compiled-statement cache per (lock, offset)
 // pair. The lock is part of the STATEMENT, so it has to be part of the
 // key; a program that never locks never touches the locked entries and
 // they stay the empty maps they start as.
-var lockCaches = func() [7][2]*runtime.TreeCache {
-	var cs [7][2]*runtime.TreeCache
+var lockCaches = func() [8][2]*runtime.TreeCache {
+	var cs [8][2]*runtime.TreeCache
 	for i := range cs {
 		cs[i][0], cs[i][1] = runtime.NewTreeCache(), runtime.NewTreeCache()
 	}

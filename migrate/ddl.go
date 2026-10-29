@@ -93,6 +93,9 @@ type ddl struct {
 	SetDefault  func(*schema.Table, *schema.Column) string
 	DropDefault func(*schema.Table, *schema.Column) string
 
+	// FillNulls sets Column.FillNulls on the rows where the column is NULL.
+	FillNulls func(*schema.Table, *schema.Column) string
+
 	AddUnique      func(*schema.Table, *schema.Unique) string
 	AddCheck       func(*schema.Table, *schema.Check) string
 	DropConstraint func(t *schema.Table, name string) string
@@ -148,6 +151,8 @@ func postgresDDL() ddl {
 	q := pgddl.Ident
 	d := ddl{
 		Ident: q,
+
+		FillNulls: func(t *schema.Table, c *schema.Column) string { return fillNulls(q, t, c) + ";" },
 
 		CreateTable: func(t *schema.Table) (string, error) {
 			return strings.TrimRight(pgddl.CreateTable(t), "\n"), nil
@@ -310,4 +315,10 @@ func pgJSONArrayFunc(t schema.Type) string {
 		return '_'
 	}, strings.ToLower(elem.SQL()))
 	return "pg_temp.storm_json_" + name
+}
+
+// fillNulls is the UPDATE that gives a column's NULL rows Column.FillNulls,
+// the same statement on every back end but for how a name is quoted.
+func fillNulls(q func(string) string, t *schema.Table, c *schema.Column) string {
+	return "UPDATE " + q(t.Name) + " SET " + q(c.Name) + " = " + c.FillNulls + " WHERE " + q(c.Name) + " IS NULL"
 }

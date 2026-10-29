@@ -33,6 +33,10 @@ const (
 	LockShare
 	LockShareNoWait
 	LockShareSkipLocked
+	// LockNoKeyUpdate is FOR UPDATE here. Oracle's foreign-key checks do not
+	// lock the parent row, so a child insert never waits for it and FOR UPDATE
+	// is already the lock that spares the key.
+	LockNoKeyUpdate
 	numLockModes
 )
 
@@ -44,7 +48,7 @@ const NumLockModes = int(numLockModes)
 // PostgreSQL's — for the three modes it has.
 func LockSuffix(m int) string {
 	switch m {
-	case LockUpdate:
+	case LockUpdate, LockNoKeyUpdate:
 		return " FOR UPDATE"
 	case LockUpdateNoWait:
 		return " FOR UPDATE NOWAIT"

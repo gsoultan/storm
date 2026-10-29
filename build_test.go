@@ -472,3 +472,25 @@ func TestBuild_ConvertFromRefusesAScalar(t *testing.T) {
 		t.Fatalf("ConvertFrom(JSONText) on a text column: %v", err)
 	}
 }
+
+type fillNullsModel struct {
+	storm.Model
+	Title *string
+	Body  string
+}
+
+func (m *fillNullsModel) Schema(t *storm.Table) {
+	t.Col(&m.Title).FillNulls("''")
+	t.Col(&m.Body).FillNulls("''")
+}
+
+// FillNulls on a column the model leaves nullable would never do anything.
+func TestBuild_RefusesFillNullsOnANullableColumn(t *testing.T) {
+	_, err := storm.Build(&fillNullsModel{})
+	if err == nil || !strings.Contains(err.Error(), "title: FillNulls on a nullable column") {
+		t.Fatalf("Build: %v, want the refusal for title alone", err)
+	}
+	if strings.Contains(err.Error(), "body") {
+		t.Fatalf("Build refused FillNulls on a NOT NULL column: %v", err)
+	}
+}

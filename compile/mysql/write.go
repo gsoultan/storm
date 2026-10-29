@@ -88,6 +88,12 @@ const (
 	LockShare
 	LockShareNoWait
 	LockShareSkipLocked
+	// LockNoKeyUpdate is FOR UPDATE here. InnoDB has no exclusive lock that
+	// spares the key, and its foreign-key checks take a shared lock FOR UPDATE
+	// conflicts with, so the deadlock the weaker lock avoids on PostgreSQL is
+	// one this back end keeps. The writers it serialises are serialised all
+	// the same.
+	LockNoKeyUpdate
 	numLockModes
 )
 
@@ -97,7 +103,7 @@ const NumLockModes = int(numLockModes)
 // LockSuffix is the clause.
 func LockSuffix(m int) string {
 	switch m {
-	case LockUpdate:
+	case LockUpdate, LockNoKeyUpdate:
 		return " FOR UPDATE"
 	case LockUpdateNoWait:
 		return " FOR UPDATE NOWAIT"
