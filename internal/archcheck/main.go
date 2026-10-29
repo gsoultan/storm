@@ -44,7 +44,7 @@ var maxFiles = map[string]int{
 // structs contributes two. A single total catches a new offending file and a
 // third struct added to an old one alike.
 const (
-	maxExtraStructs    = 132
+	maxExtraStructs    = 131
 	maxExtraInterfaces = 5
 )
 
