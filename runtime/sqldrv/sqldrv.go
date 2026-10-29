@@ -69,12 +69,17 @@ func (e Exec) Exec(ctx context.Context, query string, args []any) (int64, error)
 	if err != nil {
 		return 0, err
 	}
-	// RowsAffected is optional in database/sql and several drivers refuse it.
-	// A refusal is reported as zero rather than as an error: the statement RAN,
-	// and failing the call would turn a driver's limitation into a data error.
+	// RowsAffected is optional in database/sql and a driver may refuse it. The
+	// refusal used to be reported as zero, on the reasoning that the statement
+	// RAN and an error would turn a driver's limitation into a data error. But
+	// zero IS a data error one layer up: generated Save, Update and Delete read
+	// an affected count of zero as ErrStaleWrite or ErrNoRow, so a write that
+	// succeeded was reported as "the row changed since it was read", and a
+	// retry loop written against that error never converged. The driver's own
+	// error names the limitation; a zero disguises it as something else.
 	n, err := res.RowsAffected()
 	if err != nil {
-		return 0, nil
+		return 0, fmt.Errorf("sqldrv: the driver would not report rows affected: %w", err)
 	}
 	return n, nil
 }

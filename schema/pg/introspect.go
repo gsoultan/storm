@@ -371,7 +371,7 @@ type searchPather interface {
 // parameter, so it is the one place a name reaches SQL text. Names come from
 // configuration, never from a request, and the check costs nothing.
 func setSearchPath(ctx context.Context, c searchPather, ns string) (func() error, error) {
-	if err := validNamespace(ns); err != nil {
+	if err := ValidNamespace(ns); err != nil {
 		return nil, err
 	}
 	var prev string
@@ -389,7 +389,11 @@ func setSearchPath(ctx context.Context, c searchPather, ns string) (func() error
 	}, nil
 }
 
-func validNamespace(s string) error {
+// ValidNamespace is the rule a schema name must meet before it may be spliced
+// into `SET search_path TO`, which takes no parameter. Exported so that every
+// place in the tool that writes that statement applies the same rule — `storm
+// explain` wrote it unvalidated while Introspect, one call away, checked.
+func ValidNamespace(s string) error {
 	if s == "" || len(s) > 63 {
 		return fmt.Errorf("invalid schema name %q", s)
 	}

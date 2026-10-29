@@ -31,6 +31,11 @@ type Conn struct {
 	killed bool // a watcher killed the statement now in flight
 	broken bool // the socket is in an unknown state; the pool must not reuse it
 
+	// killGate, when set by a Pool, bounds how many KILL QUERY side connections
+	// the pool's connections have open between them. A watcher that cannot
+	// take a slot breaks its own socket instead of opening another connection.
+	killGate chan struct{}
+
 	// busy is set while a streaming result set is open. MySQL is strictly
 	// request/response: the unread rows are still on the socket, so a second
 	// statement would read them as its own answer. Without this the failure is
@@ -57,7 +62,7 @@ func Open(ctx context.Context, cfg Config) (*Conn, error) {
 	var d net.Dialer
 	nc, err := d.DialContext(ctx, network, cfg.Addr)
 	if err != nil {
-		return nil, err
+		return nil, connectErr(ctx, err)
 	}
 	// The handshake predates any statement, so there is no query to kill and
 	// nothing to fall back to: the socket deadline IS the cancellation here.
@@ -67,7 +72,7 @@ func Open(ctx context.Context, cfg Config) (*Conn, error) {
 	c := newConn(nc)
 	if err := c.handshake(cfg, host); err != nil {
 		nc.Close()
-		return nil, err
+		return nil, connectErr(ctx, err)
 	}
 	// The connection's collation must be the server's DEFAULT for utf8mb4,
 	// which is what an unqualified VARCHAR column gets. The handshake carries a
@@ -82,10 +87,28 @@ func Open(ctx context.Context, cfg Config) (*Conn, error) {
 	// because the prepared protocol refuses SET NAMES.
 	if err := c.query("SET NAMES utf8mb4", nil); err != nil {
 		nc.Close()
-		return nil, err
+		return nil, connectErr(ctx, err)
 	}
 	_ = nc.SetDeadline(time.Time{})
 	return &Conn{c: c, cfg: cfg, sts: map[string]*list.Element{}, lru: list.New()}, nil
+}
+
+// connectErr is the error for a connect that failed under ctx. When ctx has
+// ended, that is the answer: the socket deadline that stopped the dial or the
+// handshake was ctx's own, and the caller must see context.DeadlineExceeded
+// or context.Canceled, not net's "i/o timeout", or a Pool caller whose
+// statement reconnected under their deadline could not recognise their own
+// timeout. The deadline is checked by the clock as well as by ctx.Err,
+// because the socket's timer and the context's are two timers set to one
+// instant, and the socket's can fire first.
+func connectErr(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil {
+		return cerr
+	}
+	if dl, ok := ctx.Deadline(); ok && !time.Now().Before(dl) {
+		return context.DeadlineExceeded
+	}
+	return err
 }
 
 // dialTarget reads the network and the TLS server name out of Addr.
@@ -137,10 +160,12 @@ func (x *Conn) watch(ctx context.Context) func() error {
 			return
 		default:
 		}
-		if err := killQuery(x.cfg, x.c.id); err != nil {
-			// No second connection to be had. Break the socket instead: it
-			// stops this process waiting, and costs the connection, because
-			// what arrives on it next is the tail of a statement nobody read.
+		if err := x.kill(); err != nil {
+			// No second connection to be had — none could be opened, or the
+			// pool's cap on side connections is spent. Break the socket
+			// instead: it stops this process waiting, and costs the
+			// connection, because what arrives on it next is the tail of a
+			// statement nobody read.
 			x.broken = true
 			_ = x.c.c.SetDeadline(time.Unix(1, 0))
 			return
@@ -161,6 +186,33 @@ func (x *Conn) watch(ctx context.Context) func() error {
 		return nil
 	}
 }
+
+// kill delivers KILL QUERY for the statement in flight, taking a slot on the
+// pool's gate first when there is one. A watcher that finds every slot taken
+// WAITS for one, up to killGateWait: a kill is one short round trip, so the
+// queue clears in milliseconds, and the alternative — breaking the socket —
+// costs a full reconnect anyway and leaves the statement running on the
+// server. errKillGateFull is the refusal when no slot frees in time, and then
+// the caller breaks the socket rather than wait any longer.
+func (x *Conn) kill() error {
+	if x.killGate != nil {
+		t := time.NewTimer(killGateWait)
+		select {
+		case x.killGate <- struct{}{}:
+			t.Stop()
+			defer func() { <-x.killGate }()
+		case <-t.C:
+			return errKillGateFull
+		}
+	}
+	return killQuery(x.cfg, x.c.id)
+}
+
+var errKillGateFull = errors.New("mydrv: every KILL QUERY side connection the pool allows stayed busy")
+
+// killGateWait bounds how long a cancellation queues for a kill slot. A
+// variable rather than a constant so a test can shorten it.
+var killGateWait = killTimeout
 
 // killQuery aborts the statement running under thread id on a second
 // connection. KILL QUERY, not KILL: it ends the statement, not the session.

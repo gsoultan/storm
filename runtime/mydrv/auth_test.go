@@ -337,3 +337,201 @@ func TestAMalformedAddressIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// A length-encoded integer whose prefix promises more bytes than the packet
+// holds is the server's mistake (or design), and the reader must answer it
+// with ok=false rather than indexing past the slice. These are the exact
+// inputs that panicked before lenEncInt checked its own length.
+func TestLenEncIntRefusesATruncatedPrefix(t *testing.T) {
+	for _, b := range [][]byte{nil, {}, {0xfc}, {0xfc, 1}, {0xfd, 1, 2}, {0xfe, 1, 2, 3, 4, 5, 6, 7}} {
+		if _, _, ok := lenEncInt(b); ok {
+			t.Errorf("lenEncInt(% x) = ok, want a refusal", b)
+		}
+	}
+	for _, c := range []struct {
+		in []byte
+		v  uint64
+		w  int
+	}{
+		{[]byte{0x05}, 5, 1},
+		{[]byte{0xfc, 0x01, 0x02}, 0x0201, 3},
+		{[]byte{0xfd, 0x01, 0x02, 0x03}, 0x030201, 4},
+		{[]byte{0xfe, 1, 0, 0, 0, 0, 0, 0, 0}, 1, 9},
+	} {
+		v, w, ok := lenEncInt(c.in)
+		if !ok || v != c.v || w != c.w {
+			t.Errorf("lenEncInt(% x) = %d, %d, %v; want %d, %d, true", c.in, v, w, ok, c.v, c.w)
+		}
+	}
+}
+
+// A text-protocol row whose columns do not fit inside the packet is an error,
+// not an index past the buffer: the same contract the binary row reader holds.
+func TestTextRowThatOverrunsItsPacketIsAnError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		s, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer s.Close()
+		// Read the client's COM_QUERY, then answer: one column, its (skipped)
+		// definition, an EOF, and a row claiming 200 bytes in a 3-byte packet.
+		var h [4]byte
+		if _, err := s.Read(h[:]); err != nil {
+			return
+		}
+		n := int(h[0]) | int(h[1])<<8 | int(h[2])<<16
+		body := make([]byte, n)
+		if _, err := s.Read(body); err != nil {
+			return
+		}
+		write := func(seq byte, p []byte) {
+			s.Write([]byte{byte(len(p)), byte(len(p) >> 8), byte(len(p) >> 16), seq})
+			s.Write(p)
+		}
+		write(1, []byte{0x01})                // column count
+		write(2, []byte{0x03, 'd', 'e', 'f'}) // a column definition, skipped
+		write(3, []byte{0xfe, 0, 0, 0, 0})    // EOF
+		write(4, []byte{0xfc, 200, 0})        // row: length prefix says 200 bytes; none follow
+	}()
+	nc, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	c := newConn(nc)
+	err = c.query("SELECT 1", func([][]byte) error { return nil })
+	if !errors.Is(err, errShortRow) {
+		t.Fatalf("err = %v, want errShortRow", err)
+	}
+	<-serverDone
+}
+
+// A pool's KILL QUERY side connections are capped. A watcher that finds every
+// slot taken does not open another connection: it falls back to breaking its
+// own socket, which costs that one connection and reports the caller's own
+// cancellation — the same outcome as a kill that could not be delivered.
+func TestCancellationPastTheKillCapBreaksTheSocketInstead(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{} // another cancellation holds the only slot, and keeps it
+	shortenKillGateWait(t, 20*time.Millisecond)
+	x := &Conn{c: newConn(client), cfg: Config{Addr: "127.0.0.1:1"}, killGate: gate}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := x.watch(ctx)
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		x.mu.Lock()
+		broken := x.broken
+		x.mu.Unlock()
+		if broken {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the watcher neither killed nor broke the socket")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := stop(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop() = %v, want the caller's own cancellation", err)
+	}
+	if len(gate) != 1 {
+		t.Fatal("the watcher took or released a slot it was refused")
+	}
+}
+
+// A full gate is a queue, not a refusal: a slot that frees within the wait is
+// taken and the kill goes ahead. Breaking the socket at once would cost a
+// reconnect for every cancellation past the cap under a timeout storm, and
+// leave each of those statements running on the server.
+func TestAKillWaitsForASlotRatherThanBreakingTheSocket(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	shortenKillGateWait(t, time.Second)
+	// An address nothing listens on, so a kill that gets its slot fails on the
+	// dial — which is a different error from being refused a slot.
+	x := &Conn{c: newConn(client), cfg: Config{Addr: "127.0.0.1:1"}, killGate: gate}
+	x.c.id = 7
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		<-gate // the other cancellation finishes
+	}()
+	err := x.kill()
+	if err == nil || errors.Is(err, errKillGateFull) {
+		t.Fatalf("kill() = %v, want the dial's error after taking the freed slot", err)
+	}
+	if len(gate) != 0 {
+		t.Fatal("the slot was not given back after the kill")
+	}
+}
+
+// A connect that fails because the caller's ctx ran out reports the caller's
+// own deadline, not the socket's. A Pool dials under the statement's ctx when
+// it has no idle connection, so without this a statement whose connection was
+// discarded by an earlier cancellation would time out as "i/o timeout" and the
+// caller could not recognise their own context.DeadlineExceeded.
+func TestOpenUnderAnExpiredContextReportsTheCallersDeadline(t *testing.T) {
+	// A listener that accepts and says nothing: the dial succeeds and the
+	// handshake waits on a greeting that never comes.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err = Open(ctx, Config{Addr: ln.Addr().String(), User: "u"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Open() = %v, want the caller's context.DeadlineExceeded", err)
+	}
+}
+
+func shortenKillGateWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	was := killGateWait
+	killGateWait = d
+	t.Cleanup(func() { killGateWait = was })
+}
+
+// With a slot free the gate is taken for the kill and given back after it,
+// whether or not the kill could be delivered — otherwise one failed kill would
+// shrink the cap for the life of the pool.
+func TestTheKillGateIsReleasedAfterAFailedKill(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	gate := make(chan struct{}, 1)
+	// An address nothing listens on: the side connection cannot be opened,
+	// so kill fails after taking its slot.
+	x := &Conn{c: newConn(client), cfg: Config{Addr: "127.0.0.1:1"}, killGate: gate}
+	x.c.id = 7
+	if err := x.kill(); err == nil {
+		t.Fatal("a kill against a closed port succeeded")
+	}
+	if len(gate) != 0 {
+		t.Fatal("the slot was not given back after the kill failed")
+	}
+}

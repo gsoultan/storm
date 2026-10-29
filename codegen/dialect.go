@@ -117,6 +117,13 @@ type decoders struct {
 	// call SHAPE differs, because `copy(r.F[:], rv[i])` needs rv[i] to be a
 	// slice and the value shape's is an interface.
 	uuid func(field string, i int) string
+
+	// width is the exact wire width, in bytes, of every kind this family
+	// decodes at a fixed width, so a scanner can refuse a column that arrives
+	// at another one rather than index past it. Absent for the families whose
+	// values carry their own length and whose decoders already return an error
+	// for one that does not match.
+	width map[kind]int
 }
 
 // rowsType is the scanner's parameter type: `[][]byte` unless the family says
@@ -278,6 +285,13 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 			kindNumeric: true, kindTextArray: true, kindUUIDArray: true,
 			kindInt8Array: true, kindInt4Array: true, kindDecimalArray: true, kindInterval: true,
 			kindInet: true, kindTimeOfDay: true, kindTstzRange: true,
+		},
+		// PostgreSQL's binary formats for these are a fixed width and the
+		// decoders in runtime/decode.go read exactly that many bytes.
+		width: map[kind]int{
+			kindBool: 1, kindInt2: 2, kindInt4: 4, kindInt8: 8,
+			kindFloat4: 4, kindFloat8: 8, kindUUID: 16,
+			kindTimestamptz: 8, kindDate: 4,
 		},
 	}
 }

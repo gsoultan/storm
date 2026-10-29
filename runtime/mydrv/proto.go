@@ -43,6 +43,7 @@ package mydrv
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"net"
 )
 
@@ -120,6 +121,12 @@ func (c *conn) query(sql string, fn func(cols [][]byte) error) error {
 	if err != nil {
 		return err
 	}
+	// Every p[0] below is read from a packet the SERVER sized. A zero-length
+	// packet is legal on the wire and would index past the end; a corrupt or
+	// hostile server must get an error, not the process.
+	if len(p) == 0 {
+		return errShortPacket
+	}
 	if p[0] == 0xff {
 		return parseError(p)
 	}
@@ -132,7 +139,10 @@ func (c *conn) query(sql string, fn func(cols [][]byte) error) error {
 		}
 		return nil // OK or EOF: no result set
 	}
-	nCols, _, _ := lenEncInt(p)
+	nCols, _, ok := lenEncInt(p)
+	if !ok {
+		return errShortPacket
+	}
 	for i := uint64(0); i < nCols; i++ {
 		if _, err := c.readPacket(); err != nil { // column definitions, skipped
 			return err
@@ -156,20 +166,32 @@ func (c *conn) query(sql string, fn func(cols [][]byte) error) error {
 		if err != nil {
 			return err
 		}
+		if len(p) == 0 {
+			return errShortPacket
+		}
 		if p[0] == 0xfe && len(p) < 9 {
 			return nil // EOF
 		}
 		if p[0] == 0xff {
 			return parseError(p)
 		}
+		// Bounds-checked the way the binary row reader is: a text row whose
+		// columns do not fit inside its packet is errShortRow, not an index
+		// past the buffer.
 		off := 0
 		for i := 0; i < int(nCols); i++ {
+			if off >= len(p) {
+				return errShortRow
+			}
 			if p[off] == 0xfb { // NULL
 				c.cols[i] = nil
 				off++
 				continue
 			}
-			n, w, _ := lenEncInt(p[off:])
+			n, w, ok := lenEncInt(p[off:])
+			if !ok || n > uint64(len(p)) || off+w+int(n) > len(p) {
+				return errShortRow
+			}
 			off += w
 			c.cols[i] = p[off : off+int(n)]
 			off += int(n)
@@ -180,19 +202,40 @@ func (c *conn) query(sql string, fn func(cols [][]byte) error) error {
 	}
 }
 
+// lenEncInt reads a length-encoded integer. ok is false for an unknown lead
+// byte AND for a prefix that claims more bytes than b holds — the second case
+// used to index past the slice, so a packet ending in 0xfc panicked the reader
+// before the caller's own bounds check could run.
 func lenEncInt(b []byte) (v uint64, width int, ok bool) {
+	if len(b) == 0 {
+		return 0, 0, false
+	}
 	switch {
 	case b[0] < 0xfb:
 		return uint64(b[0]), 1, true
 	case b[0] == 0xfc:
+		if len(b) < 3 {
+			return 0, 0, false
+		}
 		return uint64(binary.LittleEndian.Uint16(b[1:])), 3, true
 	case b[0] == 0xfd:
+		if len(b) < 4 {
+			return 0, 0, false
+		}
 		return uint64(b[1]) | uint64(b[2])<<8 | uint64(b[3])<<16, 4, true
 	case b[0] == 0xfe:
+		if len(b) < 9 {
+			return 0, 0, false
+		}
 		return binary.LittleEndian.Uint64(b[1:]), 9, true
 	}
 	return 0, 1, false
 }
+
+// errShortPacket is a packet too short to carry the header byte the protocol
+// says comes first. Like errShortRow, an error rather than a panic: the server
+// chose the length, and a client must not let that choice take the process.
+var errShortPacket = errors.New("mydrv: the server sent a packet too short to read")
 
 func ioReadFull(r *bufio.Reader, p []byte) (int, error) {
 	n := 0

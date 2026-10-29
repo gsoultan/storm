@@ -977,7 +977,13 @@ func Scan(rv [][]byte, r *Row, sl *runtime.Slab) error { return scan(rv, r, sl) 
 // numeric past 18 significant digits, or a NaN. Those must not become a
 // plausible zero, and a row scanner is the last place that can tell.
 func scan(rv [][]byte, r *Row, sl *runtime.Slab) error {
+	if len(rv[0]) != 16 {
+		return runtime.ShapeErr("post_id", "uuid", 16, rv[0])
+	}
 	copy(r.PostID[:], rv[0])
+	if len(rv[1]) != 16 {
+		return runtime.ShapeErr("tag_id", "uuid", 16, rv[1])
+	}
 	copy(r.TagID[:], rv[1])
 	return nil
 }
