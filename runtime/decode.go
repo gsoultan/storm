@@ -151,6 +151,19 @@ func (j JSON) Unmarshal(v any) error {
 // String renders the raw JSON, for logs and errors.
 func (j JSON) String() string { return string(j) }
 
+// jsonNull is the JSON document null.
+var jsonNull = JSON("null")
+
+// OrNull is j, or the JSON document null when j is nil. A NOT NULL JSON
+// column's write binds it, so a nil value is JSON null rather than the SQL
+// NULL the column refuses, and unmarshals as nil did.
+func (j JSON) OrNull() JSON {
+	if j == nil {
+		return jsonNull
+	}
+	return j
+}
+
 // NullJSON decodes a nullable jsonb column.
 func NullJSON(b []byte, s *Slab) Null[JSON] {
 	if b == nil {

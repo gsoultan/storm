@@ -61,6 +61,7 @@ func TestLockModeNumberingMatchesPostgres(t *testing.T) {
 		mysql.LockShare:            " FOR SHARE",
 		mysql.LockShareNoWait:      " FOR SHARE NOWAIT",
 		mysql.LockShareSkipLocked:  " FOR SHARE SKIP LOCKED",
+		mysql.LockNoKeyUpdate:      " FOR UPDATE",
 	} {
 		if got := mysql.LockSuffix(m); got != want {
 			t.Errorf("LockSuffix(%d) = %q, want %q", m, got, want)
@@ -69,6 +70,11 @@ func TestLockModeNumberingMatchesPostgres(t *testing.T) {
 	// The names must line up slot for slot, not merely count the same.
 	for m := 0; m < pgsql.NumLockModes; m++ {
 		p := pgsql.LockSuffix(pgsql.LockMode(m))
+		if m == mysql.LockNoKeyUpdate {
+			// The one deliberate difference: InnoDB has no lock that spares
+			// the key, so it takes the next stronger one (see LockNoKeyUpdate).
+			p = pgsql.LockSuffix(pgsql.LockUpdate)
+		}
 		if got := mysql.LockSuffix(m); got != p {
 			t.Errorf("slot %d: MySQL locks %q where PostgreSQL locks %q — a caller asking "+
 				"for one would get the other", m, got, p)

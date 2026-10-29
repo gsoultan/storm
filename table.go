@@ -505,6 +505,19 @@ func (b *ColBuilder) ConvertFrom(c Conversion) *ColBuilder {
 	return b
 }
 
+// FillNulls says what the rows already NULL in this column become when a
+// migration makes it NOT NULL: e is set on each of them first, in the same
+// transaction, so tightening the column cannot fail on them. Without it such
+// a row fails the migration, which then applies nothing.
+//
+// It renders nothing while the column is already NOT NULL, so it can stay in
+// the model after every database has moved. Declaring it on a nullable
+// column is refused: there is nothing it would ever do.
+func (b *ColBuilder) FillNulls(e Expr) *ColBuilder {
+	b.c.sc.FillNulls = string(e)
+	return b
+}
+
 // AcknowledgeNoFK records why this field gives up referential integrity.
 //
 // On a storm.AnyRef it is required: Build refuses an AnyRef without one.
