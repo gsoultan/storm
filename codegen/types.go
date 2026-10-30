@@ -452,7 +452,7 @@ func opApplies(op string, k kind, c *schema.Column) bool {
 			return true
 		}
 		return false
-	case "Like", "ILike":
+	case "Like", "ILike", "TextHasPrefix", "TextHasSuffix", "TextContains":
 		return k == kindText
 	case "EqLower":
 		// Text only. lower() on anything else is either a no-op the planner

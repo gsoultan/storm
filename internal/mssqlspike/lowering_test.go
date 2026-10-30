@@ -287,3 +287,40 @@ func run(t *testing.T, db *sql.DB, c lowered) {
 		t.Fatalf("rows failed\n  %s\n%v", c.sql, err)
 	}
 }
+
+// The literal text matches, evaluated by the server against a literal subject.
+// The value is text, never a pattern — and T-SQL's LIKE has a third wildcard,
+// the `[` that opens a character class, so the subject carries one.
+func TestTextMatchIsLiteral(t *testing.T) {
+	db := open(t)
+	const subject = "N'50% off_[x]!'"
+	for _, c := range []struct {
+		op, v string
+		want  int
+	}{
+		{"TextHasPrefix", "50%", 1},
+		{"TextHasPrefix", "", 1},
+		{"TextHasPrefix", "5_", 0},
+		{"TextHasPrefix", "%", 0},
+		{"TextHasSuffix", "[x]!", 1},
+		{"TextHasSuffix", "_", 0},
+		{"TextContains", "% off_", 1},
+		{"TextContains", "[x]", 1},
+		{"TextContains", "[a-z]", 0}, // a class, if `[` were a wildcard
+		{"TextContains", "%%", 0},
+		{"TextContains", "!!", 0},
+	} {
+		a, b, ok := mssql.Frag(c.op, subject)
+		if !ok {
+			t.Fatalf("%s has no lowering", c.op)
+		}
+		q := "SELECT CASE WHEN " + a + "p1" + b + " THEN 1 ELSE 0 END"
+		var got int
+		if err := db.QueryRowContext(context.Background(), q, c.v).Scan(&got); err != nil {
+			t.Fatalf("%s(%q): %v\n  %s", c.op, c.v, err, q)
+		}
+		if got != c.want {
+			t.Errorf("%s(%q) = %d, want %d", c.op, c.v, got, c.want)
+		}
+	}
+}

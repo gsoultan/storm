@@ -53,16 +53,19 @@ const (
 	opHasAnyKey        runtime.Op = 22
 	opHasAllKeys       runtime.Op = 23
 	opJSONTextLikeAny  runtime.Op = 24
-	opIsNull           runtime.Op = 25
-	opIsNotNull        runtime.Op = 26
-	opJSONIsEmpty      runtime.Op = 27
-	opNullOrEmpty      runtime.Op = 28
+	opTextHasPrefix    runtime.Op = 25
+	opTextHasSuffix    runtime.Op = 26
+	opTextContains     runtime.Op = 27
+	opIsNull           runtime.Op = 28
+	opIsNotNull        runtime.Op = 29
+	opJSONIsEmpty      runtime.Op = 30
+	opNullOrEmpty      runtime.Op = 31
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 29
-	opNotExists runtime.Op = 30
+	opExists    runtime.Op = 32
+	opNotExists runtime.Op = 33
 )
 
 const nCols = 4
@@ -428,6 +431,18 @@ func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr
 // PostgreSQL's rule for NOT IN, not storm's.
 func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
 
+// HasPrefix matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) HasPrefix(v string) Pred { return Pred{col: h.c, op: opTextHasPrefix, str: v} }
+
+// HasSuffix matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) HasSuffix(v string) Pred { return Pred{col: h.c, op: opTextHasSuffix, str: v} }
+
+// Contains matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) Contains(v string) Pred { return Pred{col: h.c, op: opTextContains, str: v} }
+
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
@@ -670,6 +685,9 @@ func (q Query) RoleLike(v string) Query         { return q.Where(Role.Like(v)) }
 func (q Query) RoleILike(v string) Query        { return q.Where(Role.ILike(v)) }
 func (q Query) RoleIn(v ...string) Query        { return q.Where(Role.In(v...)) }
 func (q Query) RoleNotIn(v ...string) Query     { return q.Where(Role.NotIn(v...)) }
+func (q Query) RoleHasPrefix(v string) Query    { return q.Where(Role.HasPrefix(v)) }
+func (q Query) RoleHasSuffix(v string) Query    { return q.Where(Role.HasSuffix(v)) }
+func (q Query) RoleContains(v string) Query     { return q.Where(Role.Contains(v)) }
 func (q Query) JoinedAtEq(v time.Time) Query    { return q.Where(JoinedAt.Eq(v)) }
 func (q Query) JoinedAtNotEq(v time.Time) Query { return q.Where(JoinedAt.NotEq(v)) }
 func (q Query) JoinedAtGt(v time.Time) Query    { return q.Where(JoinedAt.Gt(v)) }
@@ -780,7 +798,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [4][31]runtime.Frag{
+var fragTable = [4][34]runtime.Frag{
 	{ // user_id
 		{}, // opNone
 		{A: "\"user_id\" = $", B: ""},
@@ -799,6 +817,9 @@ var fragTable = [4][31]runtime.Frag{
 		{},
 		{A: "\"user_id\" = ANY($", B: ")"},
 		{A: "\"user_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -846,6 +867,9 @@ var fragTable = [4][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // role
 		{}, // opNone
@@ -873,6 +897,9 @@ var fragTable = [4][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"role\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		{A: "\"role\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		{A: "\"role\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 		{},
 		{},
 		{},
@@ -888,6 +915,9 @@ var fragTable = [4][31]runtime.Frag{
 		{A: "\"joined_at\" >= $", B: ""},
 		{A: "\"joined_at\" < $", B: ""},
 		{A: "\"joined_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1331,6 +1361,47 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	}
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
+}
+
+// Each runs the query and calls fn with each row in turn, holding one row
+// and at most about 64 KiB of its text at a time, however many rows come
+// back. The row is fn's to keep. An error from fn stops the read, closes
+// the result and is returned as it is.
+//
+// The result stays open while fn runs, so fn must not use ex for another
+// statement when ex is one connection — a transaction — rather than a pool.
+func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error) error {
+	if err := q.readErr(); err != nil {
+		return err
+	}
+	var buf [21]runtime.Tok
+	st := q.readStmt(q.stream(&buf))
+	if st.Err != nil {
+		return st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	for rows.Next() {
+		var r Row
+		if err := scan(rows.RawValues(), &r, &sl); err != nil {
+			return err
+		}
+		if err := fn(r); err != nil {
+			return err
+		}
+		if sl.Size() >= runtime.EachSlabCap {
+			// Retired, not reset: strings fn kept still point into it.
+			sl = runtime.Slab{}
+		}
+	}
+	return rows.Err()
 }
 
 // One returns the first row, if any.

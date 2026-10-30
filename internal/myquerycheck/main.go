@@ -64,6 +64,15 @@ func main() {
 			mysql.OrderLead + mysql.Ident("age") + mysql.OrderSep + mysql.Ident("id") + " LIMIT " + mysql.Placeholder,
 			[]string{"@i", "@i", "@n"}},
 	}
+	// The literal text matches. Each is PREPAREd and EXECUTEd like the rest,
+	// and then asked a question whose answer differs if the bound value is read
+	// as a pattern: no name holds a `_`, so a `_` that matched any character
+	// would find n10..n19.
+	for _, op := range []string{"TextHasPrefix", "TextHasSuffix", "TextContains"} {
+		a, b, _ := mysql.Frag(op, mysql.Ident("name"))
+		stmts = append(stmts, stmt{"select_" + op, sel + mysql.WhereLead + a + b + mysql.OrderSuffix(pk),
+			[]string{"@s", "@n"}})
+	}
 	// Every ordering direction the token stream can carry.
 	for dir := 0; dir < mysql.NDirections; dir++ {
 		stmts = append(stmts, stmt{
@@ -119,6 +128,22 @@ func main() {
 		fmt.Printf("PREPARE `%s` FROM '%s';\n", s.label, strings.ReplaceAll(s.sql, "'", "''"))
 		fmt.Printf("EXECUTE `%s` USING %s;\n", s.label, strings.Join(s.args, ", "))
 		fmt.Printf("DEALLOCATE PREPARE `%s`;\n", s.label)
+	}
+
+	// The literal text matches ANSWER, not just parse. Labelled in the result
+	// for the reason the recursive probes below give.
+	for _, p := range []struct{ label, op, v string }{
+		{"text_prefix_literal", "TextHasPrefix", "n1_"}, // a wildcard `_` would count 10
+		{"text_prefix_real", "TextHasPrefix", "n12"},    // n12 and n120..n129
+		{"text_contains_pct", "TextContains", "%"},      // a wildcard `%` would count 500
+		{"text_suffix_real", "TextHasSuffix", "99"},     // n99, n199 .. n499
+	} {
+		a, b, _ := mysql.Frag(p.op, mysql.Ident("name"))
+		sql := "SELECT '" + p.label + "' AS `probe`, COUNT(*) AS `n` FROM `my_users` WHERE " + a + b
+		fmt.Printf("SET @t = '%s';\n", p.v)
+		fmt.Printf("PREPARE `%s` FROM '%s';\n", p.label, strings.ReplaceAll(sql, "'", "''"))
+		fmt.Printf("EXECUTE `%s` USING @t;\n", p.label)
+		fmt.Printf("DEALLOCATE PREPARE `%s`;\n", p.label)
 	}
 
 	// The batch loader M9's exit gate names. Both forms, and the plan, because

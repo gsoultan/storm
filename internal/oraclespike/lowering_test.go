@@ -358,3 +358,39 @@ func TestTheDeclaredShapesRun(t *testing.T) {
 
 	t.Logf("== %d statement(s) reached the server ==", r.n)
 }
+
+// The literal text matches, evaluated by the server against a literal subject:
+// the value is text, never a pattern. The empty value is the case Oracle could
+// get wrong alone — it binds as NULL — and it must still match everything, as
+// an empty prefix does on every other back end.
+func TestTextMatchIsLiteral(t *testing.T) {
+	db := open(t)
+	const subject = "'50% off_[x]!'"
+	for _, c := range []struct {
+		op, v string
+		want  int
+	}{
+		{"TextHasPrefix", "50%", 1},
+		{"TextHasPrefix", "", 1},
+		{"TextHasPrefix", "5_", 0},
+		{"TextHasPrefix", "%", 0},
+		{"TextHasSuffix", "[x]!", 1},
+		{"TextHasSuffix", "_", 0},
+		{"TextContains", "% off_", 1},
+		{"TextContains", "%%", 0},
+		{"TextContains", "!!", 0},
+	} {
+		a, b, ok := oracle.Frag(c.op, subject)
+		if !ok {
+			t.Fatalf("%s has no lowering", c.op)
+		}
+		q := "SELECT CASE WHEN " + a + "1" + b + " THEN 1 ELSE 0 END FROM dual"
+		var got int
+		if err := db.QueryRow(q, c.v).Scan(&got); err != nil {
+			t.Fatalf("%s(%q): %v\n  %s", c.op, c.v, err, q)
+		}
+		if got != c.want {
+			t.Errorf("%s(%q) = %d, want %d", c.op, c.v, got, c.want)
+		}
+	}
+}

@@ -46,7 +46,23 @@ var frags = map[string]frag{
 	"EqLower": {") = LOWER(" + Placeholder, ")"},
 
 	"NullOrEmpty": {", N'') = N''", ""},
+
+	// Literal prefix, suffix and substring matches: the bound value is text,
+	// not a pattern. T-SQL's LIKE has a third wildcard, the `[` that opens a
+	// character class, so it is escaped along with `%` and `_`; a `]` with no
+	// `[` before it is already literal.
+	"TextHasPrefix": {" LIKE (" + likeEscOpen + Placeholder, likeEscClose + " + N'%') ESCAPE N'!'"},
+	"TextHasSuffix": {" LIKE (N'%' + " + likeEscOpen + Placeholder, likeEscClose + ") ESCAPE N'!'"},
+	"TextContains":  {" LIKE (N'%' + " + likeEscOpen + Placeholder, likeEscClose + " + N'%') ESCAPE N'!'"},
 }
+
+// likeEscOpen and likeEscClose wrap a bound value so that LIKE ... ESCAPE '!'
+// reads it literally. The escape character goes first, or the escapes the
+// later replacements add would themselves be doubled.
+const (
+	likeEscOpen  = "REPLACE(REPLACE(REPLACE(REPLACE("
+	likeEscClose = ", N'!', N'!!'), N'%', N'!%'), N'_', N'!_'), N'[', N'![')"
+)
 
 // wrapped are the operators that are FUNCTIONS here. They take the identifier
 // as an argument rather than following it.

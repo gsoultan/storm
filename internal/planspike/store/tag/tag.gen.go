@@ -53,16 +53,19 @@ const (
 	opHasAnyKey        runtime.Op = 22
 	opHasAllKeys       runtime.Op = 23
 	opJSONTextLikeAny  runtime.Op = 24
-	opIsNull           runtime.Op = 25
-	opIsNotNull        runtime.Op = 26
-	opJSONIsEmpty      runtime.Op = 27
-	opNullOrEmpty      runtime.Op = 28
+	opTextHasPrefix    runtime.Op = 25
+	opTextHasSuffix    runtime.Op = 26
+	opTextContains     runtime.Op = 27
+	opIsNull           runtime.Op = 28
+	opIsNotNull        runtime.Op = 29
+	opJSONIsEmpty      runtime.Op = 30
+	opNullOrEmpty      runtime.Op = 31
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 29
-	opNotExists runtime.Op = 30
+	opExists    runtime.Op = 32
+	opNotExists runtime.Op = 33
 )
 
 const nCols = 4
@@ -447,6 +450,18 @@ func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr
 // PostgreSQL's rule for NOT IN, not storm's.
 func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
 
+// HasPrefix matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) HasPrefix(v string) Pred { return Pred{col: h.c, op: opTextHasPrefix, str: v} }
+
+// HasSuffix matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) HasSuffix(v string) Pred { return Pred{col: h.c, op: opTextHasSuffix, str: v} }
+
+// Contains matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) Contains(v string) Pred { return Pred{col: h.c, op: opTextContains, str: v} }
+
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
 	for i := range ps {
@@ -671,6 +686,9 @@ func (q Query) NameLike(v string) Query          { return q.Where(Name.Like(v)) 
 func (q Query) NameILike(v string) Query         { return q.Where(Name.ILike(v)) }
 func (q Query) NameIn(v ...string) Query         { return q.Where(Name.In(v...)) }
 func (q Query) NameNotIn(v ...string) Query      { return q.Where(Name.NotIn(v...)) }
+func (q Query) NameHasPrefix(v string) Query     { return q.Where(Name.HasPrefix(v)) }
+func (q Query) NameHasSuffix(v string) Query     { return q.Where(Name.HasSuffix(v)) }
+func (q Query) NameContains(v string) Query      { return q.Where(Name.Contains(v)) }
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "name" FROM "tags"`
 const countPrefix = `SELECT count(*) FROM "tags"`
@@ -775,7 +793,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [4][31]runtime.Frag{
+var fragTable = [4][34]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -808,6 +826,9 @@ var fragTable = [4][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -817,6 +838,9 @@ var fragTable = [4][31]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -874,6 +898,9 @@ var fragTable = [4][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // name
 		{}, // opNone
@@ -901,6 +928,9 @@ var fragTable = [4][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		{A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		{A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 		{},
 		{},
 		{},
@@ -1321,6 +1351,47 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	}
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
+}
+
+// Each runs the query and calls fn with each row in turn, holding one row
+// and at most about 64 KiB of its text at a time, however many rows come
+// back. The row is fn's to keep. An error from fn stops the read, closes
+// the result and is returned as it is.
+//
+// The result stays open while fn runs, so fn must not use ex for another
+// statement when ex is one connection — a transaction — rather than a pool.
+func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error) error {
+	if err := q.readErr(); err != nil {
+		return err
+	}
+	var buf [21]runtime.Tok
+	st := q.readStmt(q.stream(&buf))
+	if st.Err != nil {
+		return st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	for rows.Next() {
+		var r Row
+		if err := scan(rows.RawValues(), &r, &sl); err != nil {
+			return err
+		}
+		if err := fn(r); err != nil {
+			return err
+		}
+		if sl.Size() >= runtime.EachSlabCap {
+			// Retired, not reset: strings fn kept still point into it.
+			sl = runtime.Slab{}
+		}
+	}
+	return rows.Err()
 }
 
 // One returns the first row, if any.

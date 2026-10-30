@@ -24,6 +24,12 @@ const (
 	slabMax = 1 << 16 // 64 KiB
 )
 
+// EachSlabCap is how much text a streaming read lets one Slab hold before it
+// starts another. One full chunk: past it the old arena is left to the
+// collector — once no string a caller kept points into it — so a read of any
+// length holds about this much text, not the whole result.
+const EachSlabCap = slabMax
+
 // Bytes copies b into the arena and returns the copy.
 //
 // Same contract as Str: the result lives as long as the Slab and must not be
