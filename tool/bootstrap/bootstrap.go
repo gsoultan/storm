@@ -13,9 +13,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/gsoultan/storm/tool/discover"
 )
@@ -77,7 +79,31 @@ func RunWith(r *tooldiscover.Result, args []string, stdout io.Writer) (code int,
 	var errBuf capped
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 
-	switch err := cmd.Run(); {
+	// Ctrl-C reaches the child too (one process group), and would kill this
+	// process before the deferred RemoveAll: every interrupted run left a
+	// .storm-bootstrap-<pid> behind, which adopters then committed. So the
+	// signal is held here and passed on, the child decides when to stop,
+	// and the cleanup runs once it has.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+	if err := cmd.Start(); err != nil {
+		return 1, fmt.Errorf("running the generated bootstrap: %w", err)
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case sig := <-sigs:
+				_ = cmd.Process.Signal(sig) // unsupported for Interrupt on Windows; the console sends it anyway
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	switch err := cmd.Wait(); {
 	case err == nil:
 		return 0, nil
 	default:
