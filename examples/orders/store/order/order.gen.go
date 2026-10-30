@@ -57,16 +57,19 @@ const (
 	opHasAnyKey        runtime.Op = 22
 	opHasAllKeys       runtime.Op = 23
 	opJSONTextLikeAny  runtime.Op = 24
-	opIsNull           runtime.Op = 25
-	opIsNotNull        runtime.Op = 26
-	opJSONIsEmpty      runtime.Op = 27
-	opNullOrEmpty      runtime.Op = 28
+	opTextHasPrefix    runtime.Op = 25
+	opTextHasSuffix    runtime.Op = 26
+	opTextContains     runtime.Op = 27
+	opIsNull           runtime.Op = 28
+	opIsNotNull        runtime.Op = 29
+	opJSONIsEmpty      runtime.Op = 30
+	opNullOrEmpty      runtime.Op = 31
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 29
-	opNotExists runtime.Op = 30
+	opExists    runtime.Op = 32
+	opNotExists runtime.Op = 33
 )
 
 const nCols = 8
@@ -485,6 +488,18 @@ func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr
 // PostgreSQL's rule for NOT IN, not storm's.
 func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
 
+// HasPrefix matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) HasPrefix(v string) Pred { return Pred{col: h.c, op: opTextHasPrefix, str: v} }
+
+// HasSuffix matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) HasSuffix(v string) Pred { return Pred{col: h.c, op: opTextHasSuffix, str: v} }
+
+// Contains matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) Contains(v string) Pred { return Pred{col: h.c, op: opTextContains, str: v} }
+
 // DecimalCol addresses a numeric(12,2) column.
 type DecimalCol struct{ c uint8 }
 
@@ -777,6 +792,9 @@ func (q Query) UpdatedByLike(v string) Query        { return q.Where(UpdatedBy.L
 func (q Query) UpdatedByILike(v string) Query       { return q.Where(UpdatedBy.ILike(v)) }
 func (q Query) UpdatedByIn(v ...string) Query       { return q.Where(UpdatedBy.In(v...)) }
 func (q Query) UpdatedByNotIn(v ...string) Query    { return q.Where(UpdatedBy.NotIn(v...)) }
+func (q Query) UpdatedByHasPrefix(v string) Query   { return q.Where(UpdatedBy.HasPrefix(v)) }
+func (q Query) UpdatedByHasSuffix(v string) Query   { return q.Where(UpdatedBy.HasSuffix(v)) }
+func (q Query) UpdatedByContains(v string) Query    { return q.Where(UpdatedBy.Contains(v)) }
 func (q Query) CustomerIDEq(v [16]byte) Query       { return q.Where(CustomerID.Eq(v)) }
 func (q Query) CustomerIDNotEq(v [16]byte) Query    { return q.Where(CustomerID.NotEq(v)) }
 func (q Query) CustomerIDIn(v ...[16]byte) Query    { return q.Where(CustomerID.In(v...)) }
@@ -792,6 +810,9 @@ func (q Query) StatusLike(v string) Query           { return q.Where(Status.Like
 func (q Query) StatusILike(v string) Query          { return q.Where(Status.ILike(v)) }
 func (q Query) StatusIn(v ...string) Query          { return q.Where(Status.In(v...)) }
 func (q Query) StatusNotIn(v ...string) Query       { return q.Where(Status.NotIn(v...)) }
+func (q Query) StatusHasPrefix(v string) Query      { return q.Where(Status.HasPrefix(v)) }
+func (q Query) StatusHasSuffix(v string) Query      { return q.Where(Status.HasSuffix(v)) }
+func (q Query) StatusContains(v string) Query       { return q.Where(Status.Contains(v)) }
 func (q Query) TotalEq(v runtime.Decimal) Query     { return q.Where(Total.Eq(v)) }
 func (q Query) TotalNotEq(v runtime.Decimal) Query  { return q.Where(Total.NotEq(v)) }
 func (q Query) TotalGt(v runtime.Decimal) Query     { return q.Where(Total.Gt(v)) }
@@ -936,7 +957,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [9][31]runtime.Frag{
+var fragTable = [9][34]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -969,6 +990,9 @@ var fragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -978,6 +1002,9 @@ var fragTable = [9][31]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1035,6 +1062,9 @@ var fragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // updated_by
 		{}, // opNone
@@ -1062,6 +1092,9 @@ var fragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"updated_by\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		{A: "\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		{A: "\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 		{},
 		{},
 		{},
@@ -1087,6 +1120,9 @@ var fragTable = [9][31]runtime.Frag{
 		{},
 		{A: "\"customer_id\" = ANY($", B: ")"},
 		{A: "\"customer_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1128,6 +1164,9 @@ var fragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		{A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		{A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 		{},
 		{},
 		{},
@@ -1143,6 +1182,9 @@ var fragTable = [9][31]runtime.Frag{
 		{A: "\"total\" >= $", B: ""},
 		{A: "\"total\" < $", B: ""},
 		{A: "\"total\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1200,9 +1242,15 @@ var fragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // relation Lines (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1686,6 +1734,47 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	}
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
+}
+
+// Each runs the query and calls fn with each row in turn, holding one row
+// and at most about 64 KiB of its text at a time, however many rows come
+// back. The row is fn's to keep. An error from fn stops the read, closes
+// the result and is returned as it is.
+//
+// The result stays open while fn runs, so fn must not use ex for another
+// statement when ex is one connection — a transaction — rather than a pool.
+func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error) error {
+	if err := q.readErr(); err != nil {
+		return err
+	}
+	var buf [21]runtime.Tok
+	st := q.readStmt(q.stream(&buf))
+	if st.Err != nil {
+		return st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	for rows.Next() {
+		var r Row
+		if err := scan(rows.RawValues(), &r, &sl); err != nil {
+			return err
+		}
+		if err := fn(r); err != nil {
+			return err
+		}
+		if sl.Size() >= runtime.EachSlabCap {
+			// Retired, not reset: strings fn kept still point into it.
+			sl = runtime.Slab{}
+		}
+	}
+	return rows.Err()
 }
 
 // One returns the first row, if any.
@@ -2786,7 +2875,7 @@ func (q Query) OneTotals(ctx context.Context, ex runtime.Executor) (TotalsRow, e
 }
 
 // joinFragTable is fragTable for a join: every column named with its table.
-var joinFragTable = [9][31]runtime.Frag{
+var joinFragTable = [9][34]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"orders\".\"id\" = $", B: ""},
@@ -2819,6 +2908,9 @@ var joinFragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -2828,6 +2920,9 @@ var joinFragTable = [9][31]runtime.Frag{
 		{A: "\"orders\".\"created_at\" >= $", B: ""},
 		{A: "\"orders\".\"created_at\" < $", B: ""},
 		{A: "\"orders\".\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2885,6 +2980,9 @@ var joinFragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // updated_by
 		{}, // opNone
@@ -2912,6 +3010,9 @@ var joinFragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"orders\".\"updated_by\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		{A: "\"orders\".\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		{A: "\"orders\".\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 		{},
 		{},
 		{},
@@ -2937,6 +3038,9 @@ var joinFragTable = [9][31]runtime.Frag{
 		{},
 		{A: "\"orders\".\"customer_id\" = ANY($", B: ")"},
 		{A: "\"orders\".\"customer_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -2978,6 +3082,9 @@ var joinFragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"orders\".\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		{A: "\"orders\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		{A: "\"orders\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 		{},
 		{},
 		{},
@@ -2993,6 +3100,9 @@ var joinFragTable = [9][31]runtime.Frag{
 		{A: "\"orders\".\"total\" >= $", B: ""},
 		{A: "\"orders\".\"total\" < $", B: ""},
 		{A: "\"orders\".\"total\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -3050,9 +3160,15 @@ var joinFragTable = [9][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // relation Lines (pseudo-column)
 		{}, // opNone
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},

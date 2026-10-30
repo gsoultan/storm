@@ -122,6 +122,25 @@ func BenchmarkGenScan1000(b *testing.B) {
 	}
 }
 
+// The streaming read over the same 1,000 rows. Against Scan1000 it trades the
+// caller-owned result slice for one Row at a time: the allocation count is the
+// arena's, and it does not grow with the result.
+func BenchmarkGenEach1000(b *testing.B) {
+	ctx, ex := context.Background(), genExec()
+	q := genuser.New().StatusEq("active").Limit(1000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		n := 0
+		if err := q.Each(ctx, ex, func(genuser.Row) error { n++; return nil }); err != nil {
+			b.Fatal(err)
+		}
+		if n != 1000 {
+			b.Fatal(n)
+		}
+	}
+}
+
 func BenchmarkGenDynamic6(b *testing.B) {
 	ctx, ex := context.Background(), genExec()
 	q := genDynamic6()
