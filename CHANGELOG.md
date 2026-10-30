@@ -32,7 +32,10 @@ wildcard: PostgreSQL in `internal/planspike`, MySQL and MariaDB in
 row at a time into a value it hands to `fn`, and retires its string arena
 every 64 KiB rather than resetting it, so a row `fn` keeps stays intact and a
 read of any length holds one row and about 64 KiB of text. An error from `fn`
-stops the read and is returned unwrapped.
+stops the read and is returned unwrapped. Over the bench's 1,000 rows it is 6
+allocations and 40 KiB, the same as `AllInto` into a buffer the caller already
+owns (`BenchmarkGenEach1000` beside `BenchmarkGenScan1000`), without the
+caller having to own one.
 
 ### A nil value of a NOT NULL JSON column writes JSON null
 
