@@ -178,6 +178,11 @@ func (g *gen) colHandles() {
 				g.p("func (h %s) %s() Pred { return Pred{col: h.c, op: op%s} }", ht, op.m(), op.name)
 				continue
 			}
+			switch op.name {
+			case "TextHasPrefix", "TextHasSuffix", "TextContains":
+				g.p("// %s matches v literally: a %% or _ in v is that character, not a", op.m())
+				g.p("// wildcard. The escaping happens in SQL, so nothing is built per call.")
+			}
 			ctor := predCtor(c, op.name, i)
 			ctor = replaceColField(ctor)
 			g.p("func (h %s) %s(v %s) Pred { return %s }", ht, op.m(), c.goBase, ctor)

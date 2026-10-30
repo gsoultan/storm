@@ -541,6 +541,14 @@ var ops = []opDef{
 	// the characters of a JSON array is asked until it can be converted, and
 	// the question it answers survives that conversion.
 	{name: "JSONTextLikeAny", method: "TextLikeAny", args: 1},
+	// Literal substring matches on text. The value is a plain string, not a
+	// pattern: the lowering escapes LIKE's wildcards in SQL, around the bound
+	// value, so a caller's `%` or `_` matches itself and a search box cannot
+	// turn a prefix lookup into a full scan. Nothing is built in Go, so the
+	// warm path still allocates nothing.
+	{name: "TextHasPrefix", method: "HasPrefix", args: 1},
+	{name: "TextHasSuffix", method: "HasSuffix", args: 1},
+	{name: "TextContains", method: "Contains", args: 1},
 	{name: "IsNull", args: 0},
 	{name: "IsNotNull", args: 0},
 	// The document holds nothing: missing, the JSON null, or an empty array
@@ -991,6 +999,7 @@ func (g *gen) terminals() {
 	g.p("\treturn dst, rows.Err()")
 	g.p("}")
 	g.p("")
+	g.eachTerminal()
 	g.p("// One returns the first row, if any.")
 	g.p("func (q Query) One(ctx context.Context, ex %s) (Row, bool, error) {", g.execType())
 	g.p("\tvar sl runtime.Slab")
@@ -1087,6 +1096,67 @@ func readableCols(t *schema.Table) []string {
 func exportName(col string) string { return schema.GoName(col) }
 
 var _ = sort.Strings
+
+// eachTerminal emits Each: the streaming read. All holds the whole result set
+// and its string arena until it returns, which is the right trade for a page
+// and the wrong one for an export of a million rows. Each decodes one row at a
+// time and drops its arena whenever it passes a chunk's worth of text, so its
+// memory is a constant the caller does not choose by accident.
+//
+// The row goes to fn BY VALUE. A pointer into a reused Row would be cheaper by
+// a copy and would hand back a value that changes under anyone who kept it;
+// and an arena that is retired rather than reset keeps every string fn was
+// given valid for as long as fn's caller holds it. No aliasing contract to
+// document, so none to break.
+func (g *gen) eachTerminal() {
+	g.p("// Each runs the query and calls fn with each row in turn, holding one row")
+	g.p("// and at most about 64 KiB of its text at a time, however many rows come")
+	g.p("// back. The row is fn's to keep. An error from fn stops the read, closes")
+	g.p("// the result and is returned as it is.")
+	g.p("//")
+	g.p("// The result stays open while fn runs, so fn must not use ex for another")
+	g.p("// statement when ex is one connection — a transaction — rather than a pool.")
+	g.p("func (q Query) Each(ctx context.Context, ex %s, fn func(Row) error) error {", g.execType())
+	g.p("\tif err := q.readErr(); err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tvar buf [%d]runtime.Tok", g.streamBuf())
+	g.p("\tst := q.readStmt(q.stream(&buf))")
+	g.p("\tif st.Err != nil {")
+	g.p("\t\treturn st.Err")
+	g.p("\t}")
+	g.p("\tb := binders.Get()")
+	g.p("\tdefer putBinder(b)")
+	g.p("")
+	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, q.bind(b))"))
+	g.p("\tif err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tdefer rows.Close()")
+	g.p("\tvar sl runtime.Slab")
+	g.p("\t// What All learned about this shape, which Reserve caps at one chunk.")
+	g.p("\tsl.Reserve(st.SlabHint())")
+	g.p("\tfor rows.Next() {")
+	g.p("\t\tvar r Row")
+	g.p("\t\tif err := scan(rows.%s(), &r, &sl); err != nil {", g.dec.rowsAccessor())
+	g.p("\t\t\treturn err")
+	g.p("\t\t}")
+	g.p("\t\tif err := fn(r); err != nil {")
+	g.p("\t\t\treturn err")
+	g.p("\t\t}")
+	g.p("\t\tif sl.Size() >= runtime.EachSlabCap {")
+	g.p("\t\t\t// Retired, not reset: strings fn kept still point into it.")
+	g.p("\t\t\t// The next one is a single full chunk: a result this long is")
+	g.p("\t\t\t// past growing from 128 bytes.")
+	g.p("\t\t\tsl = runtime.Slab{}")
+	g.p("\t\t\tsl.Reserve(runtime.EachSlabCap)")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tst.ObserveSlab(sl.Size())")
+	g.p("\treturn rows.Err()")
+	g.p("}")
+	g.p("")
+}
 
 // orderTerm is one default ORDER BY term, resolved to the ids generated code
 // uses.

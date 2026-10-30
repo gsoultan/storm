@@ -466,19 +466,19 @@ reassembles the shape it wanted.
 Listed because the previous version of this file documented all of it as though
 it were:
 
-- **Streaming / `Iter`.** Reads are `All`, `One`, `Count`, `Exists`. There is no
-  iterator and no cursor API.
+- **A server-side cursor.** `Each` streams a result row by row in constant
+  memory ([[API]] §4), but there is no `DECLARE CURSOR` and no fetch-in-pages
+  across transactions.
 - **Declaration-time `Latest`/`Earliest`/`Top` on a relation.** The per-parent
   limit is `ChildTop`/`ChildOrder` at the call site, as above.
 - **Call-site `GroupBy(...).Select(...)`.** Not missing — refused. An unbounded
   set of result shapes can have neither a generated scanner nor a compiled
   statement, which is the whole thesis. Aggregations are declared; [[API]] §7.
-- **`Between`, `HasPrefix`/`HasSuffix`, jsonb `Path`.** The predicate vocabulary
-  is generated per column type and is listed in [[API]] §3.
-- **`FOR NO KEY UPDATE` and `FOR KEY SHARE`.** The other four lock forms are
-  built — see [[API]] §8. These two exist for the deadlock between updating a
-  parent row and inserting a child that references it, and a caller who has it
-  knows the exact SQL they want.
+- **`Between` and jsonb `Path`.** The predicate vocabulary is generated per
+  column type and is listed in [[API]] §3; `Gte` with `Lte` is `Between`.
+- **`FOR KEY SHARE`.** `ForNoKeyUpdate` and the other row locks are built — see
+  [[API]] §8. The weakest lock exists for a foreign-key check, which the server
+  already takes on its own.
 - **Package-level `user.Get(ctx, db, id)` one-liners.** It is
   `user.New().IDEq(id).One(ctx, ex)`, plus a generated shorthand per column.
 - **MySQL at run time.** There is a MySQL DDL back end, but it is not a runtime

@@ -55,16 +55,19 @@ const (
 	opHasAnyKey        runtime.Op = 22
 	opHasAllKeys       runtime.Op = 23
 	opJSONTextLikeAny  runtime.Op = 24
-	opIsNull           runtime.Op = 25
-	opIsNotNull        runtime.Op = 26
-	opJSONIsEmpty      runtime.Op = 27
-	opNullOrEmpty      runtime.Op = 28
+	opTextHasPrefix    runtime.Op = 25
+	opTextHasSuffix    runtime.Op = 26
+	opTextContains     runtime.Op = 27
+	opIsNull           runtime.Op = 28
+	opIsNotNull        runtime.Op = 29
+	opJSONIsEmpty      runtime.Op = 30
+	opNullOrEmpty      runtime.Op = 31
 	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
 	// the real columns in the frag table. Argless, like IsNull: the
 	// fragment is constant, which is what lets a semi-join ride the
 	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 29
-	opNotExists runtime.Op = 30
+	opExists    runtime.Op = 32
+	opNotExists runtime.Op = 33
 )
 
 const nCols = 6
@@ -465,6 +468,18 @@ func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr
 // PostgreSQL's rule for NOT IN, not storm's.
 func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
 
+// HasPrefix matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) HasPrefix(v string) Pred { return Pred{col: h.c, op: opTextHasPrefix, str: v} }
+
+// HasSuffix matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) HasSuffix(v string) Pred { return Pred{col: h.c, op: opTextHasSuffix, str: v} }
+
+// Contains matches v literally: a % or _ in v is that character, not a
+// wildcard. The escaping happens in SQL, so nothing is built per call.
+func (h TextCol) Contains(v string) Pred { return Pred{col: h.c, op: opTextContains, str: v} }
+
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
 	for i := range ps {
@@ -690,48 +705,54 @@ func (q *Query) leaf(p Pred) {
 }
 
 // Chained predicate sugar. Identical to Where(Col.Op(v)).
-func (q Query) IDEq(v [16]byte) Query              { return q.Where(ID.Eq(v)) }
-func (q Query) IDNotEq(v [16]byte) Query           { return q.Where(ID.NotEq(v)) }
-func (q Query) IDIn(v ...[16]byte) Query           { return q.Where(ID.In(v...)) }
-func (q Query) IDNotIn(v ...[16]byte) Query        { return q.Where(ID.NotIn(v...)) }
-func (q Query) CreatedAtEq(v time.Time) Query      { return q.Where(CreatedAt.Eq(v)) }
-func (q Query) CreatedAtNotEq(v time.Time) Query   { return q.Where(CreatedAt.NotEq(v)) }
-func (q Query) CreatedAtGt(v time.Time) Query      { return q.Where(CreatedAt.Gt(v)) }
-func (q Query) CreatedAtGte(v time.Time) Query     { return q.Where(CreatedAt.Gte(v)) }
-func (q Query) CreatedAtLt(v time.Time) Query      { return q.Where(CreatedAt.Lt(v)) }
-func (q Query) CreatedAtLte(v time.Time) Query     { return q.Where(CreatedAt.Lte(v)) }
-func (q Query) UpdatedAtEq(v time.Time) Query      { return q.Where(UpdatedAt.Eq(v)) }
-func (q Query) UpdatedAtNotEq(v time.Time) Query   { return q.Where(UpdatedAt.NotEq(v)) }
-func (q Query) UpdatedAtGt(v time.Time) Query      { return q.Where(UpdatedAt.Gt(v)) }
-func (q Query) UpdatedAtGte(v time.Time) Query     { return q.Where(UpdatedAt.Gte(v)) }
-func (q Query) UpdatedAtLt(v time.Time) Query      { return q.Where(UpdatedAt.Lt(v)) }
-func (q Query) UpdatedAtLte(v time.Time) Query     { return q.Where(UpdatedAt.Lte(v)) }
-func (q Query) ActionEq(v string) Query            { return q.Where(Action.Eq(v)) }
-func (q Query) ActionNotEq(v string) Query         { return q.Where(Action.NotEq(v)) }
-func (q Query) ActionGt(v string) Query            { return q.Where(Action.Gt(v)) }
-func (q Query) ActionGte(v string) Query           { return q.Where(Action.Gte(v)) }
-func (q Query) ActionLt(v string) Query            { return q.Where(Action.Lt(v)) }
-func (q Query) ActionLte(v string) Query           { return q.Where(Action.Lte(v)) }
-func (q Query) ActionEqLower(v string) Query       { return q.Where(Action.EqLower(v)) }
-func (q Query) ActionLike(v string) Query          { return q.Where(Action.Like(v)) }
-func (q Query) ActionILike(v string) Query         { return q.Where(Action.ILike(v)) }
-func (q Query) ActionIn(v ...string) Query         { return q.Where(Action.In(v...)) }
-func (q Query) ActionNotIn(v ...string) Query      { return q.Where(Action.NotIn(v...)) }
-func (q Query) SubjectTypeEq(v string) Query       { return q.Where(SubjectType.Eq(v)) }
-func (q Query) SubjectTypeNotEq(v string) Query    { return q.Where(SubjectType.NotEq(v)) }
-func (q Query) SubjectTypeGt(v string) Query       { return q.Where(SubjectType.Gt(v)) }
-func (q Query) SubjectTypeGte(v string) Query      { return q.Where(SubjectType.Gte(v)) }
-func (q Query) SubjectTypeLt(v string) Query       { return q.Where(SubjectType.Lt(v)) }
-func (q Query) SubjectTypeLte(v string) Query      { return q.Where(SubjectType.Lte(v)) }
-func (q Query) SubjectTypeEqLower(v string) Query  { return q.Where(SubjectType.EqLower(v)) }
-func (q Query) SubjectTypeLike(v string) Query     { return q.Where(SubjectType.Like(v)) }
-func (q Query) SubjectTypeILike(v string) Query    { return q.Where(SubjectType.ILike(v)) }
-func (q Query) SubjectTypeIn(v ...string) Query    { return q.Where(SubjectType.In(v...)) }
-func (q Query) SubjectTypeNotIn(v ...string) Query { return q.Where(SubjectType.NotIn(v...)) }
-func (q Query) SubjectIDEq(v [16]byte) Query       { return q.Where(SubjectID.Eq(v)) }
-func (q Query) SubjectIDNotEq(v [16]byte) Query    { return q.Where(SubjectID.NotEq(v)) }
-func (q Query) SubjectIDIn(v ...[16]byte) Query    { return q.Where(SubjectID.In(v...)) }
-func (q Query) SubjectIDNotIn(v ...[16]byte) Query { return q.Where(SubjectID.NotIn(v...)) }
+func (q Query) IDEq(v [16]byte) Query               { return q.Where(ID.Eq(v)) }
+func (q Query) IDNotEq(v [16]byte) Query            { return q.Where(ID.NotEq(v)) }
+func (q Query) IDIn(v ...[16]byte) Query            { return q.Where(ID.In(v...)) }
+func (q Query) IDNotIn(v ...[16]byte) Query         { return q.Where(ID.NotIn(v...)) }
+func (q Query) CreatedAtEq(v time.Time) Query       { return q.Where(CreatedAt.Eq(v)) }
+func (q Query) CreatedAtNotEq(v time.Time) Query    { return q.Where(CreatedAt.NotEq(v)) }
+func (q Query) CreatedAtGt(v time.Time) Query       { return q.Where(CreatedAt.Gt(v)) }
+func (q Query) CreatedAtGte(v time.Time) Query      { return q.Where(CreatedAt.Gte(v)) }
+func (q Query) CreatedAtLt(v time.Time) Query       { return q.Where(CreatedAt.Lt(v)) }
+func (q Query) CreatedAtLte(v time.Time) Query      { return q.Where(CreatedAt.Lte(v)) }
+func (q Query) UpdatedAtEq(v time.Time) Query       { return q.Where(UpdatedAt.Eq(v)) }
+func (q Query) UpdatedAtNotEq(v time.Time) Query    { return q.Where(UpdatedAt.NotEq(v)) }
+func (q Query) UpdatedAtGt(v time.Time) Query       { return q.Where(UpdatedAt.Gt(v)) }
+func (q Query) UpdatedAtGte(v time.Time) Query      { return q.Where(UpdatedAt.Gte(v)) }
+func (q Query) UpdatedAtLt(v time.Time) Query       { return q.Where(UpdatedAt.Lt(v)) }
+func (q Query) UpdatedAtLte(v time.Time) Query      { return q.Where(UpdatedAt.Lte(v)) }
+func (q Query) ActionEq(v string) Query             { return q.Where(Action.Eq(v)) }
+func (q Query) ActionNotEq(v string) Query          { return q.Where(Action.NotEq(v)) }
+func (q Query) ActionGt(v string) Query             { return q.Where(Action.Gt(v)) }
+func (q Query) ActionGte(v string) Query            { return q.Where(Action.Gte(v)) }
+func (q Query) ActionLt(v string) Query             { return q.Where(Action.Lt(v)) }
+func (q Query) ActionLte(v string) Query            { return q.Where(Action.Lte(v)) }
+func (q Query) ActionEqLower(v string) Query        { return q.Where(Action.EqLower(v)) }
+func (q Query) ActionLike(v string) Query           { return q.Where(Action.Like(v)) }
+func (q Query) ActionILike(v string) Query          { return q.Where(Action.ILike(v)) }
+func (q Query) ActionIn(v ...string) Query          { return q.Where(Action.In(v...)) }
+func (q Query) ActionNotIn(v ...string) Query       { return q.Where(Action.NotIn(v...)) }
+func (q Query) ActionHasPrefix(v string) Query      { return q.Where(Action.HasPrefix(v)) }
+func (q Query) ActionHasSuffix(v string) Query      { return q.Where(Action.HasSuffix(v)) }
+func (q Query) ActionContains(v string) Query       { return q.Where(Action.Contains(v)) }
+func (q Query) SubjectTypeEq(v string) Query        { return q.Where(SubjectType.Eq(v)) }
+func (q Query) SubjectTypeNotEq(v string) Query     { return q.Where(SubjectType.NotEq(v)) }
+func (q Query) SubjectTypeGt(v string) Query        { return q.Where(SubjectType.Gt(v)) }
+func (q Query) SubjectTypeGte(v string) Query       { return q.Where(SubjectType.Gte(v)) }
+func (q Query) SubjectTypeLt(v string) Query        { return q.Where(SubjectType.Lt(v)) }
+func (q Query) SubjectTypeLte(v string) Query       { return q.Where(SubjectType.Lte(v)) }
+func (q Query) SubjectTypeEqLower(v string) Query   { return q.Where(SubjectType.EqLower(v)) }
+func (q Query) SubjectTypeLike(v string) Query      { return q.Where(SubjectType.Like(v)) }
+func (q Query) SubjectTypeILike(v string) Query     { return q.Where(SubjectType.ILike(v)) }
+func (q Query) SubjectTypeIn(v ...string) Query     { return q.Where(SubjectType.In(v...)) }
+func (q Query) SubjectTypeNotIn(v ...string) Query  { return q.Where(SubjectType.NotIn(v...)) }
+func (q Query) SubjectTypeHasPrefix(v string) Query { return q.Where(SubjectType.HasPrefix(v)) }
+func (q Query) SubjectTypeHasSuffix(v string) Query { return q.Where(SubjectType.HasSuffix(v)) }
+func (q Query) SubjectTypeContains(v string) Query  { return q.Where(SubjectType.Contains(v)) }
+func (q Query) SubjectIDEq(v [16]byte) Query        { return q.Where(SubjectID.Eq(v)) }
+func (q Query) SubjectIDNotEq(v [16]byte) Query     { return q.Where(SubjectID.NotEq(v)) }
+func (q Query) SubjectIDIn(v ...[16]byte) Query     { return q.Where(SubjectID.In(v...)) }
+func (q Query) SubjectIDNotIn(v ...[16]byte) Query  { return q.Where(SubjectID.NotIn(v...)) }
 
 const selectPrefix = `SELECT "id", "created_at", "updated_at", "action", "subject_type", "subject_id" FROM "audit_logs"`
 const countPrefix = `SELECT count(*) FROM "audit_logs"`
@@ -850,7 +871,7 @@ func orderOf(dir, col uint32) string {
 
 // fragTable is every predicate this table can produce, lowered at build
 // time. Runtime splices; it never formats.
-var fragTable = [6][31]runtime.Frag{
+var fragTable = [6][34]runtime.Frag{
 	{ // id
 		{}, // opNone
 		{A: "\"id\" = $", B: ""},
@@ -883,6 +904,9 @@ var fragTable = [6][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // created_at
 		{}, // opNone
@@ -892,6 +916,9 @@ var fragTable = [6][31]runtime.Frag{
 		{A: "\"created_at\" >= $", B: ""},
 		{A: "\"created_at\" < $", B: ""},
 		{A: "\"created_at\" <= $", B: ""},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -949,6 +976,9 @@ var fragTable = [6][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{},
+		{},
+		{},
 	},
 	{ // action
 		{}, // opNone
@@ -976,6 +1006,9 @@ var fragTable = [6][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"action\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		{A: "\"action\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		{A: "\"action\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 		{},
 		{},
 		{},
@@ -1009,6 +1042,9 @@ var fragTable = [6][31]runtime.Frag{
 		{},
 		{},
 		{},
+		{A: "\"subject_type\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		{A: "\"subject_type\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		{A: "\"subject_type\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 		{},
 		{},
 		{},
@@ -1034,6 +1070,9 @@ var fragTable = [6][31]runtime.Frag{
 		{},
 		{A: "\"subject_id\" = ANY($", B: ")"},
 		{A: "\"subject_id\" <> ALL($", B: ")"},
+		{},
+		{},
+		{},
 		{},
 		{},
 		{},
@@ -1483,6 +1522,53 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 	}
 	st.ObserveSlab(sl.Size())
 	return dst, rows.Err()
+}
+
+// Each runs the query and calls fn with each row in turn, holding one row
+// and at most about 64 KiB of its text at a time, however many rows come
+// back. The row is fn's to keep. An error from fn stops the read, closes
+// the result and is returned as it is.
+//
+// The result stays open while fn runs, so fn must not use ex for another
+// statement when ex is one connection — a transaction — rather than a pool.
+func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error) error {
+	if err := q.readErr(); err != nil {
+		return err
+	}
+	var buf [21]runtime.Tok
+	st := q.readStmt(q.stream(&buf))
+	if st.Err != nil {
+		return st.Err
+	}
+	b := binders.Get()
+	defer putBinder(b)
+
+	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var sl runtime.Slab
+	// What All learned about this shape, which Reserve caps at one chunk.
+	sl.Reserve(st.SlabHint())
+	for rows.Next() {
+		var r Row
+		if err := scan(rows.RawValues(), &r, &sl); err != nil {
+			return err
+		}
+		if err := fn(r); err != nil {
+			return err
+		}
+		if sl.Size() >= runtime.EachSlabCap {
+			// Retired, not reset: strings fn kept still point into it.
+			// The next one is a single full chunk: a result this long is
+			// past growing from 128 bytes.
+			sl = runtime.Slab{}
+			sl.Reserve(runtime.EachSlabCap)
+		}
+	}
+	st.ObserveSlab(sl.Size())
+	return rows.Err()
 }
 
 // One returns the first row, if any.

@@ -58,7 +58,23 @@ var frags = map[string]frag{
 	// everywhere else, or a portable model stops being portable at the first
 	// case-insensitive lookup.
 	"EqLower": {") = LOWER(" + Placeholder, ")"},
+
+	// Literal prefix, suffix and substring matches: the bound value is text,
+	// not a pattern, and REPLACE escapes the wildcards on the server. An empty
+	// value binds as NULL here, REPLACE keeps it NULL, and `||` reads NULL as
+	// empty — so HasPrefix("") is LIKE '%', as on every other back end.
+	"TextHasPrefix": {" LIKE (" + likeEscOpen + Placeholder, likeEscClose + " || '%') ESCAPE '!'"},
+	"TextHasSuffix": {" LIKE ('%' || " + likeEscOpen + Placeholder, likeEscClose + ") ESCAPE '!'"},
+	"TextContains":  {" LIKE ('%' || " + likeEscOpen + Placeholder, likeEscClose + " || '%') ESCAPE '!'"},
 }
+
+// likeEscOpen and likeEscClose wrap a bound value so that LIKE ... ESCAPE '!'
+// reads it literally. The escape character goes first, or the escapes the
+// later replacements add would themselves be doubled.
+const (
+	likeEscOpen  = "REPLACE(REPLACE(REPLACE("
+	likeEscClose = ", '!', '!!'), '%', '!%'), '_', '!_')"
+)
 
 // wrapped are the operators that are FUNCTIONS here. They take the identifier
 // as an argument rather than following it.
