@@ -3,10 +3,10 @@
 //
 // The measurement that decided it is in internal/mssqlspike/README.md.
 // microsoft/go-mssqldb costs 11.3 allocations per row through the most
-// favourable path it offers, against runtime/mydrv's 1.07 — because every
-// column is boxed into a driver.Value before storm can see a byte, and there is
-// no RawValues to ask for. That is ADR-0007's argument with more force than
-// MySQL gave it.
+// favourable path it offers, against runtime/mydrv's 1.07 at the time (0.005
+// since) — because every column is boxed into a driver.Value before storm can
+// see a byte, and there is no RawValues to ask for. That is ADR-0007's
+// argument with more force than MySQL gave it.
 //
 // Stdlib only, like every other package under runtime/.
 //

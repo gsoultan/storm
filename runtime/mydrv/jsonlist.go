@@ -73,7 +73,7 @@ func appendJSONList(b []byte, a any) ([]byte, bool) {
 		for i, x := range v {
 			b = appendSep(b, i)
 			b = append(b, '"')
-			b = append(b, x.Format("2006-01-02 15:04:05.000000")...)
+			b = appendDateTime(b, x)
 			b = append(b, '"')
 		}
 	default:
