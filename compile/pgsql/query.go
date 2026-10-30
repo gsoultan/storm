@@ -179,7 +179,27 @@ var frags = map[string]struct{ a, b string }{
 	// the same expression: `"username" = lower($1)` reads the whole table.
 	// So the column is wrapped too — see prefixes.
 	"EqLower": {") = lower(" + Placeholder, ")"},
+	// Literal prefix, suffix and substring matches. The bound value is text,
+	// not a pattern: replace() escapes LIKE's two wildcards and the escape
+	// character itself on the SERVER, so a caller's `%` matches a percent
+	// sign and nothing is concatenated in Go. '!' rather than the default
+	// backslash, because a backslash means different things in a literal
+	// depending on standard_conforming_strings, and '!' means one thing on
+	// every back end. Under a custom plan the planner folds replace() over
+	// the bound constant, so a prefix match can still use a text_pattern_ops
+	// (or C-collation) btree index.
+	"TextHasPrefix": {" LIKE (" + likeEscOpen + Placeholder, likeEscClose + " || '%') ESCAPE '!'"},
+	"TextHasSuffix": {" LIKE ('%' || " + likeEscOpen + Placeholder, likeEscClose + ") ESCAPE '!'"},
+	"TextContains":  {" LIKE ('%' || " + likeEscOpen + Placeholder, likeEscClose + " || '%') ESCAPE '!'"},
 }
+
+// likeEscOpen and likeEscClose wrap a bound value so that LIKE ... ESCAPE '!'
+// reads it literally. The escape character goes first, or the escapes the
+// later replacements add would themselves be doubled.
+const (
+	likeEscOpen  = "replace(replace(replace("
+	likeEscClose = ", '!', '!!'), '%', '!%'), '_', '!_')"
+)
 
 // prefixes wrap the IDENTIFIER for operators whose left side is an expression
 // rather than the bare column. An operator absent here takes no prefix, which

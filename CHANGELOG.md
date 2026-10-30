@@ -14,6 +14,29 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### `HasPrefix`, `HasSuffix` and `Contains`: text matches that take text
+
+`Like` takes a pattern, so a search box wired to `Title.Like(q + "%")` lets
+whoever types `%` read every row, and every caller had to remember to escape
+`%` and `_` themselves. Text columns now have three operators whose argument
+is the literal text: the wildcards (and SQL Server's `[`) are escaped on the
+server, around the one bound value, under `ESCAPE '!'` on every back end.
+Nothing is built in Go, so the warm path still allocates nothing. Each back
+end's lowering is evaluated by a real server against a subject holding every
+wildcard: PostgreSQL in `internal/planspike`, MySQL and MariaDB in
+`internal/myquerycheck`, SQL Server and Oracle in their spikes.
+
+### `Each`: a read in constant memory
+
+`All` holds the whole result until it returns. `Each(ctx, ex, fn)` decodes one
+row at a time into a value it hands to `fn`, and retires its string arena
+every 64 KiB rather than resetting it, so a row `fn` keeps stays intact and a
+read of any length holds one row and about 64 KiB of text. An error from `fn`
+stops the read and is returned unwrapped. Over the bench's 1,000 rows it is 6
+allocations and 40 KiB, the same as `AllInto` into a buffer the caller already
+owns (`BenchmarkGenEach1000` beside `BenchmarkGenScan1000`), without the
+caller having to own one.
+
 ### A nil value of a NOT NULL JSON column writes JSON null
 
 A NOT NULL json column's Go value is a byte slice, and a nil one bound as SQL

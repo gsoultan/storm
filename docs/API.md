@@ -300,7 +300,7 @@ article.Titel.Eq("x")                // compile error: undefined
 |---|---|
 | every kind | `Asc` `Desc` `AscNullsFirst` `DescNullsLast` |
 | `UUIDCol` | `Eq` `NotEq` `In` `NotIn` |
-| `TextCol` | `Eq` `NotEq` `EqLower` `In` `NotIn` `Gt` `Gte` `Lt` `Lte` `Like` `ILike` |
+| `TextCol` | `Eq` `NotEq` `EqLower` `In` `NotIn` `Gt` `Gte` `Lt` `Lte` `Like` `ILike` `HasPrefix` `HasSuffix` `Contains` |
 | `TimeCol`, `DecimalCol`, numeric | `Eq` `NotEq` `Gt` `Gte` `Lt` `Lte` |
 | `BoolCol` | `Eq` `NotEq` |
 | `BytesCol` | `Eq` `NotEq` |
@@ -310,9 +310,17 @@ article.Titel.Eq("x")                // compile error: undefined
 | jsonb (`JSONCol`) | `Contains` `ContainedBy` `HasAnyKey` `HasAllKeys` `TextLikeAny` `IsEmpty` |
 | `TstzRangeCol` | `Eq` `NotEq` `Overlaps` `ContainsRange` `ContainedBy` |
 
-There is no `Between`, no `HasPrefix`/`HasSuffix`, and no jsonb `Path` — the
-list above is the whole vocabulary, and it is generated from the column's type
-rather than written by hand.
+There is no `Between` and no jsonb `Path` — the list above is the whole
+vocabulary, and it is generated from the column's type rather than written by
+hand.
+
+`HasPrefix`, `HasSuffix` and `Contains` take TEXT, not a pattern. `Like` hands
+the caller's `%` and `_` to the server as wildcards, so a search box wired to
+`Title.Like(q + "%")` lets a user type `%` and read every row; these three
+escape the wildcards — and SQL Server's `[` — on the server, around the bound
+value, so `Title.HasPrefix("50%")` finds titles that start with "50%" and
+nothing else. Nothing is concatenated in Go, so a warm call still allocates
+nothing. Case sensitivity is the column's collation's, as it is for `Like`.
 
 **A column named after something the package already declares** — `query`,
 `row`, `and`, `table` — gets its handle with `Col` appended: `QueryCol`. Only
@@ -377,6 +385,22 @@ page1, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
 page2, _ := article.New().Order(article.Title.Asc(), article.ID.Asc()).
     After(page1[len(page1)-1]).Limit(2).All(ctx, ex, nil)
 ```
+
+`Each` streams: it decodes one row at a time and hands it to a callback, so a
+million-row export holds one row and about 64 KiB of text rather than the
+whole result. The row is the callback's to keep; an error from it stops the
+read and comes back as it is.
+
+```go
+err := article.New().Where(article.PublishedAt.IsNotNull()).
+    Order(article.ID.Asc()).
+    Each(ctx, pool, func(a article.Row) error {
+        return csvw.Write([]string{a.Title, a.Slug})
+    })
+```
+
+The result stays open while the callback runs, so on a transaction — one
+connection — the callback must not run another statement through it.
 
 `AllDistinctOn(ctx, ex, n, dst)` keeps one row for each distinct value of the
 query's first `n` ORDER BY terms: the first, in the query's order. Order by the

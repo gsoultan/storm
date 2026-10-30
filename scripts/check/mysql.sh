@@ -167,6 +167,15 @@ else
     note "a JSON_TABLE lowering stopped using an index (ADR-0010) — $got_idx of 2 plans:"
     tail -6 "$TMP/qout" | sed 's/^/    /' >&2
   fi
+  # The literal text matches ANSWER: a bound value read as a LIKE pattern is
+  # accepted by the server and wrong, the same shape of failure as below.
+  for want in "text_prefix_literal 0" "text_prefix_real 11" "text_contains_pct 0" "text_suffix_real 5"; do
+    set -- $want
+    got="$(awk -v l="$1" '$1==l{print $2;exit}' "$TMP/qout")"
+    if [ "${got:-x}" != "$2" ]; then
+      note "$1 counted ${got:-nothing}, want $2 — a literal text match read its value as a pattern"
+    fi
+  done
   # The recursive traversal ANSWERS, not just its acceptance. A cycle guard
   # that returns the depth bound's worth of rows instead of stopping at the
   # revisited key is accepted by the server and wrong — which is the whole

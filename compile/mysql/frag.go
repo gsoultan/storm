@@ -52,7 +52,24 @@ var frags = map[string]frag{
 	"EqLower": {") = LOWER(" + Placeholder, ")"},
 
 	"NullOrEmpty": {", '') = ''", ""},
+
+	// Literal prefix, suffix and substring matches: the bound value is text,
+	// not a pattern. REPLACE escapes the wildcards on the server under ESCAPE
+	// '!', which, unlike the default backslash, means the same thing whatever
+	// NO_BACKSLASH_ESCAPES says. CONCAT because `||` is OR here. Case
+	// sensitivity follows the column's collation, exactly as Like's does.
+	"TextHasPrefix": {" LIKE CONCAT(" + likeEscOpen + Placeholder, likeEscClose + ", '%') ESCAPE '!'"},
+	"TextHasSuffix": {" LIKE CONCAT('%', " + likeEscOpen + Placeholder, likeEscClose + ") ESCAPE '!'"},
+	"TextContains":  {" LIKE CONCAT('%', " + likeEscOpen + Placeholder, likeEscClose + ", '%') ESCAPE '!'"},
 }
+
+// likeEscOpen and likeEscClose wrap a bound value so that LIKE ... ESCAPE '!'
+// reads it literally. The escape character goes first, or the escapes the
+// later replacements add would themselves be doubled.
+const (
+	likeEscOpen  = "REPLACE(REPLACE(REPLACE("
+	likeEscClose = ", '!', '!!'), '%', '!%'), '_', '!_')"
+)
 
 // wrapped are the operators that are FUNCTIONS in MySQL. They take the
 // identifier as an argument rather than following it, so Frag has to build
