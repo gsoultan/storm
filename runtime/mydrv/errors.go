@@ -69,6 +69,27 @@ const (
 	erLockNowait      = 3572
 )
 
+// Server errors that END the session: whatever the statement was, the server
+// has closed or is closing the connection it was sent on.
+const (
+	erServerShutdown     = 1053
+	erAbortingConnection = 1152
+	erNetPacketTooLarge  = 1153
+	erConnectionKilled   = 1927 // MariaDB
+	erSessionWasKilled   = 3169 // MySQL
+	erInteractionTimeout = 4031 // MySQL: wait_timeout expired
+)
+
+// fatal reports whether a server error leaves its connection unusable.
+func fatal(code uint16) bool {
+	switch code {
+	case erServerShutdown, erAbortingConnection, erNetPacketTooLarge, erConnectionKilled,
+		erSessionWasKilled, erInteractionTimeout:
+		return true
+	}
+	return false
+}
+
 // parseError decodes an ERR packet. p starts at the 0xff marker.
 //
 // The layout is: marker, two-byte code, then — only when the client asked for

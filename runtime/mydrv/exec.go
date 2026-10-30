@@ -36,6 +36,11 @@ type Conn struct {
 	// take a slot breaks its own socket instead of opening another connection.
 	killGate chan struct{}
 
+	// idleSince is when a Pool last took this connection back. A connection
+	// idle long enough to have been dropped by the server is probed before it
+	// is handed out again; see Pool.acquire.
+	idleSince time.Time
+
 	// busy is set while a streaming result set is open. MySQL is strictly
 	// request/response: the unread rows are still on the socket, so a second
 	// statement would read them as its own answer. Without this the failure is
@@ -85,7 +90,14 @@ func Open(ctx context.Context, cfg Config) (*Conn, error) {
 	//
 	// One round trip at connect, amortised by the pool, and it is text protocol
 	// because the prepared protocol refuses SET NAMES.
-	if err := c.query("SET NAMES utf8mb4", nil); err != nil {
+	//
+	// time_zone rides the same round trip. DATETIME stores a wall clock and
+	// mydec reads every one back as UTC, so the session's zone has to BE UTC
+	// or the server's own clock disagrees with the client's: CURRENT_TIMESTAMP(6)
+	// — what storm's now() lowers to — stamped the server's local time, and a
+	// server in UTC+7 wrote every "now" seven hours ahead of what a bound
+	// time.Now() wrote beside it.
+	if err := c.query("SET NAMES utf8mb4, time_zone = '+00:00'", nil); err != nil {
 		nc.Close()
 		return nil, connectErr(ctx, err)
 	}
@@ -128,6 +140,65 @@ func dialTarget(addr string) (network, host string, err error) {
 }
 
 func (x *Conn) Close() error { return x.c.c.Close() }
+
+// settle marks the connection broken when err leaves the socket in a state
+// nobody can vouch for, and returns err.
+//
+// Only a server ERROR, an argument refused before anything was written, and a
+// statement refused because rows are open leave the connection usable. Every
+// other failure — a read that hit EOF because the server restarted or killed
+// the session, a write into a reset socket, a packet that did not parse — means
+// the next statement on this socket fails the same way. Without this a pool
+// kept handing out a dead connection after a failover: one query in, every
+// query out of it was EOF, for as long as the process lived.
+func (x *Conn) settle(err error) error {
+	if err == nil || errors.Is(err, ErrRowsOpen) {
+		return err
+	}
+	var ub *unboundError
+	if errors.As(err, &ub) {
+		return err
+	}
+	var se *Error
+	if errors.As(err, &se) && !fatal(se.Code) {
+		return err
+	}
+	x.mu.Lock()
+	x.broken = true
+	x.mu.Unlock()
+	return err
+}
+
+// alive reports whether an idle connection is still connected, by looking for
+// the bytes a healthy idle MySQL connection never has: an EOF, a reset, or an
+// unsolicited packet — MySQL 8 sends error 4031 before dropping a connection
+// that outstayed wait_timeout.
+//
+// It waits idleProbeWait for an answer, and a timeout is the healthy result.
+// That wait is why the probe runs only on a connection that has sat idle for
+// idleProbeAfter: a pool under load never pays it, and one that has been
+// quiet long enough to lose a connection pays well under a millisecond, once.
+func (x *Conn) alive() bool {
+	if x.c.r.Buffered() > 0 {
+		return false
+	}
+	if err := x.c.c.SetReadDeadline(time.Now().Add(idleProbeWait)); err != nil {
+		return false
+	}
+	_, err := x.c.r.Peek(1)
+	if x.c.c.SetReadDeadline(time.Time{}) != nil {
+		return false
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// idleProbeAfter and idleProbeWait tune Conn.alive. Variables so a test can
+// shorten them.
+var (
+	idleProbeAfter = time.Second
+	idleProbeWait  = time.Millisecond
+)
 
 // watch arranges for the statement about to run to be killed if ctx finishes
 // first, and returns the function that ends the watch.
@@ -308,7 +379,7 @@ func (x *Conn) once(ctx context.Context, sql string, args []any) (int64, error) 
 	if cerr := stop(); cerr != nil {
 		return 0, cerr
 	}
-	return n, classify(err)
+	return n, classify(x.settle(err))
 }
 
 // rows streams one result set.
@@ -339,7 +410,7 @@ func (r *rows) Next() bool {
 	}
 	cols, err := r.s.nextRow()
 	if err != nil {
-		r.err = classify(err)
+		r.err = classify(r.c.settle(err))
 		r.finish()
 		return false
 	}
@@ -417,7 +488,7 @@ func (x *Conn) Query(ctx context.Context, sql string, args []any) (runtime.Rows,
 		if cerr := stop(); cerr != nil {
 			return nil, cerr
 		}
-		return nil, classify(err)
+		return nil, classify(x.settle(err))
 	}
 	x.busy = true
 	return &rows{s: s, c: x, stop: stop}, nil
@@ -437,7 +508,7 @@ func (x *Conn) Exec(ctx context.Context, sql string, args []any) (int64, error) 
 	if code(err) == erUnsupportedPS && len(args) == 0 {
 		return x.simple(ctx, sql)
 	}
-	return n, classify(err)
+	return n, classify(x.settle(err))
 }
 
 // simple runs a statement through COM_QUERY instead of the prepared protocol.
@@ -462,7 +533,7 @@ func (x *Conn) simple(ctx context.Context, sql string) (int64, error) {
 	if cerr := stop(); cerr != nil {
 		return 0, cerr
 	}
-	return n, classify(err)
+	return n, classify(x.settle(err))
 }
 
 // ErrNoCopyProtocol is why CopyFrom is emulated.

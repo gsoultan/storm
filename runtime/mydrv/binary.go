@@ -193,7 +193,12 @@ func (s *stmt) header() error {
 		s.types = nil
 		return nil // OK: no result set
 	}
-	nCols, _, _ := lenEncInt(p)
+	nCols, _, ok := lenEncInt(p)
+	if !ok || nCols > 4096 {
+		// MySQL's own limit is 4096 columns. A count past it is not a result
+		// set, and sizing a slice by it is how a bad byte becomes an OOM.
+		return errShortPacket
+	}
 	if cap(s.types) < int(nCols) {
 		s.types = make([]byte, nCols)
 	}
@@ -203,7 +208,11 @@ func (s *stmt) header() error {
 		if err != nil {
 			return err
 		}
-		s.types[i] = columnType(def)
+		t, ok := columnType(def)
+		if !ok {
+			return errShortRow
+		}
+		s.types[i] = t
 	}
 	if _, err := s.c.readPacket(); err != nil { // EOF
 		return err
@@ -346,26 +355,55 @@ func fixedWidth(t byte) int {
 // columnType pulls the type byte out of a column definition packet. The layout
 // is a run of length-encoded strings — catalog, schema, table, org_table, name,
 // org_name — then a length-encoded 0x0c, charset, length, and the type.
-func columnType(p []byte) byte {
+//
+// ok is false for a definition that ends before its type byte. Every offset
+// here comes from the server, and an unchecked one indexed past the packet —
+// the same class of panic the row readers were hardened against.
+func columnType(p []byte) (byte, bool) {
 	off := 0
-	for i := 0; i < 6; i++ {
-		n, w, _ := lenEncInt(p[off:])
+	for i := 0; i < 7; i++ { // six strings, then the 0x0c marker
+		if off >= len(p) {
+			return 0, false
+		}
+		n, w, ok := lenEncInt(p[off:])
+		if !ok {
+			return 0, false
+		}
+		if i == 6 {
+			n = 0 // the marker is a length with no payload after it
+		}
+		if n > uint64(len(p)) {
+			return 0, false
+		}
 		off += w + int(n)
 	}
-	_, w, _ := lenEncInt(p[off:]) // the 0x0c fixed-length marker
-	off += w
 	off += 2 // charset
 	off += 4 // column length
-	return p[off]
+	if off >= len(p) {
+		return 0, false
+	}
+	return p[off], true
 }
 
+// appendLenEnc writes v as a length-encoded string.
+//
+// All four widths, because the length is the caller's: a value of 64 KiB or
+// more used to be written with a two-byte length, which the server read as the
+// length MODULO 65536 — so a 70,000-byte document was stored as its first
+// 4,464 bytes, followed by the rest of the packet read as the next parameter.
+// Silently, on both engines.
 func appendLenEnc(b, v []byte) []byte {
-	switch {
-	case len(v) < 251:
-		b = append(b, byte(len(v)))
-	default:
+	switch n := uint64(len(v)); {
+	case n < 251:
+		b = append(b, byte(n))
+	case n < 1<<16:
 		b = append(b, 0xfc)
-		b = binary.LittleEndian.AppendUint16(b, uint16(len(v)))
+		b = binary.LittleEndian.AppendUint16(b, uint16(n))
+	case n < 1<<24:
+		b = append(b, 0xfd, byte(n), byte(n>>8), byte(n>>16))
+	default:
+		b = append(b, 0xfe)
+		b = binary.LittleEndian.AppendUint64(b, n)
 	}
 	return append(b, v...)
 }
@@ -613,7 +651,12 @@ func appendBind(b []byte, a any) ([]byte, error) {
 	case time.Time:
 		// The literal MySQL parses back into DATETIME(6). Microseconds always,
 		// so a value that has them does not lose them silently.
-		return appendLenEnc(b, []byte(v.Format("2006-01-02 15:04:05.000000"))), nil
+		//
+		// In UTC, because DATETIME stores the wall clock it is given and
+		// mydec reads it back as UTC. Formatting in the value's own zone
+		// stored time.Now() from a process in UTC+7 seven hours in the
+		// future, and read it back as a different instant than was written.
+		return appendLenEnc(b, appendDateTime(nil, v)), nil
 	case time.Duration:
 		return appendLenEnc(b, appendDuration(nil, v)), nil
 	case runtime.TimeOfDay:
@@ -628,9 +671,14 @@ func appendBind(b []byte, a any) ([]byte, error) {
 	if sr, ok := a.(interface{ String() string }); ok {
 		return appendLenEnc(b, []byte(sr.String())), nil
 	}
-	return nil, fmt.Errorf("mydrv: no binding for %T (a list must be a slice of "+
+	return nil, &unboundError{fmt.Errorf("mydrv: no binding for %T (a list must be a slice of "+
 		"integers, strings, uuids, byte slices or times — it is bound as one JSON "+
-		"document, because MySQL has no array parameter)", a)
+		"document, because MySQL has no array parameter)", a)}
+}
+
+// appendDateTime renders t, in UTC, as the DATETIME(6) literal MySQL parses.
+func appendDateTime(b []byte, t time.Time) []byte {
+	return t.UTC().AppendFormat(b, "2006-01-02 15:04:05.000000")
 }
 
 // appendDuration renders MySQL's TIME, which is a signed span and not a clock

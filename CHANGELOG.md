@@ -14,6 +14,46 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MySQL and MariaDB: five production bugs, found against real servers
+
+`runtime/mydrv` was stress-tested against MySQL 8.4 and MariaDB 11.4 — values
+across every protocol size boundary, non-UTC zones, server-side kills, and a
+server restart under 16 concurrent goroutines. Five failures, all fixed, each
+with a test that fails on the previous release on both servers:
+
+- **A bound value of 64 KiB or more was silently truncated.** Its length was
+  written with two bytes, so the server took it modulo 65,536: a
+  70,000-byte document was stored as its first 4,464 bytes, with no error.
+  This includes the JSON document an `In` list is bound as, so a large key
+  list reached the server cut short. All four length widths are written now.
+- **A value or row of 16 MiB or more broke the connection.** Packets are now
+  split on write and reassembled on read, as the protocol requires. A value
+  past `max_allowed_packet` reports the server's error 1153 by number instead
+  of "broken pipe".
+- **The pool never recovered from a server restart or failover.** An I/O
+  failure did not mark its connection broken, so the pool kept handing out
+  dead sockets: after a restart, the old code failed 18,943 statements in a
+  minute and was still failing when the test stopped. Now any failure that
+  leaves the socket unknown discards the connection, and a connection idle
+  for more than a second is probed (a read that waits at most 1 ms)
+  before it is reused. A connection the server killed costs no statement.
+- **Times depended on two time zones.** A bound `time.Time` was written as
+  the wall clock of its own zone, and `CURRENT_TIMESTAMP(6)` — what `now()`
+  lowers to — in the server's. DATETIME is read back as UTC, so both were off
+  by the zone's offset. Times are bound in UTC, and every session runs with
+  `time_zone = '+00:00'`, set in the round trip that already sets the
+  character set. **Behaviour change:** a DATE bound as a non-UTC midnight now
+  stores the UTC date, which is the day before east of Greenwich. Bind dates
+  as UTC midnight, which is what storm reads them back as.
+- **`Pool.Close` could race a release** and leave an open connection in the
+  idle set with nothing left to close it.
+
+Also: a malformed column definition from the server is an error, not a
+panic; a connection lets go of a buffer that one large value grew past
+1 MiB; and the packet header no longer escapes to the heap, so a 200-row
+query costs **1 allocation, not 214** (`BenchmarkQuery200x8`).
+`TestQueryCostsAboutOneAllocationPerRow` now fails above 0.1 per row.
+
 ### Smaller generated packages, same code paths
 
 Every table package is 10–25% shorter, the widest the most: the 18-column

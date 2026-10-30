@@ -168,10 +168,12 @@ func TestQueryCostsAboutOneAllocationPerRow(t *testing.T) {
 		r.Close()
 	})
 	perRow := avg / 200
-	// go-sql-driver costs 8.07 on this shape and this adapter costs 1.07. Two
-	// is a ceiling that leaves room for a Go release changing something and
-	// still fails the ten-per-row version this replaced.
-	if perRow > 2 {
+	// go-sql-driver costs 8.07 on this shape, and this adapter cost 1.07 until
+	// the packet header stopped escaping and now costs one allocation per
+	// QUERY. A tenth per row is a ceiling that leaves room for a Go release
+	// changing something and still fails the 1.07 — the per-packet header
+	// allocation — if it comes back.
+	if perRow > 0.1 {
 		t.Fatalf("%.2f allocations per row (%.0f per 200-row query); "+
 			"the adapter exists because this is about one", perRow, avg)
 	}
