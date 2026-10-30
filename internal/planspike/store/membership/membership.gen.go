@@ -1388,6 +1388,8 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 	}
 	defer rows.Close()
 	var sl runtime.Slab
+	// What All learned about this shape, which Reserve caps at one chunk.
+	sl.Reserve(st.SlabHint())
 	for rows.Next() {
 		var r Row
 		if err := scan(rows.RawValues(), &r, &sl); err != nil {
@@ -1398,9 +1400,13 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 		}
 		if sl.Size() >= runtime.EachSlabCap {
 			// Retired, not reset: strings fn kept still point into it.
+			// The next one is a single full chunk: a result this long is
+			// past growing from 128 bytes.
 			sl = runtime.Slab{}
+			sl.Reserve(runtime.EachSlabCap)
 		}
 	}
+	st.ObserveSlab(sl.Size())
 	return rows.Err()
 }
 
