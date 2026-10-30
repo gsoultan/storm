@@ -110,28 +110,63 @@ func (p *Pool) acquire(ctx context.Context) (*Conn, error) {
 	}
 	// Prefer a warm connection: it has a prepared-statement cache, and storm's
 	// generated code runs the same handful of statements over and over.
-	select {
-	case c := <-p.idle:
-		return c, nil
-	default:
+	for {
+		select {
+		case c := <-p.idle:
+			if p.usable(c) {
+				return c, nil
+			}
+			continue
+		default:
+		}
+		break
 	}
 	wait, stop := p.waitFor()
 	defer stop()
+	for {
+		c, fresh, err := p.await(ctx, wait)
+		if err != nil || fresh || p.usable(c) {
+			return c, err
+		}
+	}
+}
+
+// usable vets an idle connection before it is handed out, and discards it —
+// token included — when the server has dropped it in the meantime.
+//
+// This is what makes a failover, a server restart or a wait_timeout cost
+// nothing visible: without it every connection the pool held across the
+// event was handed out once more to fail with EOF, so a restart surfaced as
+// MaxConns failed statements. A connection used within idleProbeAfter is not
+// probed, because a pool under load is the common case and a server that
+// went away a moment ago will be noticed by the statement that settles it.
+func (p *Pool) usable(c *Conn) bool {
+	if time.Since(c.idleSince) < idleProbeAfter || c.alive() {
+		return true
+	}
+	_ = c.Close()
+	<-p.sem
+	return false
+}
+
+// await waits for an idle connection or a token to open one. fresh reports a
+// connection opened here, which has nothing to vet.
+func (p *Pool) await(ctx context.Context, wait <-chan time.Time) (c *Conn, fresh bool, err error) {
 	select {
 	case c := <-p.idle:
-		return c, nil
+		return c, false, nil
 	case p.sem <- struct{}{}:
 		c, err := Open(ctx, p.cfg)
 		if err != nil {
 			<-p.sem
-			return nil, err
+			return nil, false, err
 		}
 		c.killGate = p.killGate
-		return c, nil
+		return c, true, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	case <-wait:
-		return nil, ErrPoolExhausted
+		return nil, false, ErrPoolExhausted
 	}
 }
 
@@ -160,17 +195,21 @@ func (p *Pool) release(c *Conn) {
 	broken := c.broken
 	c.mu.Unlock()
 
+	// Under the pool's lock, so that Close cannot run between the check and
+	// the hand-back: a connection pushed after Close drained the idle set
+	// would sit there, open, with nothing left to close it.
 	p.mu.Lock()
-	closed := p.closed
-	p.mu.Unlock()
-
-	if !broken && !closed {
+	if !broken && !p.closed {
+		c.c.trim()
+		c.idleSince = time.Now()
 		select {
 		case p.idle <- c:
+			p.mu.Unlock()
 			return
 		default:
 		}
 	}
+	p.mu.Unlock()
 	_ = c.Close()
 	<-p.sem
 }

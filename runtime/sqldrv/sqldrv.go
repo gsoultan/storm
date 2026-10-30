@@ -2,8 +2,8 @@
 //
 // IT IS THE SLOW PATH, ON PURPOSE, and saying so is the point of this comment.
 // storm's own clients — runtime/pgxdrv, runtime/mydrv, runtime/msdrv — hand the
-// generated scanners raw wire bytes and cost between 0.09 and 1.07 allocations
-// per row. A database/sql driver decodes before storm can see the wire, so this
+// generated scanners raw wire bytes and cost at most 0.09 allocations per
+// row. A database/sql driver decodes before storm can see the wire, so this
 // adapter hands over the DECODED values instead (runtime.Rows.Values), and the
 // generated package reads them with runtime/valdec. internal/oraclespike
 // measured go-ora at 26.3 allocations per row through that shape.

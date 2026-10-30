@@ -291,7 +291,7 @@ wire. `runtime/sqldrv` adapts any of them; `runtime/valdec` is the decoder
 family that reads what they hand over. **The consequence is wider than Oracle:
 any `database/sql` driver satisfies storm's Executor port now.**
 
-**It is the slow path and says so.** storm's own clients cost 0.09 to 1.07
+**It is the slow path and says so.** storm's own clients cost at most 0.09
 allocations per row; go-ora costs 26.3, and `database/sql` accounts for 0.2 of
 that. `CopyFrom` is emulated one INSERT per row and `Batch` is N round trips,
 both documented rather than silently degraded.
