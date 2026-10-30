@@ -14,6 +14,30 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Smaller generated packages, same code paths
+
+Every table package is 10–25% shorter, the widest the most: the 18-column
+`internal/planspike` user table went from 5,594 lines to 4,182, and the
+committed packages from 74,232 lines to 65,896. Nothing an adopter calls
+changed, and nothing on the warm path did either: the SQL is the same, and
+re-measured, the warm builder is still 0 allocations and a read of one row or
+of 1,000 still 6 (`BenchmarkGenGetOne`, `BenchmarkGenScan1000`).
+
+- The predicate fragment tables are keyed by operator (`opEq: {A: ...}`), so
+  an operator a column does not take is absent rather than a `{},` line.
+  That was 34 lines per column, twice over for a table that joins.
+- Switch arms with identical bodies share one `case 0, 3, 7:` — the arena
+  stores in `leaf` and `bindPreds` repeat per column of a type.
+- One line per column in `orderTable`, one row per target for the upsert's
+  assignable columns, and one `insertArgs`/`updateArgs` per package where
+  four write paths each had their own copy of the per-column switch.
+
+What did not move, and why: the column-independent terminals (`AllInto`,
+`Each`, `Count`, ...) are still emitted per table. Routing their row loop
+through a shared generic helper means calling the scanner through a function
+value, which escape analysis cannot see into, so the caller's `Slab` moves to
+the heap and every read gains an allocation.
+
 ### `HasPrefix`, `HasSuffix` and `Contains`: text matches that take text
 
 `Like` takes a pattern, so a search box wired to `Title.Like(q + "%")` lets

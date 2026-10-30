@@ -689,21 +689,14 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 func (q *Query) leaf(p Pred) {
 	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
-		case 0:
+		case 0, 7:
 			if int(q.nar) >= 3 {
 				q.over = true
 				return
 			}
 			q.anyRaw[q.nar] = p.anyRaw
 			q.nar++
-		case 3:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
-		case 4:
+		case 3, 4:
 			if int(q.nas) >= 3 {
 				q.over = true
 				return
@@ -717,13 +710,6 @@ func (q *Query) leaf(p Pred) {
 			}
 			q.anyI32[q.nai32] = p.anyI32
 			q.nai32++
-		case 7:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
 		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
@@ -733,48 +719,27 @@ func (q *Query) leaf(p Pred) {
 		return
 	}
 	switch p.col {
-	case 0:
+	case 0, 7:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
 		}
 		q.raws[q.nr] = p.raw
 		q.nr++
-	case 1:
+	case 1, 2, 5:
 		if int(q.ntm) >= 4 {
 			q.over = true
 			return
 		}
 		q.tims[q.ntm] = p.tim
 		q.ntm++
-	case 2:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
-	case 3:
+	case 3, 4:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
 		}
 		q.strs[q.ns] = p.str
 		q.ns++
-	case 4:
-		if int(q.ns) >= 6 {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = p.str
-		q.ns++
-	case 5:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
 	case 6:
 		if int(q.nn) >= 6 {
 			q.over = true
@@ -782,13 +747,6 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.nums[q.nn] = p.num
 		q.nn++
-	case 7:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = p.raw
-		q.nr++
 	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 }
@@ -904,54 +862,14 @@ var lockCaches = func() [8][2]*runtime.TreeCache {
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
 var orderTable = [nCols][4]string{
-	{ // id
-		"\"id\"",
-		"\"id\" DESC",
-		"\"id\" ASC NULLS FIRST",
-		"\"id\" DESC NULLS LAST",
-	},
-	{ // created_at
-		"\"created_at\"",
-		"\"created_at\" DESC",
-		"\"created_at\" ASC NULLS FIRST",
-		"\"created_at\" DESC NULLS LAST",
-	},
-	{ // updated_at
-		"\"updated_at\"",
-		"\"updated_at\" DESC",
-		"\"updated_at\" ASC NULLS FIRST",
-		"\"updated_at\" DESC NULLS LAST",
-	},
-	{ // title
-		"\"title\"",
-		"\"title\" DESC",
-		"\"title\" ASC NULLS FIRST",
-		"\"title\" DESC NULLS LAST",
-	},
-	{ // body
-		"\"body\"",
-		"\"body\" DESC",
-		"\"body\" ASC NULLS FIRST",
-		"\"body\" DESC NULLS LAST",
-	},
-	{ // published_at
-		"\"published_at\"",
-		"\"published_at\" DESC",
-		"\"published_at\" ASC NULLS FIRST",
-		"\"published_at\" DESC NULLS LAST",
-	},
-	{ // view_count
-		"\"view_count\"",
-		"\"view_count\" DESC",
-		"\"view_count\" ASC NULLS FIRST",
-		"\"view_count\" DESC NULLS LAST",
-	},
-	{ // author_id
-		"\"author_id\"",
-		"\"author_id\" DESC",
-		"\"author_id\" ASC NULLS FIRST",
-		"\"author_id\" DESC NULLS LAST",
-	},
+	{"\"id\"", "\"id\" DESC", "\"id\" ASC NULLS FIRST", "\"id\" DESC NULLS LAST"},
+	{"\"created_at\"", "\"created_at\" DESC", "\"created_at\" ASC NULLS FIRST", "\"created_at\" DESC NULLS LAST"},
+	{"\"updated_at\"", "\"updated_at\" DESC", "\"updated_at\" ASC NULLS FIRST", "\"updated_at\" DESC NULLS LAST"},
+	{"\"title\"", "\"title\" DESC", "\"title\" ASC NULLS FIRST", "\"title\" DESC NULLS LAST"},
+	{"\"body\"", "\"body\" DESC", "\"body\" ASC NULLS FIRST", "\"body\" DESC NULLS LAST"},
+	{"\"published_at\"", "\"published_at\" DESC", "\"published_at\" ASC NULLS FIRST", "\"published_at\" DESC NULLS LAST"},
+	{"\"view_count\"", "\"view_count\" DESC", "\"view_count\" ASC NULLS FIRST", "\"view_count\" DESC NULLS LAST"},
+	{"\"author_id\"", "\"author_id\" DESC", "\"author_id\" ASC NULLS FIRST", "\"author_id\" DESC NULLS LAST"},
 }
 
 // identTable is each column's bare quoted name, for the left side of a
@@ -999,328 +917,88 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [9][34]runtime.Frag{
 	{ // id
-		{}, // opNone
-		{A: "\"id\" = $", B: ""},
-		{A: "\"id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"id\" = ANY($", B: ")"},
-		{A: "\"id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"id\" = $"},
+		opNotEq: {A: "\"id\" <> $"},
+		opIn:    {A: "\"id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"id\" <> ALL($", B: ")"},
 	},
 	{ // created_at
-		{}, // opNone
-		{A: "\"created_at\" = $", B: ""},
-		{A: "\"created_at\" <> $", B: ""},
-		{A: "\"created_at\" > $", B: ""},
-		{A: "\"created_at\" >= $", B: ""},
-		{A: "\"created_at\" < $", B: ""},
-		{A: "\"created_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"created_at\" = $"},
+		opNotEq: {A: "\"created_at\" <> $"},
+		opGt:    {A: "\"created_at\" > $"},
+		opGte:   {A: "\"created_at\" >= $"},
+		opLt:    {A: "\"created_at\" < $"},
+		opLte:   {A: "\"created_at\" <= $"},
 	},
 	{ // updated_at
-		{}, // opNone
-		{A: "\"updated_at\" = $", B: ""},
-		{A: "\"updated_at\" <> $", B: ""},
-		{A: "\"updated_at\" > $", B: ""},
-		{A: "\"updated_at\" >= $", B: ""},
-		{A: "\"updated_at\" < $", B: ""},
-		{A: "\"updated_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"updated_at\" = $"},
+		opNotEq: {A: "\"updated_at\" <> $"},
+		opGt:    {A: "\"updated_at\" > $"},
+		opGte:   {A: "\"updated_at\" >= $"},
+		opLt:    {A: "\"updated_at\" < $"},
+		opLte:   {A: "\"updated_at\" <= $"},
 	},
 	{ // title
-		{}, // opNone
-		{A: "\"title\" = $", B: ""},
-		{A: "\"title\" <> $", B: ""},
-		{A: "\"title\" > $", B: ""},
-		{A: "\"title\" >= $", B: ""},
-		{A: "\"title\" < $", B: ""},
-		{A: "\"title\" <= $", B: ""},
-		{A: "lower(\"title\") = lower($", B: ")"},
-		{A: "\"title\" LIKE $", B: ""},
-		{A: "\"title\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"title\" = ANY($", B: ")"},
-		{A: "\"title\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"title\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"title\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"title\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"title\" = $"},
+		opNotEq:         {A: "\"title\" <> $"},
+		opGt:            {A: "\"title\" > $"},
+		opGte:           {A: "\"title\" >= $"},
+		opLt:            {A: "\"title\" < $"},
+		opLte:           {A: "\"title\" <= $"},
+		opEqLower:       {A: "lower(\"title\") = lower($", B: ")"},
+		opLike:          {A: "\"title\" LIKE $"},
+		opILike:         {A: "\"title\" ILIKE $"},
+		opIn:            {A: "\"title\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"title\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"title\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"title\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"title\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // body
-		{}, // opNone
-		{A: "\"body\" = $", B: ""},
-		{A: "\"body\" <> $", B: ""},
-		{A: "\"body\" > $", B: ""},
-		{A: "\"body\" >= $", B: ""},
-		{A: "\"body\" < $", B: ""},
-		{A: "\"body\" <= $", B: ""},
-		{A: "lower(\"body\") = lower($", B: ")"},
-		{A: "\"body\" LIKE $", B: ""},
-		{A: "\"body\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"body\" = ANY($", B: ")"},
-		{A: "\"body\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"body\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"body\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"body\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"body\" = $"},
+		opNotEq:         {A: "\"body\" <> $"},
+		opGt:            {A: "\"body\" > $"},
+		opGte:           {A: "\"body\" >= $"},
+		opLt:            {A: "\"body\" < $"},
+		opLte:           {A: "\"body\" <= $"},
+		opEqLower:       {A: "lower(\"body\") = lower($", B: ")"},
+		opLike:          {A: "\"body\" LIKE $"},
+		opILike:         {A: "\"body\" ILIKE $"},
+		opIn:            {A: "\"body\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"body\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"body\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"body\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"body\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // published_at
-		{}, // opNone
-		{A: "\"published_at\" = $", B: ""},
-		{A: "\"published_at\" <> $", B: ""},
-		{A: "\"published_at\" > $", B: ""},
-		{A: "\"published_at\" >= $", B: ""},
-		{A: "\"published_at\" < $", B: ""},
-		{A: "\"published_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"published_at\" IS NULL", B: ""},
-		{A: "\"published_at\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opEq:        {A: "\"published_at\" = $"},
+		opNotEq:     {A: "\"published_at\" <> $"},
+		opGt:        {A: "\"published_at\" > $"},
+		opGte:       {A: "\"published_at\" >= $"},
+		opLt:        {A: "\"published_at\" < $"},
+		opLte:       {A: "\"published_at\" <= $"},
+		opIsNull:    {A: "\"published_at\" IS NULL"},
+		opIsNotNull: {A: "\"published_at\" IS NOT NULL"},
 	},
 	{ // view_count
-		{}, // opNone
-		{A: "\"view_count\" = $", B: ""},
-		{A: "\"view_count\" <> $", B: ""},
-		{A: "\"view_count\" > $", B: ""},
-		{A: "\"view_count\" >= $", B: ""},
-		{A: "\"view_count\" < $", B: ""},
-		{A: "\"view_count\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"view_count\" = ANY($", B: ")"},
-		{A: "\"view_count\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"view_count\" = $"},
+		opNotEq: {A: "\"view_count\" <> $"},
+		opGt:    {A: "\"view_count\" > $"},
+		opGte:   {A: "\"view_count\" >= $"},
+		opLt:    {A: "\"view_count\" < $"},
+		opLte:   {A: "\"view_count\" <= $"},
+		opIn:    {A: "\"view_count\" = ANY($", B: ")"},
+		opNotIn: {A: "\"view_count\" <> ALL($", B: ")"},
 	},
 	{ // author_id
-		{}, // opNone
-		{A: "\"author_id\" = $", B: ""},
-		{A: "\"author_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"author_id\" = ANY($", B: ")"},
-		{A: "\"author_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"author_id\" = $"},
+		opNotEq: {A: "\"author_id\" <> $"},
+		opIn:    {A: "\"author_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"author_id\" <> ALL($", B: ")"},
 	},
 	{ // relation Comments (pseudo-column)
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "EXISTS (SELECT 1 FROM \"comments\" AS \"_storm_e\" WHERE \"_storm_e\".\"post_id\" = \"posts\".\"id\")"},
-		{A: "NOT EXISTS (SELECT 1 FROM \"comments\" AS \"_storm_e\" WHERE \"_storm_e\".\"post_id\" = \"posts\".\"id\")"},
+		opExists:    {A: "EXISTS (SELECT 1 FROM \"comments\" AS \"_storm_e\" WHERE \"_storm_e\".\"post_id\" = \"posts\".\"id\")"},
+		opNotExists: {A: "NOT EXISTS (SELECT 1 FROM \"comments\" AS \"_storm_e\" WHERE \"_storm_e\".\"post_id\" = \"posts\".\"id\")"},
 	},
 }
 
@@ -1669,15 +1347,11 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
-			case 0:
+			case 0, 7:
 				b.anyRaw[nar] = q.anyRaw[nar]
 				v = append(v, &b.anyRaw[nar])
 				nar++
-			case 3:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
-			case 4:
+			case 3, 4:
 				b.anyStr[nas] = q.anyStr[nas]
 				v = append(v, &b.anyStr[nas])
 				nas++
@@ -1685,46 +1359,26 @@ func (q Query) bindPreds(b *binder) []any {
 				b.anyI32[nai32] = q.anyI32[nai32]
 				v = append(v, &b.anyI32[nai32])
 				nai32++
-			case 7:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
 			}
 			continue
 		}
 		switch t.Col() {
-		case 0:
+		case 0, 7:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
-		case 1:
+		case 1, 2, 5:
 			b.tims[ntm] = q.tims[ntm]
 			v = append(v, &b.tims[ntm])
 			ntm++
-		case 2:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
-		case 3:
+		case 3, 4:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
-		case 4:
-			b.strs[ns] = q.strs[ns]
-			v = append(v, &b.strs[ns])
-			ns++
-		case 5:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
 		case 6:
 			b.nums[nn] = q.nums[nn]
 			v = append(v, &b.nums[nn])
 			nn++
-		case 7:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
 		}
 	}
 	b.vals = v
@@ -2297,6 +1951,34 @@ func Create() Ins { return Ins{} }
 // Assigned reports the mask, which is also the statement key.
 func (n Ins) Assigned() uint64 { return n.set }
 
+// insertArgs appends the values n assigns, in column order.
+func (n *Ins) insertArgs(args []any) []any {
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.ID)
+		case 1:
+			args = append(args, n.row.CreatedAt)
+		case 2:
+			args = append(args, n.row.UpdatedAt)
+		case 3:
+			args = append(args, n.row.Title)
+		case 4:
+			args = append(args, n.row.Body)
+		case 5:
+			args = append(args, n.row.PublishedAt.Arg())
+		case 6:
+			args = append(args, n.row.ViewCount)
+		case 7:
+			args = append(args, n.row.AuthorID)
+		}
+	}
+	return args
+}
+
 func (n *Ins) SetID(v [16]byte) {
 	n.row.ID = v
 	n.set |= iID
@@ -2410,28 +2092,23 @@ var conflictSpecs = []string{
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
 	set := make([]string, 0, 6)
-	switch i {
-	case 0:
-		if mask&(1<<2) != 0 {
-			set = append(set, "updated_at")
-		}
-		if mask&(1<<3) != 0 {
-			set = append(set, "title")
-		}
-		if mask&(1<<4) != 0 {
-			set = append(set, "body")
-		}
-		if mask&(1<<5) != 0 {
-			set = append(set, "published_at")
-		}
-		if mask&(1<<6) != 0 {
-			set = append(set, "view_count")
-		}
-		if mask&(1<<7) != 0 {
-			set = append(set, "author_id")
+	for j, bit := range assignBits[i] {
+		if mask&(1<<bit) != 0 {
+			set = append(set, assignNames[i][j])
 		}
 	}
 	return set
+}
+
+// assignBits and assignNames are, per target, the insert bit and the name
+// of each column it may overwrite. An empty row is a target whose key
+// covers every updatable column.
+var assignBits = [1][]uint8{
+	{2, 3, 4, 5, 6, 7},
+}
+
+var assignNames = [1][]string{
+	{"updated_at", "title", "body", "published_at", "view_count", "author_id"},
 }
 
 // OnConflictID upserts on the unique index over (id).
@@ -2545,29 +2222,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return Row{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.Title)
-		case 4:
-			args = append(args, n.row.Body)
-		case 5:
-			args = append(args, n.row.PublishedAt.Arg())
-		case 6:
-			args = append(args, n.row.ViewCount)
-		case 7:
-			args = append(args, n.row.AuthorID)
-		}
-	}
+	args = n.insertArgs(args)
 	var out Row
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
@@ -2707,15 +2362,7 @@ func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, err
 // RETURNING here would mean scanning a result per statement, which is
 // exactly the per-row work a batch exists to avoid.
 func InsertOp(r Row) runtime.BatchOp {
-	var mask uint64
-	mask |= 1 << 0
-	mask |= 1 << 1
-	mask |= 1 << 2
-	mask |= 1 << 3
-	mask |= 1 << 4
-	mask |= 1 << 5
-	mask |= 1 << 6
-	mask |= 1 << 7
+	const mask = 1<<nInsertable - 1 // every insertable column
 	st := stmtForInsertNoReturn(mask, 0, 0)
 	args := make([]any, 0, 8)
 	args = append(args, r.ID)
@@ -2754,29 +2401,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		return runtime.BatchOp{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.Title)
-		case 4:
-			args = append(args, n.row.Body)
-		case 5:
-			args = append(args, n.row.PublishedAt.Arg())
-		case 6:
-			args = append(args, n.row.ViewCount)
-		case 7:
-			args = append(args, n.row.AuthorID)
-		}
-	}
+	args = n.insertArgs(args)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
 }
 
@@ -2825,25 +2450,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 	}
 	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.Title)
-		case 2:
-			args = append(args, m.row.Body)
-		case 3:
-			args = append(args, m.row.PublishedAt.Arg())
-		case 4:
-			args = append(args, m.row.ViewCount)
-		case 5:
-			args = append(args, m.row.AuthorID)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, true
 }
@@ -2921,25 +2528,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.Title)
-		case 2:
-			args = append(args, m.row.Body)
-		case 3:
-			args = append(args, m.row.PublishedAt.Arg())
-		case 4:
-			args = append(args, m.row.ViewCount)
-		case 5:
-			args = append(args, m.row.AuthorID)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	if m.expr != 0 {
 		return m.updateReturning(ctx, ex, st, args)
@@ -3198,25 +2787,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 		b := binders.Get()
 		defer putBinder(b)
 		args := make([]any, 0, st.NArg)
-		for i := 0; i < nUpdatable; i++ {
-			if m.dirty&(1<<uint(i)) == 0 {
-				continue
-			}
-			switch i {
-			case 0:
-				args = append(args, m.row.UpdatedAt)
-			case 1:
-				args = append(args, m.row.Title)
-			case 2:
-				args = append(args, m.row.Body)
-			case 3:
-				args = append(args, m.row.PublishedAt.Arg())
-			case 4:
-				args = append(args, m.row.ViewCount)
-			case 5:
-				args = append(args, m.row.AuthorID)
-			}
-		}
+		args = m.updateArgs(args)
 		return run(st.SQL, append(args, q.bindPreds(b)...))
 	}
 }

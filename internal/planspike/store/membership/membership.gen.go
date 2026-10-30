@@ -603,14 +603,7 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 func (q *Query) leaf(p Pred) {
 	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
-		case 0:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
-		case 1:
+		case 0, 1:
 			if int(q.nar) >= 3 {
 				q.over = true
 				return
@@ -633,14 +626,7 @@ func (q *Query) leaf(p Pred) {
 		return
 	}
 	switch p.col {
-	case 0:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = p.raw
-		q.nr++
-	case 1:
+	case 0, 1:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
@@ -733,30 +719,10 @@ var lockCaches = func() [8][2]*runtime.TreeCache {
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
 var orderTable = [nCols][4]string{
-	{ // user_id
-		"\"user_id\"",
-		"\"user_id\" DESC",
-		"\"user_id\" ASC NULLS FIRST",
-		"\"user_id\" DESC NULLS LAST",
-	},
-	{ // org_id
-		"\"org_id\"",
-		"\"org_id\" DESC",
-		"\"org_id\" ASC NULLS FIRST",
-		"\"org_id\" DESC NULLS LAST",
-	},
-	{ // role
-		"\"role\"",
-		"\"role\" DESC",
-		"\"role\" ASC NULLS FIRST",
-		"\"role\" DESC NULLS LAST",
-	},
-	{ // joined_at
-		"\"joined_at\"",
-		"\"joined_at\" DESC",
-		"\"joined_at\" ASC NULLS FIRST",
-		"\"joined_at\" DESC NULLS LAST",
-	},
+	{"\"user_id\"", "\"user_id\" DESC", "\"user_id\" ASC NULLS FIRST", "\"user_id\" DESC NULLS LAST"},
+	{"\"org_id\"", "\"org_id\" DESC", "\"org_id\" ASC NULLS FIRST", "\"org_id\" DESC NULLS LAST"},
+	{"\"role\"", "\"role\" DESC", "\"role\" ASC NULLS FIRST", "\"role\" DESC NULLS LAST"},
+	{"\"joined_at\"", "\"joined_at\" DESC", "\"joined_at\" ASC NULLS FIRST", "\"joined_at\" DESC NULLS LAST"},
 }
 
 // identTable is each column's bare quoted name, for the left side of a
@@ -800,148 +766,40 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [4][34]runtime.Frag{
 	{ // user_id
-		{}, // opNone
-		{A: "\"user_id\" = $", B: ""},
-		{A: "\"user_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"user_id\" = ANY($", B: ")"},
-		{A: "\"user_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"user_id\" = $"},
+		opNotEq: {A: "\"user_id\" <> $"},
+		opIn:    {A: "\"user_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"user_id\" <> ALL($", B: ")"},
 	},
 	{ // org_id
-		{}, // opNone
-		{A: "\"org_id\" = $", B: ""},
-		{A: "\"org_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"org_id\" = ANY($", B: ")"},
-		{A: "\"org_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"org_id\" = $"},
+		opNotEq: {A: "\"org_id\" <> $"},
+		opIn:    {A: "\"org_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"org_id\" <> ALL($", B: ")"},
 	},
 	{ // role
-		{}, // opNone
-		{A: "\"role\" = $", B: ""},
-		{A: "\"role\" <> $", B: ""},
-		{A: "\"role\" > $", B: ""},
-		{A: "\"role\" >= $", B: ""},
-		{A: "\"role\" < $", B: ""},
-		{A: "\"role\" <= $", B: ""},
-		{A: "lower(\"role\") = lower($", B: ")"},
-		{A: "\"role\" LIKE $", B: ""},
-		{A: "\"role\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"role\" = ANY($", B: ")"},
-		{A: "\"role\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"role\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"role\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"role\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"role\" = $"},
+		opNotEq:         {A: "\"role\" <> $"},
+		opGt:            {A: "\"role\" > $"},
+		opGte:           {A: "\"role\" >= $"},
+		opLt:            {A: "\"role\" < $"},
+		opLte:           {A: "\"role\" <= $"},
+		opEqLower:       {A: "lower(\"role\") = lower($", B: ")"},
+		opLike:          {A: "\"role\" LIKE $"},
+		opILike:         {A: "\"role\" ILIKE $"},
+		opIn:            {A: "\"role\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"role\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"role\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"role\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"role\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // joined_at
-		{}, // opNone
-		{A: "\"joined_at\" = $", B: ""},
-		{A: "\"joined_at\" <> $", B: ""},
-		{A: "\"joined_at\" > $", B: ""},
-		{A: "\"joined_at\" >= $", B: ""},
-		{A: "\"joined_at\" < $", B: ""},
-		{A: "\"joined_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"joined_at\" = $"},
+		opNotEq: {A: "\"joined_at\" <> $"},
+		opGt:    {A: "\"joined_at\" > $"},
+		opGte:   {A: "\"joined_at\" >= $"},
+		opLt:    {A: "\"joined_at\" < $"},
+		opLte:   {A: "\"joined_at\" <= $"},
 	},
 }
 
@@ -1273,11 +1131,7 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
-			case 0:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
-			case 1:
+			case 0, 1:
 				b.anyRaw[nar] = q.anyRaw[nar]
 				v = append(v, &b.anyRaw[nar])
 				nar++
@@ -1289,11 +1143,7 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		}
 		switch t.Col() {
-		case 0:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
-		case 1:
+		case 0, 1:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
@@ -1665,6 +1515,26 @@ func Create() Ins { return Ins{} }
 // Assigned reports the mask, which is also the statement key.
 func (n Ins) Assigned() uint64 { return n.set }
 
+// insertArgs appends the values n assigns, in column order.
+func (n *Ins) insertArgs(args []any) []any {
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.UserID)
+		case 1:
+			args = append(args, n.row.OrgID)
+		case 2:
+			args = append(args, n.row.Role)
+		case 3:
+			args = append(args, n.row.JoinedAt)
+		}
+	}
+	return args
+}
+
 func (n *Ins) SetUserID(v [16]byte) {
 	n.row.UserID = v
 	n.set |= iUserID
@@ -1731,16 +1601,23 @@ var conflictSpecs = []string{
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
 	set := make([]string, 0, 2)
-	switch i {
-	case 0:
-		if mask&(1<<2) != 0 {
-			set = append(set, "role")
-		}
-		if mask&(1<<3) != 0 {
-			set = append(set, "joined_at")
+	for j, bit := range assignBits[i] {
+		if mask&(1<<bit) != 0 {
+			set = append(set, assignNames[i][j])
 		}
 	}
 	return set
+}
+
+// assignBits and assignNames are, per target, the insert bit and the name
+// of each column it may overwrite. An empty row is a target whose key
+// covers every updatable column.
+var assignBits = [1][]uint8{
+	{2, 3},
+}
+
+var assignNames = [1][]string{
+	{"role", "joined_at"},
 }
 
 // OnConflictUserIDOrgID upserts on the unique index over (user_id, org_id).
@@ -1827,21 +1704,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return Row{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.UserID)
-		case 1:
-			args = append(args, n.row.OrgID)
-		case 2:
-			args = append(args, n.row.Role)
-		case 3:
-			args = append(args, n.row.JoinedAt)
-		}
-	}
+	args = n.insertArgs(args)
 	var out Row
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
@@ -1969,11 +1832,7 @@ func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, err
 // RETURNING here would mean scanning a result per statement, which is
 // exactly the per-row work a batch exists to avoid.
 func InsertOp(r Row) runtime.BatchOp {
-	var mask uint64
-	mask |= 1 << 0
-	mask |= 1 << 1
-	mask |= 1 << 2
-	mask |= 1 << 3
+	const mask = 1<<nInsertable - 1 // every insertable column
 	st := stmtForInsertNoReturn(mask, 0)
 	args := make([]any, 0, 4)
 	args = append(args, r.UserID)
@@ -2008,21 +1867,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		return runtime.BatchOp{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.UserID)
-		case 1:
-			args = append(args, n.row.OrgID)
-		case 2:
-			args = append(args, n.row.Role)
-		case 3:
-			args = append(args, n.row.JoinedAt)
-		}
-	}
+	args = n.insertArgs(args)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
 }
 
@@ -2062,17 +1907,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 	}
 	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.Role)
-		case 1:
-			args = append(args, m.row.JoinedAt)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.UserID)
 	args = append(args, m.row.OrgID)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, true
@@ -2149,17 +1984,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.Role)
-		case 1:
-			args = append(args, m.row.JoinedAt)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.UserID)
 	args = append(args, m.row.OrgID)
 	if m.expr != 0 {
@@ -2409,17 +2234,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 		b := binders.Get()
 		defer putBinder(b)
 		args := make([]any, 0, st.NArg)
-		for i := 0; i < nUpdatable; i++ {
-			if m.dirty&(1<<uint(i)) == 0 {
-				continue
-			}
-			switch i {
-			case 0:
-				args = append(args, m.row.Role)
-			case 1:
-				args = append(args, m.row.JoinedAt)
-			}
-		}
+		args = m.updateArgs(args)
 		return run(st.SQL, append(args, q.bindPreds(b)...))
 	}
 }

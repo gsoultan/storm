@@ -988,7 +988,7 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 func (q *Query) leaf(p Pred) {
 	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
-		case 0:
+		case 0, 16:
 			if int(q.nar) >= 3 {
 				q.over = true
 				return
@@ -1002,35 +1002,7 @@ func (q *Query) leaf(p Pred) {
 			}
 			q.anyI32[q.nai32] = p.anyI32
 			q.nai32++
-		case 5:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
-		case 6:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
-		case 7:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
-		case 8:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
-		case 9:
+		case 5, 6, 7, 8, 9, 11:
 			if int(q.nas) >= 3 {
 				q.over = true
 				return
@@ -1044,13 +1016,6 @@ func (q *Query) leaf(p Pred) {
 			}
 			q.anyI16[q.nai16] = p.anyI16
 			q.nai16++
-		case 11:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
 		case 15:
 			if int(q.nadec) >= 3 {
 				q.over = true
@@ -1058,13 +1023,6 @@ func (q *Query) leaf(p Pred) {
 			}
 			q.anyDec[q.nadec] = p.anyDec
 			q.nadec++
-		case 16:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
 		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
@@ -1074,56 +1032,28 @@ func (q *Query) leaf(p Pred) {
 		return
 	}
 	switch p.col {
-	case 0:
+	case 0, 16:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
 		}
 		q.raws[q.nr] = p.raw
 		q.nr++
-	case 1:
+	case 1, 2, 4:
 		if int(q.ntm) >= 4 {
 			q.over = true
 			return
 		}
 		q.tims[q.ntm] = p.tim
 		q.ntm++
-	case 2:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
-	case 3:
+	case 3, 10:
 		if int(q.nn) >= 6 {
 			q.over = true
 			return
 		}
 		q.nums[q.nn] = p.num
 		q.nn++
-	case 4:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
-	case 5:
-		if int(q.ns) >= 6 {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = p.str
-		q.ns++
-	case 6:
-		if int(q.ns) >= 6 {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = p.str
-		q.ns++
-	case 7:
+	case 5, 6, 7, 11:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
@@ -1137,20 +1067,6 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.jsns[q.njs] = p.jsn
 		q.njs++
-	case 10:
-		if int(q.nn) >= 6 {
-			q.over = true
-			return
-		}
-		q.nums[q.nn] = p.num
-		q.nn++
-	case 11:
-		if int(q.ns) >= 6 {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = p.str
-		q.ns++
 	case 12:
 		if int(q.nbo) >= 4 {
 			q.over = true
@@ -1158,27 +1074,13 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.bools[q.nbo] = p.bol
 		q.nbo++
-	case 13:
+	case 13, 14:
 		if int(q.nd) >= 4 {
 			q.over = true
 			return
 		}
 		q.decs[q.nd] = p.dec
 		q.nd++
-	case 14:
-		if int(q.nd) >= 4 {
-			q.over = true
-			return
-		}
-		q.decs[q.nd] = p.dec
-		q.nd++
-	case 16:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = p.raw
-		q.nr++
 	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 }
@@ -1367,108 +1269,23 @@ var lockCaches = func() [8][2]*runtime.TreeCache {
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
 var orderTable = [nCols][4]string{
-	{ // id
-		"\"id\"",
-		"\"id\" DESC",
-		"\"id\" ASC NULLS FIRST",
-		"\"id\" DESC NULLS LAST",
-	},
-	{ // created_at
-		"\"created_at\"",
-		"\"created_at\" DESC",
-		"\"created_at\" ASC NULLS FIRST",
-		"\"created_at\" DESC NULLS LAST",
-	},
-	{ // updated_at
-		"\"updated_at\"",
-		"\"updated_at\" DESC",
-		"\"updated_at\" ASC NULLS FIRST",
-		"\"updated_at\" DESC NULLS LAST",
-	},
-	{ // version
-		"\"version\"",
-		"\"version\" DESC",
-		"\"version\" ASC NULLS FIRST",
-		"\"version\" DESC NULLS LAST",
-	},
-	{ // deleted_at
-		"\"deleted_at\"",
-		"\"deleted_at\" DESC",
-		"\"deleted_at\" ASC NULLS FIRST",
-		"\"deleted_at\" DESC NULLS LAST",
-	},
-	{ // email
-		"\"email\"",
-		"\"email\" DESC",
-		"\"email\" ASC NULLS FIRST",
-		"\"email\" DESC NULLS LAST",
-	},
-	{ // name
-		"\"name\"",
-		"\"name\" DESC",
-		"\"name\" ASC NULLS FIRST",
-		"\"name\" DESC NULLS LAST",
-	},
-	{ // status
-		"\"status\"",
-		"\"status\" DESC",
-		"\"status\" ASC NULLS FIRST",
-		"\"status\" DESC NULLS LAST",
-	},
-	{ // prefs
-		"\"prefs\"",
-		"\"prefs\" DESC",
-		"\"prefs\" ASC NULLS FIRST",
-		"\"prefs\" DESC NULLS LAST",
-	},
-	{ // scopes
-		"\"scopes\"",
-		"\"scopes\" DESC",
-		"\"scopes\" ASC NULLS FIRST",
-		"\"scopes\" DESC NULLS LAST",
-	},
-	{ // age
-		"\"age\"",
-		"\"age\" DESC",
-		"\"age\" ASC NULLS FIRST",
-		"\"age\" DESC NULLS LAST",
-	},
-	{ // last_ip
-		"\"last_ip\"",
-		"\"last_ip\" DESC",
-		"\"last_ip\" ASC NULLS FIRST",
-		"\"last_ip\" DESC NULLS LAST",
-	},
-	{ // active
-		"\"active\"",
-		"\"active\" DESC",
-		"\"active\" ASC NULLS FIRST",
-		"\"active\" DESC NULLS LAST",
-	},
-	{ // balance
-		"\"balance\"",
-		"\"balance\" DESC",
-		"\"balance\" ASC NULLS FIRST",
-		"\"balance\" DESC NULLS LAST",
-	},
-	{ // credit
-		"\"credit\"",
-		"\"credit\" DESC",
-		"\"credit\" ASC NULLS FIRST",
-		"\"credit\" DESC NULLS LAST",
-	},
-	{ // splits
-		"\"splits\"",
-		"\"splits\" DESC",
-		"\"splits\" ASC NULLS FIRST",
-		"\"splits\" DESC NULLS LAST",
-	},
-	{ // org_id
-		"\"org_id\"",
-		"\"org_id\" DESC",
-		"\"org_id\" ASC NULLS FIRST",
-		"\"org_id\" DESC NULLS LAST",
-	},
+	{"\"id\"", "\"id\" DESC", "\"id\" ASC NULLS FIRST", "\"id\" DESC NULLS LAST"},
+	{"\"created_at\"", "\"created_at\" DESC", "\"created_at\" ASC NULLS FIRST", "\"created_at\" DESC NULLS LAST"},
+	{"\"updated_at\"", "\"updated_at\" DESC", "\"updated_at\" ASC NULLS FIRST", "\"updated_at\" DESC NULLS LAST"},
+	{"\"version\"", "\"version\" DESC", "\"version\" ASC NULLS FIRST", "\"version\" DESC NULLS LAST"},
+	{"\"deleted_at\"", "\"deleted_at\" DESC", "\"deleted_at\" ASC NULLS FIRST", "\"deleted_at\" DESC NULLS LAST"},
+	{"\"email\"", "\"email\" DESC", "\"email\" ASC NULLS FIRST", "\"email\" DESC NULLS LAST"},
+	{"\"name\"", "\"name\" DESC", "\"name\" ASC NULLS FIRST", "\"name\" DESC NULLS LAST"},
+	{"\"status\"", "\"status\" DESC", "\"status\" ASC NULLS FIRST", "\"status\" DESC NULLS LAST"},
+	{"\"prefs\"", "\"prefs\" DESC", "\"prefs\" ASC NULLS FIRST", "\"prefs\" DESC NULLS LAST"},
+	{"\"scopes\"", "\"scopes\" DESC", "\"scopes\" ASC NULLS FIRST", "\"scopes\" DESC NULLS LAST"},
+	{"\"age\"", "\"age\" DESC", "\"age\" ASC NULLS FIRST", "\"age\" DESC NULLS LAST"},
+	{"\"last_ip\"", "\"last_ip\" DESC", "\"last_ip\" ASC NULLS FIRST", "\"last_ip\" DESC NULLS LAST"},
+	{"\"active\"", "\"active\" DESC", "\"active\" ASC NULLS FIRST", "\"active\" DESC NULLS LAST"},
+	{"\"balance\"", "\"balance\" DESC", "\"balance\" ASC NULLS FIRST", "\"balance\" DESC NULLS LAST"},
+	{"\"credit\"", "\"credit\" DESC", "\"credit\" ASC NULLS FIRST", "\"credit\" DESC NULLS LAST"},
+	{"\"splits\"", "\"splits\" DESC", "\"splits\" ASC NULLS FIRST", "\"splits\" DESC NULLS LAST"},
+	{"\"org_id\"", "\"org_id\" DESC", "\"org_id\" ASC NULLS FIRST", "\"org_id\" DESC NULLS LAST"},
 }
 
 // identTable is each column's bare quoted name, for the left side of a
@@ -1525,652 +1342,177 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [18][34]runtime.Frag{
 	{ // id
-		{}, // opNone
-		{A: "\"id\" = $", B: ""},
-		{A: "\"id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"id\" = ANY($", B: ")"},
-		{A: "\"id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"id\" = $"},
+		opNotEq: {A: "\"id\" <> $"},
+		opIn:    {A: "\"id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"id\" <> ALL($", B: ")"},
 	},
 	{ // created_at
-		{}, // opNone
-		{A: "\"created_at\" = $", B: ""},
-		{A: "\"created_at\" <> $", B: ""},
-		{A: "\"created_at\" > $", B: ""},
-		{A: "\"created_at\" >= $", B: ""},
-		{A: "\"created_at\" < $", B: ""},
-		{A: "\"created_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"created_at\" = $"},
+		opNotEq: {A: "\"created_at\" <> $"},
+		opGt:    {A: "\"created_at\" > $"},
+		opGte:   {A: "\"created_at\" >= $"},
+		opLt:    {A: "\"created_at\" < $"},
+		opLte:   {A: "\"created_at\" <= $"},
 	},
 	{ // updated_at
-		{}, // opNone
-		{A: "\"updated_at\" = $", B: ""},
-		{A: "\"updated_at\" <> $", B: ""},
-		{A: "\"updated_at\" > $", B: ""},
-		{A: "\"updated_at\" >= $", B: ""},
-		{A: "\"updated_at\" < $", B: ""},
-		{A: "\"updated_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"updated_at\" = $"},
+		opNotEq: {A: "\"updated_at\" <> $"},
+		opGt:    {A: "\"updated_at\" > $"},
+		opGte:   {A: "\"updated_at\" >= $"},
+		opLt:    {A: "\"updated_at\" < $"},
+		opLte:   {A: "\"updated_at\" <= $"},
 	},
 	{ // version
-		{}, // opNone
-		{A: "\"version\" = $", B: ""},
-		{A: "\"version\" <> $", B: ""},
-		{A: "\"version\" > $", B: ""},
-		{A: "\"version\" >= $", B: ""},
-		{A: "\"version\" < $", B: ""},
-		{A: "\"version\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"version\" = ANY($", B: ")"},
-		{A: "\"version\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"version\" = $"},
+		opNotEq: {A: "\"version\" <> $"},
+		opGt:    {A: "\"version\" > $"},
+		opGte:   {A: "\"version\" >= $"},
+		opLt:    {A: "\"version\" < $"},
+		opLte:   {A: "\"version\" <= $"},
+		opIn:    {A: "\"version\" = ANY($", B: ")"},
+		opNotIn: {A: "\"version\" <> ALL($", B: ")"},
 	},
 	{ // deleted_at
-		{}, // opNone
-		{A: "\"deleted_at\" = $", B: ""},
-		{A: "\"deleted_at\" <> $", B: ""},
-		{A: "\"deleted_at\" > $", B: ""},
-		{A: "\"deleted_at\" >= $", B: ""},
-		{A: "\"deleted_at\" < $", B: ""},
-		{A: "\"deleted_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"deleted_at\" IS NULL", B: ""},
-		{A: "\"deleted_at\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opEq:        {A: "\"deleted_at\" = $"},
+		opNotEq:     {A: "\"deleted_at\" <> $"},
+		opGt:        {A: "\"deleted_at\" > $"},
+		opGte:       {A: "\"deleted_at\" >= $"},
+		opLt:        {A: "\"deleted_at\" < $"},
+		opLte:       {A: "\"deleted_at\" <= $"},
+		opIsNull:    {A: "\"deleted_at\" IS NULL"},
+		opIsNotNull: {A: "\"deleted_at\" IS NOT NULL"},
 	},
 	{ // email
-		{}, // opNone
-		{A: "\"email\" = $", B: ""},
-		{A: "\"email\" <> $", B: ""},
-		{A: "\"email\" > $", B: ""},
-		{A: "\"email\" >= $", B: ""},
-		{A: "\"email\" < $", B: ""},
-		{A: "\"email\" <= $", B: ""},
-		{A: "lower(\"email\") = lower($", B: ")"},
-		{A: "\"email\" LIKE $", B: ""},
-		{A: "\"email\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"email\" = ANY($", B: ")"},
-		{A: "\"email\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"email\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"email\" = $"},
+		opNotEq:         {A: "\"email\" <> $"},
+		opGt:            {A: "\"email\" > $"},
+		opGte:           {A: "\"email\" >= $"},
+		opLt:            {A: "\"email\" < $"},
+		opLte:           {A: "\"email\" <= $"},
+		opEqLower:       {A: "lower(\"email\") = lower($", B: ")"},
+		opLike:          {A: "\"email\" LIKE $"},
+		opILike:         {A: "\"email\" ILIKE $"},
+		opIn:            {A: "\"email\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"email\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"email\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // name
-		{}, // opNone
-		{A: "\"name\" = $", B: ""},
-		{A: "\"name\" <> $", B: ""},
-		{A: "\"name\" > $", B: ""},
-		{A: "\"name\" >= $", B: ""},
-		{A: "\"name\" < $", B: ""},
-		{A: "\"name\" <= $", B: ""},
-		{A: "lower(\"name\") = lower($", B: ")"},
-		{A: "\"name\" LIKE $", B: ""},
-		{A: "\"name\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"name\" = ANY($", B: ")"},
-		{A: "\"name\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"name\" = $"},
+		opNotEq:         {A: "\"name\" <> $"},
+		opGt:            {A: "\"name\" > $"},
+		opGte:           {A: "\"name\" >= $"},
+		opLt:            {A: "\"name\" < $"},
+		opLte:           {A: "\"name\" <= $"},
+		opEqLower:       {A: "lower(\"name\") = lower($", B: ")"},
+		opLike:          {A: "\"name\" LIKE $"},
+		opILike:         {A: "\"name\" ILIKE $"},
+		opIn:            {A: "\"name\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"name\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // status
-		{}, // opNone
-		{A: "\"status\" = $", B: ""},
-		{A: "\"status\" <> $", B: ""},
-		{A: "\"status\" > $", B: ""},
-		{A: "\"status\" >= $", B: ""},
-		{A: "\"status\" < $", B: ""},
-		{A: "\"status\" <= $", B: ""},
-		{A: "lower(\"status\") = lower($", B: ")"},
-		{A: "\"status\" LIKE $", B: ""},
-		{A: "\"status\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"status\" = ANY($", B: ")"},
-		{A: "\"status\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"status\" = $"},
+		opNotEq:         {A: "\"status\" <> $"},
+		opGt:            {A: "\"status\" > $"},
+		opGte:           {A: "\"status\" >= $"},
+		opLt:            {A: "\"status\" < $"},
+		opLte:           {A: "\"status\" <= $"},
+		opEqLower:       {A: "lower(\"status\") = lower($", B: ")"},
+		opLike:          {A: "\"status\" LIKE $"},
+		opILike:         {A: "\"status\" ILIKE $"},
+		opIn:            {A: "\"status\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"status\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // prefs
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"prefs\" @> $", B: ""},
-		{A: "\"prefs\" <@ $", B: ""},
-		{A: "\"prefs\" ?| $", B: ""},
-		{A: "\"prefs\" ?& $", B: ""},
-		{A: "COALESCE(\"prefs\"::text, '') LIKE ANY($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "COALESCE(\"prefs\"::text, '') IN ('', 'null', '[]', '{}')", B: ""},
-		{},
-		{},
-		{},
+		opJSONContains:    {A: "\"prefs\" @> $"},
+		opJSONContainedBy: {A: "\"prefs\" <@ $"},
+		opHasAnyKey:       {A: "\"prefs\" ?| $"},
+		opHasAllKeys:      {A: "\"prefs\" ?& $"},
+		opJSONTextLikeAny: {A: "COALESCE(\"prefs\"::text, '') LIKE ANY($", B: ")"},
+		opJSONIsEmpty:     {A: "COALESCE(\"prefs\"::text, '') IN ('', 'null', '[]', '{}')"},
 	},
 	{ // scopes
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"scopes\" @> $", B: ""},
-		{A: "\"scopes\" <@ $", B: ""},
-		{A: "\"scopes\" && $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opArrayContains:    {A: "\"scopes\" @> $"},
+		opArrayContainedBy: {A: "\"scopes\" <@ $"},
+		opArrayOverlaps:    {A: "\"scopes\" && $"},
 	},
 	{ // age
-		{}, // opNone
-		{A: "\"age\" = $", B: ""},
-		{A: "\"age\" <> $", B: ""},
-		{A: "\"age\" > $", B: ""},
-		{A: "\"age\" >= $", B: ""},
-		{A: "\"age\" < $", B: ""},
-		{A: "\"age\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"age\" = ANY($", B: ")"},
-		{A: "\"age\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"age\" IS NULL", B: ""},
-		{A: "\"age\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opEq:        {A: "\"age\" = $"},
+		opNotEq:     {A: "\"age\" <> $"},
+		opGt:        {A: "\"age\" > $"},
+		opGte:       {A: "\"age\" >= $"},
+		opLt:        {A: "\"age\" < $"},
+		opLte:       {A: "\"age\" <= $"},
+		opIn:        {A: "\"age\" = ANY($", B: ")"},
+		opNotIn:     {A: "\"age\" <> ALL($", B: ")"},
+		opIsNull:    {A: "\"age\" IS NULL"},
+		opIsNotNull: {A: "\"age\" IS NOT NULL"},
 	},
 	{ // last_ip
-		{}, // opNone
-		{A: "\"last_ip\" = $", B: ""},
-		{A: "\"last_ip\" <> $", B: ""},
-		{A: "\"last_ip\" > $", B: ""},
-		{A: "\"last_ip\" >= $", B: ""},
-		{A: "\"last_ip\" < $", B: ""},
-		{A: "\"last_ip\" <= $", B: ""},
-		{A: "lower(\"last_ip\") = lower($", B: ")"},
-		{A: "\"last_ip\" LIKE $", B: ""},
-		{A: "\"last_ip\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"last_ip\" = ANY($", B: ")"},
-		{A: "\"last_ip\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"last_ip\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"last_ip\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"last_ip\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"last_ip\" IS NULL", B: ""},
-		{A: "\"last_ip\" IS NOT NULL", B: ""},
-		{},
-		{A: "COALESCE(\"last_ip\", '') = ''", B: ""},
-		{},
-		{},
+		opEq:            {A: "\"last_ip\" = $"},
+		opNotEq:         {A: "\"last_ip\" <> $"},
+		opGt:            {A: "\"last_ip\" > $"},
+		opGte:           {A: "\"last_ip\" >= $"},
+		opLt:            {A: "\"last_ip\" < $"},
+		opLte:           {A: "\"last_ip\" <= $"},
+		opEqLower:       {A: "lower(\"last_ip\") = lower($", B: ")"},
+		opLike:          {A: "\"last_ip\" LIKE $"},
+		opILike:         {A: "\"last_ip\" ILIKE $"},
+		opIn:            {A: "\"last_ip\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"last_ip\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"last_ip\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"last_ip\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"last_ip\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opIsNull:        {A: "\"last_ip\" IS NULL"},
+		opIsNotNull:     {A: "\"last_ip\" IS NOT NULL"},
+		opNullOrEmpty:   {A: "COALESCE(\"last_ip\", '') = ''"},
 	},
 	{ // active
-		{}, // opNone
-		{A: "\"active\" = $", B: ""},
-		{A: "\"active\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"active\" = $"},
+		opNotEq: {A: "\"active\" <> $"},
 	},
 	{ // balance
-		{}, // opNone
-		{A: "\"balance\" = $", B: ""},
-		{A: "\"balance\" <> $", B: ""},
-		{A: "\"balance\" > $", B: ""},
-		{A: "\"balance\" >= $", B: ""},
-		{A: "\"balance\" < $", B: ""},
-		{A: "\"balance\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"balance\" = $"},
+		opNotEq: {A: "\"balance\" <> $"},
+		opGt:    {A: "\"balance\" > $"},
+		opGte:   {A: "\"balance\" >= $"},
+		opLt:    {A: "\"balance\" < $"},
+		opLte:   {A: "\"balance\" <= $"},
 	},
 	{ // credit
-		{}, // opNone
-		{A: "\"credit\" = $", B: ""},
-		{A: "\"credit\" <> $", B: ""},
-		{A: "\"credit\" > $", B: ""},
-		{A: "\"credit\" >= $", B: ""},
-		{A: "\"credit\" < $", B: ""},
-		{A: "\"credit\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"credit\" IS NULL", B: ""},
-		{A: "\"credit\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opEq:        {A: "\"credit\" = $"},
+		opNotEq:     {A: "\"credit\" <> $"},
+		opGt:        {A: "\"credit\" > $"},
+		opGte:       {A: "\"credit\" >= $"},
+		opLt:        {A: "\"credit\" < $"},
+		opLte:       {A: "\"credit\" <= $"},
+		opIsNull:    {A: "\"credit\" IS NULL"},
+		opIsNotNull: {A: "\"credit\" IS NOT NULL"},
 	},
 	{ // splits
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"splits\" @> $", B: ""},
-		{A: "\"splits\" <@ $", B: ""},
-		{A: "\"splits\" && $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"splits\" IS NULL", B: ""},
-		{A: "\"splits\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opArrayContains:    {A: "\"splits\" @> $"},
+		opArrayContainedBy: {A: "\"splits\" <@ $"},
+		opArrayOverlaps:    {A: "\"splits\" && $"},
+		opIsNull:           {A: "\"splits\" IS NULL"},
+		opIsNotNull:        {A: "\"splits\" IS NOT NULL"},
 	},
 	{ // org_id
-		{}, // opNone
-		{A: "\"org_id\" = $", B: ""},
-		{A: "\"org_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"org_id\" = ANY($", B: ")"},
-		{A: "\"org_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"org_id\" = $"},
+		opNotEq: {A: "\"org_id\" <> $"},
+		opIn:    {A: "\"org_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"org_id\" <> ALL($", B: ")"},
 	},
 	{ // relation Posts (pseudo-column)
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\")"},
-		{A: "NOT EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\")"},
+		opExists:    {A: "EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\")"},
+		opNotExists: {A: "NOT EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\")"},
 	},
 }
 
@@ -2558,7 +1900,7 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
-			case 0:
+			case 0, 16:
 				b.anyRaw[nar] = q.anyRaw[nar]
 				v = append(v, &b.anyRaw[nar])
 				nar++
@@ -2566,23 +1908,7 @@ func (q Query) bindPreds(b *binder) []any {
 				b.anyI32[nai32] = q.anyI32[nai32]
 				v = append(v, &b.anyI32[nai32])
 				nai32++
-			case 5:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
-			case 6:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
-			case 7:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
-			case 8:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
-			case 9:
+			case 5, 6, 7, 8, 9, 11:
 				b.anyStr[nas] = q.anyStr[nas]
 				v = append(v, &b.anyStr[nas])
 				nas++
@@ -2590,51 +1916,27 @@ func (q Query) bindPreds(b *binder) []any {
 				b.anyI16[nai16] = q.anyI16[nai16]
 				v = append(v, &b.anyI16[nai16])
 				nai16++
-			case 11:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
 			case 15:
 				b.anyDec[nadec] = q.anyDec[nadec]
 				v = append(v, &b.anyDec[nadec])
 				nadec++
-			case 16:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
 			}
 			continue
 		}
 		switch t.Col() {
-		case 0:
+		case 0, 16:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
-		case 1:
+		case 1, 2, 4:
 			b.tims[ntm] = q.tims[ntm]
 			v = append(v, &b.tims[ntm])
 			ntm++
-		case 2:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
-		case 3:
+		case 3, 10:
 			b.nums[nn] = q.nums[nn]
 			v = append(v, &b.nums[nn])
 			nn++
-		case 4:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
-		case 5:
-			b.strs[ns] = q.strs[ns]
-			v = append(v, &b.strs[ns])
-			ns++
-		case 6:
-			b.strs[ns] = q.strs[ns]
-			v = append(v, &b.strs[ns])
-			ns++
-		case 7:
+		case 5, 6, 7, 11:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
@@ -2642,30 +1944,14 @@ func (q Query) bindPreds(b *binder) []any {
 			b.jsns[njs] = q.jsns[njs]
 			v = append(v, &b.jsns[njs])
 			njs++
-		case 10:
-			b.nums[nn] = q.nums[nn]
-			v = append(v, &b.nums[nn])
-			nn++
-		case 11:
-			b.strs[ns] = q.strs[ns]
-			v = append(v, &b.strs[ns])
-			ns++
 		case 12:
 			b.bools[nbo] = q.bools[nbo]
 			v = append(v, &b.bools[nbo])
 			nbo++
-		case 13:
+		case 13, 14:
 			b.decs[nd] = q.decs[nd]
 			v = append(v, &b.decs[nd])
 			nd++
-		case 14:
-			b.decs[nd] = q.decs[nd]
-			v = append(v, &b.decs[nd])
-			nd++
-		case 16:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
 		}
 	}
 	b.vals = v
@@ -3134,652 +2420,177 @@ func (q Query) OneFin(ctx context.Context, ex runtime.Executor) (FinRow, bool, e
 // joinFragTable is fragTable for a join: every column named with its table.
 var joinFragTable = [18][34]runtime.Frag{
 	{ // id
-		{}, // opNone
-		{A: "\"users\".\"id\" = $", B: ""},
-		{A: "\"users\".\"id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"id\" = ANY($", B: ")"},
-		{A: "\"users\".\"id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"users\".\"id\" = $"},
+		opNotEq: {A: "\"users\".\"id\" <> $"},
+		opIn:    {A: "\"users\".\"id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"users\".\"id\" <> ALL($", B: ")"},
 	},
 	{ // created_at
-		{}, // opNone
-		{A: "\"users\".\"created_at\" = $", B: ""},
-		{A: "\"users\".\"created_at\" <> $", B: ""},
-		{A: "\"users\".\"created_at\" > $", B: ""},
-		{A: "\"users\".\"created_at\" >= $", B: ""},
-		{A: "\"users\".\"created_at\" < $", B: ""},
-		{A: "\"users\".\"created_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"users\".\"created_at\" = $"},
+		opNotEq: {A: "\"users\".\"created_at\" <> $"},
+		opGt:    {A: "\"users\".\"created_at\" > $"},
+		opGte:   {A: "\"users\".\"created_at\" >= $"},
+		opLt:    {A: "\"users\".\"created_at\" < $"},
+		opLte:   {A: "\"users\".\"created_at\" <= $"},
 	},
 	{ // updated_at
-		{}, // opNone
-		{A: "\"users\".\"updated_at\" = $", B: ""},
-		{A: "\"users\".\"updated_at\" <> $", B: ""},
-		{A: "\"users\".\"updated_at\" > $", B: ""},
-		{A: "\"users\".\"updated_at\" >= $", B: ""},
-		{A: "\"users\".\"updated_at\" < $", B: ""},
-		{A: "\"users\".\"updated_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"users\".\"updated_at\" = $"},
+		opNotEq: {A: "\"users\".\"updated_at\" <> $"},
+		opGt:    {A: "\"users\".\"updated_at\" > $"},
+		opGte:   {A: "\"users\".\"updated_at\" >= $"},
+		opLt:    {A: "\"users\".\"updated_at\" < $"},
+		opLte:   {A: "\"users\".\"updated_at\" <= $"},
 	},
 	{ // version
-		{}, // opNone
-		{A: "\"users\".\"version\" = $", B: ""},
-		{A: "\"users\".\"version\" <> $", B: ""},
-		{A: "\"users\".\"version\" > $", B: ""},
-		{A: "\"users\".\"version\" >= $", B: ""},
-		{A: "\"users\".\"version\" < $", B: ""},
-		{A: "\"users\".\"version\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"version\" = ANY($", B: ")"},
-		{A: "\"users\".\"version\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"users\".\"version\" = $"},
+		opNotEq: {A: "\"users\".\"version\" <> $"},
+		opGt:    {A: "\"users\".\"version\" > $"},
+		opGte:   {A: "\"users\".\"version\" >= $"},
+		opLt:    {A: "\"users\".\"version\" < $"},
+		opLte:   {A: "\"users\".\"version\" <= $"},
+		opIn:    {A: "\"users\".\"version\" = ANY($", B: ")"},
+		opNotIn: {A: "\"users\".\"version\" <> ALL($", B: ")"},
 	},
 	{ // deleted_at
-		{}, // opNone
-		{A: "\"users\".\"deleted_at\" = $", B: ""},
-		{A: "\"users\".\"deleted_at\" <> $", B: ""},
-		{A: "\"users\".\"deleted_at\" > $", B: ""},
-		{A: "\"users\".\"deleted_at\" >= $", B: ""},
-		{A: "\"users\".\"deleted_at\" < $", B: ""},
-		{A: "\"users\".\"deleted_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"deleted_at\" IS NULL", B: ""},
-		{A: "\"users\".\"deleted_at\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opEq:        {A: "\"users\".\"deleted_at\" = $"},
+		opNotEq:     {A: "\"users\".\"deleted_at\" <> $"},
+		opGt:        {A: "\"users\".\"deleted_at\" > $"},
+		opGte:       {A: "\"users\".\"deleted_at\" >= $"},
+		opLt:        {A: "\"users\".\"deleted_at\" < $"},
+		opLte:       {A: "\"users\".\"deleted_at\" <= $"},
+		opIsNull:    {A: "\"users\".\"deleted_at\" IS NULL"},
+		opIsNotNull: {A: "\"users\".\"deleted_at\" IS NOT NULL"},
 	},
 	{ // email
-		{}, // opNone
-		{A: "\"users\".\"email\" = $", B: ""},
-		{A: "\"users\".\"email\" <> $", B: ""},
-		{A: "\"users\".\"email\" > $", B: ""},
-		{A: "\"users\".\"email\" >= $", B: ""},
-		{A: "\"users\".\"email\" < $", B: ""},
-		{A: "\"users\".\"email\" <= $", B: ""},
-		{A: "lower(\"users\".\"email\") = lower($", B: ")"},
-		{A: "\"users\".\"email\" LIKE $", B: ""},
-		{A: "\"users\".\"email\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"email\" = ANY($", B: ")"},
-		{A: "\"users\".\"email\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"email\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"users\".\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"users\".\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"users\".\"email\" = $"},
+		opNotEq:         {A: "\"users\".\"email\" <> $"},
+		opGt:            {A: "\"users\".\"email\" > $"},
+		opGte:           {A: "\"users\".\"email\" >= $"},
+		opLt:            {A: "\"users\".\"email\" < $"},
+		opLte:           {A: "\"users\".\"email\" <= $"},
+		opEqLower:       {A: "lower(\"users\".\"email\") = lower($", B: ")"},
+		opLike:          {A: "\"users\".\"email\" LIKE $"},
+		opILike:         {A: "\"users\".\"email\" ILIKE $"},
+		opIn:            {A: "\"users\".\"email\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"users\".\"email\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"users\".\"email\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"users\".\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"users\".\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // name
-		{}, // opNone
-		{A: "\"users\".\"name\" = $", B: ""},
-		{A: "\"users\".\"name\" <> $", B: ""},
-		{A: "\"users\".\"name\" > $", B: ""},
-		{A: "\"users\".\"name\" >= $", B: ""},
-		{A: "\"users\".\"name\" < $", B: ""},
-		{A: "\"users\".\"name\" <= $", B: ""},
-		{A: "lower(\"users\".\"name\") = lower($", B: ")"},
-		{A: "\"users\".\"name\" LIKE $", B: ""},
-		{A: "\"users\".\"name\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"name\" = ANY($", B: ")"},
-		{A: "\"users\".\"name\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"users\".\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"users\".\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"users\".\"name\" = $"},
+		opNotEq:         {A: "\"users\".\"name\" <> $"},
+		opGt:            {A: "\"users\".\"name\" > $"},
+		opGte:           {A: "\"users\".\"name\" >= $"},
+		opLt:            {A: "\"users\".\"name\" < $"},
+		opLte:           {A: "\"users\".\"name\" <= $"},
+		opEqLower:       {A: "lower(\"users\".\"name\") = lower($", B: ")"},
+		opLike:          {A: "\"users\".\"name\" LIKE $"},
+		opILike:         {A: "\"users\".\"name\" ILIKE $"},
+		opIn:            {A: "\"users\".\"name\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"users\".\"name\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"users\".\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"users\".\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"users\".\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // status
-		{}, // opNone
-		{A: "\"users\".\"status\" = $", B: ""},
-		{A: "\"users\".\"status\" <> $", B: ""},
-		{A: "\"users\".\"status\" > $", B: ""},
-		{A: "\"users\".\"status\" >= $", B: ""},
-		{A: "\"users\".\"status\" < $", B: ""},
-		{A: "\"users\".\"status\" <= $", B: ""},
-		{A: "lower(\"users\".\"status\") = lower($", B: ")"},
-		{A: "\"users\".\"status\" LIKE $", B: ""},
-		{A: "\"users\".\"status\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"status\" = ANY($", B: ")"},
-		{A: "\"users\".\"status\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"users\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"users\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"users\".\"status\" = $"},
+		opNotEq:         {A: "\"users\".\"status\" <> $"},
+		opGt:            {A: "\"users\".\"status\" > $"},
+		opGte:           {A: "\"users\".\"status\" >= $"},
+		opLt:            {A: "\"users\".\"status\" < $"},
+		opLte:           {A: "\"users\".\"status\" <= $"},
+		opEqLower:       {A: "lower(\"users\".\"status\") = lower($", B: ")"},
+		opLike:          {A: "\"users\".\"status\" LIKE $"},
+		opILike:         {A: "\"users\".\"status\" ILIKE $"},
+		opIn:            {A: "\"users\".\"status\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"users\".\"status\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"users\".\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"users\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"users\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // prefs
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"prefs\" @> $", B: ""},
-		{A: "\"users\".\"prefs\" <@ $", B: ""},
-		{A: "\"users\".\"prefs\" ?| $", B: ""},
-		{A: "\"users\".\"prefs\" ?& $", B: ""},
-		{A: "COALESCE(\"users\".\"prefs\"::text, '') LIKE ANY($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "COALESCE(\"users\".\"prefs\"::text, '') IN ('', 'null', '[]', '{}')", B: ""},
-		{},
-		{},
-		{},
+		opJSONContains:    {A: "\"users\".\"prefs\" @> $"},
+		opJSONContainedBy: {A: "\"users\".\"prefs\" <@ $"},
+		opHasAnyKey:       {A: "\"users\".\"prefs\" ?| $"},
+		opHasAllKeys:      {A: "\"users\".\"prefs\" ?& $"},
+		opJSONTextLikeAny: {A: "COALESCE(\"users\".\"prefs\"::text, '') LIKE ANY($", B: ")"},
+		opJSONIsEmpty:     {A: "COALESCE(\"users\".\"prefs\"::text, '') IN ('', 'null', '[]', '{}')"},
 	},
 	{ // scopes
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"scopes\" @> $", B: ""},
-		{A: "\"users\".\"scopes\" <@ $", B: ""},
-		{A: "\"users\".\"scopes\" && $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opArrayContains:    {A: "\"users\".\"scopes\" @> $"},
+		opArrayContainedBy: {A: "\"users\".\"scopes\" <@ $"},
+		opArrayOverlaps:    {A: "\"users\".\"scopes\" && $"},
 	},
 	{ // age
-		{}, // opNone
-		{A: "\"users\".\"age\" = $", B: ""},
-		{A: "\"users\".\"age\" <> $", B: ""},
-		{A: "\"users\".\"age\" > $", B: ""},
-		{A: "\"users\".\"age\" >= $", B: ""},
-		{A: "\"users\".\"age\" < $", B: ""},
-		{A: "\"users\".\"age\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"age\" = ANY($", B: ")"},
-		{A: "\"users\".\"age\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"age\" IS NULL", B: ""},
-		{A: "\"users\".\"age\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opEq:        {A: "\"users\".\"age\" = $"},
+		opNotEq:     {A: "\"users\".\"age\" <> $"},
+		opGt:        {A: "\"users\".\"age\" > $"},
+		opGte:       {A: "\"users\".\"age\" >= $"},
+		opLt:        {A: "\"users\".\"age\" < $"},
+		opLte:       {A: "\"users\".\"age\" <= $"},
+		opIn:        {A: "\"users\".\"age\" = ANY($", B: ")"},
+		opNotIn:     {A: "\"users\".\"age\" <> ALL($", B: ")"},
+		opIsNull:    {A: "\"users\".\"age\" IS NULL"},
+		opIsNotNull: {A: "\"users\".\"age\" IS NOT NULL"},
 	},
 	{ // last_ip
-		{}, // opNone
-		{A: "\"users\".\"last_ip\" = $", B: ""},
-		{A: "\"users\".\"last_ip\" <> $", B: ""},
-		{A: "\"users\".\"last_ip\" > $", B: ""},
-		{A: "\"users\".\"last_ip\" >= $", B: ""},
-		{A: "\"users\".\"last_ip\" < $", B: ""},
-		{A: "\"users\".\"last_ip\" <= $", B: ""},
-		{A: "lower(\"users\".\"last_ip\") = lower($", B: ")"},
-		{A: "\"users\".\"last_ip\" LIKE $", B: ""},
-		{A: "\"users\".\"last_ip\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"last_ip\" = ANY($", B: ")"},
-		{A: "\"users\".\"last_ip\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"last_ip\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"users\".\"last_ip\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"users\".\"last_ip\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"users\".\"last_ip\" IS NULL", B: ""},
-		{A: "\"users\".\"last_ip\" IS NOT NULL", B: ""},
-		{},
-		{A: "COALESCE(\"users\".\"last_ip\", '') = ''", B: ""},
-		{},
-		{},
+		opEq:            {A: "\"users\".\"last_ip\" = $"},
+		opNotEq:         {A: "\"users\".\"last_ip\" <> $"},
+		opGt:            {A: "\"users\".\"last_ip\" > $"},
+		opGte:           {A: "\"users\".\"last_ip\" >= $"},
+		opLt:            {A: "\"users\".\"last_ip\" < $"},
+		opLte:           {A: "\"users\".\"last_ip\" <= $"},
+		opEqLower:       {A: "lower(\"users\".\"last_ip\") = lower($", B: ")"},
+		opLike:          {A: "\"users\".\"last_ip\" LIKE $"},
+		opILike:         {A: "\"users\".\"last_ip\" ILIKE $"},
+		opIn:            {A: "\"users\".\"last_ip\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"users\".\"last_ip\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"users\".\"last_ip\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"users\".\"last_ip\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"users\".\"last_ip\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opIsNull:        {A: "\"users\".\"last_ip\" IS NULL"},
+		opIsNotNull:     {A: "\"users\".\"last_ip\" IS NOT NULL"},
+		opNullOrEmpty:   {A: "COALESCE(\"users\".\"last_ip\", '') = ''"},
 	},
 	{ // active
-		{}, // opNone
-		{A: "\"users\".\"active\" = $", B: ""},
-		{A: "\"users\".\"active\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"users\".\"active\" = $"},
+		opNotEq: {A: "\"users\".\"active\" <> $"},
 	},
 	{ // balance
-		{}, // opNone
-		{A: "\"users\".\"balance\" = $", B: ""},
-		{A: "\"users\".\"balance\" <> $", B: ""},
-		{A: "\"users\".\"balance\" > $", B: ""},
-		{A: "\"users\".\"balance\" >= $", B: ""},
-		{A: "\"users\".\"balance\" < $", B: ""},
-		{A: "\"users\".\"balance\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"users\".\"balance\" = $"},
+		opNotEq: {A: "\"users\".\"balance\" <> $"},
+		opGt:    {A: "\"users\".\"balance\" > $"},
+		opGte:   {A: "\"users\".\"balance\" >= $"},
+		opLt:    {A: "\"users\".\"balance\" < $"},
+		opLte:   {A: "\"users\".\"balance\" <= $"},
 	},
 	{ // credit
-		{}, // opNone
-		{A: "\"users\".\"credit\" = $", B: ""},
-		{A: "\"users\".\"credit\" <> $", B: ""},
-		{A: "\"users\".\"credit\" > $", B: ""},
-		{A: "\"users\".\"credit\" >= $", B: ""},
-		{A: "\"users\".\"credit\" < $", B: ""},
-		{A: "\"users\".\"credit\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"credit\" IS NULL", B: ""},
-		{A: "\"users\".\"credit\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opEq:        {A: "\"users\".\"credit\" = $"},
+		opNotEq:     {A: "\"users\".\"credit\" <> $"},
+		opGt:        {A: "\"users\".\"credit\" > $"},
+		opGte:       {A: "\"users\".\"credit\" >= $"},
+		opLt:        {A: "\"users\".\"credit\" < $"},
+		opLte:       {A: "\"users\".\"credit\" <= $"},
+		opIsNull:    {A: "\"users\".\"credit\" IS NULL"},
+		opIsNotNull: {A: "\"users\".\"credit\" IS NOT NULL"},
 	},
 	{ // splits
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"splits\" @> $", B: ""},
-		{A: "\"users\".\"splits\" <@ $", B: ""},
-		{A: "\"users\".\"splits\" && $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"splits\" IS NULL", B: ""},
-		{A: "\"users\".\"splits\" IS NOT NULL", B: ""},
-		{},
-		{},
-		{},
-		{},
+		opArrayContains:    {A: "\"users\".\"splits\" @> $"},
+		opArrayContainedBy: {A: "\"users\".\"splits\" <@ $"},
+		opArrayOverlaps:    {A: "\"users\".\"splits\" && $"},
+		opIsNull:           {A: "\"users\".\"splits\" IS NULL"},
+		opIsNotNull:        {A: "\"users\".\"splits\" IS NOT NULL"},
 	},
 	{ // org_id
-		{}, // opNone
-		{A: "\"users\".\"org_id\" = $", B: ""},
-		{A: "\"users\".\"org_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"users\".\"org_id\" = ANY($", B: ")"},
-		{A: "\"users\".\"org_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"users\".\"org_id\" = $"},
+		opNotEq: {A: "\"users\".\"org_id\" <> $"},
+		opIn:    {A: "\"users\".\"org_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"users\".\"org_id\" <> ALL($", B: ")"},
 	},
 	{ // relation Posts (pseudo-column)
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\")"},
-		{A: "NOT EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\")"},
+		opExists:    {A: "EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\")"},
+		opNotExists: {A: "NOT EXISTS (SELECT 1 FROM \"posts\" AS \"_storm_e\" WHERE \"_storm_e\".\"author_id\" = \"users\".\"id\")"},
 	},
 }
 
@@ -4339,6 +3150,52 @@ func Create() Ins { return Ins{} }
 // Assigned reports the mask, which is also the statement key.
 func (n Ins) Assigned() uint64 { return n.set }
 
+// insertArgs appends the values n assigns, in column order.
+func (n *Ins) insertArgs(args []any) []any {
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.ID)
+		case 1:
+			args = append(args, n.row.CreatedAt)
+		case 2:
+			args = append(args, n.row.UpdatedAt)
+		case 3:
+			args = append(args, n.row.Version)
+		case 4:
+			args = append(args, n.row.DeletedAt.Arg())
+		case 5:
+			args = append(args, n.row.Email)
+		case 6:
+			args = append(args, n.row.Name)
+		case 7:
+			args = append(args, n.row.Status)
+		case 8:
+			args = append(args, n.row.Prefs.OrNull())
+		case 9:
+			args = append(args, n.row.Scopes)
+		case 10:
+			args = append(args, n.row.Age.Arg())
+		case 11:
+			args = append(args, n.row.LastIP.Arg())
+		case 12:
+			args = append(args, n.row.Active)
+		case 13:
+			args = append(args, n.row.Balance)
+		case 14:
+			args = append(args, n.row.Credit.Arg())
+		case 15:
+			args = append(args, n.row.Splits)
+		case 16:
+			args = append(args, n.row.OrgID)
+		}
+	}
+	return args
+}
+
 func (n *Ins) SetID(v [16]byte) {
 	n.row.ID = v
 	n.set |= iID
@@ -4519,95 +3376,25 @@ var conflictSpecs = []string{
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
 	set := make([]string, 0, 14)
-	switch i {
-	case 0:
-		if mask&(1<<2) != 0 {
-			set = append(set, "updated_at")
-		}
-		if mask&(1<<4) != 0 {
-			set = append(set, "deleted_at")
-		}
-		if mask&(1<<5) != 0 {
-			set = append(set, "email")
-		}
-		if mask&(1<<6) != 0 {
-			set = append(set, "name")
-		}
-		if mask&(1<<7) != 0 {
-			set = append(set, "status")
-		}
-		if mask&(1<<8) != 0 {
-			set = append(set, "prefs")
-		}
-		if mask&(1<<9) != 0 {
-			set = append(set, "scopes")
-		}
-		if mask&(1<<10) != 0 {
-			set = append(set, "age")
-		}
-		if mask&(1<<11) != 0 {
-			set = append(set, "last_ip")
-		}
-		if mask&(1<<12) != 0 {
-			set = append(set, "active")
-		}
-		if mask&(1<<13) != 0 {
-			set = append(set, "balance")
-		}
-		if mask&(1<<14) != 0 {
-			set = append(set, "credit")
-		}
-		if mask&(1<<15) != 0 {
-			set = append(set, "splits")
-		}
-		if mask&(1<<16) != 0 {
-			set = append(set, "org_id")
-		}
-	case 1:
-		if mask&(1<<2) != 0 {
-			set = append(set, "updated_at")
-		}
-		if mask&(1<<4) != 0 {
-			set = append(set, "deleted_at")
-		}
-		if mask&(1<<5) != 0 {
-			set = append(set, "email")
-		}
-		if mask&(1<<6) != 0 {
-			set = append(set, "name")
-		}
-		if mask&(1<<7) != 0 {
-			set = append(set, "status")
-		}
-		if mask&(1<<8) != 0 {
-			set = append(set, "prefs")
-		}
-		if mask&(1<<9) != 0 {
-			set = append(set, "scopes")
-		}
-		if mask&(1<<10) != 0 {
-			set = append(set, "age")
-		}
-		if mask&(1<<11) != 0 {
-			set = append(set, "last_ip")
-		}
-		if mask&(1<<12) != 0 {
-			set = append(set, "active")
-		}
-		if mask&(1<<13) != 0 {
-			set = append(set, "balance")
-		}
-		if mask&(1<<14) != 0 {
-			set = append(set, "credit")
-		}
-		if mask&(1<<15) != 0 {
-			set = append(set, "splits")
-		}
-		if mask&(1<<16) != 0 {
-			set = append(set, "org_id")
+	for j, bit := range assignBits[i] {
+		if mask&(1<<bit) != 0 {
+			set = append(set, assignNames[i][j])
 		}
 	}
 	return set
+}
+
+// assignBits and assignNames are, per target, the insert bit and the name
+// of each column it may overwrite. An empty row is a target whose key
+// covers every updatable column.
+var assignBits = [2][]uint8{
+	{2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+	{2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+}
+
+var assignNames = [2][]string{
+	{"updated_at", "deleted_at", "email", "name", "status", "prefs", "scopes", "age", "last_ip", "active", "balance", "credit", "splits", "org_id"},
+	{"updated_at", "deleted_at", "email", "name", "status", "prefs", "scopes", "age", "last_ip", "active", "balance", "credit", "splits", "org_id"},
 }
 
 // OnConflictID upserts on the unique index over (id).
@@ -4739,47 +3526,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return Row{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.Version)
-		case 4:
-			args = append(args, n.row.DeletedAt.Arg())
-		case 5:
-			args = append(args, n.row.Email)
-		case 6:
-			args = append(args, n.row.Name)
-		case 7:
-			args = append(args, n.row.Status)
-		case 8:
-			args = append(args, n.row.Prefs.OrNull())
-		case 9:
-			args = append(args, n.row.Scopes)
-		case 10:
-			args = append(args, n.row.Age.Arg())
-		case 11:
-			args = append(args, n.row.LastIP.Arg())
-		case 12:
-			args = append(args, n.row.Active)
-		case 13:
-			args = append(args, n.row.Balance)
-		case 14:
-			args = append(args, n.row.Credit.Arg())
-		case 15:
-			args = append(args, n.row.Splits)
-		case 16:
-			args = append(args, n.row.OrgID)
-		}
-	}
+	args = n.insertArgs(args)
 	var out Row
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
@@ -4946,24 +3693,7 @@ func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, err
 // RETURNING here would mean scanning a result per statement, which is
 // exactly the per-row work a batch exists to avoid.
 func InsertOp(r Row) runtime.BatchOp {
-	var mask uint64
-	mask |= 1 << 0
-	mask |= 1 << 1
-	mask |= 1 << 2
-	mask |= 1 << 3
-	mask |= 1 << 4
-	mask |= 1 << 5
-	mask |= 1 << 6
-	mask |= 1 << 7
-	mask |= 1 << 8
-	mask |= 1 << 9
-	mask |= 1 << 10
-	mask |= 1 << 11
-	mask |= 1 << 12
-	mask |= 1 << 13
-	mask |= 1 << 14
-	mask |= 1 << 15
-	mask |= 1 << 16
+	const mask = 1<<nInsertable - 1 // every insertable column
 	st := stmtForInsertNoReturn(mask, 0, 0)
 	args := make([]any, 0, 17)
 	args = append(args, r.ID)
@@ -5011,47 +3741,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		return runtime.BatchOp{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.Version)
-		case 4:
-			args = append(args, n.row.DeletedAt.Arg())
-		case 5:
-			args = append(args, n.row.Email)
-		case 6:
-			args = append(args, n.row.Name)
-		case 7:
-			args = append(args, n.row.Status)
-		case 8:
-			args = append(args, n.row.Prefs.OrNull())
-		case 9:
-			args = append(args, n.row.Scopes)
-		case 10:
-			args = append(args, n.row.Age.Arg())
-		case 11:
-			args = append(args, n.row.LastIP.Arg())
-		case 12:
-			args = append(args, n.row.Active)
-		case 13:
-			args = append(args, n.row.Balance)
-		case 14:
-			args = append(args, n.row.Credit.Arg())
-		case 15:
-			args = append(args, n.row.Splits)
-		case 16:
-			args = append(args, n.row.OrgID)
-		}
-	}
+	args = n.insertArgs(args)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
 }
 
@@ -5100,41 +3790,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 	}
 	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.DeletedAt.Arg())
-		case 2:
-			args = append(args, m.row.Email)
-		case 3:
-			args = append(args, m.row.Name)
-		case 4:
-			args = append(args, m.row.Status)
-		case 5:
-			args = append(args, m.row.Prefs.OrNull())
-		case 6:
-			args = append(args, m.row.Scopes)
-		case 7:
-			args = append(args, m.row.Age.Arg())
-		case 8:
-			args = append(args, m.row.LastIP.Arg())
-		case 9:
-			args = append(args, m.row.Active)
-		case 10:
-			args = append(args, m.row.Balance)
-		case 11:
-			args = append(args, m.row.Credit.Arg())
-		case 12:
-			args = append(args, m.row.Splits)
-		case 13:
-			args = append(args, m.row.OrgID)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	args = append(args, m.row.Version)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, true
@@ -5218,41 +3874,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.DeletedAt.Arg())
-		case 2:
-			args = append(args, m.row.Email)
-		case 3:
-			args = append(args, m.row.Name)
-		case 4:
-			args = append(args, m.row.Status)
-		case 5:
-			args = append(args, m.row.Prefs.OrNull())
-		case 6:
-			args = append(args, m.row.Scopes)
-		case 7:
-			args = append(args, m.row.Age.Arg())
-		case 8:
-			args = append(args, m.row.LastIP.Arg())
-		case 9:
-			args = append(args, m.row.Active)
-		case 10:
-			args = append(args, m.row.Balance)
-		case 11:
-			args = append(args, m.row.Credit.Arg())
-		case 12:
-			args = append(args, m.row.Splits)
-		case 13:
-			args = append(args, m.row.OrgID)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	args = append(args, m.row.Version)
 	if m.expr != 0 {
@@ -5533,41 +4155,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 		b := binders.Get()
 		defer putBinder(b)
 		args := make([]any, 0, st.NArg)
-		for i := 0; i < nUpdatable; i++ {
-			if m.dirty&(1<<uint(i)) == 0 {
-				continue
-			}
-			switch i {
-			case 0:
-				args = append(args, m.row.UpdatedAt)
-			case 1:
-				args = append(args, m.row.DeletedAt.Arg())
-			case 2:
-				args = append(args, m.row.Email)
-			case 3:
-				args = append(args, m.row.Name)
-			case 4:
-				args = append(args, m.row.Status)
-			case 5:
-				args = append(args, m.row.Prefs.OrNull())
-			case 6:
-				args = append(args, m.row.Scopes)
-			case 7:
-				args = append(args, m.row.Age.Arg())
-			case 8:
-				args = append(args, m.row.LastIP.Arg())
-			case 9:
-				args = append(args, m.row.Active)
-			case 10:
-				args = append(args, m.row.Balance)
-			case 11:
-				args = append(args, m.row.Credit.Arg())
-			case 12:
-				args = append(args, m.row.Splits)
-			case 13:
-				args = append(args, m.row.OrgID)
-			}
-		}
+		args = m.updateArgs(args)
 		return run(st.SQL, append(args, q.bindPreds(b)...))
 	}
 }

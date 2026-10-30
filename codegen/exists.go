@@ -65,12 +65,8 @@ func (g *gen) existsFragRows() {
 	pk := g.t.PrimaryKey[0]
 	for _, rel := range rels {
 		g.p("\t{ // relation %s (pseudo-column)", rel.Field)
-		g.p("\t\t{}, // opNone")
-		for range ops {
-			g.p("\t\t{},")
-		}
-		g.p("\t\t{A: %q},", g.lw.ExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
-		g.p("\t\t{A: %q},", g.lw.NotExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
+		g.p("\t\topExists: {A: %q},", g.lw.ExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
+		g.p("\t\topNotExists: {A: %q},", g.lw.NotExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
 		g.p("\t},")
 	}
 }
