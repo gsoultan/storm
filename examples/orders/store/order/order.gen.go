@@ -660,28 +660,14 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 func (q *Query) leaf(p Pred) {
 	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
-		case 0:
+		case 0, 4:
 			if int(q.nar) >= 3 {
 				q.over = true
 				return
 			}
 			q.anyRaw[q.nar] = p.anyRaw
 			q.nar++
-		case 3:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
-		case 4:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
-		case 5:
+		case 3, 5:
 			if int(q.nas) >= 3 {
 				q.over = true
 				return
@@ -697,42 +683,21 @@ func (q *Query) leaf(p Pred) {
 		return
 	}
 	switch p.col {
-	case 0:
+	case 0, 4:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
 		}
 		q.raws[q.nr] = p.raw
 		q.nr++
-	case 1:
+	case 1, 2, 7:
 		if int(q.ntm) >= 4 {
 			q.over = true
 			return
 		}
 		q.tims[q.ntm] = p.tim
 		q.ntm++
-	case 2:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
-	case 3:
-		if int(q.ns) >= 6 {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = p.str
-		q.ns++
-	case 4:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = p.raw
-		q.nr++
-	case 5:
+	case 3, 5:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
@@ -746,13 +711,6 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.decs[q.nd] = p.dec
 		q.nd++
-	case 7:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
 	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 }
@@ -864,54 +822,14 @@ var lockCaches = func() [8][2]*runtime.TreeCache {
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
 var orderTable = [nCols][4]string{
-	{ // id
-		"\"id\"",
-		"\"id\" DESC",
-		"\"id\" ASC NULLS FIRST",
-		"\"id\" DESC NULLS LAST",
-	},
-	{ // created_at
-		"\"created_at\"",
-		"\"created_at\" DESC",
-		"\"created_at\" ASC NULLS FIRST",
-		"\"created_at\" DESC NULLS LAST",
-	},
-	{ // updated_at
-		"\"updated_at\"",
-		"\"updated_at\" DESC",
-		"\"updated_at\" ASC NULLS FIRST",
-		"\"updated_at\" DESC NULLS LAST",
-	},
-	{ // updated_by
-		"\"updated_by\"",
-		"\"updated_by\" DESC",
-		"\"updated_by\" ASC NULLS FIRST",
-		"\"updated_by\" DESC NULLS LAST",
-	},
-	{ // customer_id
-		"\"customer_id\"",
-		"\"customer_id\" DESC",
-		"\"customer_id\" ASC NULLS FIRST",
-		"\"customer_id\" DESC NULLS LAST",
-	},
-	{ // status
-		"\"status\"",
-		"\"status\" DESC",
-		"\"status\" ASC NULLS FIRST",
-		"\"status\" DESC NULLS LAST",
-	},
-	{ // total
-		"\"total\"",
-		"\"total\" DESC",
-		"\"total\" ASC NULLS FIRST",
-		"\"total\" DESC NULLS LAST",
-	},
-	{ // placed_at
-		"\"placed_at\"",
-		"\"placed_at\" DESC",
-		"\"placed_at\" ASC NULLS FIRST",
-		"\"placed_at\" DESC NULLS LAST",
-	},
+	{"\"id\"", "\"id\" DESC", "\"id\" ASC NULLS FIRST", "\"id\" DESC NULLS LAST"},
+	{"\"created_at\"", "\"created_at\" DESC", "\"created_at\" ASC NULLS FIRST", "\"created_at\" DESC NULLS LAST"},
+	{"\"updated_at\"", "\"updated_at\" DESC", "\"updated_at\" ASC NULLS FIRST", "\"updated_at\" DESC NULLS LAST"},
+	{"\"updated_by\"", "\"updated_by\" DESC", "\"updated_by\" ASC NULLS FIRST", "\"updated_by\" DESC NULLS LAST"},
+	{"\"customer_id\"", "\"customer_id\" DESC", "\"customer_id\" ASC NULLS FIRST", "\"customer_id\" DESC NULLS LAST"},
+	{"\"status\"", "\"status\" DESC", "\"status\" ASC NULLS FIRST", "\"status\" DESC NULLS LAST"},
+	{"\"total\"", "\"total\" DESC", "\"total\" ASC NULLS FIRST", "\"total\" DESC NULLS LAST"},
+	{"\"placed_at\"", "\"placed_at\" DESC", "\"placed_at\" ASC NULLS FIRST", "\"placed_at\" DESC NULLS LAST"},
 }
 
 // identTable is each column's bare quoted name, for the left side of a
@@ -959,328 +877,84 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [9][34]runtime.Frag{
 	{ // id
-		{}, // opNone
-		{A: "\"id\" = $", B: ""},
-		{A: "\"id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"id\" = ANY($", B: ")"},
-		{A: "\"id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"id\" = $"},
+		opNotEq: {A: "\"id\" <> $"},
+		opIn:    {A: "\"id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"id\" <> ALL($", B: ")"},
 	},
 	{ // created_at
-		{}, // opNone
-		{A: "\"created_at\" = $", B: ""},
-		{A: "\"created_at\" <> $", B: ""},
-		{A: "\"created_at\" > $", B: ""},
-		{A: "\"created_at\" >= $", B: ""},
-		{A: "\"created_at\" < $", B: ""},
-		{A: "\"created_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"created_at\" = $"},
+		opNotEq: {A: "\"created_at\" <> $"},
+		opGt:    {A: "\"created_at\" > $"},
+		opGte:   {A: "\"created_at\" >= $"},
+		opLt:    {A: "\"created_at\" < $"},
+		opLte:   {A: "\"created_at\" <= $"},
 	},
 	{ // updated_at
-		{}, // opNone
-		{A: "\"updated_at\" = $", B: ""},
-		{A: "\"updated_at\" <> $", B: ""},
-		{A: "\"updated_at\" > $", B: ""},
-		{A: "\"updated_at\" >= $", B: ""},
-		{A: "\"updated_at\" < $", B: ""},
-		{A: "\"updated_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"updated_at\" = $"},
+		opNotEq: {A: "\"updated_at\" <> $"},
+		opGt:    {A: "\"updated_at\" > $"},
+		opGte:   {A: "\"updated_at\" >= $"},
+		opLt:    {A: "\"updated_at\" < $"},
+		opLte:   {A: "\"updated_at\" <= $"},
 	},
 	{ // updated_by
-		{}, // opNone
-		{A: "\"updated_by\" = $", B: ""},
-		{A: "\"updated_by\" <> $", B: ""},
-		{A: "\"updated_by\" > $", B: ""},
-		{A: "\"updated_by\" >= $", B: ""},
-		{A: "\"updated_by\" < $", B: ""},
-		{A: "\"updated_by\" <= $", B: ""},
-		{A: "lower(\"updated_by\") = lower($", B: ")"},
-		{A: "\"updated_by\" LIKE $", B: ""},
-		{A: "\"updated_by\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"updated_by\" = ANY($", B: ")"},
-		{A: "\"updated_by\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"updated_by\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"updated_by\" = $"},
+		opNotEq:         {A: "\"updated_by\" <> $"},
+		opGt:            {A: "\"updated_by\" > $"},
+		opGte:           {A: "\"updated_by\" >= $"},
+		opLt:            {A: "\"updated_by\" < $"},
+		opLte:           {A: "\"updated_by\" <= $"},
+		opEqLower:       {A: "lower(\"updated_by\") = lower($", B: ")"},
+		opLike:          {A: "\"updated_by\" LIKE $"},
+		opILike:         {A: "\"updated_by\" ILIKE $"},
+		opIn:            {A: "\"updated_by\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"updated_by\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"updated_by\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // customer_id
-		{}, // opNone
-		{A: "\"customer_id\" = $", B: ""},
-		{A: "\"customer_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"customer_id\" = ANY($", B: ")"},
-		{A: "\"customer_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"customer_id\" = $"},
+		opNotEq: {A: "\"customer_id\" <> $"},
+		opIn:    {A: "\"customer_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"customer_id\" <> ALL($", B: ")"},
 	},
 	{ // status
-		{}, // opNone
-		{A: "\"status\" = $", B: ""},
-		{A: "\"status\" <> $", B: ""},
-		{A: "\"status\" > $", B: ""},
-		{A: "\"status\" >= $", B: ""},
-		{A: "\"status\" < $", B: ""},
-		{A: "\"status\" <= $", B: ""},
-		{A: "lower(\"status\") = lower($", B: ")"},
-		{A: "\"status\" LIKE $", B: ""},
-		{A: "\"status\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"status\" = ANY($", B: ")"},
-		{A: "\"status\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"status\" = $"},
+		opNotEq:         {A: "\"status\" <> $"},
+		opGt:            {A: "\"status\" > $"},
+		opGte:           {A: "\"status\" >= $"},
+		opLt:            {A: "\"status\" < $"},
+		opLte:           {A: "\"status\" <= $"},
+		opEqLower:       {A: "lower(\"status\") = lower($", B: ")"},
+		opLike:          {A: "\"status\" LIKE $"},
+		opILike:         {A: "\"status\" ILIKE $"},
+		opIn:            {A: "\"status\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"status\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // total
-		{}, // opNone
-		{A: "\"total\" = $", B: ""},
-		{A: "\"total\" <> $", B: ""},
-		{A: "\"total\" > $", B: ""},
-		{A: "\"total\" >= $", B: ""},
-		{A: "\"total\" < $", B: ""},
-		{A: "\"total\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"total\" = $"},
+		opNotEq: {A: "\"total\" <> $"},
+		opGt:    {A: "\"total\" > $"},
+		opGte:   {A: "\"total\" >= $"},
+		opLt:    {A: "\"total\" < $"},
+		opLte:   {A: "\"total\" <= $"},
 	},
 	{ // placed_at
-		{}, // opNone
-		{A: "\"placed_at\" = $", B: ""},
-		{A: "\"placed_at\" <> $", B: ""},
-		{A: "\"placed_at\" > $", B: ""},
-		{A: "\"placed_at\" >= $", B: ""},
-		{A: "\"placed_at\" < $", B: ""},
-		{A: "\"placed_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"placed_at\" = $"},
+		opNotEq: {A: "\"placed_at\" <> $"},
+		opGt:    {A: "\"placed_at\" > $"},
+		opGte:   {A: "\"placed_at\" >= $"},
+		opLt:    {A: "\"placed_at\" < $"},
+		opLte:   {A: "\"placed_at\" <= $"},
 	},
 	{ // relation Lines (pseudo-column)
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
-		{A: "NOT EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
+		opExists:    {A: "EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
+		opNotExists: {A: "NOT EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
 	},
 }
 
@@ -1626,19 +1300,11 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
-			case 0:
+			case 0, 4:
 				b.anyRaw[nar] = q.anyRaw[nar]
 				v = append(v, &b.anyRaw[nar])
 				nar++
-			case 3:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
-			case 4:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
-			case 5:
+			case 3, 5:
 				b.anyStr[nas] = q.anyStr[nas]
 				v = append(v, &b.anyStr[nas])
 				nas++
@@ -1646,27 +1312,15 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		}
 		switch t.Col() {
-		case 0:
+		case 0, 4:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
-		case 1:
+		case 1, 2, 7:
 			b.tims[ntm] = q.tims[ntm]
 			v = append(v, &b.tims[ntm])
 			ntm++
-		case 2:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
-		case 3:
-			b.strs[ns] = q.strs[ns]
-			v = append(v, &b.strs[ns])
-			ns++
-		case 4:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
-		case 5:
+		case 3, 5:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
@@ -1674,10 +1328,6 @@ func (q Query) bindPreds(b *binder) []any {
 			b.decs[nd] = q.decs[nd]
 			v = append(v, &b.decs[nd])
 			nd++
-		case 7:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
 		}
 	}
 	b.vals = v
@@ -2883,328 +2533,84 @@ func (q Query) OneTotals(ctx context.Context, ex runtime.Executor) (TotalsRow, e
 // joinFragTable is fragTable for a join: every column named with its table.
 var joinFragTable = [9][34]runtime.Frag{
 	{ // id
-		{}, // opNone
-		{A: "\"orders\".\"id\" = $", B: ""},
-		{A: "\"orders\".\"id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"orders\".\"id\" = ANY($", B: ")"},
-		{A: "\"orders\".\"id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"orders\".\"id\" = $"},
+		opNotEq: {A: "\"orders\".\"id\" <> $"},
+		opIn:    {A: "\"orders\".\"id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"orders\".\"id\" <> ALL($", B: ")"},
 	},
 	{ // created_at
-		{}, // opNone
-		{A: "\"orders\".\"created_at\" = $", B: ""},
-		{A: "\"orders\".\"created_at\" <> $", B: ""},
-		{A: "\"orders\".\"created_at\" > $", B: ""},
-		{A: "\"orders\".\"created_at\" >= $", B: ""},
-		{A: "\"orders\".\"created_at\" < $", B: ""},
-		{A: "\"orders\".\"created_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"orders\".\"created_at\" = $"},
+		opNotEq: {A: "\"orders\".\"created_at\" <> $"},
+		opGt:    {A: "\"orders\".\"created_at\" > $"},
+		opGte:   {A: "\"orders\".\"created_at\" >= $"},
+		opLt:    {A: "\"orders\".\"created_at\" < $"},
+		opLte:   {A: "\"orders\".\"created_at\" <= $"},
 	},
 	{ // updated_at
-		{}, // opNone
-		{A: "\"orders\".\"updated_at\" = $", B: ""},
-		{A: "\"orders\".\"updated_at\" <> $", B: ""},
-		{A: "\"orders\".\"updated_at\" > $", B: ""},
-		{A: "\"orders\".\"updated_at\" >= $", B: ""},
-		{A: "\"orders\".\"updated_at\" < $", B: ""},
-		{A: "\"orders\".\"updated_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"orders\".\"updated_at\" = $"},
+		opNotEq: {A: "\"orders\".\"updated_at\" <> $"},
+		opGt:    {A: "\"orders\".\"updated_at\" > $"},
+		opGte:   {A: "\"orders\".\"updated_at\" >= $"},
+		opLt:    {A: "\"orders\".\"updated_at\" < $"},
+		opLte:   {A: "\"orders\".\"updated_at\" <= $"},
 	},
 	{ // updated_by
-		{}, // opNone
-		{A: "\"orders\".\"updated_by\" = $", B: ""},
-		{A: "\"orders\".\"updated_by\" <> $", B: ""},
-		{A: "\"orders\".\"updated_by\" > $", B: ""},
-		{A: "\"orders\".\"updated_by\" >= $", B: ""},
-		{A: "\"orders\".\"updated_by\" < $", B: ""},
-		{A: "\"orders\".\"updated_by\" <= $", B: ""},
-		{A: "lower(\"orders\".\"updated_by\") = lower($", B: ")"},
-		{A: "\"orders\".\"updated_by\" LIKE $", B: ""},
-		{A: "\"orders\".\"updated_by\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"orders\".\"updated_by\" = ANY($", B: ")"},
-		{A: "\"orders\".\"updated_by\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"orders\".\"updated_by\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"orders\".\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"orders\".\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"orders\".\"updated_by\" = $"},
+		opNotEq:         {A: "\"orders\".\"updated_by\" <> $"},
+		opGt:            {A: "\"orders\".\"updated_by\" > $"},
+		opGte:           {A: "\"orders\".\"updated_by\" >= $"},
+		opLt:            {A: "\"orders\".\"updated_by\" < $"},
+		opLte:           {A: "\"orders\".\"updated_by\" <= $"},
+		opEqLower:       {A: "lower(\"orders\".\"updated_by\") = lower($", B: ")"},
+		opLike:          {A: "\"orders\".\"updated_by\" LIKE $"},
+		opILike:         {A: "\"orders\".\"updated_by\" ILIKE $"},
+		opIn:            {A: "\"orders\".\"updated_by\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"orders\".\"updated_by\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"orders\".\"updated_by\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"orders\".\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"orders\".\"updated_by\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // customer_id
-		{}, // opNone
-		{A: "\"orders\".\"customer_id\" = $", B: ""},
-		{A: "\"orders\".\"customer_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"orders\".\"customer_id\" = ANY($", B: ")"},
-		{A: "\"orders\".\"customer_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"orders\".\"customer_id\" = $"},
+		opNotEq: {A: "\"orders\".\"customer_id\" <> $"},
+		opIn:    {A: "\"orders\".\"customer_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"orders\".\"customer_id\" <> ALL($", B: ")"},
 	},
 	{ // status
-		{}, // opNone
-		{A: "\"orders\".\"status\" = $", B: ""},
-		{A: "\"orders\".\"status\" <> $", B: ""},
-		{A: "\"orders\".\"status\" > $", B: ""},
-		{A: "\"orders\".\"status\" >= $", B: ""},
-		{A: "\"orders\".\"status\" < $", B: ""},
-		{A: "\"orders\".\"status\" <= $", B: ""},
-		{A: "lower(\"orders\".\"status\") = lower($", B: ")"},
-		{A: "\"orders\".\"status\" LIKE $", B: ""},
-		{A: "\"orders\".\"status\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"orders\".\"status\" = ANY($", B: ")"},
-		{A: "\"orders\".\"status\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"orders\".\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"orders\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"orders\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"orders\".\"status\" = $"},
+		opNotEq:         {A: "\"orders\".\"status\" <> $"},
+		opGt:            {A: "\"orders\".\"status\" > $"},
+		opGte:           {A: "\"orders\".\"status\" >= $"},
+		opLt:            {A: "\"orders\".\"status\" < $"},
+		opLte:           {A: "\"orders\".\"status\" <= $"},
+		opEqLower:       {A: "lower(\"orders\".\"status\") = lower($", B: ")"},
+		opLike:          {A: "\"orders\".\"status\" LIKE $"},
+		opILike:         {A: "\"orders\".\"status\" ILIKE $"},
+		opIn:            {A: "\"orders\".\"status\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"orders\".\"status\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"orders\".\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"orders\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"orders\".\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // total
-		{}, // opNone
-		{A: "\"orders\".\"total\" = $", B: ""},
-		{A: "\"orders\".\"total\" <> $", B: ""},
-		{A: "\"orders\".\"total\" > $", B: ""},
-		{A: "\"orders\".\"total\" >= $", B: ""},
-		{A: "\"orders\".\"total\" < $", B: ""},
-		{A: "\"orders\".\"total\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"orders\".\"total\" = $"},
+		opNotEq: {A: "\"orders\".\"total\" <> $"},
+		opGt:    {A: "\"orders\".\"total\" > $"},
+		opGte:   {A: "\"orders\".\"total\" >= $"},
+		opLt:    {A: "\"orders\".\"total\" < $"},
+		opLte:   {A: "\"orders\".\"total\" <= $"},
 	},
 	{ // placed_at
-		{}, // opNone
-		{A: "\"orders\".\"placed_at\" = $", B: ""},
-		{A: "\"orders\".\"placed_at\" <> $", B: ""},
-		{A: "\"orders\".\"placed_at\" > $", B: ""},
-		{A: "\"orders\".\"placed_at\" >= $", B: ""},
-		{A: "\"orders\".\"placed_at\" < $", B: ""},
-		{A: "\"orders\".\"placed_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"orders\".\"placed_at\" = $"},
+		opNotEq: {A: "\"orders\".\"placed_at\" <> $"},
+		opGt:    {A: "\"orders\".\"placed_at\" > $"},
+		opGte:   {A: "\"orders\".\"placed_at\" >= $"},
+		opLt:    {A: "\"orders\".\"placed_at\" < $"},
+		opLte:   {A: "\"orders\".\"placed_at\" <= $"},
 	},
 	{ // relation Lines (pseudo-column)
-		{}, // opNone
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
-		{A: "NOT EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
+		opExists:    {A: "EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
+		opNotExists: {A: "NOT EXISTS (SELECT 1 FROM \"order_lines\" AS \"_storm_e\" WHERE \"_storm_e\".\"order_id\" = \"orders\".\"id\")"},
 	},
 }
 
@@ -3661,6 +3067,34 @@ func Create() Ins { return Ins{} }
 // Assigned reports the mask, which is also the statement key.
 func (n Ins) Assigned() uint64 { return n.set }
 
+// insertArgs appends the values n assigns, in column order.
+func (n *Ins) insertArgs(args []any) []any {
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.ID)
+		case 1:
+			args = append(args, n.row.CreatedAt)
+		case 2:
+			args = append(args, n.row.UpdatedAt)
+		case 3:
+			args = append(args, n.row.UpdatedBy)
+		case 4:
+			args = append(args, n.row.CustomerID)
+		case 5:
+			args = append(args, n.row.Status)
+		case 6:
+			args = append(args, n.row.Total)
+		case 7:
+			args = append(args, n.row.PlacedAt)
+		}
+	}
+	return args
+}
+
 func (n *Ins) SetID(v [16]byte) {
 	n.row.ID = v
 	n.set |= iID
@@ -3767,28 +3201,23 @@ var conflictSpecs = []string{
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
 	set := make([]string, 0, 6)
-	switch i {
-	case 0:
-		if mask&(1<<2) != 0 {
-			set = append(set, "updated_at")
-		}
-		if mask&(1<<3) != 0 {
-			set = append(set, "updated_by")
-		}
-		if mask&(1<<4) != 0 {
-			set = append(set, "customer_id")
-		}
-		if mask&(1<<5) != 0 {
-			set = append(set, "status")
-		}
-		if mask&(1<<6) != 0 {
-			set = append(set, "total")
-		}
-		if mask&(1<<7) != 0 {
-			set = append(set, "placed_at")
+	for j, bit := range assignBits[i] {
+		if mask&(1<<bit) != 0 {
+			set = append(set, assignNames[i][j])
 		}
 	}
 	return set
+}
+
+// assignBits and assignNames are, per target, the insert bit and the name
+// of each column it may overwrite. An empty row is a target whose key
+// covers every updatable column.
+var assignBits = [1][]uint8{
+	{2, 3, 4, 5, 6, 7},
+}
+
+var assignNames = [1][]string{
+	{"updated_at", "updated_by", "customer_id", "status", "total", "placed_at"},
 }
 
 // OnConflictID upserts on the unique index over (id).
@@ -3902,29 +3331,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return Row{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.UpdatedBy)
-		case 4:
-			args = append(args, n.row.CustomerID)
-		case 5:
-			args = append(args, n.row.Status)
-		case 6:
-			args = append(args, n.row.Total)
-		case 7:
-			args = append(args, n.row.PlacedAt)
-		}
-	}
+	args = n.insertArgs(args)
 	var out Row
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
@@ -4064,15 +3471,7 @@ func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, err
 // RETURNING here would mean scanning a result per statement, which is
 // exactly the per-row work a batch exists to avoid.
 func InsertOp(r Row) runtime.BatchOp {
-	var mask uint64
-	mask |= 1 << 0
-	mask |= 1 << 1
-	mask |= 1 << 2
-	mask |= 1 << 3
-	mask |= 1 << 4
-	mask |= 1 << 5
-	mask |= 1 << 6
-	mask |= 1 << 7
+	const mask = 1<<nInsertable - 1 // every insertable column
 	st := stmtForInsertNoReturn(mask, 0, 0)
 	args := make([]any, 0, 8)
 	args = append(args, r.ID)
@@ -4111,29 +3510,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		return runtime.BatchOp{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.UpdatedBy)
-		case 4:
-			args = append(args, n.row.CustomerID)
-		case 5:
-			args = append(args, n.row.Status)
-		case 6:
-			args = append(args, n.row.Total)
-		case 7:
-			args = append(args, n.row.PlacedAt)
-		}
-	}
+	args = n.insertArgs(args)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
 }
 
@@ -4182,25 +3559,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 	}
 	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.UpdatedBy)
-		case 2:
-			args = append(args, m.row.CustomerID)
-		case 3:
-			args = append(args, m.row.Status)
-		case 4:
-			args = append(args, m.row.Total)
-		case 5:
-			args = append(args, m.row.PlacedAt)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, true
 }
@@ -4276,25 +3635,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.UpdatedBy)
-		case 2:
-			args = append(args, m.row.CustomerID)
-		case 3:
-			args = append(args, m.row.Status)
-		case 4:
-			args = append(args, m.row.Total)
-		case 5:
-			args = append(args, m.row.PlacedAt)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	if m.expr != 0 {
 		return m.updateReturning(ctx, ex, st, args)
@@ -4551,25 +3892,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 		b := binders.Get()
 		defer putBinder(b)
 		args := make([]any, 0, st.NArg)
-		for i := 0; i < nUpdatable; i++ {
-			if m.dirty&(1<<uint(i)) == 0 {
-				continue
-			}
-			switch i {
-			case 0:
-				args = append(args, m.row.UpdatedAt)
-			case 1:
-				args = append(args, m.row.UpdatedBy)
-			case 2:
-				args = append(args, m.row.CustomerID)
-			case 3:
-				args = append(args, m.row.Status)
-			case 4:
-				args = append(args, m.row.Total)
-			case 5:
-				args = append(args, m.row.PlacedAt)
-			}
-		}
+		args = m.updateArgs(args)
 		return run(st.SQL, append(args, q.bindPreds(b)...))
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"go/format"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/schema"
@@ -667,11 +669,11 @@ func (g *gen) compile() {
 	g.p("// still must not be built from strings at run time.")
 	g.p("var orderTable = [nCols][%d]string{", g.lw.NDirections)
 	for _, c := range g.cols {
-		g.p("\t{ // %s", c.Name())
-		for d := 0; d < g.lw.NDirections; d++ {
-			g.p("\t\t%q,", g.lw.OrderTerm(d, g.lw.Ident(c.Name())))
+		terms := make([]string, g.lw.NDirections)
+		for d := range terms {
+			terms[d] = strconv.Quote(g.lw.OrderTerm(d, g.lw.Ident(c.Name())))
 		}
-		g.p("\t},")
+		g.p("\t{%s},", strings.Join(terms, ", "))
 	}
 	g.p("}")
 	g.p("")
@@ -1276,17 +1278,49 @@ func (g *gen) inheritDialect(from *gen) {
 	g.s = from.s
 }
 
+// fragLit spells one lowered fragment, leaving out an empty B.
+func fragLit(a, b string) string {
+	if b == "" {
+		return fmt.Sprintf("{A: %q}", a)
+	}
+	return fmt.Sprintf("{A: %q, B: %q}", a, b)
+}
+
+// emitCases writes the arms of a generated switch, one per entry of bodies,
+// keyed by the matching entry of ids, with arms whose bodies are identical
+// sharing one `case a, b:` line. A wide table otherwise repeats the same arena
+// store once per column of a type. Arms come out in order of each body's
+// first id, so the output is as deterministic as the column order.
+func (g *gen) emitCases(indent string, ids []int, bodies []string) {
+	done := make([]bool, len(bodies))
+	for i := range bodies {
+		if done[i] {
+			continue
+		}
+		var same []string
+		for j := i; j < len(bodies); j++ {
+			if !done[j] && bodies[j] == bodies[i] {
+				done[j] = true
+				same = append(same, strconv.Itoa(ids[j]))
+			}
+		}
+		g.p("%scase %s:", indent, strings.Join(same, ", "))
+		g.p("%s", bodies[i])
+	}
+}
+
 // fragTable emits every predicate this table can produce, lowered at build
 // time, naming each column as ident spells it.
 func (g *gen) fragTable(name string, ident func(string) string) {
 	nRels := len(existsRelations(g.t))
+	// Keyed by operator, so a slot an operator does not apply to is simply
+	// absent: the array is the same, and a wide table stops spending a line
+	// on every empty one.
 	g.p("var %s = [%d][%d]runtime.Frag{", name, len(g.cols)+nRels, len(ops)+3)
 	for _, c := range g.cols {
 		g.p("\t{ // %s", c.Name())
-		g.p("\t\t{}, // opNone")
 		for _, op := range ops {
 			if !opApplies(op.name, c.kind, c.col) {
-				g.p("\t\t{},")
 				continue
 			}
 			a, b, ok := g.lw.Frag(op.name, ident(c.Name()), c.col)
@@ -1295,10 +1329,8 @@ func (g *gen) fragTable(name string, ident func(string) string) {
 					g.t.Name, c.Name(), g.lw.name, op.name)
 				return
 			}
-			g.p("\t\t{A: %q, B: %q},", a, b)
+			g.p("\t\top%s: %s,", op.name, fragLit(a, b))
 		}
-		g.p("\t\t{},")
-		g.p("\t\t{},")
 		g.p("\t},")
 	}
 	g.existsFragRows()
