@@ -817,20 +817,18 @@ func (g *gen) treePreds() {
 		// field this replaced made the second one overwrite the first.
 		g.p("\tif %s {", listOpTest("p.op"))
 		g.p("\t\tswitch p.col {")
+		var ids []int
+		var bodies []string
 		for i, c := range g.cols {
 			slot := predArraySlot(c)
 			if slot == "" {
 				continue
 			}
 			cur := anyCursor(slot)
-			g.p("\t\tcase %d:", i)
-			g.p("\t\t\tif int(q.%s) >= %d {", cur, g.budget(maxAny))
-			g.p("\t\t\t\tq.over = true")
-			g.p("\t\t\t\treturn")
-			g.p("\t\t\t}")
-			g.p("\t\t\tq.%s[q.%s] = p.%s", slot, cur, slot)
-			g.p("\t\t\tq.%s++", cur)
+			ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\tif int(q.%s) >= %d {\n\t\t\t\tq.over = true\n\t\t\t\treturn\n\t\t\t}\n\t\t\tq.%s[q.%s] = p.%s\n\t\t\tq.%s++",
+				cur, g.budget(maxAny), slot, cur, slot, cur))
 		}
+		g.emitCases("\t\t", ids, bodies)
 		g.p("\t\t}")
 		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
 		g.p("\t\treturn")
@@ -852,6 +850,8 @@ func (g *gen) treePreds() {
 	g.p("\t\treturn")
 	g.p("\t}")
 	g.p("\tswitch p.col {")
+	var ids []int
+	var bodies []string
 	for i, c := range g.cols {
 		arena, cur := arenaFor(c)
 		if arena == "" {
@@ -871,14 +871,10 @@ func (g *gen) treePreds() {
 			g.err = fmt.Errorf("codegen: arena %q has no capacity entry — add it to the map in treePreds", arena)
 			return
 		}
-		g.p("\tcase %d:", i)
-		g.p("\t\tif int(q.%s) >= %d {", cur, g.budget(max))
-		g.p("\t\t\tq.over = true")
-		g.p("\t\t\treturn")
-		g.p("\t\t}")
-		g.p("\t\tq.%s[q.%s] = %s", arena, cur, predSlotFor(c))
-		g.p("\t\tq.%s++", cur)
+		ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\tif int(q.%s) >= %d {\n\t\t\tq.over = true\n\t\t\treturn\n\t\t}\n\t\tq.%s[q.%s] = %s\n\t\tq.%s++",
+			cur, g.budget(max), arena, cur, predSlotFor(c), cur))
 	}
+	g.emitCases("\t", ids, bodies)
 	g.p("\t}")
 	g.p("\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
 	g.p("}")
@@ -1001,33 +997,35 @@ func (g *gen) treeBind() {
 	if len(ts.anyList) > 0 {
 		g.p("\t\tcase %s:", listOpCases())
 		g.p("\t\t\tswitch t.Col() {")
+		var ids []int
+		var bodies []string
 		for i, c := range g.cols {
 			slot := predArraySlot(c)
 			if slot == "" {
 				continue
 			}
 			cur := anyCursor(slot)
-			g.p("\t\t\tcase %d:", i)
-			g.p("\t\t\t\tb.%s[%s] = q.%s[%s]", slot, cur, slot, cur)
-			g.p("\t\t\t\tv = append(v, &b.%s[%s])", slot, cur)
-			g.p("\t\t\t\t%s++", cur)
+			ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\t\tb.%s[%s] = q.%s[%s]\n\t\t\t\tv = append(v, &b.%s[%s])\n\t\t\t\t%s++",
+				slot, cur, slot, cur, slot, cur, cur))
 		}
+		g.emitCases("\t\t\t", ids, bodies)
 		g.p("\t\t\t}")
 		g.p("\t\t\tcontinue")
 	}
 	g.p("\t\t}")
 	g.p("\t\tswitch t.Col() {")
+	var ids []int
+	var bodies []string
 	for i, c := range g.cols {
 		arena, _ := arenaFor(c)
 		if arena == "" {
 			continue // no value arena: nothing to copy into the binder
 		}
 		short := cursorFor(arena)
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\tb.%s[%s] = q.%s[%s]", arena, short, arena, short)
-		g.p("\t\t\tv = append(v, &b.%s[%s])", arena, short)
-		g.p("\t\t\t%s++", short)
+		ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\tb.%s[%s] = q.%s[%s]\n\t\t\tv = append(v, &b.%s[%s])\n\t\t\t%s++",
+			arena, short, arena, short, arena, short, short))
 	}
+	g.emitCases("\t\t", ids, bodies)
 	g.p("\t\t}")
 	g.p("\t}")
 	g.p("\tb.vals = v")

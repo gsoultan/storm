@@ -69,18 +69,18 @@ func TestUpsert_ConflictSpecs(t *testing.T) {
 func TestUpsert_KeyColumnsAreNotAssignedButExpressionKeysAre(t *testing.T) {
 	src := find(t, gen(t, codegen.PackageOptions{}, &upTenant{}), "uptenant")
 
-	// The case index is the position in conflictSpecs, so read the order out
+	// The row index is the position in conflictSpecs, so read the order out
 	// of the generated code rather than assuming it.
 	specs := between(t, src, "var conflictSpecs = []string{", "\n}")
-	body := between(t, src, "func assignable(", "\n}")
-	cases := strings.Split(body, "case ")
+	body := between(t, src, "var assignNames = ", "\n}")
+	rows := strings.Split(body, "\n")[1:]
 
 	for i, spec := range strings.Split(strings.TrimSpace(specs), "\n") {
-		if i+1 >= len(cases) {
-			t.Fatalf("conflictSpecs has %d entries but assignable has %d cases",
-				i+1, len(cases)-1)
+		if i >= len(rows) {
+			t.Fatalf("conflictSpecs has %d entries but assignNames has %d rows",
+				i+1, len(rows))
 		}
-		c := cases[i+1]
+		c := rows[i]
 		for _, col := range []string{"tenant", "slug", "name"} {
 			// A plain key column is equal on both sides — that is why the row
 			// conflicted — so assigning it from EXCLUDED is noise.
