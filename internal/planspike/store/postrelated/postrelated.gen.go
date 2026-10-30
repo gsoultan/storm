@@ -520,14 +520,7 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 func (q *Query) leaf(p Pred) {
 	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
-		case 0:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
-		case 1:
+		case 0, 1:
 			if int(q.nar) >= 3 {
 				q.over = true
 				return
@@ -543,14 +536,7 @@ func (q *Query) leaf(p Pred) {
 		return
 	}
 	switch p.col {
-	case 0:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = p.raw
-		q.nr++
-	case 1:
+	case 0, 1:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
@@ -609,18 +595,8 @@ var lockCaches = func() [8][2]*runtime.TreeCache {
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
 var orderTable = [nCols][4]string{
-	{ // post_id
-		"\"post_id\"",
-		"\"post_id\" DESC",
-		"\"post_id\" ASC NULLS FIRST",
-		"\"post_id\" DESC NULLS LAST",
-	},
-	{ // related_id
-		"\"related_id\"",
-		"\"related_id\" DESC",
-		"\"related_id\" ASC NULLS FIRST",
-		"\"related_id\" DESC NULLS LAST",
-	},
+	{"\"post_id\"", "\"post_id\" DESC", "\"post_id\" ASC NULLS FIRST", "\"post_id\" DESC NULLS LAST"},
+	{"\"related_id\"", "\"related_id\" DESC", "\"related_id\" ASC NULLS FIRST", "\"related_id\" DESC NULLS LAST"},
 }
 
 // identTable is each column's bare quoted name, for the left side of a
@@ -662,76 +638,16 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [2][34]runtime.Frag{
 	{ // post_id
-		{}, // opNone
-		{A: "\"post_id\" = $", B: ""},
-		{A: "\"post_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"post_id\" = ANY($", B: ")"},
-		{A: "\"post_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"post_id\" = $"},
+		opNotEq: {A: "\"post_id\" <> $"},
+		opIn:    {A: "\"post_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"post_id\" <> ALL($", B: ")"},
 	},
 	{ // related_id
-		{}, // opNone
-		{A: "\"related_id\" = $", B: ""},
-		{A: "\"related_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"related_id\" = ANY($", B: ")"},
-		{A: "\"related_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"related_id\" = $"},
+		opNotEq: {A: "\"related_id\" <> $"},
+		opIn:    {A: "\"related_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"related_id\" <> ALL($", B: ")"},
 	},
 }
 
@@ -1049,11 +965,7 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
-			case 0:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
-			case 1:
+			case 0, 1:
 				b.anyRaw[nar] = q.anyRaw[nar]
 				v = append(v, &b.anyRaw[nar])
 				nar++
@@ -1061,11 +973,7 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		}
 		switch t.Col() {
-		case 0:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
-		case 1:
+		case 0, 1:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
@@ -1393,6 +1301,22 @@ func Create() Ins { return Ins{} }
 // Assigned reports the mask, which is also the statement key.
 func (n Ins) Assigned() uint64 { return n.set }
 
+// insertArgs appends the values n assigns, in column order.
+func (n *Ins) insertArgs(args []any) []any {
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.PostID)
+		case 1:
+			args = append(args, n.row.RelatedID)
+		}
+	}
+	return args
+}
+
 func (n *Ins) SetPostID(v [16]byte) {
 	n.row.PostID = v
 	n.set |= iPostID
@@ -1449,11 +1373,23 @@ var conflictSpecs = []string{
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
 	set := make([]string, 0, 0)
-	switch i {
-	case 0:
-		// Every updatable column is part of this key.
+	for j, bit := range assignBits[i] {
+		if mask&(1<<bit) != 0 {
+			set = append(set, assignNames[i][j])
+		}
 	}
 	return set
+}
+
+// assignBits and assignNames are, per target, the insert bit and the name
+// of each column it may overwrite. An empty row is a target whose key
+// covers every updatable column.
+var assignBits = [1][]uint8{
+	{},
+}
+
+var assignNames = [1][]string{
+	{},
 }
 
 // OnConflictPostIDRelatedID upserts on the unique index over (post_id, related_id).
@@ -1537,17 +1473,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return Row{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.PostID)
-		case 1:
-			args = append(args, n.row.RelatedID)
-		}
-	}
+	args = n.insertArgs(args)
 	var out Row
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
@@ -1669,9 +1595,7 @@ func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, err
 // RETURNING here would mean scanning a result per statement, which is
 // exactly the per-row work a batch exists to avoid.
 func InsertOp(r Row) runtime.BatchOp {
-	var mask uint64
-	mask |= 1 << 0
-	mask |= 1 << 1
+	const mask = 1<<nInsertable - 1 // every insertable column
 	st := stmtForInsertNoReturn(mask, 0)
 	args := make([]any, 0, 2)
 	args = append(args, r.PostID)
@@ -1704,17 +1628,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		return runtime.BatchOp{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.PostID)
-		case 1:
-			args = append(args, n.row.RelatedID)
-		}
-	}
+	args = n.insertArgs(args)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
 }
 
@@ -1754,13 +1668,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 	}
 	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.PostID)
 	args = append(args, m.row.RelatedID)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, true
@@ -1837,13 +1745,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.PostID)
 	args = append(args, m.row.RelatedID)
 	if m.expr != 0 {
@@ -2089,13 +1991,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 		b := binders.Get()
 		defer putBinder(b)
 		args := make([]any, 0, st.NArg)
-		for i := 0; i < nUpdatable; i++ {
-			if m.dirty&(1<<uint(i)) == 0 {
-				continue
-			}
-			switch i {
-			}
-		}
+		args = m.updateArgs(args)
 		return run(st.SQL, append(args, q.bindPreds(b)...))
 	}
 }

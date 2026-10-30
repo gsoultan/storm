@@ -633,14 +633,7 @@ func (q *Query) leaf(p Pred) {
 		}
 		q.raws[q.nr] = p.raw
 		q.nr++
-	case 1:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
-	case 2:
+	case 1, 2:
 		if int(q.ntm) >= 4 {
 			q.over = true
 			return
@@ -728,30 +721,10 @@ var lockCaches = func() [8][2]*runtime.TreeCache {
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
 var orderTable = [nCols][4]string{
-	{ // id
-		"\"id\"",
-		"\"id\" DESC",
-		"\"id\" ASC NULLS FIRST",
-		"\"id\" DESC NULLS LAST",
-	},
-	{ // created_at
-		"\"created_at\"",
-		"\"created_at\" DESC",
-		"\"created_at\" ASC NULLS FIRST",
-		"\"created_at\" DESC NULLS LAST",
-	},
-	{ // updated_at
-		"\"updated_at\"",
-		"\"updated_at\" DESC",
-		"\"updated_at\" ASC NULLS FIRST",
-		"\"updated_at\" DESC NULLS LAST",
-	},
-	{ // name
-		"\"name\"",
-		"\"name\" DESC",
-		"\"name\" ASC NULLS FIRST",
-		"\"name\" DESC NULLS LAST",
-	},
+	{"\"id\"", "\"id\" DESC", "\"id\" ASC NULLS FIRST", "\"id\" DESC NULLS LAST"},
+	{"\"created_at\"", "\"created_at\" DESC", "\"created_at\" ASC NULLS FIRST", "\"created_at\" DESC NULLS LAST"},
+	{"\"updated_at\"", "\"updated_at\" DESC", "\"updated_at\" ASC NULLS FIRST", "\"updated_at\" DESC NULLS LAST"},
+	{"\"name\"", "\"name\" DESC", "\"name\" ASC NULLS FIRST", "\"name\" DESC NULLS LAST"},
 }
 
 // identTable is each column's bare quoted name, for the left side of a
@@ -795,148 +768,42 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [4][34]runtime.Frag{
 	{ // id
-		{}, // opNone
-		{A: "\"id\" = $", B: ""},
-		{A: "\"id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"id\" = ANY($", B: ")"},
-		{A: "\"id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"id\" = $"},
+		opNotEq: {A: "\"id\" <> $"},
+		opIn:    {A: "\"id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"id\" <> ALL($", B: ")"},
 	},
 	{ // created_at
-		{}, // opNone
-		{A: "\"created_at\" = $", B: ""},
-		{A: "\"created_at\" <> $", B: ""},
-		{A: "\"created_at\" > $", B: ""},
-		{A: "\"created_at\" >= $", B: ""},
-		{A: "\"created_at\" < $", B: ""},
-		{A: "\"created_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"created_at\" = $"},
+		opNotEq: {A: "\"created_at\" <> $"},
+		opGt:    {A: "\"created_at\" > $"},
+		opGte:   {A: "\"created_at\" >= $"},
+		opLt:    {A: "\"created_at\" < $"},
+		opLte:   {A: "\"created_at\" <= $"},
 	},
 	{ // updated_at
-		{}, // opNone
-		{A: "\"updated_at\" = $", B: ""},
-		{A: "\"updated_at\" <> $", B: ""},
-		{A: "\"updated_at\" > $", B: ""},
-		{A: "\"updated_at\" >= $", B: ""},
-		{A: "\"updated_at\" < $", B: ""},
-		{A: "\"updated_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"updated_at\" = $"},
+		opNotEq: {A: "\"updated_at\" <> $"},
+		opGt:    {A: "\"updated_at\" > $"},
+		opGte:   {A: "\"updated_at\" >= $"},
+		opLt:    {A: "\"updated_at\" < $"},
+		opLte:   {A: "\"updated_at\" <= $"},
 	},
 	{ // name
-		{}, // opNone
-		{A: "\"name\" = $", B: ""},
-		{A: "\"name\" <> $", B: ""},
-		{A: "\"name\" > $", B: ""},
-		{A: "\"name\" >= $", B: ""},
-		{A: "\"name\" < $", B: ""},
-		{A: "\"name\" <= $", B: ""},
-		{A: "lower(\"name\") = lower($", B: ")"},
-		{A: "\"name\" LIKE $", B: ""},
-		{A: "\"name\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"name\" = ANY($", B: ")"},
-		{A: "\"name\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"name\" = $"},
+		opNotEq:         {A: "\"name\" <> $"},
+		opGt:            {A: "\"name\" > $"},
+		opGte:           {A: "\"name\" >= $"},
+		opLt:            {A: "\"name\" < $"},
+		opLte:           {A: "\"name\" <= $"},
+		opEqLower:       {A: "lower(\"name\") = lower($", B: ")"},
+		opLike:          {A: "\"name\" LIKE $"},
+		opILike:         {A: "\"name\" ILIKE $"},
+		opIn:            {A: "\"name\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"name\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 }
 
@@ -1283,11 +1150,7 @@ func (q Query) bindPreds(b *binder) []any {
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
-		case 1:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
-		case 2:
+		case 1, 2:
 			b.tims[ntm] = q.tims[ntm]
 			v = append(v, &b.tims[ntm])
 			ntm++
@@ -1653,6 +1516,26 @@ func Create() Ins { return Ins{} }
 // Assigned reports the mask, which is also the statement key.
 func (n Ins) Assigned() uint64 { return n.set }
 
+// insertArgs appends the values n assigns, in column order.
+func (n *Ins) insertArgs(args []any) []any {
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.ID)
+		case 1:
+			args = append(args, n.row.CreatedAt)
+		case 2:
+			args = append(args, n.row.UpdatedAt)
+		case 3:
+			args = append(args, n.row.Name)
+		}
+	}
+	return args
+}
+
 func (n *Ins) SetID(v [16]byte) {
 	n.row.ID = v
 	n.set |= iID
@@ -1719,16 +1602,23 @@ var conflictSpecs = []string{
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
 	set := make([]string, 0, 2)
-	switch i {
-	case 0:
-		if mask&(1<<2) != 0 {
-			set = append(set, "updated_at")
-		}
-		if mask&(1<<3) != 0 {
-			set = append(set, "name")
+	for j, bit := range assignBits[i] {
+		if mask&(1<<bit) != 0 {
+			set = append(set, assignNames[i][j])
 		}
 	}
 	return set
+}
+
+// assignBits and assignNames are, per target, the insert bit and the name
+// of each column it may overwrite. An empty row is a target whose key
+// covers every updatable column.
+var assignBits = [1][]uint8{
+	{2, 3},
+}
+
+var assignNames = [1][]string{
+	{"updated_at", "name"},
 }
 
 // OnConflictID upserts on the unique index over (id).
@@ -1815,21 +1705,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return Row{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.Name)
-		}
-	}
+	args = n.insertArgs(args)
 	var out Row
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
@@ -1957,11 +1833,7 @@ func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, err
 // RETURNING here would mean scanning a result per statement, which is
 // exactly the per-row work a batch exists to avoid.
 func InsertOp(r Row) runtime.BatchOp {
-	var mask uint64
-	mask |= 1 << 0
-	mask |= 1 << 1
-	mask |= 1 << 2
-	mask |= 1 << 3
+	const mask = 1<<nInsertable - 1 // every insertable column
 	st := stmtForInsertNoReturn(mask, 0)
 	args := make([]any, 0, 4)
 	args = append(args, r.ID)
@@ -1996,21 +1868,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		return runtime.BatchOp{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.Name)
-		}
-	}
+	args = n.insertArgs(args)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
 }
 
@@ -2050,17 +1908,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 	}
 	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.Name)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, true
 }
@@ -2136,17 +1984,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.Name)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	if m.expr != 0 {
 		return m.updateReturning(ctx, ex, st, args)
@@ -2395,17 +2233,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 		b := binders.Get()
 		defer putBinder(b)
 		args := make([]any, 0, st.NArg)
-		for i := 0; i < nUpdatable; i++ {
-			if m.dirty&(1<<uint(i)) == 0 {
-				continue
-			}
-			switch i {
-			case 0:
-				args = append(args, m.row.UpdatedAt)
-			case 1:
-				args = append(args, m.row.Name)
-			}
-		}
+		args = m.updateArgs(args)
 		return run(st.SQL, append(args, q.bindPreds(b)...))
 	}
 }

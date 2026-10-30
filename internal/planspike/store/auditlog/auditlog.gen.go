@@ -621,34 +621,20 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 func (q *Query) leaf(p Pred) {
 	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
 		switch p.col {
-		case 0:
+		case 0, 5:
 			if int(q.nar) >= 3 {
 				q.over = true
 				return
 			}
 			q.anyRaw[q.nar] = p.anyRaw
 			q.nar++
-		case 3:
+		case 3, 4:
 			if int(q.nas) >= 3 {
 				q.over = true
 				return
 			}
 			q.anyStr[q.nas] = p.anyStr
 			q.nas++
-		case 4:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
-		case 5:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
 		}
 		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 		return
@@ -658,48 +644,27 @@ func (q *Query) leaf(p Pred) {
 		return
 	}
 	switch p.col {
-	case 0:
+	case 0, 5:
 		if int(q.nr) >= 4 {
 			q.over = true
 			return
 		}
 		q.raws[q.nr] = p.raw
 		q.nr++
-	case 1:
+	case 1, 2:
 		if int(q.ntm) >= 4 {
 			q.over = true
 			return
 		}
 		q.tims[q.ntm] = p.tim
 		q.ntm++
-	case 2:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
-	case 3:
+	case 3, 4:
 		if int(q.ns) >= 6 {
 			q.over = true
 			return
 		}
 		q.strs[q.ns] = p.str
 		q.ns++
-	case 4:
-		if int(q.ns) >= 6 {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = p.str
-		q.ns++
-	case 5:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = p.raw
-		q.nr++
 	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 }
@@ -792,42 +757,12 @@ var lockCaches = func() [8][2]*runtime.TreeCache {
 // time. ORDER BY is chosen per query, so it cannot be a constant — but it
 // still must not be built from strings at run time.
 var orderTable = [nCols][4]string{
-	{ // id
-		"\"id\"",
-		"\"id\" DESC",
-		"\"id\" ASC NULLS FIRST",
-		"\"id\" DESC NULLS LAST",
-	},
-	{ // created_at
-		"\"created_at\"",
-		"\"created_at\" DESC",
-		"\"created_at\" ASC NULLS FIRST",
-		"\"created_at\" DESC NULLS LAST",
-	},
-	{ // updated_at
-		"\"updated_at\"",
-		"\"updated_at\" DESC",
-		"\"updated_at\" ASC NULLS FIRST",
-		"\"updated_at\" DESC NULLS LAST",
-	},
-	{ // action
-		"\"action\"",
-		"\"action\" DESC",
-		"\"action\" ASC NULLS FIRST",
-		"\"action\" DESC NULLS LAST",
-	},
-	{ // subject_type
-		"\"subject_type\"",
-		"\"subject_type\" DESC",
-		"\"subject_type\" ASC NULLS FIRST",
-		"\"subject_type\" DESC NULLS LAST",
-	},
-	{ // subject_id
-		"\"subject_id\"",
-		"\"subject_id\" DESC",
-		"\"subject_id\" ASC NULLS FIRST",
-		"\"subject_id\" DESC NULLS LAST",
-	},
+	{"\"id\"", "\"id\" DESC", "\"id\" ASC NULLS FIRST", "\"id\" DESC NULLS LAST"},
+	{"\"created_at\"", "\"created_at\" DESC", "\"created_at\" ASC NULLS FIRST", "\"created_at\" DESC NULLS LAST"},
+	{"\"updated_at\"", "\"updated_at\" DESC", "\"updated_at\" ASC NULLS FIRST", "\"updated_at\" DESC NULLS LAST"},
+	{"\"action\"", "\"action\" DESC", "\"action\" ASC NULLS FIRST", "\"action\" DESC NULLS LAST"},
+	{"\"subject_type\"", "\"subject_type\" DESC", "\"subject_type\" ASC NULLS FIRST", "\"subject_type\" DESC NULLS LAST"},
+	{"\"subject_id\"", "\"subject_id\" DESC", "\"subject_id\" ASC NULLS FIRST", "\"subject_id\" DESC NULLS LAST"},
 }
 
 // identTable is each column's bare quoted name, for the left side of a
@@ -873,220 +808,64 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [6][34]runtime.Frag{
 	{ // id
-		{}, // opNone
-		{A: "\"id\" = $", B: ""},
-		{A: "\"id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"id\" = ANY($", B: ")"},
-		{A: "\"id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"id\" = $"},
+		opNotEq: {A: "\"id\" <> $"},
+		opIn:    {A: "\"id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"id\" <> ALL($", B: ")"},
 	},
 	{ // created_at
-		{}, // opNone
-		{A: "\"created_at\" = $", B: ""},
-		{A: "\"created_at\" <> $", B: ""},
-		{A: "\"created_at\" > $", B: ""},
-		{A: "\"created_at\" >= $", B: ""},
-		{A: "\"created_at\" < $", B: ""},
-		{A: "\"created_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"created_at\" = $"},
+		opNotEq: {A: "\"created_at\" <> $"},
+		opGt:    {A: "\"created_at\" > $"},
+		opGte:   {A: "\"created_at\" >= $"},
+		opLt:    {A: "\"created_at\" < $"},
+		opLte:   {A: "\"created_at\" <= $"},
 	},
 	{ // updated_at
-		{}, // opNone
-		{A: "\"updated_at\" = $", B: ""},
-		{A: "\"updated_at\" <> $", B: ""},
-		{A: "\"updated_at\" > $", B: ""},
-		{A: "\"updated_at\" >= $", B: ""},
-		{A: "\"updated_at\" < $", B: ""},
-		{A: "\"updated_at\" <= $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"updated_at\" = $"},
+		opNotEq: {A: "\"updated_at\" <> $"},
+		opGt:    {A: "\"updated_at\" > $"},
+		opGte:   {A: "\"updated_at\" >= $"},
+		opLt:    {A: "\"updated_at\" < $"},
+		opLte:   {A: "\"updated_at\" <= $"},
 	},
 	{ // action
-		{}, // opNone
-		{A: "\"action\" = $", B: ""},
-		{A: "\"action\" <> $", B: ""},
-		{A: "\"action\" > $", B: ""},
-		{A: "\"action\" >= $", B: ""},
-		{A: "\"action\" < $", B: ""},
-		{A: "\"action\" <= $", B: ""},
-		{A: "lower(\"action\") = lower($", B: ")"},
-		{A: "\"action\" LIKE $", B: ""},
-		{A: "\"action\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"action\" = ANY($", B: ")"},
-		{A: "\"action\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"action\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"action\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"action\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"action\" = $"},
+		opNotEq:         {A: "\"action\" <> $"},
+		opGt:            {A: "\"action\" > $"},
+		opGte:           {A: "\"action\" >= $"},
+		opLt:            {A: "\"action\" < $"},
+		opLte:           {A: "\"action\" <= $"},
+		opEqLower:       {A: "lower(\"action\") = lower($", B: ")"},
+		opLike:          {A: "\"action\" LIKE $"},
+		opILike:         {A: "\"action\" ILIKE $"},
+		opIn:            {A: "\"action\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"action\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"action\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"action\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"action\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // subject_type
-		{}, // opNone
-		{A: "\"subject_type\" = $", B: ""},
-		{A: "\"subject_type\" <> $", B: ""},
-		{A: "\"subject_type\" > $", B: ""},
-		{A: "\"subject_type\" >= $", B: ""},
-		{A: "\"subject_type\" < $", B: ""},
-		{A: "\"subject_type\" <= $", B: ""},
-		{A: "lower(\"subject_type\") = lower($", B: ")"},
-		{A: "\"subject_type\" LIKE $", B: ""},
-		{A: "\"subject_type\" ILIKE $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"subject_type\" = ANY($", B: ")"},
-		{A: "\"subject_type\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"subject_type\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{A: "\"subject_type\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		{A: "\"subject_type\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:            {A: "\"subject_type\" = $"},
+		opNotEq:         {A: "\"subject_type\" <> $"},
+		opGt:            {A: "\"subject_type\" > $"},
+		opGte:           {A: "\"subject_type\" >= $"},
+		opLt:            {A: "\"subject_type\" < $"},
+		opLte:           {A: "\"subject_type\" <= $"},
+		opEqLower:       {A: "lower(\"subject_type\") = lower($", B: ")"},
+		opLike:          {A: "\"subject_type\" LIKE $"},
+		opILike:         {A: "\"subject_type\" ILIKE $"},
+		opIn:            {A: "\"subject_type\" = ANY($", B: ")"},
+		opNotIn:         {A: "\"subject_type\" <> ALL($", B: ")"},
+		opTextHasPrefix: {A: "\"subject_type\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		opTextHasSuffix: {A: "\"subject_type\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		opTextContains:  {A: "\"subject_type\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // subject_id
-		{}, // opNone
-		{A: "\"subject_id\" = $", B: ""},
-		{A: "\"subject_id\" <> $", B: ""},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{A: "\"subject_id\" = ANY($", B: ")"},
-		{A: "\"subject_id\" <> ALL($", B: ")"},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
-		{},
+		opEq:    {A: "\"subject_id\" = $"},
+		opNotEq: {A: "\"subject_id\" <> $"},
+		opIn:    {A: "\"subject_id\" = ANY($", B: ")"},
+		opNotIn: {A: "\"subject_id\" <> ALL($", B: ")"},
 	},
 }
 
@@ -1422,50 +1201,30 @@ func (q Query) bindPreds(b *binder) []any {
 			continue
 		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
 			switch t.Col() {
-			case 0:
+			case 0, 5:
 				b.anyRaw[nar] = q.anyRaw[nar]
 				v = append(v, &b.anyRaw[nar])
 				nar++
-			case 3:
+			case 3, 4:
 				b.anyStr[nas] = q.anyStr[nas]
 				v = append(v, &b.anyStr[nas])
 				nas++
-			case 4:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
-			case 5:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
 			}
 			continue
 		}
 		switch t.Col() {
-		case 0:
+		case 0, 5:
 			b.raws[nr] = q.raws[nr]
 			v = append(v, &b.raws[nr])
 			nr++
-		case 1:
+		case 1, 2:
 			b.tims[ntm] = q.tims[ntm]
 			v = append(v, &b.tims[ntm])
 			ntm++
-		case 2:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
-		case 3:
+		case 3, 4:
 			b.strs[ns] = q.strs[ns]
 			v = append(v, &b.strs[ns])
 			ns++
-		case 4:
-			b.strs[ns] = q.strs[ns]
-			v = append(v, &b.strs[ns])
-			ns++
-		case 5:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
 		}
 	}
 	b.vals = v
@@ -1846,6 +1605,30 @@ func Create() Ins { return Ins{} }
 // Assigned reports the mask, which is also the statement key.
 func (n Ins) Assigned() uint64 { return n.set }
 
+// insertArgs appends the values n assigns, in column order.
+func (n *Ins) insertArgs(args []any) []any {
+	for i := 0; i < nInsertable; i++ {
+		if n.set&(1<<uint(i)) == 0 {
+			continue
+		}
+		switch i {
+		case 0:
+			args = append(args, n.row.ID)
+		case 1:
+			args = append(args, n.row.CreatedAt)
+		case 2:
+			args = append(args, n.row.UpdatedAt)
+		case 3:
+			args = append(args, n.row.Action)
+		case 4:
+			args = append(args, n.row.SubjectType)
+		case 5:
+			args = append(args, n.row.SubjectID)
+		}
+	}
+	return args
+}
+
 func (n *Ins) SetID(v [16]byte) {
 	n.row.ID = v
 	n.set |= iID
@@ -1922,22 +1705,23 @@ var conflictSpecs = []string{
 // assignable is the columns target i may overwrite, given the mask.
 func assignable(i uint8, mask uint64) []string {
 	set := make([]string, 0, 4)
-	switch i {
-	case 0:
-		if mask&(1<<2) != 0 {
-			set = append(set, "updated_at")
-		}
-		if mask&(1<<3) != 0 {
-			set = append(set, "action")
-		}
-		if mask&(1<<4) != 0 {
-			set = append(set, "subject_type")
-		}
-		if mask&(1<<5) != 0 {
-			set = append(set, "subject_id")
+	for j, bit := range assignBits[i] {
+		if mask&(1<<bit) != 0 {
+			set = append(set, assignNames[i][j])
 		}
 	}
 	return set
+}
+
+// assignBits and assignNames are, per target, the insert bit and the name
+// of each column it may overwrite. An empty row is a target whose key
+// covers every updatable column.
+var assignBits = [1][]uint8{
+	{2, 3, 4, 5},
+}
+
+var assignNames = [1][]string{
+	{"updated_at", "action", "subject_type", "subject_id"},
 }
 
 // OnConflictID upserts on the unique index over (id).
@@ -2026,25 +1810,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 		return Row{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.Action)
-		case 4:
-			args = append(args, n.row.SubjectType)
-		case 5:
-			args = append(args, n.row.SubjectID)
-		}
-	}
+	args = n.insertArgs(args)
 	var out Row
 	rows, err := ex.Query(ctx, st.SQL, args)
 	if err != nil {
@@ -2178,13 +1944,7 @@ func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, err
 // RETURNING here would mean scanning a result per statement, which is
 // exactly the per-row work a batch exists to avoid.
 func InsertOp(r Row) runtime.BatchOp {
-	var mask uint64
-	mask |= 1 << 0
-	mask |= 1 << 1
-	mask |= 1 << 2
-	mask |= 1 << 3
-	mask |= 1 << 4
-	mask |= 1 << 5
+	const mask = 1<<nInsertable - 1 // every insertable column
 	st := stmtForInsertNoReturn(mask, 0)
 	args := make([]any, 0, 6)
 	args = append(args, r.ID)
@@ -2221,25 +1981,7 @@ func (n *Ins) Op() (runtime.BatchOp, error) {
 		return runtime.BatchOp{}, st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nInsertable; i++ {
-		if n.set&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, n.row.ID)
-		case 1:
-			args = append(args, n.row.CreatedAt)
-		case 2:
-			args = append(args, n.row.UpdatedAt)
-		case 3:
-			args = append(args, n.row.Action)
-		case 4:
-			args = append(args, n.row.SubjectType)
-		case 5:
-			args = append(args, n.row.SubjectID)
-		}
-	}
+	args = n.insertArgs(args)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, nil
 }
 
@@ -2279,21 +2021,7 @@ func (m *Mut) UpdateOp() (runtime.BatchOp, bool) {
 	}
 	st := stmtForKey(m.key(), false)
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.Action)
-		case 2:
-			args = append(args, m.row.SubjectType)
-		case 3:
-			args = append(args, m.row.SubjectID)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	return runtime.BatchOp{SQL: st.SQL, Args: args}, true
 }
@@ -2369,21 +2097,7 @@ func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
 		return st.Err
 	}
 	args := make([]any, 0, st.NArg)
-	for i := 0; i < nUpdatable; i++ {
-		if m.dirty&(1<<uint(i)) == 0 {
-			continue
-		}
-		switch i {
-		case 0:
-			args = append(args, m.row.UpdatedAt)
-		case 1:
-			args = append(args, m.row.Action)
-		case 2:
-			args = append(args, m.row.SubjectType)
-		case 3:
-			args = append(args, m.row.SubjectID)
-		}
-	}
+	args = m.updateArgs(args)
 	args = append(args, m.row.ID)
 	if m.expr != 0 {
 		return m.updateReturning(ctx, ex, st, args)
@@ -2636,21 +2350,7 @@ func (q Query) UpdateAllStep(m Mut) runtime.Step {
 		b := binders.Get()
 		defer putBinder(b)
 		args := make([]any, 0, st.NArg)
-		for i := 0; i < nUpdatable; i++ {
-			if m.dirty&(1<<uint(i)) == 0 {
-				continue
-			}
-			switch i {
-			case 0:
-				args = append(args, m.row.UpdatedAt)
-			case 1:
-				args = append(args, m.row.Action)
-			case 2:
-				args = append(args, m.row.SubjectType)
-			case 3:
-				args = append(args, m.row.SubjectID)
-			}
-		}
+		args = m.updateArgs(args)
 		return run(st.SQL, append(args, q.bindPreds(b)...))
 	}
 }

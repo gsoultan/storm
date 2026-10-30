@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gsoultan/storm/compile/pgsql"
@@ -735,17 +736,7 @@ func (g *gen) insInsertNoReturn(ins []colInfo) {
 	g.p("\t\treturn Row{}, st.Err")
 	g.p("\t}")
 	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nInsertable; i++ {")
-	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range ins {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
+	g.p("\targs = n.insertArgs(args)")
 	g.p("\taffected, err := ex.Exec(ctx, st.SQL, args)")
 	g.p("\tif err != nil {")
 	g.p("\t\treturn Row{}, err")
@@ -914,25 +905,7 @@ func (g *gen) upsertTargets(ins []colInfo) {
 	g.p("")
 
 	g.p("// assignable is the columns target i may overwrite, given the mask.")
-	g.p("func assignable(i uint8, mask uint64) []string {")
-	g.p("\tset := make([]string, 0, %d)", len(upd))
-	g.p("\tswitch i {")
-	for i, ct := range targets {
-		g.p("\tcase %d:", i)
-		cols := assignableFor(ct, upd, ins)
-		if len(cols) == 0 {
-			g.p("\t\t// Every updatable column is part of this key.")
-		}
-		for _, c := range cols {
-			g.p("\t\tif mask&(1<<%d) != 0 {", insertIndex(ins, c.Name()))
-			g.p("\t\t\tset = append(set, %q)", c.Name())
-			g.p("\t\t}")
-		}
-	}
-	g.p("\t}")
-	g.p("\treturn set")
-	g.p("}")
-	g.p("")
+	g.assignable(targets, upd, ins, func(c string) string { return c })
 
 	for i, ct := range targets {
 		where := ""
@@ -1112,25 +1085,7 @@ func (g *gen) mergeTargets(ins []colInfo) {
 	g.p("// columns the caller ASSIGNED. Assigning every column would revert each")
 	g.p("// one the caller left out to its default, on the row that already")
 	g.p("// exists — a silent data loss that reads as an upsert working.")
-	g.p("func assignable(i uint8, mask uint64) []string {")
-	g.p("\tset := make([]string, 0, %d)", len(upd))
-	g.p("\tswitch i {")
-	for i, ct := range targets {
-		g.p("\tcase %d:", i)
-		cols := assignableFor(ct, upd, ins)
-		if len(cols) == 0 {
-			g.p("\t\t// Every updatable column is part of this key.")
-		}
-		for _, c := range cols {
-			g.p("\t\tif mask&(1<<%d) != 0 {", insertIndex(ins, c.Name()))
-			g.p("\t\t\tset = append(set, %q)", g.lw.Ident(c.Name()))
-			g.p("\t\t}")
-		}
-	}
-	g.p("\t}")
-	g.p("\treturn set")
-	g.p("}")
-	g.p("")
+	g.assignable(targets, upd, ins, g.lw.Ident)
 
 	for i, ct := range targets {
 		where := ""
@@ -1248,6 +1203,46 @@ func plainKeys(cols []string) []pgsql.ConflictKey {
 // expression, where `lower(email)` matching does NOT mean the emails are
 // equal and overwriting is exactly what the caller means. So only plain key
 // columns are held back.
+// assignable emits the columns each upsert target may overwrite as two
+// parallel tables, one row per target, and the loop that filters them by the
+// insert mask. Every column a target names is in its row, so a wide table
+// costs a line per target rather than three per column.
+func (g *gen) assignable(targets []conflictTarget, upd, ins []colInfo, name func(string) string) {
+	g.p("func assignable(i uint8, mask uint64) []string {")
+	g.p("\tset := make([]string, 0, %d)", len(upd))
+	g.p("\tfor j, bit := range assignBits[i] {")
+	g.p("\t\tif mask&(1<<bit) != 0 {")
+	g.p("\t\t\tset = append(set, assignNames[i][j])")
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\treturn set")
+	g.p("}")
+	g.p("")
+	g.p("// assignBits and assignNames are, per target, the insert bit and the name")
+	g.p("// of each column it may overwrite. An empty row is a target whose key")
+	g.p("// covers every updatable column.")
+	g.p("var assignBits = [%d][]uint8{", len(targets))
+	for _, ct := range targets {
+		var bits []string
+		for _, c := range assignableFor(ct, upd, ins) {
+			bits = append(bits, strconv.Itoa(insertIndex(ins, c.Name())))
+		}
+		g.p("\t{%s},", strings.Join(bits, ", "))
+	}
+	g.p("}")
+	g.p("")
+	g.p("var assignNames = [%d][]string{", len(targets))
+	for _, ct := range targets {
+		var names []string
+		for _, c := range assignableFor(ct, upd, ins) {
+			names = append(names, strconv.Quote(name(c.Name())))
+		}
+		g.p("\t{%s},", strings.Join(names, ", "))
+	}
+	g.p("}")
+	g.p("")
+}
+
 func assignableFor(ct conflictTarget, upd, ins []colInfo) []colInfo {
 	key := map[string]bool{}
 	for _, k := range ct.Keys {
@@ -1341,6 +1336,22 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("")
 	g.p("// Assigned reports the mask, which is also the statement key.")
 	g.p("func (n Ins) Assigned() uint64 { return n.set }")
+	g.p("")
+	g.p("// insertArgs appends the values n assigns, in column order.")
+	g.p("func (n *Ins) insertArgs(args []any) []any {")
+	g.p("\tfor i := 0; i < nInsertable; i++ {")
+	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
+	g.p("\t\t\tcontinue")
+	g.p("\t\t}")
+	g.p("\t\tswitch i {")
+	for i, c := range ins {
+		g.p("\t\tcase %d:", i)
+		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
+	}
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\treturn args")
+	g.p("}")
 	g.p("")
 	for _, c := range ins {
 		nm := exportName(c.Name())
@@ -1443,17 +1454,7 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("\t\treturn Row{}, st.Err")
 	g.p("\t}")
 	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nInsertable; i++ {")
-	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range ins {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
+	g.p("\targs = n.insertArgs(args)")
 	g.p("\tvar out Row")
 	g.p("\trows, err := %s", g.dec.rowsFrom("ex.Query(ctx, st.SQL, args)"))
 	g.p("\tif err != nil {")
@@ -1695,18 +1696,7 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 	g.p("\t\treturn st.Err")
 	g.p("\t}")
 	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range upd {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
-	g.guardArgs("\t")
+	g.p("\targs = m.updateArgs(args)")
 	for _, c := range pk {
 		g.p("\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
 	}
@@ -1909,10 +1899,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	g.p("// RETURNING here would mean scanning a result per statement, which is")
 	g.p("// exactly the per-row work a batch exists to avoid.")
 	g.p("func InsertOp(r Row) runtime.BatchOp {")
-	g.p("\tvar mask uint64")
-	for i := range ins {
-		g.p("\tmask |= 1 << %d", i)
-	}
+	g.p("\tconst mask = 1<<nInsertable - 1 // every insertable column")
 	// The NO-RETURN form, which Op next door already used and this did not. On
 	// a back end whose insert returns the row — MariaDB — the clause makes the
 	// server answer with a RESULT SET where the batch asked for a count, so
@@ -1952,17 +1939,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 	g.p("\t\treturn runtime.BatchOp{}, st.Err")
 	g.p("\t}")
 	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nInsertable; i++ {")
-	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range ins {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
+	g.p("\targs = n.insertArgs(args)")
 	g.p("\treturn runtime.BatchOp{SQL: st.SQL, Args: args}, nil")
 	g.p("}")
 	g.p("")
@@ -2009,18 +1986,7 @@ func (g *gen) batchOps(ins, upd, pk []colInfo) {
 		g.p("\tst := stmtForKey(m.key())")
 	}
 	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\tif m.dirty&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range upd {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
-	g.guardArgs("\t")
+	g.p("\targs = m.updateArgs(args)")
 	for _, c := range pk {
 		g.p("\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
 	}
@@ -2895,18 +2861,7 @@ func (g *gen) stepFns(upd, pk []colInfo) {
 	g.p("\t\tb := binders.Get()")
 	g.p("\t\tdefer putBinder(b)")
 	g.p("\t\targs := make([]any, 0, st.NArg)")
-	g.p("\t\tfor i := 0; i < nUpdatable; i++ {")
-	g.p("\t\t\tif m.dirty&(1<<uint(i)) == 0 {")
-	g.p("\t\t\t\tcontinue")
-	g.p("\t\t\t}")
-	g.p("\t\t\tswitch i {")
-	for i, c := range upd {
-		g.p("\t\t\tcase %d:", i)
-		g.p("\t\t\t\targs = append(args, %s)", writeArg(c, "m.row."+exportName(c.Name())))
-	}
-	g.p("\t\t\t}")
-	g.p("\t\t}")
-	g.guardArgs("\t\t")
+	g.p("\t\targs = m.updateArgs(args)")
 	g.p("\t\treturn run(st.SQL, append(args, q.bindPreds(b)...))")
 	g.p("\t}")
 	g.p("}")
@@ -3246,17 +3201,7 @@ func (g *gen) guardedUpsert(ins []colInfo) {
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
 	g.p("\targs := make([]any, 0, st.NArg)")
-	g.p("\tfor i := 0; i < nInsertable; i++ {")
-	g.p("\t\tif n.set&(1<<uint(i)) == 0 {")
-	g.p("\t\t\tcontinue")
-	g.p("\t\t}")
-	g.p("\t\tswitch i {")
-	for i, c := range ins {
-		g.p("\t\tcase %d:", i)
-		g.p("\t\t\targs = append(args, %s)", writeArg(c, "n.row."+exportName(c.Name())))
-	}
-	g.p("\t\t}")
-	g.p("\t}")
+	g.p("\targs = n.insertArgs(args)")
 	g.p("\tif toks != nil {")
 	g.p("\t\targs = append(args, q.bindPreds(b)...)")
 	g.p("\t}")
