@@ -47,13 +47,8 @@ func (g *gen) batchTop() {
 	}
 	cols := readableCols(g.t)
 
-	g.p("// Greatest-n-per-group: at most n children per parent, in ONE query.")
-	g.p("//")
-	g.p("// The ordering is REQUIRED and must be a strict total order. \"The first")
-	g.p("// three by date\" with ties on that date returns an arbitrary three, and")
-	g.p("// a different arbitrary three on the next call — a paging bug that only")
-	g.p("// appears under data the developer did not have. Add the primary key as")
-	g.p("// a final term if the natural ordering is not unique.")
+	g.p("// Greatest-n-per-group needs a strict total order: add the primary key as a")
+	g.p("// final term if the natural ordering has ties.")
 	g.p("var errNoTopOrder = errors.New(")
 	g.p("\t%q)", "storm: a per-parent limit needs an ordering — without one "+
 		"\"the first three\" is an arbitrary three, and a different three next time")
@@ -91,12 +86,8 @@ func (g *gen) topFn(key string, kc *schema.Column, cols []string) {
 		def = "Lateral"
 	}
 
-	g.p("// %s fetches at most n rows for each id, ordered by order.", name)
-	g.p("//")
-	g.p("// ONE round trip regardless of how many ids are passed — the per-parent")
-	g.p("// limit is expressed in SQL, not by looping. It delegates to the lowering")
-	g.p("// chosen at BUILD time by measurement (bench/RESULTS.md); the strategy is")
-	g.p("// never sniffed at run time.")
+	g.p("// %s fetches at most n rows for each id, ordered by order, in one", name)
+	g.p("// round trip. The lowering was chosen at generate time.")
 	g.p("func %s(ctx context.Context, ex "+g.execType()+", ids []%s, n int64, order ...Sort) ([]Row, error) {", name, keyGo)
 	g.p("\treturn %s%s(ctx, ex, ids, n, order...)", name, def)
 	g.p("}")
@@ -225,14 +216,9 @@ func (g *gen) distinctOn() {
 	g.p("\treturn c.Put(key, %s)", g.splice("prefix+distinctTail", "toks, lowering, suffix"))
 	g.p("}")
 	g.p("")
-	g.p("// AllDistinctOn runs the query keeping one row for each distinct value")
-	g.p("// of its first n order terms: the first, in the query's order. Order")
-	g.p("// by the key and then by what picks the row:")
-	g.p("//")
-	g.p("//\tq.Order(Project.Asc(), Key.Asc(), CreatedAt.Desc()).AllDistinctOn(ctx, ex, 2, nil)")
-	g.p("//")
-	g.p("// is each project's and key's newest row. Limit and Offset count the")
-	g.p("// rows kept. n outside the explicit order, or a row lock, is refused.")
+	g.p("// AllDistinctOn keeps the first row, in the query's order, for each distinct")
+	g.p("// value of its first n order terms. Limit and Offset count the rows kept;")
+	g.p("// n outside the explicit order, or a row lock, is refused.")
 	g.p("func (q Query) AllDistinctOn(ctx context.Context, ex %s, n int, dst []Row) ([]Row, error) {", g.execType())
 	g.p("\tif err := q.Err(); err != nil {")
 	g.p("\t\treturn dst, err")
