@@ -153,9 +153,7 @@ func (g *gen) colHandles() {
 				}
 				switch op.name {
 				case "NotIn":
-					g.p("// NotIn is `<> ALL($1)`. A NULL anywhere in v makes the")
-					g.p("// comparison NULL for every row and the result empty —")
-					g.p("// PostgreSQL's rule for NOT IN, not storm's.")
+					g.p("// NotIn is `<> ALL($1)`: a NULL in v matches no row, as NOT IN does.")
 				case "ArrayContains":
 					g.p("// Contains is `@>`: every element of v is in the column.")
 					g.p("// An empty v is true for every row — every array contains")
@@ -181,7 +179,7 @@ func (g *gen) colHandles() {
 			switch op.name {
 			case "TextHasPrefix", "TextHasSuffix", "TextContains":
 				g.p("// %s matches v literally: a %% or _ in v is that character, not a", op.m())
-				g.p("// wildcard. The escaping happens in SQL, so nothing is built per call.")
+				g.p("// wildcard.")
 			}
 			ctor := predCtor(c, op.name, i)
 			ctor = replaceColField(ctor)

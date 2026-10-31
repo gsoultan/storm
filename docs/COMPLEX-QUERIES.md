@@ -373,7 +373,6 @@ Not declarable, and each for a reason rather than an oversight:
 | set-returning functions | a row source that is not a table — [ADR-0009](adr/0009-gap-filling-needs-a-from-that-is-not-a-table.md) |
 | recursive CTEs you write yourself | `Descend`/`Ascend` cover the self-reference; anything else is SQL |
 | a whole-table or paged `UPDATE`/`DELETE` | `UpdateAll`/`DeleteAll` take a query's predicates as their `WHERE`, but refuse no predicate and refuse `Limit`/`Offset`, which a write has no clause for; those are `storm.SQLExec` |
-| streaming a result set | reads are `All`/`One`/`Count`/`Exists`; an export pages with `After` |
 | jsonb path extraction — `->>`, jsonpath | containment and key tests are declared; asking about a nested scalar is SQL |
 
 And when a query is not declarable, `storm.SQL[T]` is not a downgrade: the
