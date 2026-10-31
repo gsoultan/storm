@@ -402,6 +402,22 @@ err := article.New().Where(article.PublishedAt.IsNotNull()).
 The result stays open while the callback runs, so on a transaction — one
 connection — the callback must not run another statement through it.
 
+`Rows` is the same read as an iterator, for `range`. It is `Each` underneath,
+so it costs the same memory and allocations; breaking out of the loop closes
+the result, and an error is yielded once with a zero row:
+
+```go
+for a, err := range article.New().Order(article.ID.Asc()).Rows(ctx, pool) {
+    if err != nil {
+        return err
+    }
+    csvw.Write([]string{a.Title, a.Slug})
+}
+```
+
+`List(ctx, ex)` is `All(ctx, ex, nil)`, for the common read that has no slice
+to reuse.
+
 `AllDistinctOn(ctx, ex, n, dst)` keeps one row for each distinct value of the
 query's first `n` ORDER BY terms: the first, in the query's order. Order by the
 key and then by what picks the row:

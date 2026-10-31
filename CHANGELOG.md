@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-10-21
+updated: 2026-10-31
 ---
 
 # Changelog
@@ -13,6 +13,58 @@ Every entry names what changed and — where it matters — what it cost, becaus
 a release note that cannot be checked is marketing.
 
 ## Unreleased
+
+### `storm watch`: no lost saves, and no regenerate for a handler edit
+
+- **A save made while generation ran was lost.** After generating, the
+  watcher re-read the tree and took that as its baseline, so an edit saved
+  during the seconds a `go run` takes was never generated. The baseline is
+  now the tree as it was before generating.
+- **Only edits that can change the output regenerate.** That is a file in a
+  package with a model, query or union, a module package one of those
+  imports (where a mixin lives), `go.mod`/`go.sum`, or a file that newly
+  imports storm. Editing an HTTP handler or a test no longer costs a full
+  generate.
+- **`go.mod` and `go.sum` are watched**, so bumping storm regenerates.
+- **`storm generate` leaves unchanged files alone** and writes changed ones
+  through a temporary file and a rename. Identical output no longer moves
+  every mtime (which made gopls reload every table package and restarted
+  live-reload tools on each save), and a run that dies part way leaves no
+  half-written file. The summary line counts what was unchanged.
+
+### `Rows`: a read you can range over, and `List`
+
+```go
+for r, err := range user.New().Where(user.Status.Eq("active")).Rows(ctx, ex) {
+    if err != nil {
+        return err
+    }
+    ...
+}
+```
+
+`Rows` is `Each` as an iterator: the same constant memory and the same
+allocations (6 for 50 rows against PostgreSQL 16). Breaking out of the loop
+closes the result; a query error is yielded once with a zero row. `List(ctx,
+ex)` is `All(ctx, ex, nil)`. Regenerate to get both.
+
+### Generated comments state the contract; the reasoning moved to docs
+
+Each table package repeated the same design rationale once per table. Doc
+comments now say what a method does, refuses and returns, and
+[docs/GENERATED.md](docs/GENERATED.md) carries the reasoning once. Committed
+generated packages went from 65,896 lines to 61,636 (6.5%), with no change to
+any statement, signature or warm path.
+
+### Allocation budgets are a CI gate
+
+`scripts/check/allocs.sh` runs storm's own benchmarks and compares allocs/op
+exactly against `bench/ALLOCS` (43 budgets). Before, CI only checked that the
+benchmarks still ran, so an extra allocation on the warm path would have
+shipped green. A budgeted benchmark that does not run (no server) fails the
+gate. `make check` runs it too and needs `STORM_MYSQL_ADDR`.
+
+## v1.8.0 – v1.10.0 — 2026-10-29 to 2026-10-30
 
 ### MySQL and MariaDB: five production bugs, found against real servers
 
