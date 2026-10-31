@@ -749,17 +749,27 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema, d
 	}
 	sort.Strings(paths) // stable output order, so a diff of two runs is empty
 
+	unchanged := 0
 	for _, rel := range paths {
 		full := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(full, files[rel], 0o644); err != nil {
+		changed, err := writeGenerated(full, files[rel])
+		if err != nil {
 			return err
+		}
+		if !changed {
+			unchanged++
+			continue
 		}
 		fmt.Printf("→ %s (%d bytes)\n", full, len(files[rel]))
 	}
-	fmt.Printf("%d package(s) from %d table(s)\n", len(files), len(model.Tables))
+	fmt.Printf("%d package(s) from %d table(s)", len(files), len(model.Tables))
+	if unchanged > 0 {
+		fmt.Printf(", %d unchanged", unchanged)
+	}
+	fmt.Println()
 	return nil
 }
 
