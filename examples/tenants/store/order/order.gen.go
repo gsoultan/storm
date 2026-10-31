@@ -1438,6 +1438,15 @@ func (q Query) Each(ctx context.Context, ex shard.Bound, fn func(Row) error) err
 	return rows.Err()
 }
 
+// Rows is Each as an iterator, for range. Breaking out of the loop closes
+// the result; an error is yielded once, with a zero Row.
+func (q Query) Rows(ctx context.Context, ex shard.Bound) func(yield func(Row, error) bool) {
+	return runtime.Seq(func(fn func(Row) error) error { return q.Each(ctx, ex, fn) })
+}
+
+// List runs the query and returns every row: All with no slice to reuse.
+func (q Query) List(ctx context.Context, ex shard.Bound) ([]Row, error) { return q.All(ctx, ex, nil) }
+
 // One returns the first row, if any.
 func (q Query) One(ctx context.Context, ex shard.Bound) (Row, bool, error) {
 	var sl runtime.Slab

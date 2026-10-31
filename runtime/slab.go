@@ -1,6 +1,10 @@
 package runtime
 
-import "unsafe"
+import (
+	"errors"
+	"iter"
+	"unsafe"
+)
 
 // Slab is a chunked string arena. Decoding a result copies every text column
 // into it once, so a 1,000-row scan costs a handful of allocations instead of
@@ -29,6 +33,38 @@ const (
 // collector — once no string a caller kept points into it — so a read of any
 // length holds about this much text, not the whole result.
 const EachSlabCap = slabMax
+
+// Seq turns a generated Each into an iterator, which is what a generated
+// Rows returns:
+//
+//	for r, err := range user.New().Where(...).Rows(ctx, ex) {
+//		if err != nil {
+//			return err
+//		}
+//		...
+//	}
+//
+// It reads in the same constant memory as Each, because it is Each. Leaving
+// the loop early stops the read and closes the result; an error from the
+// query or the scan is yielded once, with a zero row, and ends the loop.
+func Seq[R any](each func(fn func(R) error) error) iter.Seq2[R, error] {
+	return func(yield func(R, error) bool) {
+		err := each(func(r R) error {
+			if !yield(r, nil) {
+				return errStopSeq
+			}
+			return nil
+		})
+		if err != nil && err != errStopSeq {
+			var zero R
+			yield(zero, err)
+		}
+	}
+}
+
+// errStopSeq is how Seq tells Each the loop body broke out. It never leaves
+// Seq, so nobody can compare against it.
+var errStopSeq = errors.New("storm: iteration stopped")
 
 // Bytes copies b into the arena and returns the copy.
 //
