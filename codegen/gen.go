@@ -1158,6 +1158,15 @@ func (g *gen) eachTerminal() {
 	g.p("\treturn rows.Err()")
 	g.p("}")
 	g.p("")
+	g.p("// Rows is Each as an iterator, for range. Breaking out of the loop closes")
+	g.p("// the result; an error is yielded once, with a zero Row.")
+	g.p("func (q Query) Rows(ctx context.Context, ex %s) func(yield func(Row, error) bool) {", g.execType())
+	g.p("\treturn runtime.Seq(func(fn func(Row) error) error { return q.Each(ctx, ex, fn) })")
+	g.p("}")
+	g.p("")
+	g.p("// List runs the query and returns every row: All with no slice to reuse.")
+	g.p("func (q Query) List(ctx context.Context, ex %s) ([]Row, error) { return q.All(ctx, ex, nil) }", g.execType())
+	g.p("")
 }
 
 // orderTerm is one default ORDER BY term, resolved to the ids generated code
