@@ -206,6 +206,13 @@ jobs:
           # already shipped once at ten allocations per row while claiming one.
           go test -run XXX -bench . -benchtime=1x ./runtime/mydrv/
 
+      # The perf gate the step above is not: storm's own benchmarks, compared
+      # exactly against bench/ALLOCS. allocs/op is deterministic, so a single
+      # extra allocation on the warm path fails here instead of shipping.
+      - name: allocation budgets
+        if: ${{ !cancelled() }}
+        run: ./scripts/check/allocs.sh
+
       # The seed corpus runs as an ordinary test above; this is the part that
       # searches. Short on every PR because a fuzzer that only runs nightly
       # finds its bugs a day after the commit that caused them.
