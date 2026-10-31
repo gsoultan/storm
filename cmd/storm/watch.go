@@ -50,12 +50,11 @@ func watch(dir string, args []string) error {
 
 	// Generate once up front, so a watcher started against a stale tree makes
 	// it current rather than waiting for an edit that may not come.
-	regenerate(dir, args)
-
-	last, err := tooldiscover.Fingerprint(mod.Root, out)
+	last, err := tooldiscover.TakeSnapshot(mod.Root, out)
 	if err != nil {
 		return err
 	}
+	ws := regenerate(dir, args)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -68,46 +67,68 @@ func watch(dir string, args []string) error {
 			fmt.Fprintln(os.Stderr, "\nstorm: stopped")
 			return nil
 		case <-tick.C:
-			cur, err := tooldiscover.Fingerprint(mod.Root, out)
-			if err != nil || cur == last {
+			cur, changed, ok := settle(mod.Root, out, last)
+			if !ok {
 				continue
 			}
-			// Wait for the burst to end before reading anything.
-			for {
-				time.Sleep(settleFor)
-				settled, err := tooldiscover.Fingerprint(mod.Root, out)
-				if err != nil || settled == cur {
-					cur = settled
-					break
-				}
-				cur = settled
-			}
+			// The baseline is the tree as it was BEFORE generating, never
+			// after. Re-reading it afterwards absorbed any save made while
+			// generate ran (seconds, for a go run), so that save was never
+			// generated. The output directory is excluded from the snapshot,
+			// so the generator's own writes cannot look like a change.
 			last = cur
-			regenerate(dir, args)
-			// The generator just wrote into the tree; re-read so its own
-			// output is not the next "change".
-			if after, err := tooldiscover.Fingerprint(mod.Root, out); err == nil {
-				last = after
+			if !ws.Relevant(changed) {
+				continue
+			}
+			if next := regenerate(dir, args); next != nil {
+				ws = next
 			}
 		}
 	}
 }
 
+// settle polls until the tree stops changing and returns it with what changed
+// since last; ok is false when nothing did. Editors write in bursts, so
+// reading on the first change would see a half-written file.
+func settle(root, out string, last tooldiscover.Snapshot) (tooldiscover.Snapshot, []string, bool) {
+	cur, err := tooldiscover.TakeSnapshot(root, out)
+	if err != nil || len(cur.Changed(last)) == 0 {
+		return nil, nil, false
+	}
+	for {
+		time.Sleep(settleFor)
+		settled, err := tooldiscover.TakeSnapshot(root, out)
+		if err != nil {
+			continue
+		}
+		if len(settled.Changed(cur)) == 0 {
+			break
+		}
+		cur = settled
+	}
+	return cur, cur.Changed(last), true
+}
+
 // regenerate runs one generation and reports it in one line. It never returns
 // an error: a watcher that exits on a compile error in a half-typed model is
 // a watcher nobody leaves running.
-func regenerate(dir string, args []string) {
+//
+// It returns what the next change is judged against: the packages discovery
+// found models in and everything they import. nil means discovery itself
+// failed, and the caller keeps the set it had.
+func regenerate(dir string, args []string) *tooldiscover.WatchSet {
 	start := time.Now()
 	wd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "storm: %v\n", err)
-		return
+		return nil
 	}
 	r, err := tooldiscover.Discover(wd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "storm: %s\n", err)
-		return
+		return nil
 	}
+	ws := r.WatchSet()
 	for _, s := range r.Skipped {
 		if s.Actionable {
 			fmt.Fprintf(os.Stderr, "storm: skipped %s.%s — %s\n", s.ImportPath, s.Name, s.Why)
@@ -115,7 +136,7 @@ func regenerate(dir string, args []string) {
 	}
 	if err := checkUndeclarable(r); err != nil {
 		fmt.Fprintf(os.Stderr, "storm: %s\n", err)
-		return
+		return ws
 	}
 
 	code, err := toolbootstrap.RunWith(r, append([]string{"generate", dir}, args...), io.Discard)
@@ -127,6 +148,7 @@ func regenerate(dir string, args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "storm: %d model(s) → %s (%s)\n", len(r.Models), dir, took(start))
 	}
+	return ws
 }
 
 func took(start time.Time) string {
