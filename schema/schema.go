@@ -303,6 +303,12 @@ type Relation struct {
 	// enforces it. Only ever set on the owning side.
 	NoFK string
 
+	// Document is how this reference is stored on a document target
+	// ("reference"), or empty when the model did not say — which a document
+	// back end refuses rather than guesses (ADR-0004). Only ever set on the
+	// owning side, and invisible to every SQL back end.
+	Document string
+
 	// Link is the join table of a MANY-TO-MANY, empty for every other shape.
 	//
 	// Neither side of a many-to-many carries a key, so Column means nothing

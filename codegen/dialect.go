@@ -52,6 +52,15 @@ const (
 	// neither is a decision to take at the end of a long change. See
 	// internal/oraclespike/README.md.
 	DialectOracle
+	// DialectMongo targets MongoDB 6.0 and later.
+	//
+	// A BACK END, not a dialect (ADR-0004): nothing in this package lowers
+	// for it. Its table packages come from codegen/mongo, which shares the
+	// plan — the token stream, the shape cache, the method names — and none
+	// of the SQL text. Package refuses it rather than emitting PostgreSQL by
+	// default, which is what every switch here would otherwise fall through
+	// to.
+	DialectMongo
 )
 
 func (d Dialect) String() string {
@@ -64,6 +73,8 @@ func (d Dialect) String() string {
 		return "mssql"
 	case DialectOracle:
 		return "oracle"
+	case DialectMongo:
+		return "mongo"
 	}
 	return "postgres"
 }

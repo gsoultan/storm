@@ -44,6 +44,8 @@ import (
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/codegen/mongo"
+	"github.com/gsoultan/storm/compile/mgddl"
 	"github.com/gsoultan/storm/compile/msddl"
 	"github.com/gsoultan/storm/compile/myddl"
 	"github.com/gsoultan/storm/compile/oraddl"
@@ -120,12 +122,12 @@ usage:
                                   migrations (functions, views the model omits)
   storm watch <dir>               regenerate on save; leave it running while you edit
   storm models                    what discovery found, and which rule matched
-  storm portable <dialect>        fail if the model does not port (mysql, mariadb, mssql)
+  storm portable <dialect>        fail if the model does not port (mysql, mariadb, mssql, oracle, mongo)
   storm lint                      cost every named plan in round trips; fail over the budget
   storm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
 flags:
-  -dialect    the engine to generate for: postgres (default), mysql, mariadb, mssql.
+  -dialect    the engine to generate for: postgres (default), mysql, mariadb, mssql, oracle, mongo.
               ddl and generate honour it; diff, verify, explain and import
               read a live PostgreSQL catalogue and have no other form
   -dsn        PostgreSQL connection string (or $STORM_DSN)
@@ -180,7 +182,7 @@ func run(args []string) error {
 	maxSeqRows := fs.Int("max-seq-rows", 10000, "explain: flag a seq scan the planner sizes at or above this")
 	pending := fs.Bool("pending", false, "verify the model against the migrations directory instead of the database")
 	dialectName := fs.String("dialect", "postgres",
-		"the engine to generate for: postgres, mysql or mariadb")
+		"the engine to generate for: postgres, mysql, mariadb, mssql, oracle or mongo")
 	// Flags may appear ANYWHERE, including after a positional argument.
 	//
 	// Go's flag package stops at the first non-flag, so `storm diff init
@@ -725,7 +727,7 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema, d
 	if err != nil {
 		return err
 	}
-	files, err := codegen.Package(model, codegen.PackageOptions{
+	files, err := packageFor(model, codegen.PackageOptions{
 		Dir:                dir,
 		Import:             modulePath,
 		Package:            filepath.Base(dir),
@@ -880,7 +882,7 @@ func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema, d cod
 	if err != nil {
 		return err
 	}
-	want, err := codegen.Package(model, codegen.PackageOptions{
+	want, err := packageFor(model, codegen.PackageOptions{
 		Dir:                dir,
 		Import:             modulePath,
 		Package:            filepath.Base(dir),
@@ -1131,9 +1133,17 @@ func parseDialect(name string) (target, error) {
 			check:   oraddl.Check,
 			ddl:     oraddl.Create,
 		}, nil
+	case "mongo", "mongodb":
+		// A back end rather than a dialect (ADR-0004): the "DDL" is the
+		// collections' validators and indexes, as commands.
+		return target{
+			dialect: codegen.DialectMongo,
+			check:   mgddl.Check,
+			ddl:     mgddl.Create,
+		}, nil
 	}
 	return target{}, fmt.Errorf(
-		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql and oracle", name)
+		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql, oracle and mongo", name)
 }
 
 // rawCheckable reports whether storm.SQL declarations can be validated against
@@ -1187,9 +1197,28 @@ func portable(dialect string, model *schema.Schema) error {
 		}
 		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
 		return nil
+	case "mongo", "mongodb":
+		// The longest list, and the most honest one: a document store differs
+		// in SHAPE, so most refusals are constructs storm will not pretend to
+		// translate — a reference that does not say how it is stored, a
+		// cascade nothing would perform, SQL text nothing can evaluate.
+		if err := mgddl.Check(model); err != nil {
+			return err
+		}
+		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
+		return nil
 	}
 	return fmt.Errorf(
-		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql and oracle", dialect)
+		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql, oracle and mongo", dialect)
+}
+
+// packageFor generates the tree for o.Dialect. MongoDB has a generator of its
+// own (ADR-0004), and this is the one place the choice is made.
+func packageFor(model *schema.Schema, o codegen.PackageOptions) (map[string][]byte, error) {
+	if o.Dialect == codegen.DialectMongo {
+		return codegenmongo.Package(model, codegenmongo.Options{Import: o.Import})
+	}
+	return codegen.Package(model, o)
 }
 
 // livePlan is the one place a migration plan is produced from a live database.

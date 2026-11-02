@@ -191,6 +191,7 @@ func Build(models ...any) (*schema.Schema, error) {
 	// Pass 5a: the references a model left unconstrained lose their foreign
 	// key. After pass 5, so the column was indexed as any reference is.
 	for _, mi := range b.ordered {
+		b.applyDocumentForms(mi)
 		b.dropAcknowledgedFKs(mi)
 	}
 
@@ -1559,6 +1560,18 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// applyDocumentForms records each OnDocument declaration on the owning side of
+// the relation it was made on, which is what a document back end reads.
+func (b *builder) applyDocumentForms(mi *modelInfo) {
+	for c, d := range mi.tbl.docForms {
+		for _, r := range mi.tbl.out.Relations {
+			if r.Owner && r.Column == c.sc.Name {
+				r.Document = string(d)
+			}
+		}
+	}
 }
 
 // dropAcknowledgedFKs removes the foreign key of each reference the model

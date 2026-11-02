@@ -45,6 +45,19 @@ func NewUUIDv7() [16]byte {
 	return u
 }
 
+// NewUUIDv4 returns a random (version 4) uuid — what gen_random_uuid()
+// produces, for a target with no generator a write can call. Prefer v7 for a
+// key: see NewUUIDv7.
+func NewUUIDv4() [16]byte {
+	var u [16]byte
+	if _, err := rand.Read(u[:]); err != nil {
+		panic("storm: crypto/rand: " + err.Error())
+	}
+	u[6] = (u[6] & 0x0f) | 0x40 // version 4
+	u[8] = (u[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return u
+}
+
 // IsZeroUUID reports whether u is the zero value, which is how generated code
 // tells "the caller did not set an id" from "the caller set one".
 //

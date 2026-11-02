@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-10-31
+updated: 2026-11-02
 ---
 
 # Changelog
@@ -13,6 +13,51 @@ Every entry names what changed and — where it matters — what it cost, becaus
 a release note that cannot be checked is marketing.
 
 ## Unreleased
+
+### MongoDB, as a back end (ADR-0004)
+
+```go
+func (b *Book) Schema(t *storm.Table) {
+    t.Col(&b.Author).OnDocument(storm.Reference()) // required on MongoDB, inert on SQL
+}
+```
+
+```sh
+storm portable mongo            # every construct that does not port, with its line
+storm ddl -dialect mongo        # the collections: $jsonSchema validators and indexes
+storm generate -dialect mongo   # one package per model, the same API
+```
+
+- **The same generated surface** as the SQL targets' core: typed predicates,
+  `Order`, `Limit`/`Offset`, `All`/`List`/`Each`/`Rows`/`One`/`Count`/`Exists`,
+  `Create().Insert`, `Insert`, `Mutate().Update`, `Delete`, `UpdateAll`,
+  `DeleteAll`, `InsertAll`, `runtime.InTx`. The statements are MongoDB command
+  documents written at generate time by `compile/mongo`, keyed on the same
+  token stream, so a shape compiles once whatever its values.
+- **SQL's answers, not MongoDB's.** `NotEq` and `NotIn` do not match a null
+  field, as `<>` does not; a nullable UNIQUE admits many documents without the
+  key, as PostgreSQL's does; the text matches bind escaped literals; `Insert`
+  is an insert that fails on a duplicate key and reads the stored row back,
+  `now()` from the server's clock. `Not` is not generated: `$nor` disagrees
+  with SQL's `NOT` over a null, and no lowering makes them agree.
+- **`runtime/mgdrv`**, a stdlib-only client: OP_MSG, SCRAM-SHA-256, TLS, a
+  bounded pool, cursors with `getMore`/`killCursors`, transactions on a pinned
+  session, cancellation. `runtime/bsondec` decodes its rows. A duplicate key is
+  `runtime.ErrUniqueViolation` with the index's name; a validator failure is
+  `runtime.ErrCheckViolation`; a write conflict is `runtime.Retryable`.
+- **Refused at generate time, by name**: a reference without `OnDocument`,
+  cascading actions nothing would perform, composite keys, SQL-text defaults,
+  checks and partial indexes, arrays and json (next), soft delete, plans,
+  projections, aggregations, joins, unions and the rest — the list is in
+  `docs/DIALECTS.md`.
+- **What it costs.** Timestamps are milliseconds. Ascending order puts NULLs
+  first. `Batch` is a round trip per statement and `InsertAll` one per
+  thousand documents. The client talks to one server — a primary or a mongos —
+  and refuses a URI asking for topology discovery. The Mongo path holds no
+  allocation budget yet: predicate values are boxed.
+- `examples/library` is a model generated for MongoDB, run end to end in CI
+  against MongoDB 7 by `scripts/check/mongo.sh`, a new `mongo` job.
+- `runtime.NewUUIDv4`, for `gen_random_uuid()` on a target with no generator.
 
 ### `storm watch`: no lost saves, and no regenerate for a handler edit
 

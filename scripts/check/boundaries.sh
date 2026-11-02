@@ -143,6 +143,13 @@ before=$(cat examples/tenants/store/*.gen.go examples/tenants/store/*/*.gen.go 2
 go run ./examples/tenants/gen >/dev/null 2>&1
 stale "$before" "$(cat examples/tenants/store/*.gen.go examples/tenants/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./examples/tenants/gen"
 
+# The MongoDB example: the only in-tree package from codegen/mongo, and the
+# collection definitions compile/mgddl prints beside it. Regenerates without a
+# server, like blog.
+before=$(cat examples/library/store/*.js examples/library/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)
+go run ./examples/library/gen >/dev/null 2>&1
+stale "$before" "$(cat examples/library/store/*.js examples/library/store/*/*.gen.go 2>/dev/null | shasum -a 256 | cut -d' ' -f1)" "go run ./examples/library/gen"
+
 # examples/orders is NOT in the list above, because regenerating it needs a
 # server and this script needs none. What it does not need a server for is the
 # question that matters: does the code checked in still COMPILE against the
