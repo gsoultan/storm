@@ -1,6 +1,6 @@
 # ADR-0004 — MongoDB is a back end, not a dialect
 
-**Status:** Proposed · 2026-08-23
+**Status:** Accepted · 2026-08-23 · implemented 2026-11-02 (unreleased)
 
 ## Context
 
@@ -62,3 +62,32 @@ store, and finding that out on Oracle is far cheaper.
 **Reversible?** Dropping Mongo later costs one back end package. The
 logical-plan IR it forced is worth keeping regardless — it is what keeps the SQL
 back ends from ossifying around Postgres.
+
+## Implemented — what held, and what moved (2026-11-02)
+
+**Held.** The IR was a logical plan, and it paid: the token stream, the shape
+cache and the Row type are shared unchanged, and the only new runtime walk is
+`runtime/mgsplice`, which is `SpliceTree` with prefix punctuation. No SQL back
+end changed. Shape differences are declared — `OnDocument` is required on
+every reference, and a model without it fails generation naming the method.
+Unsupported constructs fail generation naming the construct and the line
+(`compile/mgddl.Check`, which `storm portable mongo` prints).
+
+**Moved: the driver.** This ADR expected `mongo-go-driver`, isolated the way
+pgx is. storm wrote `runtime/mgdrv` instead, stdlib-only, for the reason M9,
+M10 and M11 each measured: the port hands a generated scanner raw wire bytes,
+and a driver that decodes into its own value types first would force a decode
+and a re-encode per field. OP_MSG, SCRAM-SHA-256 and the handful of commands
+storm sends are a small protocol surface; a topology monitor, SRV discovery
+and read preferences are not built, and the client refuses a URI that asks
+for them rather than ignoring it.
+
+**Moved: the spelling.** `s.HasMany(...).OnDocument(storm.Embed(...))` became
+`t.Col(&x.Ref).OnDocument(storm.Reference())`, in the field-pointer form the
+rest of the model API took after this was written. `Reference` is built;
+`Embed` is not, and is the next increment, with relation loading.
+
+**Not built yet**, and each is a refusal rather than an approximation: named
+plans, projections, aggregations, joins, unions, keyed upserts, version
+columns, soft delete, arrays and json. The full list is in
+[DIALECTS](../DIALECTS.md#mongodb-is-a-back-end-not-a-dialect).

@@ -50,6 +50,14 @@ declare -a FLOORS=(
   # skipped, and a floor met by a package whose tests did not run is a floor
   # that means nothing. They are enforced in scripts/check/mssql.sh, which does
   # have one.
+  # The MongoDB back end's server-free half. runtime/mgdrv is NOT here, for
+  # msdrv's reason: its live half needs a replica set, and its floor is in
+  # scripts/check/mongo.sh, which has one.
+  "github.com/gsoultan/storm/compile/mongo 95"
+  "github.com/gsoultan/storm/compile/mgddl 95"
+  "github.com/gsoultan/storm/runtime/bsondec 95"
+  "github.com/gsoultan/storm/runtime/mgsplice 95"
+  "github.com/gsoultan/storm/codegen/mongo 85"
   "github.com/gsoultan/storm/compile/pgsql 80"
   "github.com/gsoultan/storm/compile/pgddl 90"
   "github.com/gsoultan/storm/codegen 85"

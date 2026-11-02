@@ -323,6 +323,44 @@ jobs:
   # Four databases on two cores is a scheduling decision, not a correctness
   # one, so it is made here rather than by loosening a timeout until the flake
   # stops reproducing.
+  # MongoDB (ADR-0004). Started by hand rather than as a service container:
+  # transactions need a REPLICA SET, and a service cannot be given the
+  # --replSet argument or initiated before the steps run.
+  mongo:
+    runs-on: ubuntu-latest
+    env:
+      STORM_MONGO_URI: mongodb://127.0.0.1:27017/storm_test
+      STORM_MONGO_AUTH_URI: mongodb://storm:Storm1Passw0rd@127.0.0.1:27018/storm_test?authSource=admin
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: start mongodb
+        run: |
+          docker run -d --name rs -p 27017:27017 mongo:7 --replSet rs0
+          docker run -d --name auth -p 27018:27017 \
+            -e MONGO_INITDB_ROOT_USERNAME=storm -e MONGO_INITDB_ROOT_PASSWORD=Storm1Passw0rd mongo:7
+          for i in $(seq 1 60); do
+            docker exec rs mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec rs mongosh --quiet --eval \
+            'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for i in $(seq 1 60); do
+            docker exec rs mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q true && \
+            docker exec auth mongosh --quiet -u storm -p Storm1Passw0rd --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+      # The driver under -race, SCRAM against an authenticating server, the
+      # generated example end to end, and the driver's coverage floor.
+      - name: the mongodb back end
+        if: ${{ !cancelled() }}
+        run: ./scripts/check/mongo.sh
+
   sqlserver:
     runs-on: ubuntu-latest
     services:

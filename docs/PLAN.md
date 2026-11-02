@@ -428,7 +428,7 @@ placeholder or output clause reaches MySQL SQL, verified both ways.
 
 | M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **DONE** — lowering, DDL, TDS client, codegen, upsert, bulk load, the CLI, the escape hatch and `storm import`. `migrate.Auto` needs a DDL seam inside `migrate/` and is a decision of its own |
 | M11 | Oracle | 4 → **6** | empty-string-is-NULL surfaced at declare time | ~~capability model cannot carry Oracle~~ — **measured, it can**. See below |
-| M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | — |
+| M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | **first increment, unreleased** — `runtime/mgdrv` (stdlib-only), `runtime/bsondec`, `compile/mongo`, `compile/mgddl`, `codegen/mongo`, `OnDocument(storm.Reference())`, gated live in CI; `examples/library` is one model serving both. Relation loading, `Embed`, upserts, arrays and json are next |
 
 **M11 was estimated before it started, measured 2026-09-22**
 (`internal/oraclespike`). Three questions this time rather than two, because

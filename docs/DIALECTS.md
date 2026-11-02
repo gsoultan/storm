@@ -1,7 +1,7 @@
 ---
 tags: [storm, dialects, portability]
-updated: 2026-09-12
-status: implemented for PostgreSQL, MySQL 8 and MariaDB
+updated: 2026-11-02
+status: implemented for PostgreSQL, MySQL 8, MariaDB, SQL Server, Oracle (SQL-only) and MongoDB
 ---
 
 # Targets: SQL dialects and document stores
@@ -24,7 +24,8 @@ status: implemented for PostgreSQL, MySQL 8 and MariaDB
 > that speaks the wire directly rather than wrapping a `database/sql` driver
 > (which would hand back values already decoded, and force re-encoding).
 > A generated package does real CRUD against both engines, through a pool,
-> over TLS. SQL Server, Oracle and Mongo remain design.
+> over TLS. SQL Server and Oracle followed; MongoDB is a back end rather than a
+> dialect, and has a section of its own below.
 
 ## What differs on MySQL and MariaDB, and why
 
@@ -361,30 +362,107 @@ required anyway.
 
 ## MongoDB is a back end, not a dialect
 
+> **Built, unreleased.** `storm generate -dialect mongo` writes a table package
+> per model, `storm ddl -dialect mongo` prints the collections' validators and
+> indexes as commands, and `storm portable mongo` lists what does not port.
+> `runtime/mgdrv` is a stdlib-only client — OP_MSG, SCRAM-SHA-256, TLS, a
+> bounded pool, transactions — and `runtime/bsondec` is the fifth decoder
+> family. Gated against MongoDB 7 in CI (`scripts/check/mongo.sh`), and
+> `examples/library` is the generated package running end to end.
+
 This is the honest part.
 
-storm's IR is a **logical query plan** (relational algebra), not a SQL AST. SQL
-dialects lower the plan to SQL text; Mongo lowers it to an aggregation pipeline.
-The runtime executes an opaque compiled artifact and does not care which.
+storm's IR is a **logical query plan**, not a SQL AST, and this is the target
+that collects on it. The SQL back ends lower the plan to SQL text; this one
+lowers it to a **command document** — JSON with numbered holes, `{"$arg":1}`
+— that `compile/mongo` writes at generate time and `runtime/mgdrv` compiles to
+BSON once per distinct text. The runtime executes an opaque compiled artifact
+and does not care which.
 
-What maps cleanly: filters → `$match`; projections → `$project`; sort/limit/skip;
-aggregates → `$group`; equi-joins → `$lookup`; `IN` → `$in`; upsert; bulk write.
+What is SHARED is the plan, not the text: the token stream a predicate is
+built as, the shape cache keyed on it, the Row type, and the method names. A
+group is open, members, separator, close on both — `(a AND b)` there,
+`{"$and":[a,b]}` here — so `runtime/mgsplice` is `runtime.SpliceTree`'s walk
+with other punctuation. `codegen/mongo` is a generator of its own rather than a
+flag on `codegen`, because `codegen`'s lowering struct is SQL punctuation from
+end to end, and a document back end that borrowed it would be the "teach the
+SQL emitter to print pipelines" framing ADR-0004 rejected.
 
-What does **not** map, and will be a generation error rather than a surprise:
-non-equality joins, foreign keys and FK-ordered flush, cross-database joins,
-arbitrary CTEs, and full transactional semantics outside a replica set.
+### What maps, and how
 
-**The modelling difference is the real one.** A document schema embeds where a
-relational schema joins, and that is a design decision no translator can make
-for you. Hence `OnDocument(storm.Embed(...))` in [[API]] §1 — required, not
-defaulted. A relation with no document directive fails generation for a Mongo
-target.
+| Construct | SQL targets | MongoDB | Why |
+|---|---|---|---|
+| primary key | a column | **`_id`** | The index every collection already has. A second unique index on an `id` field would double the write cost of every insert |
+| uuid key | server default, or client v7 | generated **client-side** — v4 for `gen_random_uuid()`, v7 for `uuidv7()` | No generator a write can call; the version the model asked for is the one it gets |
+| `now()` default | server default | **`$currentDate`** | Still the SERVER's clock. A client `time.Now()` would make rows written seconds apart land out of order on a skewed host |
+| `Insert` read-back | `RETURNING` | **`findAndModify` + upsert** against a filter that matches nothing | `{"_id": k, "$nor": [{}]}` matches no document, so the upsert path INSERTS — failing with a duplicate key if `k` exists, never overwriting — and returns the stored document, defaults included. One round trip, as `RETURNING` is |
+| `Update` read-back | `RETURNING` | `findAndModify` with `new: true` | No match is no row, which is `runtime.ErrNoRow` |
+| `NOT NULL`, column types, enums, `varchar(n)` | the column | a **`$jsonSchema` validator**, `strict`/`error` | Without one a collection accepts any document, and a scanner would meet a string where it expects a long. A violation is `runtime.ErrCheckViolation` (the server does not say which field) |
+| nullable UNIQUE | many NULL rows | **translated** to a `partialFilterExpression` on `$type` | MongoDB indexes a missing field as null and admits ONE such document. Requiring every nullable key field to hold a value indexes exactly the rows PostgreSQL's UNIQUE constrains — SQL Server's translation, for the same reason. `NULLS NOT DISTINCT` is the plain form |
+| invisible index | MySQL `INVISIBLE` | `hidden: true` | Same purpose: maintained, unused, so a drop can be rehearsed |
+| `In` / `NotIn` | `= ANY($1)` | `$in` / `$nin` with ONE bound array | The command does not depend on list length, as on PostgreSQL |
+| `NotEq` | `<>` | **`$nin: [v, null]`** | SQL's `<>` is UNKNOWN for a NULL, so the row is not returned; MongoDB's `$ne` matches a missing field. Lowered to SQL's answer. `NotIn` adds `$ne: null` for the same reason |
+| `IsNull` | `IS NULL` | `{f: null}` | Matches null OR absent. A document store has no column a row can lack, so absence is how NULL is stored |
+| `HasPrefix` / `HasSuffix` / `Contains` | `LIKE` over escaped text | `$regex` over **escaped** text | The caller's `.*` matches those two characters. A prefix is anchored, which is the form an index answers |
+| `Like` / `ILike` | `LIKE` / `ILIKE` | an anchored `$regex`, `$options: "i"` | `%` and `_` translated, everything else literal |
+| keyed upsert, `ON CONFLICT` | per unique index | **not generated yet** | `update` with `upsert: true` keyed on a unique field is the lowering; it waits on the same "every unique index is a target" surface the SQL packages have |
+| `InsertAll` | `COPY` | the `insert` command, 1,000 documents per round trip | Not a separate wire path, and `runtime/mgdrv`'s package comment says so |
+| `Batch` | one round trip | **one round trip per statement** | OP_MSG has no pipelining a client can rely on for acknowledged writes; emulated and documented, as the port requires |
+| transactions | `BEGIN` | a session's next transaction number, started by its first statement | A pinned connection owns one session, so no session is ever started or ended. A standalone server refuses — a replica set or a mongos is required |
+| unique violation | `23505` etc. | `11000` → `runtime.ErrUniqueViolation`, with the index's name | The same typed error, so a handler is written once. A write conflict or a `TransientTransactionError` is `runtime.Retryable` |
+| timestamps | microseconds | **milliseconds** | BSON's datetime. A value written and read back is truncated to the millisecond |
+| `date` | a date | a datetime at midnight UTC | One temporal type; a zone would move the day |
+| `numeric(p,s)` | `numeric` | **Decimal128** | Exact, and keeps its scale — `1.50` stays `1.50`. Past 18 digits is refused on read, as everywhere |
+| ascending sort | NULLs last | **NULLs first** | MongoDB's fixed placement. Said on `Asc` in the generated comment; translating it would need a computed sort key and lose the index |
 
-Consequence worth stating plainly: **do not expect one model to run unchanged on
-Postgres and Mongo and be well-designed on both.** storm's contribution is
-making the difference *visible at build time* and letting one model serve both
-where that genuinely makes sense. `storm lint --portable` prints the intersection
-of your configured targets, so "what will not port" is a command, not a wiki page.
+### What does not port, and is refused at generate time
+
+`storm portable mongo` prints every one, with the line it was declared on.
+Most are SQL TEXT a document store cannot evaluate; the rest are guarantees it
+cannot make, or shapes this back end does not generate yet.
+
+- **A reference with no `OnDocument`.** `t.Col(&b.Author).OnDocument(storm.Reference())`
+  is required for every reference (ADR-0004): embed-versus-reference is a
+  modelling decision, and silence never becomes a guess. It changes nothing on
+  a SQL target. `storm.Reference()` keeps the key and enforces nothing —
+  there are no foreign keys. `storm.Embed` is the next form, and not built.
+- **`ON DELETE`/`ON UPDATE` `CASCADE`, `SET NULL`, `SET DEFAULT`.** Nothing
+  would perform them; the rows would simply stay. Do it in the write that
+  deletes the parent. `RESTRICT` and `NO ACTION` are accepted under
+  `Reference()`, which says in its name that nothing is enforced.
+- **Composite primary keys and composite foreign keys**, identity and serial
+  keys (no sequence; a counter document is a race), generated columns, `CHECK`
+  and `EXCLUDE` constraints, partitioning, defaults that are SQL expressions
+  rather than `now()`, a uuid generator or a literal.
+- **Types**: arrays, `json`/`jsonb`, ranges, network types, `interval`, `time`,
+  `tsvector`, `hstore`. Arrays and json have natural BSON forms — an array, an
+  embedded document — and are the next thing this back end should gain; they
+  are refused rather than stored as text nobody could query as what it is.
+- **Indexes**: partial over SQL text, expression keys, non-B-tree methods,
+  `INCLUDE`, storage parameters, operator classes, collations, prefix lengths,
+  explicit NULL placement.
+- **Soft delete.** Its live-scoped UNIQUE needs a partial index on "is null",
+  which `partialFilterExpression` cannot say — MySQL's refusal, for a
+  different reason.
+- **Not generated yet**: named plans (relation loading — `$lookup` or a batch
+  loader by `$in`), projections, declared aggregations, joins, unions
+  (`$unionWith`), version columns, `IncWhen`, keyset `After`, row locks,
+  `Not`/`NotAny`, existence probes, set-based write shapes, sharding, and
+  many-to-many join tables. **`Not` is deliberately absent rather than
+  pending**: `$nor` matches a document whose field is null where SQL's `NOT`
+  over the same comparison is UNKNOWN, so a negation would return rows the SQL
+  targets do not.
+- **Functions, views and triggers**, and `storm.SQL` — there is no SQL.
+- **`storm diff`, `verify`, `explain`, `import`, `watch`** have no MongoDB form.
+  There is no catalogue to diff against beyond the validator, and `import` is
+  impossible in principle (ADR-0001): a document store has no schema to read.
+
+The consequence worth stating plainly has not changed: **do not expect one
+model to run unchanged on PostgreSQL and MongoDB and be well-designed on
+both.** `examples/library` is a model that does, and it is small on purpose.
+storm's contribution is making the difference visible at build time — every
+item above is a sentence from `storm portable mongo`, not a surprise in
+production.
 
 ## Sequencing
 
@@ -403,7 +481,7 @@ about a plan is where it was wrong.
 | v1.1 | MySQL 8 + MariaDB | **v1.0.0** | placeholder style, no `RETURNING`, arity bucketing, `ON DUPLICATE KEY`. Close enough to be tractable, different enough to prove the seam is real |
 | v1.2 | SQL Server | **v1.1.0** | `OUTPUT`, `MERGE`, `[ ]` quoting, `@p1`, `ORDER BY`-required paging, TVP bulk |
 | v1.3 | Oracle | — | the hardest SQL target — empty-string-is-NULL is *semantic*, plus `NUMBER` mapping, identifier limits, upper-case folding |
-| v2.0 | MongoDB | — | the back-end seam, not the dialect seam |
+| v2.0 | MongoDB | **unreleased** | the back-end seam, not the dialect seam |
 
 **Gate before v1.1:** the Postgres back end must have zero dialect conditionals
 outside `compile/`, proven by `scripts/check/import-boundary.sh`. If the seam
@@ -412,3 +490,10 @@ leaked while nobody was testing it, fix that before adding a second target.
 **Gate before v2.0:** Oracle must ship first. Oracle already stresses semantic
 divergence and capability gating; if the capability model cannot carry Oracle,
 it certainly cannot carry a document store.
+
+*Met in substance, 2026-11-02.* What the gate protected against was the
+capability model failing on Oracle; `internal/oraclespike` measured that it
+does not (PLAN.md, M11), and Oracle generates — experimentally — through
+`runtime/sqldrv`. MongoDB is a back end rather than a dialect, so it is not
+waiting on Oracle's native client either: none of its code touches the SQL
+seam.

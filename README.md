@@ -115,6 +115,15 @@ via `runtime/sqldrv`. It is experimental in the sense
 [docs/DIALECTS.md](docs/DIALECTS.md) lists what each engine does differently
 and why.
 
+**MongoDB is a back end, not a dialect**
+([ADR-0004](docs/adr/0004-mongodb-as-backend.md)), and unreleased.
+`storm generate -dialect mongo` emits the same table API — the statements are
+command documents rather than SQL — over `runtime/mgdrv`, another stdlib-only
+client. A reference must say how it is stored (`OnDocument(storm.Reference())`),
+and what has no faithful document form is refused at generate time, by name;
+[docs/DIALECTS.md](docs/DIALECTS.md#mongodb-is-a-back-end-not-a-dialect) lists
+both. [`examples/library`](examples/library) runs against MongoDB 7 in CI.
+
 The milestone log with
 every exit gate is [docs/PLAN.md](docs/PLAN.md), what would still stop a
 team adopting this is written down, with gates, in

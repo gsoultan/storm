@@ -195,6 +195,17 @@ func UUIDv7() RawSQL { return "uuidv7()" }
 // rest of storm does.
 func GenRandomUUID() RawSQL { return "gen_random_uuid()" }
 
+// Document is how a reference is stored on a document target (MongoDB). See
+// ColBuilder.OnDocument. A string rather than a struct so a value compares with
+// == and prints as what it means.
+type Document string
+
+// Reference stores the referenced row's key in the referring document — the
+// relational shape, kept. The target enforces nothing about it: there are no
+// foreign keys on MongoDB, so a reference to a deleted document dangles, and
+// storm says so here rather than pretending otherwise.
+func Reference() Document { return "reference" }
+
 // Interval is a PostgreSQL interval: months, days and microseconds kept
 // separate, because a month has no fixed length and a day is not always 24
 // hours. An alias for the same reason Decimal is — the model's type and the

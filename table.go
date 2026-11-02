@@ -53,6 +53,10 @@ type Table struct {
 	// after the indexes are, so the column keeps its index and every
 	// declaration that looks the key up still finds it while Schema runs.
 	noFK map[*col]string
+	// docForms are the OnDocument declarations: how a reference is stored on
+	// a document target. Keyed like noFK, and copied onto the relation once
+	// every table's relations exist.
+	docForms map[*col]Document
 
 	// matches are the t.ProbesOn declarations, resolved once every table's
 	// relations are wired: the target is named by a local instance, and its
@@ -555,6 +559,36 @@ func (b *ColBuilder) AcknowledgeNoFK(reason string) *ColBuilder {
 			b.t.noFK = map[*col]string{}
 		}
 		b.t.noFK[b.c] = reason
+	}
+	return b
+}
+
+// OnDocument says how this reference is represented on a document target —
+// MongoDB — and is required there for every reference a model declares
+// (ADR-0004). A relational schema joins where a document schema embeds or
+// refers, and that is a modelling decision no translator can infer, so storm
+// refuses to guess: generating for MongoDB with a reference that says nothing
+// is an error naming this method.
+//
+// It changes nothing on a SQL target. The foreign key, its index and its
+// referential actions stay exactly as declared, so one model can serve both.
+//
+//	t.Col(&a.Author).OnDocument(storm.Reference())
+func (b *ColBuilder) OnDocument(d Document) *ColBuilder {
+	switch {
+	case !b.c.isRel || b.t.fkFor(b.c.sc.Name) == nil:
+		b.t.errs.add(fmt.Errorf(
+			"%s.%s: OnDocument is only meaningful on a reference to another model",
+			b.t.out.Name, b.c.sc.Name))
+	case d != Reference():
+		b.t.errs.add(fmt.Errorf(
+			"%s.%s: OnDocument(%q) is not a document form storm knows — use storm.Reference()",
+			b.t.out.Name, b.c.sc.Name, string(d)))
+	default:
+		if b.t.docForms == nil {
+			b.t.docForms = map[*col]Document{}
+		}
+		b.t.docForms[b.c] = d
 	}
 	return b
 }
