@@ -27,6 +27,14 @@ declare -a FLOORS=(
   # Needs STORM_MYSQL_ADDR to reach anything, which is the same bargain pgxdrv
   # makes with STORM_DSN.
   "github.com/gsoultan/storm/runtime/mydrv 80"
+  # The query result cache. No server needed for any of it — the Store is an
+  # interface and the tests hold a map — and a mistake here is a cached answer
+  # handed to the wrong caller, or to the right one after an invalidation.
+  "github.com/gsoultan/storm/runtime/qcache 95"
+  # The Redis client: a wire protocol, like mydrv. The offline half drives a
+  # fake server through every malformed reply; STORM_REDIS_URL adds the live
+  # half, which CI's test job has.
+  "github.com/gsoultan/storm/runtime/redisdrv 85"
   "github.com/gsoultan/storm/compile/mysql 80"
   "github.com/gsoultan/storm/compile/mariadb 80"
   "github.com/gsoultan/storm/runtime/mydec 90"

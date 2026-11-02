@@ -14,6 +14,26 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Redis: a query result cache (experimental)
+
+```go
+cached := qcache.New(pool, redisdrv.Open(redisdrv.Options{Addr: "cache:6379"}), qcache.Options{})
+list, err := product.New().List(qcache.For(qcache.Scoped(ctx, tenant), time.Minute, "products"), cached)
+err = cached.Invalidate(ctx, "products")
+```
+
+- **`runtime/qcache`** decorates the `Executor` port with a read-through
+  cache. A read is cached only when its context is marked with `For` (TTL and
+  tags), keys include the caller's scope and are refused without one, a
+  result is stored only when read to the end, and `Invalidate` bumps a tag's
+  generation rather than deleting entries. A Store failure is a miss, never a
+  failed query. Generated packages are unchanged.
+- **`runtime/redisdrv`** is a stdlib-only RESP2 client (TLS, AUTH, SELECT,
+  bounded pool, per-command deadlines) that satisfies `qcache.Store`. Any
+  other client can satisfy the three-method interface instead.
+- An unmarked read through the cache allocates nothing. CI runs the client
+  against Redis 7.4. [docs/CACHING.md](docs/CACHING.md) has the contract.
+
 ### `storm watch`: no lost saves, and no regenerate for a handler edit
 
 - **A save made while generation ran was lost.** After generating, the
