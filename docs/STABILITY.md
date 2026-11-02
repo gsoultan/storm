@@ -118,6 +118,11 @@ impossible; mixed-version generated trees are not a supported state.
   `runtime/shard` or the sharded generated surface, with its gates green on
   PostgreSQL, MySQL and SQL Server.
 
+- **The Redis query cache, while it is experimental.** `runtime/qcache` and
+  `runtime/redisdrv` are new and may change in a minor. What will not change:
+  a read is cached only when its call site marks it, and a marked read without
+  a scope is not cached unless `Options.Unscoped` says so.
+
 ## Which server versions
 
 A version storm has never run against is a version storm does not support, so

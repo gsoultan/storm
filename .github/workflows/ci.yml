@@ -88,12 +88,25 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      # The store behind runtime/qcache, for runtime/redisdrv's live tests.
+      # Pinned for the same reason MySQL is.
+      redis:
+        image: redis:7.4
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       STORM_DSN: postgres://storm:storm@localhost:5432/storm
       # The adapter's live tests read these. Without them the whole of
       # runtime/mydrv skips, and "the tests pass" would mean the unit half.
       STORM_MYSQL_ADDR: 127.0.0.1:3306
       STORM_MARIADB_ADDR: 127.0.0.1:3307
+      # runtime/redisdrv's live tests FLUSH the database this names: 15, which
+      # nothing else uses.
+      STORM_REDIS_URL: redis://127.0.0.1:6379/15
       # The SQL Server gate reads this. Without it internal/mssqlspike skips
       # entirely and "the tests pass" would mean the two dialects that already
       # had a server.

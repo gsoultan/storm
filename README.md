@@ -380,6 +380,22 @@ case runtime.Retryable(err):                          // 40001/40P01 — run it 
 value**; PostgreSQL's own diagnostic does, and it stays reachable through
 `Unwrap`. Anything storm has no opinion about comes back unchanged.
 
+## Caching reads in Redis
+
+```go
+cached := qcache.New(pool, redisdrv.Open(redisdrv.Options{Addr: "cache:6379"}), qcache.Options{})
+
+ctx = qcache.Scoped(ctx, tenantID)
+list, err := product.New().Where(product.Active.Eq(true)).
+    List(qcache.For(ctx, time.Minute, "products"), cached)
+
+err = cached.Invalidate(ctx, "products") // after the write commits
+```
+
+Opt-in per call, keyed by who asked, invalidated by tag, and never the reason
+a query fails. The Redis client is stdlib-only. See
+[docs/CACHING.md](docs/CACHING.md).
+
 ## Boundaries
 
 No applied DDL. No lazy loading — ever; unloaded relations do not compile. No
