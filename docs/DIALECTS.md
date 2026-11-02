@@ -399,6 +399,7 @@ SQL emitter to print pipelines" framing ADR-0004 rejected.
 | `json` / `jsonb` | a json column | the **BSON value its text denotes** — a document, an array, a string, a number | Stored as text, nothing inside would be queryable as what it is. `Contains` is translated path by path, with a type test beside each scalar so `{"a":["x"]}` does not contain `{"a":"x"}` and an array of objects is not an object, which is PostgreSQL's answer and not MongoDB's. `HasAnyKey`/`HasAllKeys` read a key on an object and an element of an array, as `?` does. A key that cannot be a field path (empty, `$`-prefixed, dotted) is an error, never a filter that matches something else. `ContainedBy` and `TextLikeAny` are not generated — no filter says either. A number comes back as the type it was stored as: an integer as digits, a double in Go's shortest form. GIN becomes a **wildcard index** on `<col>.$**` |
 | version column | `WHERE version = $n`, `version + 1` | the version in the `findAndModify` query, **`$add`** in the update | Same lock, same `runtime.ErrStaleWrite`, same missing `MutateKey` |
 | `Inc` / `Add` / `IncWhen` | `n = n + 1`, `n + CASE WHEN g = $1 …` | an **aggregation-pipeline update**: `{"$add":["$n",…]}`, `$cond` over the document's own `g` | Every update is a pipeline (`[{"$set":{…}}]`) for this: the value read and the value written are one command. `$inc` would turn a NULL into 1 where SQL keeps it NULL. A bound value is wrapped in `$literal`, so a string that starts with `$` is a string, not a path |
+| `ON DELETE CASCADE` / `SET NULL` / `SET DEFAULT` / `RESTRICT` | the foreign key | **performed by the generated package** through `runtime/mgcascade`, inside a transaction it opens or joins | The plan — every collection that references this one, transitively, and what each declared — is written into the package at generate time. A delete reads the referenced values of the documents going, checks every `RESTRICT` first, then cascades, nulls or defaults the children, then deletes. A RESTRICT violation is `runtime.ErrForeignKeyViolation`. `NO ACTION`, the default, stays unenforced, and so does the insert side: a child naming a parent that does not exist is stored, because a check before the insert would race the delete it meant to stop. Handed something that is neither a pool nor a transaction, the steps run in order without one |
 | soft delete | `deleted_at IS NULL` ANDed in front | **`{"$and":[{"deleted_at":null}, <filter>]}`** in front of every read and write | `Delete` marks with `$$NOW` (the server's clock), `HardDelete` removes, `Restore` clears, `WithDeleted` widens a read when the model said `ReadsDeleted`, and `UpdateAll`/`DeleteAll` refuse it. A live document stores the field as an explicit null |
 | live-scoped UNIQUE | a partial index `WHERE deleted_at IS NULL` | `partialFilterExpression: {"deleted_at": null}` | Equality to null in a partial filter covers both a null and an absent field (measured on MongoDB 7), so a returning user can sign up again and two live users still cannot share an address |
 | uuid key | server default, or client v7 | generated **client-side** — v4 for `gen_random_uuid()`, v7 for `uuidv7()` | No generator a write can call; the version the model asked for is the one it gets |
@@ -434,10 +435,11 @@ cannot make, or shapes this back end does not generate yet.
   modelling decision, and silence never becomes a guess. It changes nothing on
   a SQL target. `storm.Reference()` keeps the key and enforces nothing —
   there are no foreign keys. `storm.Embed` is the next form, and not built.
-- **`ON DELETE`/`ON UPDATE` `CASCADE`, `SET NULL`, `SET DEFAULT`.** Nothing
-  would perform them; the rows would simply stay. Do it in the write that
-  deletes the parent. `RESTRICT` and `NO ACTION` are accepted under
-  `Reference()`, which says in its name that nothing is enforced.
+- **`ON UPDATE` actions on a reference to anything but the parent's primary
+  key.** A key never changes here (`_id` is immutable), so `ON UPDATE` on one
+  is accepted and means nothing; on another column it would need storm to
+  rewrite every child on every update, and it does not. `SET DEFAULT` to a
+  generated uuid is refused too: each child would need its own.
 - Identity and serial keys (no sequence; a counter document is a race),
   generated columns, `CHECK` and `EXCLUDE` constraints, partitioning, defaults
   that are SQL expressions rather than `now()`, a uuid generator, or a literal

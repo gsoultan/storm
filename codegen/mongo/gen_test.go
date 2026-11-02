@@ -176,7 +176,7 @@ func TestGeneratorRefusesWhatItCannotWrite(t *testing.T) {
 	} {
 		s := shaped()
 		edit(s.Tables[0])
-		if _, err := File(s.Tables[0], "stock", "x"); err == nil {
+		if _, err := File(s, s.Tables[0], "stock", "x"); err == nil {
 			t.Errorf("%s: generated", name)
 		}
 	}

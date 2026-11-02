@@ -89,6 +89,8 @@ rest of the model API took after this was written. `Reference` is built;
 
 **Not built yet**, and each is a refusal rather than an approximation: named
 plans, projections, aggregations, joins, unions and keyed upserts. Composite
-keys, arrays and json, version columns, guarded increments and soft delete
-followed the first release, each translated to SQL's answer. The full list is in
+keys, arrays and json, version columns, guarded increments, soft delete and
+`ON DELETE` actions followed the first release, each translated to SQL's
+answer — the last performed by the generated package, since the server has
+no foreign keys to do it. The full list is in
 [DIALECTS](../DIALECTS.md#mongodb-is-a-back-end-not-a-dialect).

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/runtime/mgcascade"
 	"github.com/gsoultan/storm/runtime/mgsplice"
 )
 
@@ -1013,6 +1014,9 @@ func (q Query) writeAllErr() error {
 	return nil
 }
 
+// filterCache holds DeleteAll's filter alone, for the cascade's first read.
+var filterCache = newCaches()
+
 // DeleteAll deletes every matching row and reports how many.
 // The query needs a predicate (runtime.ErrUnfilteredWrite) and no Limit or
 // Offset (runtime.ErrPagedWrite).
@@ -1024,7 +1028,7 @@ func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error
 	if st.Err != nil {
 		return 0, st.Err
 	}
-	return ex.Exec(ctx, st.SQL, q.args())
+	return mgcascade.Delete(ctx, ex, cascade, filtered(filterCache, 0, q.stream(), "", "", 1, false).SQL, q.args(), st.SQL)
 }
 
 // Column bits, for the write masks.
@@ -1492,12 +1496,28 @@ func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64
 	return ex.Exec(ctx, st.SQL, args)
 }
 
+// cascade is what deleting a document here does to the collections that
+// reference it, as the model declared — MongoDB has no foreign keys, so
+// storm performs the actions itself, in one transaction when it can open
+// or join one. See runtime/mgcascade.
+var cascade = &mgcascade.Plan{Nodes: []mgcascade.Node{
+	{Coll: "books", Edges: []mgcascade.Edge{
+		{Child: 1, Name: "volumes.book_id", From: []string{"book_id"}, To: []string{"_id"}, Action: mgcascade.Restrict, Set: ""},
+	}},
+	{Coll: "volumes"},
+}}
+
+// keyFilter addresses one document by its key, for the plan's first read.
+const keyFilter = "{\"_id\":{\"$arg\":1}}"
+
 var deleteOne = "{\"delete\":\"books\",\"deletes\":[{\"limit\":1,\"q\":{\"_id\":{\"$arg\":1}}}]}"
 
 // Delete deletes the row with this key. A key that matches nothing is
 // runtime.ErrNoRow.
+//
+// The references to it are acted on first, as declared: see cascade.
 func Delete(ctx context.Context, ex runtime.Executor, id [16]byte) error {
-	return exactlyOne(ex.Exec(ctx, deleteOne, []any{id}))
+	return exactlyOne(mgcascade.Delete(ctx, ex, cascade, keyFilter, []any{id}, deleteOne))
 }
 
 func exactlyOne(n int64, err error) error {

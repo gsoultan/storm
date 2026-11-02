@@ -14,6 +14,7 @@ import (
 
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/runtime/mgcascade"
 	"github.com/gsoultan/storm/runtime/mgsplice"
 )
 
@@ -32,12 +33,13 @@ type Row struct {
 	Branch    string
 	Barcode   string
 	BookID    [16]byte
+	DonorID   runtime.Null[[16]byte]
 	OnShelf   bool
 	Checkouts int64
 	Version   int32
 }
 
-const nCols = 6
+const nCols = 7
 
 // fields are the stored names, in column order: the projection every read
 // asks for, so a row's values arrive in the order scan reads them.
@@ -45,6 +47,7 @@ var fields = [nCols]string{
 	"_id.branch",
 	"_id.barcode",
 	"book_id",
+	"donor_id",
 	"on_shelf",
 	"checkouts",
 	"version",
@@ -256,9 +259,10 @@ var (
 	Branch    = TextCol{c: 0}
 	Barcode   = TextCol{c: 1}
 	BookID    = UUIDCol{c: 2}
-	OnShelf   = BoolCol{c: 3}
-	Checkouts = Int8Col{c: 4}
-	Version   = Int4Col{c: 5}
+	DonorID   = UUIDCol{c: 3}
+	OnShelf   = BoolCol{c: 4}
+	Checkouts = Int8Col{c: 5}
+	Version   = Int4Col{c: 6}
 )
 
 // fragTab is every comparison on every column, lowered at generate time.
@@ -268,6 +272,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$eq\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$eq\":", B: "}}", Arg: true},
@@ -276,6 +281,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"book_id\":{\"$nin\":[", B: ",null]}}", Arg: true},
+		{A: "{\"donor_id\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"checkouts\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"version\":{\"$nin\":[", B: ",null]}}", Arg: true},
@@ -284,6 +290,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$gt\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$gt\":", B: "}}", Arg: true},
@@ -292,6 +299,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$gte\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$gte\":", B: "}}", Arg: true},
@@ -300,6 +308,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$lt\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$lt\":", B: "}}", Arg: true},
@@ -308,6 +317,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$lte\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$lte\":", B: "}}", Arg: true},
@@ -316,6 +326,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$in\":", B: "}}", Arg: true},
@@ -324,6 +335,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"book_id\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
+		{A: "{\"donor_id\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"checkouts\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"version\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
@@ -332,6 +344,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":null}", B: "", Arg: false},
 		{A: "{\"_id.barcode\":null}", B: "", Arg: false},
 		{A: "{\"book_id\":null}", B: "", Arg: false},
+		{A: "{\"donor_id\":null}", B: "", Arg: false},
 		{A: "{\"on_shelf\":null}", B: "", Arg: false},
 		{A: "{\"checkouts\":null}", B: "", Arg: false},
 		{A: "{\"version\":null}", B: "", Arg: false},
@@ -340,6 +353,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"_id.barcode\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"book_id\":{\"$ne\":null}}", B: "", Arg: false},
+		{A: "{\"donor_id\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"on_shelf\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"checkouts\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"version\":{\"$ne\":null}}", B: "", Arg: false},
@@ -348,6 +362,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$regex\":", B: "}}", Arg: true},
@@ -356,6 +371,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$regex\":", B: "}}", Arg: true},
@@ -364,6 +380,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$regex\":", B: "}}", Arg: true},
@@ -372,6 +389,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$regex\":", B: "}}", Arg: true},
@@ -380,6 +398,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"book_id\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
+		{A: "{\"donor_id\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"checkouts\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"version\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
@@ -388,6 +407,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$all\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$all\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$all\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$all\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$all\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$all\":", B: "}}", Arg: true},
@@ -396,6 +416,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
 		{A: "{\"book_id\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"donor_id\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
 		{A: "{\"checkouts\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
 		{A: "{\"version\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
@@ -404,11 +425,13 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"_id.barcode\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"book_id\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"donor_id\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"on_shelf\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"checkouts\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"version\":{\"$in\":", B: "}}", Arg: true},
 	},
 	{ // JSONContains
+		{A: "{\"$and\":", B: "}", Arg: true},
 		{A: "{\"$and\":", B: "}", Arg: true},
 		{A: "{\"$and\":", B: "}", Arg: true},
 		{A: "{\"$and\":", B: "}", Arg: true},
@@ -423,8 +446,10 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"$or\":", B: "}", Arg: true},
 		{A: "{\"$or\":", B: "}", Arg: true},
 		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
 	},
 	{ // HasAllKeys
+		{A: "{\"$and\":", B: "}", Arg: true},
 		{A: "{\"$and\":", B: "}", Arg: true},
 		{A: "{\"$and\":", B: "}", Arg: true},
 		{A: "{\"$and\":", B: "}", Arg: true},
@@ -436,6 +461,7 @@ var fragTab = [23][nCols]mgsplice.Frag{
 		{A: "{\"_id.branch\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
 		{A: "{\"_id.barcode\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
 		{A: "{\"book_id\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"donor_id\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
 		{A: "{\"on_shelf\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
 		{A: "{\"checkouts\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
 		{A: "{\"version\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
@@ -449,6 +475,7 @@ var sortTab = [2][nCols]string{
 		"\"_id.branch\":1",
 		"\"_id.barcode\":1",
 		"\"book_id\":1",
+		"\"donor_id\":1",
 		"\"on_shelf\":1",
 		"\"checkouts\":1",
 		"\"version\":1",
@@ -457,6 +484,7 @@ var sortTab = [2][nCols]string{
 		"\"_id.branch\":-1",
 		"\"_id.barcode\":-1",
 		"\"book_id\":-1",
+		"\"donor_id\":-1",
 		"\"on_shelf\":-1",
 		"\"checkouts\":-1",
 		"\"version\":-1",
@@ -586,18 +614,20 @@ func (q Query) preds() bool {
 
 func (q Query) scope() int { return 0 }
 
-func (q Query) BranchEq(v string) Query      { return q.Where(Branch.Eq(v)) }
-func (q Query) BarcodeEq(v string) Query     { return q.Where(Barcode.Eq(v)) }
-func (q Query) BookIDEq(v [16]byte) Query    { return q.Where(BookID.Eq(v)) }
-func (q Query) OnShelfEq(v bool) Query       { return q.Where(OnShelf.Eq(v)) }
-func (q Query) CheckoutsEq(v int64) Query    { return q.Where(Checkouts.Eq(v)) }
-func (q Query) VersionEq(v int32) Query      { return q.Where(Version.Eq(v)) }
-func (q Query) BranchNotEq(v string) Query   { return q.Where(Branch.NotEq(v)) }
-func (q Query) BarcodeNotEq(v string) Query  { return q.Where(Barcode.NotEq(v)) }
-func (q Query) BookIDNotEq(v [16]byte) Query { return q.Where(BookID.NotEq(v)) }
-func (q Query) OnShelfNotEq(v bool) Query    { return q.Where(OnShelf.NotEq(v)) }
-func (q Query) CheckoutsNotEq(v int64) Query { return q.Where(Checkouts.NotEq(v)) }
-func (q Query) VersionNotEq(v int32) Query   { return q.Where(Version.NotEq(v)) }
+func (q Query) BranchEq(v string) Query       { return q.Where(Branch.Eq(v)) }
+func (q Query) BarcodeEq(v string) Query      { return q.Where(Barcode.Eq(v)) }
+func (q Query) BookIDEq(v [16]byte) Query     { return q.Where(BookID.Eq(v)) }
+func (q Query) DonorIDEq(v [16]byte) Query    { return q.Where(DonorID.Eq(v)) }
+func (q Query) OnShelfEq(v bool) Query        { return q.Where(OnShelf.Eq(v)) }
+func (q Query) CheckoutsEq(v int64) Query     { return q.Where(Checkouts.Eq(v)) }
+func (q Query) VersionEq(v int32) Query       { return q.Where(Version.Eq(v)) }
+func (q Query) BranchNotEq(v string) Query    { return q.Where(Branch.NotEq(v)) }
+func (q Query) BarcodeNotEq(v string) Query   { return q.Where(Barcode.NotEq(v)) }
+func (q Query) BookIDNotEq(v [16]byte) Query  { return q.Where(BookID.NotEq(v)) }
+func (q Query) DonorIDNotEq(v [16]byte) Query { return q.Where(DonorID.NotEq(v)) }
+func (q Query) OnShelfNotEq(v bool) Query     { return q.Where(OnShelf.NotEq(v)) }
+func (q Query) CheckoutsNotEq(v int64) Query  { return q.Where(Checkouts.NotEq(v)) }
+func (q Query) VersionNotEq(v int32) Query    { return q.Where(Version.NotEq(v)) }
 
 // The statement caches, one per scope: [0] the live documents, [1] every
 // document, for a query that said WithDeleted.
@@ -651,7 +681,7 @@ func filtered(cs caches, scope int, toks []runtime.Tok, head, tail string, first
 }
 
 var (
-	findHead   = "{\"find\":\"volumes\",\"limit\":{\"$arg\":1},\"skip\":{\"$arg\":2},\"projection\":{\"_id.branch\":1,\"_id.barcode\":1,\"book_id\":1,\"on_shelf\":1,\"checkouts\":1,\"version\":1},\"filter\":"
+	findHead   = "{\"find\":\"volumes\",\"limit\":{\"$arg\":1},\"skip\":{\"$arg\":2},\"projection\":{\"_id.branch\":1,\"_id.barcode\":1,\"book_id\":1,\"donor_id\":1,\"on_shelf\":1,\"checkouts\":1,\"version\":1},\"filter\":"
 	countHead  = "{\"aggregate\":\"volumes\",\"cursor\":{},\"pipeline\":[{\"$match\":"
 	existsHead = "{\"find\":\"volumes\",\"limit\":1,\"projection\":{\"_id\":1},\"filter\":"
 	deleteHead = "{\"delete\":\"volumes\",\"deletes\":[{\"limit\":0,\"q\":"
@@ -795,6 +825,9 @@ func (q Query) writeAllErr() error {
 	return nil
 }
 
+// filterCache holds DeleteAll's filter alone, for the cascade's first read.
+var filterCache = newCaches()
+
 // DeleteAll deletes every matching row and reports how many.
 // The query needs a predicate (runtime.ErrUnfilteredWrite) and no Limit or
 // Offset (runtime.ErrPagedWrite).
@@ -806,7 +839,7 @@ func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error
 	if st.Err != nil {
 		return 0, st.Err
 	}
-	return ex.Exec(ctx, st.SQL, q.args())
+	return mgcascade.Delete(ctx, ex, cascade, filtered(filterCache, 0, q.stream(), "", "", 1, false).SQL, q.args(), st.SQL)
 }
 
 // Column bits, for the write masks.
@@ -814,10 +847,11 @@ const (
 	dBranch        uint64 = 1 << 0
 	dBarcode       uint64 = 1 << 1
 	dBookID        uint64 = 1 << 2
-	dOnShelf       uint64 = 1 << 3
-	dCheckouts     uint64 = 1 << 4
-	dVersion       uint64 = 1 << 5
-	guardCheckouts uint64 = 1 << 6 // IncCheckoutsWhenOnShelf
+	dDonorID       uint64 = 1 << 3
+	dOnShelf       uint64 = 1 << 4
+	dCheckouts     uint64 = 1 << 5
+	dVersion       uint64 = 1 << 6
+	guardCheckouts uint64 = 1 << 7 // IncCheckoutsWhenOnShelf
 )
 
 // keyBits are the primary key's columns.
@@ -830,6 +864,7 @@ var setName = [nCols]string{
 	"",
 	"",
 	"\"book_id\"",
+	"\"donor_id\"",
 	"\"on_shelf\"",
 	"\"checkouts\"",
 	"\"version\"",
@@ -838,6 +873,7 @@ var setName = [nCols]string{
 // insertDefault is the $setOnInsert literal or the $currentDate a column
 // gets when the caller left it unset.
 var insertDefault = [nCols][2]string{
+	{},
 	{},
 	{},
 	{},
@@ -905,12 +941,14 @@ var exprSet = [nCols]string{
 	"",
 	"",
 	"",
+	"",
 	"\"checkouts\":{\"$add\":[\"$checkouts\",1]}",
 	"\"version\":{\"$add\":[\"$version\",1]}",
 }
 
 // addOpen opens Add's form: the column plus a bound amount.
 var addOpen = [nCols]string{
+	"",
 	"",
 	"",
 	"",
@@ -970,7 +1008,7 @@ func pipeDoc(dirty, expr uint64, first int) string {
 
 var (
 	insertPre  = "{\"findAndModify\":\"volumes\",\"query\":{\"_id\":{\"branch\":{\"$arg\":1},\"barcode\":{\"$arg\":2}},\"$nor\":[{}]},\"update\":"
-	insertPost = ",\"upsert\":true,\"new\":true,\"fields\":{\"_id.branch\":1,\"_id.barcode\":1,\"book_id\":1,\"on_shelf\":1,\"checkouts\":1,\"version\":1}}"
+	insertPost = ",\"upsert\":true,\"new\":true,\"fields\":{\"_id.branch\":1,\"_id.barcode\":1,\"book_id\":1,\"donor_id\":1,\"on_shelf\":1,\"checkouts\":1,\"version\":1}}"
 )
 
 func insertStmt(set uint64) *runtime.Stmt {
@@ -1002,6 +1040,10 @@ func (n Ins) Assigned() uint64 { return n.set }
 func (n *Ins) SetBranch(v string)   { n.row.Branch = v; n.set |= dBranch }
 func (n *Ins) SetBarcode(v string)  { n.row.Barcode = v; n.set |= dBarcode }
 func (n *Ins) SetBookID(v [16]byte) { n.row.BookID = v; n.set |= dBookID }
+func (n *Ins) SetDonorID(v [16]byte) {
+	n.row.DonorID = runtime.Null[[16]byte]{V: v, Valid: true}
+	n.set |= dDonorID
+}
 func (n *Ins) SetOnShelf(v bool)    { n.row.OnShelf = v; n.set |= dOnShelf }
 func (n *Ins) SetCheckouts(v int64) { n.row.Checkouts = v; n.set |= dCheckouts }
 func (n *Ins) SetVersion(v int32)   { n.row.Version = v; n.set |= dVersion }
@@ -1096,6 +1138,9 @@ func (r *Row) values(args []any, mask uint64) []any {
 	if mask&dBookID != 0 {
 		args = append(args, r.BookID)
 	}
+	if mask&dDonorID != 0 {
+		args = append(args, nullable(r.DonorID))
+	}
 	if mask&dOnShelf != 0 {
 		args = append(args, r.OnShelf)
 	}
@@ -1110,7 +1155,7 @@ func (r *Row) values(args []any, mask uint64) []any {
 
 var (
 	updatePre  = "{\"findAndModify\":\"volumes\",\"query\":{\"_id\":{\"branch\":{\"$arg\":1},\"barcode\":{\"$arg\":2}},\"version\":{\"$arg\":3}},\"update\":"
-	updatePost = ",\"new\":true,\"fields\":{\"_id.branch\":1,\"_id.barcode\":1,\"book_id\":1,\"on_shelf\":1,\"checkouts\":1,\"version\":1}}"
+	updatePost = ",\"new\":true,\"fields\":{\"_id.branch\":1,\"_id.barcode\":1,\"book_id\":1,\"donor_id\":1,\"on_shelf\":1,\"checkouts\":1,\"version\":1}}"
 )
 
 // Mut stages an update. Only assigned columns are written.
@@ -1135,7 +1180,17 @@ func (m Mut) Row() Row { return m.row }
 // Setters. There is none for the key, an Immutable column or the version
 // column: the absence of the method is the enforcement.
 func (m *Mut) SetBookID(v [16]byte) { m.row.BookID = v; m.dirty |= dBookID; m.expr &^= dBookID }
-func (m *Mut) SetOnShelf(v bool)    { m.row.OnShelf = v; m.dirty |= dOnShelf; m.expr &^= dOnShelf }
+func (m *Mut) SetDonorID(v [16]byte) {
+	m.row.DonorID = runtime.Null[[16]byte]{V: v, Valid: true}
+	m.dirty |= dDonorID
+	m.expr &^= dDonorID
+}
+func (m *Mut) SetDonorIDNull() {
+	m.row.DonorID = runtime.Null[[16]byte]{}
+	m.dirty |= dDonorID
+	m.expr &^= dDonorID
+}
+func (m *Mut) SetOnShelf(v bool) { m.row.OnShelf = v; m.dirty |= dOnShelf; m.expr &^= dOnShelf }
 func (m *Mut) SetCheckouts(v int64) {
 	m.row.Checkouts = v
 	m.dirty |= dCheckouts
@@ -1237,12 +1292,28 @@ func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64
 	return ex.Exec(ctx, st.SQL, args)
 }
 
+// cascade is what deleting a document here does to the collections that
+// reference it, as the model declared — MongoDB has no foreign keys, so
+// storm performs the actions itself, in one transaction when it can open
+// or join one. See runtime/mgcascade.
+var cascade = &mgcascade.Plan{Nodes: []mgcascade.Node{
+	{Coll: "volumes", Edges: []mgcascade.Edge{
+		{Child: 1, Name: "holds.(branch, barcode)", From: []string{"branch", "barcode"}, To: []string{"_id.branch", "_id.barcode"}, Action: mgcascade.Cascade, Set: ""},
+	}},
+	{Coll: "holds"},
+}}
+
+// keyFilter addresses one document by its key, for the plan's first read.
+const keyFilter = "{\"_id\":{\"branch\":{\"$arg\":1},\"barcode\":{\"$arg\":2}}}"
+
 var deleteOne = "{\"delete\":\"volumes\",\"deletes\":[{\"limit\":1,\"q\":{\"_id\":{\"branch\":{\"$arg\":1},\"barcode\":{\"$arg\":2}}}}]}"
 
 // Delete deletes the row with this key. A key that matches nothing is
 // runtime.ErrNoRow.
+//
+// The references to it are acted on first, as declared: see cascade.
 func Delete(ctx context.Context, ex runtime.Executor, branch string, barcode string) error {
-	return exactlyOne(ex.Exec(ctx, deleteOne, []any{branch, barcode}))
+	return exactlyOne(mgcascade.Delete(ctx, ex, cascade, keyFilter, []any{branch, barcode}, deleteOne))
 }
 
 func exactlyOne(n int64, err error) error {
@@ -1297,13 +1368,16 @@ func scan(rv [][]byte, r *Row) error {
 	if r.BookID, err = bsondec.UUID(rv[2]); err != nil {
 		return errors.Join(errors.New("storm: volumes.book_id"), err)
 	}
-	if r.OnShelf, err = bsondec.Bool(rv[3]); err != nil {
+	if r.DonorID, err = bsondec.Nullable(rv[3], bsondec.UUID); err != nil {
+		return errors.Join(errors.New("storm: volumes.donor_id"), err)
+	}
+	if r.OnShelf, err = bsondec.Bool(rv[4]); err != nil {
 		return errors.Join(errors.New("storm: volumes.on_shelf"), err)
 	}
-	if r.Checkouts, err = bsondec.Int8(rv[4]); err != nil {
+	if r.Checkouts, err = bsondec.Int8(rv[5]); err != nil {
 		return errors.Join(errors.New("storm: volumes.checkouts"), err)
 	}
-	if r.Version, err = bsondec.Int4(rv[5]); err != nil {
+	if r.Version, err = bsondec.Int4(rv[6]); err != nil {
 		return errors.Join(errors.New("storm: volumes.version"), err)
 	}
 	return nil

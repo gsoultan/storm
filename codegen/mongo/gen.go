@@ -63,7 +63,7 @@ func Package(s *schema.Schema, o Options) (map[string][]byte, error) {
 			return nil, fmt.Errorf("codegenmongo: tables %q and %q both generate package %q", prev, name, pkg)
 		}
 		seen[pkg] = name
-		src, err := File(t, pkg, o.Import)
+		src, err := File(s, t, pkg, o.Import)
 		if err != nil {
 			return nil, err
 		}
@@ -72,9 +72,10 @@ func Package(s *schema.Schema, o Options) (map[string][]byte, error) {
 	return out, nil
 }
 
-// File renders one table's package.
-func File(t *schema.Table, pkg, imp string) ([]byte, error) {
-	g, err := newGen(t, pkg, imp)
+// File renders one table's package. s is the whole model, which a delete's
+// referential actions are read from; nil generates none.
+func File(s *schema.Schema, t *schema.Table, pkg, imp string) ([]byte, error) {
+	g, err := newGen(s, t, pkg, imp)
 	if err != nil {
 		return nil, err
 	}

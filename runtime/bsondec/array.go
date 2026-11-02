@@ -128,3 +128,9 @@ func Size(t byte, b []byte) int {
 	}
 	return -1
 }
+
+// Raw is a value exactly as it sat in a document — its BSON type byte and
+// its bytes — handed back to runtime/mgdrv to bind unchanged. A cascade reads
+// a parent's key and matches children on it; decoding it into a Go value and
+// encoding it again would be two chances to change it.
+type Raw []byte

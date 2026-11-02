@@ -60,7 +60,10 @@ type Book struct {
 func (b *Book) Schema(t *storm.Table) {
 	t.Col(&b.Title).Size(300)
 	t.Col(&b.Price).Numeric(10, 2)
-	t.Col(&b.Author).OnDocument(storm.Reference())
+	// Hard-deleting an author takes their books with them. MongoDB has no
+	// foreign keys; the generated package performs the cascade itself, in
+	// one transaction.
+	t.Col(&b.Author).OnDelete(storm.Cascade).OnDocument(storm.Reference())
 	// Nullable and unique: many books may lack an ISBN, as PostgreSQL allows.
 	// compile/mgddl translates this to a partial index so MongoDB agrees.
 	t.Unique(&b.ISBN)
@@ -81,6 +84,7 @@ type Volume struct {
 	Branch    string
 	Barcode   string
 	BookID    storm.UUID
+	DonorID   *storm.UUID
 	OnShelf   bool
 	Checkouts int64
 	Version   int32
@@ -92,8 +96,12 @@ func (c *Volume) Schema(t *storm.Table) {
 	t.Col(&c.Barcode).Size(32)
 	t.Col(&c.Version).Version().Default("0")
 	t.Col(&c.Checkouts).IncWhen(&c.OnShelf).Default("0")
+	// A book with copies on the shelves cannot be deleted; a donor who is
+	// removed leaves their donations anonymous.
 	var b Book
-	t.ForeignKey(&c.BookID).References(&b, &b.ID).OnDocument(storm.Reference())
+	t.ForeignKey(&c.BookID).References(&b, &b.ID).OnDelete(storm.Restrict).OnDocument(storm.Reference())
+	var a Author
+	t.ForeignKey(&c.DonorID).References(&a, &a.ID).OnDelete(storm.SetNull).OnDocument(storm.Reference())
 }
 
 // Hold is a reader's place in the queue for one copy: a composite reference
@@ -111,7 +119,7 @@ func (h *Hold) Schema(t *storm.Table) {
 	t.Col(&h.Barcode).Size(32)
 	var c Volume
 	t.ForeignKey(&h.Branch, &h.Barcode).References(&c, &c.Branch, &c.Barcode).
-		OnDocument(storm.Reference())
+		OnDelete(storm.Cascade).OnDocument(storm.Reference())
 }
 
 // All is what Build and the generator consume.

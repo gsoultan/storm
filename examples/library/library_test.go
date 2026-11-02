@@ -499,3 +499,85 @@ func TestCompositeKeyVersionAndIncWhen(t *testing.T) {
 		t.Fatalf("read back: %+v %v", got, err)
 	}
 }
+
+// TestReferentialActions: MongoDB has no foreign keys, so every ON DELETE
+// below is storm's own work, done in a transaction the pool opens.
+func TestReferentialActions(t *testing.T) {
+	ctx := context.Background()
+	mkAuthor := func(name string) author.Row {
+		n := author.Create()
+		n.SetName(name)
+		n.SetEmail(name + "@refs.example.com")
+		r, err := n.Insert(ctx, db)
+		if err != nil {
+			t.Fatal(name, err)
+		}
+		return r
+	}
+	writer, donor := mkAuthor("writer"), mkAuthor("donor")
+	nb := book.Create()
+	nb.SetTitle("Referenced")
+	nb.SetPages(100)
+	nb.SetPrice(runtime.Decimal{Unscaled: 100, Scale: 2})
+	nb.SetAuthorID(writer.ID)
+	b, err := nb.Insert(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nv := volume.Create()
+	nv.SetBranch("refs")
+	nv.SetBarcode("r1")
+	nv.SetBookID(b.ID)
+	nv.SetDonorID(donor.ID)
+	nv.SetOnShelf(true)
+	if _, err := nv.Insert(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	nh := hold.Create()
+	nh.SetBranch("refs")
+	nh.SetBarcode("r1")
+	nh.SetReader("bo")
+	if _, err := nh.Insert(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	// RESTRICT, two levels down: the writer's book still has a copy on a
+	// shelf, so the writer cannot go, and nothing went with the attempt.
+	if err := author.HardDelete(ctx, db, writer.ID); !errors.Is(err, runtime.ErrForeignKeyViolation) {
+		t.Fatalf("restrict: %v", err)
+	}
+	if n, _ := book.New().Where(book.AuthorID.Eq(writer.ID)).Count(ctx, db); n != 1 {
+		t.Fatalf("a refused delete removed the book: %d", n)
+	}
+
+	// SET NULL: the donor goes; the copy stays, anonymous.
+	if err := author.HardDelete(ctx, db, donor.ID); err != nil {
+		t.Fatal(err)
+	}
+	v, ok, err := volume.New().Where(volume.Branch.Eq("refs")).One(ctx, db)
+	if err != nil || !ok || v.DonorID.Valid {
+		t.Fatalf("set null: %+v %v", v, err)
+	}
+
+	// CASCADE through a composite key: the copy takes its holds with it.
+	if err := volume.Delete(ctx, db, "refs", "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := hold.New().Where(hold.Branch.Eq("refs")).Count(ctx, db); n != 0 {
+		t.Fatalf("cascade left %d holds", n)
+	}
+
+	// And now the writer can go, taking the book.
+	if err := author.HardDelete(ctx, db, writer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := book.New().Where(book.AuthorID.Eq(writer.ID)).Count(ctx, db); n != 0 {
+		t.Fatalf("cascade left %d books", n)
+	}
+
+	// A bulk delete acts on every document it matches, inside the same
+	// transaction as the delete.
+	if n, err := book.New().Where(book.ID.Eq(b.ID)).DeleteAll(ctx, db); err != nil || n != 0 {
+		t.Fatalf("DeleteAll of nothing: %d %v", n, err)
+	}
+}

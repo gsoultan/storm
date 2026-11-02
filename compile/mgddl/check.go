@@ -42,7 +42,7 @@ func Check(s *schema.Schema) error {
 		add("", "trigger %s: a SQL trigger has no MongoDB form", tr.Name)
 	}
 	for _, t := range s.Tables {
-		checkTable(t, add)
+		checkTable(s, t, add)
 	}
 	if len(p) == 0 {
 		return nil
@@ -51,7 +51,7 @@ func Check(s *schema.Schema) error {
 	return fmt.Errorf("this model does not port to MongoDB:\n%s", strings.Join(p, "\n"))
 }
 
-func checkTable(t *schema.Table, add func(pos, format string, a ...any)) {
+func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, a ...any)) {
 	n := t.Name
 	if len(t.PrimaryKey) == 0 {
 		add(t.Pos, "%s: needs a primary key — it is stored as _id", n)
@@ -88,7 +88,7 @@ func checkTable(t *schema.Table, add func(pos, format string, a ...any)) {
 		checkColumn(t, c, add)
 	}
 	for _, fk := range t.ForeignKeys {
-		checkReference(t, fk, add)
+		checkReference(s, t, fk, add)
 	}
 	for _, ix := range t.Indexes {
 		checkIndex(t, ix, add)
@@ -129,11 +129,13 @@ func checkColumn(t *schema.Table, c *schema.Column, add func(pos, format string,
 
 // checkReference holds a foreign key to what a document store can promise.
 //
-// It can promise nothing: there are no foreign keys. So a reference must SAY
-// how it is stored (OnDocument), and an action the database was meant to take
-// on the referencing row — cascade, set null, set default — is refused,
-// because on this target nothing would take it and the rows would simply stay.
-func checkReference(t *schema.Table, fk *schema.ForeignKey, add func(pos, format string, a ...any)) {
+// There are no foreign keys, so a reference must SAY how it is stored
+// (OnDocument). Its ON DELETE action is performed by the generated package
+// itself (runtime/mgcascade). An ON UPDATE action is accepted only on a
+// reference to the parent's primary key, which no generated method can change
+// — anything else would need the update to rewrite its children, which is not
+// generated.
+func checkReference(s *schema.Schema, t *schema.Table, fk *schema.ForeignKey, add func(pos, format string, a ...any)) {
 	if len(fk.Columns) != 1 {
 		if fk.Document == "" {
 			add(t.Pos, "%s: the foreign key (%s) must say how it is stored in a document — "+
@@ -141,7 +143,7 @@ func checkReference(t *schema.Table, fk *schema.ForeignKey, add func(pos, format
 				"embed-versus-reference is a modelling decision storm will not guess (ADR-0004)",
 				t.Name, strings.Join(fk.Columns, ", "))
 		}
-		checkActions(t, fk, t.Pos, add)
+		checkActions(s, t, fk, t.Pos, add)
 		return
 	}
 	c := t.Column(fk.Columns[0])
@@ -161,18 +163,49 @@ func checkReference(t *schema.Table, fk *schema.ForeignKey, add func(pos, format
 			"t.Col(&x.%s).OnDocument(storm.Reference()) — because embed-versus-reference is a "+
 			"modelling decision storm will not guess (ADR-0004)", t.Name, fk.Columns[0], field)
 	}
-	checkActions(t, fk, pos, add)
+	checkActions(s, t, fk, pos, add)
 }
 
-func checkActions(t *schema.Table, fk *schema.ForeignKey, pos string, add func(pos, format string, a ...any)) {
-	for _, a := range []schema.Action{fk.OnDelete, fk.OnUpdate} {
-		switch a {
-		case schema.Cascade, schema.SetNull, schema.SetDefault:
-			add(pos, "%s.%s: ON DELETE/UPDATE %s — MongoDB has no foreign keys, so nothing "+
-				"would perform it; do it in the write that deletes the parent",
-				t.Name, strings.Join(fk.Columns, ", "), a)
+func checkActions(s *schema.Schema, t *schema.Table, fk *schema.ForeignKey, pos string, add func(pos, format string, a ...any)) {
+	cols := strings.Join(fk.Columns, ", ")
+	if fk.OnDelete == schema.SetDefault {
+		for _, col := range fk.Columns {
+			c := t.Column(col)
+			if c == nil {
+				continue
+			}
+			switch k, _ := mongo.ClassifyDefault(c); k {
+			case mongo.DefaultUUIDv4, mongo.DefaultUUIDv7:
+				add(pos, "%s.%s: ON DELETE SET DEFAULT to a generated uuid — every child would need a "+
+					"value of its own, which one update cannot write", t.Name, col)
+			}
 		}
 	}
+	switch fk.OnUpdate {
+	case schema.Cascade, schema.SetNull, schema.SetDefault:
+		if ref := s.Table(fk.RefTable); ref == nil || !sameCols(ref.PrimaryKey, fk.RefColumns) {
+			add(pos, "%s.%s: ON UPDATE %s on a reference to a column that is not %s's key — "+
+				"an update that changed it would have to rewrite its children, which is not generated",
+				t.Name, cols, fk.OnUpdate, fk.RefTable)
+		}
+	}
+}
+
+// sameCols compares two column lists as sets, the way a key is matched.
+func sameCols(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	in := map[string]bool{}
+	for _, c := range a {
+		in[c] = true
+	}
+	for _, c := range b {
+		if !in[c] {
+			return false
+		}
+	}
+	return true
 }
 
 func checkIndex(t *schema.Table, ix *schema.Index, add func(pos, format string, a ...any)) {

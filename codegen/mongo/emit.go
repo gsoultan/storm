@@ -23,10 +23,16 @@ type gen struct {
 	// guards are the counters with a guarded increment (IncWhen), in column
 	// order; guard j takes expression bit nCols+j.
 	guards []int
+	// plan is the referential actions a delete performs, or nil.
+	plan []cascadeNode
 }
 
-func newGen(t *schema.Table, pkg, imp string) (*gen, error) {
+func newGen(s *schema.Schema, t *schema.Table, pkg, imp string) (*gen, error) {
 	g := &gen{t: t, pkg: pkg, imp: imp, version: -1, soft: -1}
+	var err error
+	if g.plan, err = cascadePlan(s, t); err != nil {
+		return nil, err
+	}
 	for i, c := range t.Columns {
 		k, ok := kindOf(c)
 		if !ok {
@@ -138,6 +144,9 @@ func (g *gen) header() {
 	g.p("")
 	g.p("\t%q", g.imp+"/runtime")
 	g.p("\t%q", g.imp+"/runtime/bsondec")
+	if g.plan != nil {
+		g.p("\t%q", g.imp+"/runtime/mgcascade")
+	}
 	g.p("\t%q", g.imp+"/runtime/mgsplice")
 	g.p(")")
 	g.p("")

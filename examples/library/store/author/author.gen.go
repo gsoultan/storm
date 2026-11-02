@@ -14,6 +14,7 @@ import (
 
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/runtime/mgcascade"
 	"github.com/gsoultan/storm/runtime/mgsplice"
 )
 
@@ -1226,6 +1227,24 @@ func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64
 	return ex.Exec(ctx, st.SQL, args)
 }
 
+// cascade is what deleting a document here does to the collections that
+// reference it, as the model declared — MongoDB has no foreign keys, so
+// storm performs the actions itself, in one transaction when it can open
+// or join one. See runtime/mgcascade.
+var cascade = &mgcascade.Plan{Nodes: []mgcascade.Node{
+	{Coll: "authors", Edges: []mgcascade.Edge{
+		{Child: 1, Name: "books.author_id", From: []string{"author_id"}, To: []string{"_id"}, Action: mgcascade.Cascade, Set: ""},
+		{Child: 2, Name: "volumes.donor_id", From: []string{"donor_id"}, To: []string{"_id"}, Action: mgcascade.SetNull, Set: "[{\"$set\":{\"donor_id\":null}}]"},
+	}},
+	{Coll: "books", Edges: []mgcascade.Edge{
+		{Child: 2, Name: "volumes.book_id", From: []string{"book_id"}, To: []string{"_id"}, Action: mgcascade.Restrict, Set: ""},
+	}},
+	{Coll: "volumes"},
+}}
+
+// keyFilter addresses one document by its key, for the plan's first read.
+const keyFilter = "{\"_id\":{\"$arg\":1}}"
+
 var (
 	softDeleteOne = "{\"update\":\"authors\",\"updates\":[{\"q\":{\"_id\":{\"$arg\":1},\"deleted_at\":null},\"u\":[{\"$set\":{\"deleted_at\":\"$$NOW\"}}]}]}"
 	restoreOne    = "{\"update\":\"authors\",\"updates\":[{\"q\":{\"_id\":{\"$arg\":1},\"deleted_at\":{\"$ne\":null}},\"u\":[{\"$set\":{\"deleted_at\":null}}]}]}"
@@ -1242,9 +1261,9 @@ func Delete(ctx context.Context, ex runtime.Executor, id [16]byte) error {
 
 // HardDelete removes the document for real, deleted or not. It is the only
 // function in this package that destroys data, which is why it is not
-// spelled Delete.
+// spelled Delete. The references to it are acted on as declared.
 func HardDelete(ctx context.Context, ex runtime.Executor, id [16]byte) error {
-	return exactlyOne(ex.Exec(ctx, hardDeleteOne, []any{id}))
+	return exactlyOne(mgcascade.Delete(ctx, ex, cascade, keyFilter, []any{id}, hardDeleteOne))
 }
 
 // Restore clears the mark. A row that was not deleted is runtime.ErrNoRow.

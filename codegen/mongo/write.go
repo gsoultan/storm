@@ -598,14 +598,19 @@ func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64
 }
 
 func (g *gen) deleteFns() {
+	g.cascadeVar()
 	sig, call := g.keySig()
 	if g.soft < 0 {
 		g.p("var deleteOne = %q", mongo.DeleteOne(g.t))
 		g.p("")
 		g.p("// Delete deletes the row with this key. A key that matches nothing is")
 		g.p("// runtime.ErrNoRow.")
+		if g.plan != nil {
+			g.p("//")
+			g.p("// The references to it are acted on first, as declared: see cascade.")
+		}
 		g.p("func Delete(ctx context.Context, ex runtime.Executor, %s) error {", sig)
-		g.p("\treturn exactlyOne(ex.Exec(ctx, deleteOne, []any{%s}))", call)
+		g.p("\treturn exactlyOne(%s)", g.removeCall("deleteOne", call))
 		g.p("}")
 	} else {
 		sd := mongo.Str(g.stored(g.soft))
@@ -628,15 +633,15 @@ func Delete(ctx context.Context, ex runtime.Executor, %s) error {
 
 // HardDelete removes the document for real, deleted or not. It is the only
 // function in this package that destroys data, which is why it is not
-// spelled Delete.
+// spelled Delete. The references to it are acted on as declared.
 func HardDelete(ctx context.Context, ex runtime.Executor, %s) error {
-	return exactlyOne(ex.Exec(ctx, hardDeleteOne, []any{%s}))
+	return exactlyOne(%s)
 }
 
 // Restore clears the mark. A row that was not deleted is runtime.ErrNoRow.
 func Restore(ctx context.Context, ex runtime.Executor, %s) error {
 	return exactlyOne(ex.Exec(ctx, restoreOne, []any{%s}))
-}`, sig, call, sig, call, sig, call)
+}`, sig, call, sig, g.removeCall("hardDeleteOne", call), sig, call)
 	}
 	g.p(`
 func exactlyOne(n int64, err error) error {
@@ -649,6 +654,15 @@ func exactlyOne(n int64, err error) error {
 	return nil
 }
 `)
+}
+
+// removeCall is the expression that runs a delete by key: the command alone,
+// or through the cascade plan.
+func (g *gen) removeCall(cmd, call string) string {
+	if g.plan == nil {
+		return "ex.Exec(ctx, " + cmd + ", []any{" + call + "})"
+	}
+	return "mgcascade.Delete(ctx, ex, cascade, keyFilter, []any{" + call + "}, " + cmd + ")"
 }
 
 func (g *gen) insertAll() {

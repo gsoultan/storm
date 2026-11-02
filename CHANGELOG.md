@@ -14,6 +14,19 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: ON DELETE CASCADE, SET NULL, SET DEFAULT and RESTRICT
+
+A MongoDB server has no foreign keys, so these were refused. The generated
+package now performs them, through the new `runtime/mgcascade`: the whole
+reference graph below a collection is written into its package at generate
+time, and `Delete`, `HardDelete` and `DeleteAll` check every `RESTRICT`,
+act on the children — recursively — and then delete, in a transaction the
+pool opens or the caller's `Tx`. A violation is
+`runtime.ErrForeignKeyViolation`. `NO ACTION` stays unenforced, as does the
+insert side; `ON UPDATE` actions are accepted only on a reference to the
+parent's key, which cannot change. The cost is one read of the parent's
+referenced values plus one command per child collection per thousand values.
+
 ### MongoDB: composite keys, arrays and json, versions, soft delete
 
 The first of the constructs `storm portable mongo` refused, now generated —

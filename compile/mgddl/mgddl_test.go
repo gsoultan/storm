@@ -86,7 +86,8 @@ func TestEveryRefusalNamesItsConstruct(t *testing.T) {
 	tb.Checks = []*schema.Check{{Expr: "1=1"}}
 	tb.Plans = []*schema.Plan{{}}
 	tb.ForeignKeys = []*schema.ForeignKey{
-		{Columns: []string{"org_id"}, RefTable: "orgs", OnDelete: schema.Cascade},
+		{Columns: []string{"org_id"}, RefTable: "orgs", OnDelete: schema.Cascade, OnUpdate: schema.Cascade, RefColumns: []string{"slug"}},
+		{Columns: []string{"u"}, RefTable: "users", RefColumns: []string{"id"}, OnDelete: schema.SetDefault, Document: "reference"},
 		{Columns: []string{"a", "org_id"}, RefTable: "orgs"},
 	}
 	tb.Relations = []*schema.Relation{{Field: "Org", Owner: true, Column: "org_id"}}
@@ -119,7 +120,8 @@ func TestEveryRefusalNamesItsConstruct(t *testing.T) {
 		"users.u: a uuid default on a text column",
 		"model.go:9: users.org_id: a reference must say how it is stored",
 		"t.Col(&x.Org).OnDocument(storm.Reference())",
-		"ON DELETE/UPDATE CASCADE",
+		"users.org_id: ON UPDATE CASCADE on a reference to a column that is not orgs's key",
+		"users.u: ON DELETE SET DEFAULT to a generated uuid",
 		"the foreign key (a, org_id) must say how it is stored",
 		"CHECK constraints", "named plans",
 		"is partial over SQL text", "uses gist", "INCLUDE columns", "storage parameters",
@@ -213,14 +215,41 @@ func TestTheShapesRoundOneAdded(t *testing.T) {
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "attrs"}}, Unique: true},
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "email"}}, Method: "gin"})
 	tb.ForeignKeys[0].Document = ""
-	tb.ForeignKeys[0].OnDelete = schema.Cascade
+	tb.ForeignKeys[0].OnUpdate = schema.SetNull
 	err = Check(s)
 	for _, want := range []string{
 		"stock: UNIQUE over tags", "unique index ix_stock_attrs covers attrs",
-		"uses gin", "the foreign key (branch, sku) must say", "stock.branch, sku: ON DELETE/UPDATE CASCADE",
+		"uses gin", "the foreign key (branch, sku) must say", "stock.branch, sku: ON UPDATE SET NULL",
 	} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal must contain %q: %v", want, err)
 		}
+	}
+}
+
+// A delete's actions are performed by the generated package now, and ON
+// UPDATE on a reference to a key no generated method can change is accepted.
+func TestReferentialActionsThatPort(t *testing.T) {
+	s := &schema.Schema{Tables: []*schema.Table{
+		{Name: "orgs", PrimaryKey: []string{"a", "b"}, Columns: []*schema.Column{
+			{Name: "a", Type: schema.Type{Name: schema.TypeText}, NotNull: true},
+			{Name: "b", Type: schema.Type{Name: schema.TypeText}, NotNull: true}}},
+		{Name: "users", PrimaryKey: []string{"id"}, Columns: []*schema.Column{
+			{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+			{Name: "a", Type: schema.Type{Name: schema.TypeText}, Default: "'x'"},
+			{Name: "b", Type: schema.Type{Name: schema.TypeText}}},
+			ForeignKeys: []*schema.ForeignKey{{Columns: []string{"a", "b"}, RefTable: "orgs",
+				RefColumns: []string{"b", "a"}, OnDelete: schema.SetDefault, OnUpdate: schema.Cascade, Document: "reference"}}},
+	}}
+	if err := Check(s); err != nil {
+		t.Fatal(err)
+	}
+	s.Tables[1].ForeignKeys[0].RefColumns = []string{"a", "c"}
+	if err := Check(s); err == nil {
+		t.Error("ON UPDATE on a non-key reference")
+	}
+	s.Tables[1].ForeignKeys[0].RefColumns = []string{"a"}
+	if err := Check(s); err == nil {
+		t.Error("ON UPDATE on a partial key")
 	}
 }

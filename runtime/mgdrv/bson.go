@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/bsondec"
 )
 
 // BSON, the subset this driver writes and reads. Append-style over a []byte so
@@ -252,6 +253,17 @@ func appendValue(b []byte, name string, v any) ([]byte, error) {
 			return appendBinary(b, argName(i), 4, x[i][:]), nil
 		})
 	case []time.Time:
+		return appendArray(b, name, len(x), func(b []byte, i int) ([]byte, error) {
+			return appendValue(b, argName(i), x[i])
+		})
+	case bsondec.Raw:
+		if len(x) == 0 {
+			return appendName(b, tNull, name), nil
+		}
+		b = append(b, x[0])
+		b = append(append(b, name...), 0)
+		return append(b, x[1:]...), nil
+	case []bsondec.Raw:
 		return appendArray(b, name, len(x), func(b []byte, i int) ([]byte, error) {
 			return appendValue(b, argName(i), x[i])
 		})

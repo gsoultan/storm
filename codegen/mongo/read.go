@@ -225,6 +225,13 @@ func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error
 `, strconv.Quote(mongo.UpdateTail))
 		return
 	}
+	run := "ex.Exec(ctx, st.SQL, q.args())"
+	if g.plan != nil {
+		run = "mgcascade.Delete(ctx, ex, cascade, filtered(filterCache, 0, q.stream(), \"\", \"\", 1, false).SQL, q.args(), st.SQL)"
+		g.p("// filterCache holds DeleteAll's filter alone, for the cascade's first read.")
+		g.p("var filterCache = newCaches()")
+		g.p("")
+	}
 	g.p(`// DeleteAll deletes every matching row and reports how many.
 // The query needs a predicate (runtime.ErrUnfilteredWrite) and no Limit or
 // Offset (runtime.ErrPagedWrite).
@@ -236,9 +243,9 @@ func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error
 	if st.Err != nil {
 		return 0, st.Err
 	}
-	return ex.Exec(ctx, st.SQL, q.args())
+	return %s
 }
-`, strconv.Quote(mongo.DeleteTail))
+`, strconv.Quote(mongo.DeleteTail), run)
 }
 
 // deleteAllHead is DeleteAll's command up to its filter: a delete, or on a

@@ -57,6 +57,7 @@ declare -a FLOORS=(
   "github.com/gsoultan/storm/compile/mgddl 95"
   "github.com/gsoultan/storm/runtime/bsondec 95"
   "github.com/gsoultan/storm/runtime/mgsplice 95"
+  "github.com/gsoultan/storm/runtime/mgcascade 95"
   "github.com/gsoultan/storm/codegen/mongo 85"
   "github.com/gsoultan/storm/compile/pgsql 80"
   "github.com/gsoultan/storm/compile/pgddl 90"
