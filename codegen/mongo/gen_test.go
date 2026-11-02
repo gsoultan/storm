@@ -191,9 +191,9 @@ func TestGeneratorRefusesWhatItCannotWrite(t *testing.T) {
 
 func TestPackageRefusesBeforeWritingAnything(t *testing.T) {
 	s := every()
-	s.Tables[0].Checks = []*schema.Check{{Expr: "hits >= 0"}}
+	s.Tables[0].Checks = []*schema.Check{{Expr: "hits / 2 >= 0"}}
 	if files, err := Package(s, Options{Import: "x"}); err == nil || files != nil {
-		t.Fatal("a CHECK constraint must be refused")
+		t.Fatal("a CHECK constraint that divides must be refused")
 	}
 	if _, err := Package(every(), Options{}); err == nil {
 		t.Error("Import is required")

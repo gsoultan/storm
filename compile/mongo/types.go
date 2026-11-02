@@ -102,11 +102,11 @@ const (
 // ClassifyDefault reports how a column's default is produced on this back end,
 // and for a literal, its JSON form.
 func ClassifyDefault(c *schema.Column) (DefaultKind, string) {
-	d := c.Default
-	switch d {
-	case "":
+	d := plainDefault(c.Default)
+	switch strings.ToLower(d) {
+	case "", "null":
 		return DefaultNone, ""
-	case "now()", "CURRENT_TIMESTAMP", "current_timestamp":
+	case "now()", "current_timestamp", "transaction_timestamp()":
 		if c.Type.Name == schema.TypeTimestamptz {
 			return DefaultServerTime, ""
 		}
@@ -117,7 +117,7 @@ func ClassifyDefault(c *schema.Column) (DefaultKind, string) {
 		return DefaultUUIDv7, ""
 	case "true", "false":
 		if c.Type.Name == schema.TypeBool {
-			return DefaultLiteral, d
+			return DefaultLiteral, strings.ToLower(d)
 		}
 		return DefaultUnsupported, ""
 	}
@@ -144,6 +144,46 @@ func ClassifyDefault(c *schema.Column) (DefaultKind, string) {
 		return numberLiteral(c.Type.Name, d)
 	}
 	return DefaultUnsupported, ""
+}
+
+// plainDefault is a default with what changes nothing taken off: spaces,
+// enclosing parentheses — PostgreSQL's catalogue prints (0) and ('x') — and a
+// cast after a number or a boolean (sqlStringLiteral reads a string's with
+// it). 0::integer is 0 to the column it defaults, as true::boolean is true;
+// the column's type is what the value is stored as either way.
+func plainDefault(d string) string {
+	for {
+		d = strings.TrimSpace(d)
+		if len(d) >= 2 && d[0] == '(' && d[len(d)-1] == ')' && balanced(d[1:len(d)-1]) {
+			d = d[1 : len(d)-1]
+			continue
+		}
+		if i := strings.LastIndex(d, "::"); i > 0 && d[0] != '\'' {
+			// Only off a number or a boolean: now()::date is midnight, not now.
+			v := plainDefault(d[:i])
+			if l := strings.ToLower(v); isNumber(v) || l == "true" || l == "false" {
+				return v
+			}
+		}
+		return d
+	}
+}
+
+// balanced reports whether s's parentheses pair up, so (a)(b) is not read
+// as one parenthesised a)(b.
+func balanced(s string) bool {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // sqlStringLiteral unquotes 'it”s' to it's, optionally followed by a cast.

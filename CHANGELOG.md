@@ -14,6 +14,18 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: CHECK constraints, partial indexes and defaults from SQL text
+
+The new `compile/mgexpr` reads a small subset of SQL expressions and writes
+it with SQL's answer: a `CHECK` becomes the validator's `$expr`, carrying
+NULL through as UNKNOWN so a check fails only on FALSE, and a partial index's
+`WHERE` becomes its `partialFilterExpression`. Comparisons, `AND`/`OR`/`NOT`,
+`IS [NOT] NULL`, `IN`, `BETWEEN`, `LIKE`, `+ - *`, `length`, `abs` and
+`coalesce` are in it; anything else is still refused, naming the construct.
+Defaults may be parenthesised or cast to their own type, as PostgreSQL's
+catalogue prints them. `runtime/mgdrv` no longer panics on a command nested
+more than sixteen documents deep.
+
 ### MongoDB: ON DELETE CASCADE, SET NULL, SET DEFAULT and RESTRICT
 
 A MongoDB server has no foreign keys, so these were refused. The generated

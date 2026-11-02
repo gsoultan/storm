@@ -62,8 +62,11 @@ func (t *template) encode(b []byte, args []any) ([]byte, error) {
 		return b, errors.New("mgdrv: " + t.cmd + " needs " + strconv.Itoa(t.nargs) +
 			" arguments, got " + strconv.Itoa(len(args)))
 	}
-	var stack [16]int
-	depth := 0
+	// The open documents' starts. Sixteen levels cover every command a
+	// generated package writes; a translated CHECK nests deeper, and grows
+	// the stack rather than indexing past it.
+	var buf [16]int
+	stack := buf[:0]
 	var err error
 	for i := range t.ops {
 		o := &t.ops[i]
@@ -72,11 +75,13 @@ func (t *template) encode(b []byte, args []any) ([]byte, error) {
 			b = append(b, o.raw...)
 		case opOpen:
 			b = append(b, o.raw...)
-			b, stack[depth] = startDoc(b)
-			depth++
+			var at int
+			b, at = startDoc(b)
+			stack = append(stack, at)
 		case opClose:
-			depth--
-			b = endDoc(b, stack[depth])
+			at := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			b = endDoc(b, at)
 		case opArg:
 			if b, err = appendValue(b, o.name, args[o.arg]); err != nil {
 				return b, errors.New("mgdrv: argument " + strconv.Itoa(o.arg+1) + " of " + t.cmd +

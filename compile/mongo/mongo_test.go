@@ -220,3 +220,32 @@ func TestTypesAndDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultsSQLSpellsDifferently(t *testing.T) {
+	col := func(typ, d string) *schema.Column {
+		return &schema.Column{Name: "c", Type: schema.Type{Name: typ}, Default: d}
+	}
+	for _, c := range []struct {
+		col  *schema.Column
+		kind DefaultKind
+		lit  string
+	}{
+		{col(schema.TypeInt4, "(0)"), DefaultLiteral, "0"},
+		{col(schema.TypeInt4, "0::integer"), DefaultLiteral, "0"},
+		{col(schema.TypeInt4, "(-1)::int"), DefaultLiteral, "-1"},
+		{col(schema.TypeInt8, " ( 5 ) "), DefaultLiteral, `{"$numberLong":"5"}`},
+		{col(schema.TypeBool, "TRUE"), DefaultLiteral, "true"},
+		{col(schema.TypeBool, "false::boolean"), DefaultLiteral, "false"},
+		{col(schema.TypeText, "('x'::text)"), DefaultLiteral, `"x"`},
+		{col(schema.TypeText, "NULL"), DefaultNone, ""},
+		{col(schema.TypeTimestamptz, "CURRENT_TIMESTAMP"), DefaultServerTime, ""},
+		{col(schema.TypeTimestamptz, "transaction_timestamp()"), DefaultServerTime, ""},
+		{col(schema.TypeTimestamptz, "now()::date"), DefaultUnsupported, ""},
+		{col(schema.TypeInt4, "(1)+(2)"), DefaultUnsupported, ""},
+		{col(schema.TypeInt4, "(1))"), DefaultUnsupported, ""},
+	} {
+		if k, lit := ClassifyDefault(c.col); k != c.kind || lit != c.lit {
+			t.Errorf("%q: %v %q", c.col.Default, k, lit)
+		}
+	}
+}

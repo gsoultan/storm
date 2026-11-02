@@ -60,6 +60,9 @@ type Book struct {
 func (b *Book) Schema(t *storm.Table) {
 	t.Col(&b.Title).Size(300)
 	t.Col(&b.Price).Numeric(10, 2)
+	// SQL text, translated into the collection's validator with SQL's
+	// answer — a NULL passes, as it does a CHECK.
+	t.Check(storm.RawSQL(`pages > 0 AND price >= 0`))
 	// Hard-deleting an author takes their books with them. MongoDB has no
 	// foreign keys; the generated package performs the cascade itself, in
 	// one transaction.
@@ -96,6 +99,9 @@ func (c *Volume) Schema(t *storm.Table) {
 	t.Col(&c.Barcode).Size(32)
 	t.Col(&c.Version).Version().Default("0")
 	t.Col(&c.Checkouts).IncWhen(&c.OnShelf).Default("0")
+	// A partial index over the copies on a shelf that have circulated, as a
+	// partialFilterExpression.
+	t.Index(&c.Checkouts).Where(storm.RawSQL(`on_shelf AND checkouts > 0`))
 	// A book with copies on the shelves cannot be deleted; a donor who is
 	// removed leaves their donations anonymous.
 	var b Book

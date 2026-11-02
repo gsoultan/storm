@@ -83,7 +83,7 @@ func TestEveryRefusalNamesItsConstruct(t *testing.T) {
 		&schema.Column{Name: "a", Type: schema.Type{Name: schema.TypeUUID}},
 	)
 	tb.SoftDelete = "at"
-	tb.Checks = []*schema.Check{{Expr: "1=1"}}
+	tb.Checks = []*schema.Check{{Expr: "lower(nick) = 'x'"}, {Expr: "id IS NOT NULL"}}
 	tb.Plans = []*schema.Plan{{}}
 	tb.ForeignKeys = []*schema.ForeignKey{
 		{Columns: []string{"org_id"}, RefTable: "orgs", OnDelete: schema.Cascade, OnUpdate: schema.Cascade, RefColumns: []string{"slug"}},
@@ -123,7 +123,7 @@ func TestEveryRefusalNamesItsConstruct(t *testing.T) {
 		"users.org_id: ON UPDATE CASCADE on a reference to a column that is not orgs's key",
 		"users.u: ON DELETE SET DEFAULT to a generated uuid",
 		"the foreign key (a, org_id) must say how it is stored",
-		"CHECK constraints", "named plans",
+		"CHECK (lower(nick) = 'x')", "the function lower()", "named plans",
 		"is partial over SQL text", "uses gist", "INCLUDE columns", "storage parameters",
 		"expression key", "operator class", "places NULLs explicitly",
 		"links: a generated many-to-many",
@@ -251,5 +251,38 @@ func TestReferentialActionsThatPort(t *testing.T) {
 	s.Tables[1].ForeignKeys[0].RefColumns = []string{"a"}
 	if err := Check(s); err == nil {
 		t.Error("ON UPDATE on a partial key")
+	}
+}
+
+func TestChecksAndPartialIndexesTranslate(t *testing.T) {
+	tb := &schema.Table{Name: "items", PrimaryKey: []string{"id"}, Columns: []*schema.Column{
+		{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true},
+		{Name: "n", Type: schema.Type{Name: schema.TypeInt4}},
+		{Name: "code", Type: schema.Type{Name: schema.TypeText}},
+		{Name: "live", Type: schema.Type{Name: schema.TypeBool}, NotNull: true},
+	}}
+	tb.Checks = []*schema.Check{{Expr: "n > 0"}, {Expr: "code LIKE 'A%'"}}
+	tb.Indexes = []*schema.Index{
+		{Columns: []schema.IndexColumn{{Name: "code"}}, Unique: true, Where: "live"},
+		{Columns: []schema.IndexColumn{{Name: "n"}}, Where: "n IN (1, 2)"},
+	}
+	cmds, err := Commands(&schema.Schema{Tables: []*schema.Table{tb}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(cmds, "\n")
+	for _, want := range []string{
+		`}},"$expr":{"$and":[{"$ne":[`,
+		`"partialFilterExpression":{"$and":[{"code":{"$type":"string"}},{"live":true}]}`,
+		`"partialFilterExpression":{"n":{"$in":[1,2]}}`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("lacks %s:\n%s", want, all)
+		}
+	}
+	tb.Checks = tb.Checks[:1]
+	cmds, _ = Commands(&schema.Schema{Tables: []*schema.Table{tb}})
+	if !strings.Contains(cmds[0], `}},"$expr":{"$ne":[`) {
+		t.Errorf("one check is the $expr itself: %s", cmds[0])
 	}
 }

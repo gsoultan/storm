@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gsoultan/storm/compile/mgexpr"
 	"github.com/gsoultan/storm/compile/mongo"
 	"github.com/gsoultan/storm/schema"
 )
@@ -93,7 +94,22 @@ func createCollection(t *schema.Table, enums map[string]*schema.Enum) string {
 	if len(required) > 0 {
 		b.WriteString(`,"required":[` + strings.Join(required, ",") + `]`)
 	}
-	b.WriteString(`,"properties":{` + strings.Join(props, ",") + `}}}`)
+	b.WriteString(`,"properties":{` + strings.Join(props, ",") + `}}`)
+	// CHECK constraints beside the schema: a validator ANDs its top-level
+	// clauses. Check refused every one that does not translate.
+	var checks []string
+	for _, ck := range t.Checks {
+		e, _ := mgexpr.Check(t, ck.Expr)
+		checks = append(checks, e)
+	}
+	switch len(checks) {
+	case 0:
+	case 1:
+		b.WriteString(`,"$expr":` + checks[0])
+	default:
+		b.WriteString(`,"$expr":{"$and":[` + strings.Join(checks, ",") + `]}`)
+	}
+	b.WriteString(`}`)
 	b.WriteString(`,"validationLevel":"strict","validationAction":"error"}`)
 	return b.String()
 }
@@ -171,7 +187,7 @@ func createIndexes(t *schema.Table) string {
 		for i, k := range t.PrimaryKey {
 			keys[i] = schema.IndexColumn{Name: k}
 		}
-		ixs = append(ixs, index(t, t.Name+"_pkey", keys, false, false, false, ""))
+		ixs = append(ixs, index(t, t.Name+"_pkey", keys, false, false, false, "", ""))
 	}
 	for _, u := range t.Uniques {
 		keys := make([]schema.IndexColumn, len(u.Columns))
@@ -182,7 +198,7 @@ func createIndexes(t *schema.Table) string {
 		if name == "" {
 			name = t.UniqueName(u)
 		}
-		ixs = append(ixs, index(t, name, keys, true, false, false, ""))
+		ixs = append(ixs, index(t, name, keys, true, false, false, "", ""))
 	}
 	for _, ix := range t.Indexes {
 		name := ix.Name
@@ -193,7 +209,11 @@ func createIndexes(t *schema.Table) string {
 			ixs = append(ixs, gin(t, name, ix))
 			continue
 		}
-		ixs = append(ixs, index(t, name, ix.Columns, ix.Unique, ix.NullsNotDistinct, ix.Invisible, ix.LiveCol))
+		where := ""
+		if ix.Where != "" && ix.LiveCol == "" {
+			where, _ = mgexpr.Partial(t, ix.Where)
+		}
+		ixs = append(ixs, index(t, name, ix.Columns, ix.Unique, ix.NullsNotDistinct, ix.Invisible, ix.LiveCol, where))
 	}
 	if len(ixs) == 0 {
 		return ""
@@ -216,8 +236,9 @@ func gin(t *schema.Table, name string, ix *schema.Index) string {
 // index is one index. live names a soft-delete column when the index is a
 // unique key scoped to the live documents, which partialFilterExpression
 // says as `live: null` — matching a field that is null or absent, the same
-// documents every read here calls live.
-func index(t *schema.Table, name string, keys []schema.IndexColumn, unique, nullsEqual, hidden bool, live string) string {
+// documents every read here calls live. where is a translated partial
+// predicate, a filter document, or "".
+func index(t *schema.Table, name string, keys []schema.IndexColumn, unique, nullsEqual, hidden bool, live, where string) string {
 	var key, partial []string
 	for _, k := range keys {
 		f := mongo.Field(t, k.Name)
@@ -238,7 +259,12 @@ func index(t *schema.Table, name string, keys []schema.IndexColumn, unique, null
 	if unique {
 		s += `,"unique":true`
 	}
-	if len(partial) > 0 {
+	switch {
+	case where != "" && len(partial) > 0:
+		s += `,"partialFilterExpression":{"$and":[{` + strings.Join(partial, ",") + `},` + where + `]}`
+	case where != "":
+		s += `,"partialFilterExpression":` + where
+	case len(partial) > 0:
 		s += `,"partialFilterExpression":{` + strings.Join(partial, ",") + `}`
 	}
 	if hidden {

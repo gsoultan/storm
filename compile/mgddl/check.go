@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gsoultan/storm/compile/mgexpr"
 	"github.com/gsoultan/storm/compile/mongo"
 	"github.com/gsoultan/storm/schema"
 )
@@ -66,7 +67,6 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 	}{
 		{t.Sharded(), "a shard key"},
 		{t.Partition != nil || t.PartitionOf != "", "partitioning"},
-		{len(t.Checks) > 0, "CHECK constraints (SQL text)"},
 		{len(t.Excludes) > 0, "EXCLUDE constraints"},
 		{len(t.Arcs) > 0 || len(t.AnyRefs) > 0, "polymorphic references"},
 		{len(t.Plans) > 0, "named plans (relation loading is not generated yet)"},
@@ -86,6 +86,12 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 	}
 	for _, c := range t.Columns {
 		checkColumn(t, c, add)
+	}
+	for _, ck := range t.Checks {
+		if _, err := mgexpr.Check(t, ck.Expr); err != nil {
+			add(t.Pos, "%s: CHECK (%s) is SQL text a validator cannot state with SQL's answer: %v",
+				n, ck.Expr, unwrap(err))
+		}
 	}
 	for _, fk := range t.ForeignKeys {
 		checkReference(s, t, fk, add)
@@ -215,9 +221,9 @@ func checkIndex(t *schema.Table, ix *schema.Index, add func(pos, format string, 
 	}
 	name := t.IndexName(ix)
 	switch {
-	case ix.Where != "" && ix.LiveCol == "":
-		add(pos, "%s: index %s is partial over SQL text (%s), which partialFilterExpression "+
-			"cannot evaluate", t.Name, name, ix.Where)
+	case ix.Where != "" && ix.LiveCol == "" && partialErr(t, ix) != nil:
+		add(pos, "%s: index %s is partial over SQL text (%s) partialFilterExpression cannot "+
+			"state with SQL's answer: %v", t.Name, name, ix.Where, unwrap(partialErr(t, ix)))
 	case ix.Method == "gin" && ginable(t, ix):
 		// An array's index is multikey and a json column's a wildcard index
 		// over its fields: each answers the containment GIN answers.
@@ -273,4 +279,14 @@ func colPos(t *schema.Table, c *schema.Column) string {
 		return c.Pos
 	}
 	return t.Pos
+}
+
+func partialErr(t *schema.Table, ix *schema.Index) error {
+	_, err := mgexpr.Partial(t, ix.Where)
+	return err
+}
+
+// unwrap is a refusal's reason without the sentinel's words.
+func unwrap(err error) string {
+	return strings.TrimPrefix(err.Error(), mgexpr.ErrUnsupported.Error()+"\n")
 }

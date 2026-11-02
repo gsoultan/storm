@@ -1,6 +1,7 @@
 package mgdrv
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gsoultan/storm/runtime"
@@ -132,5 +133,28 @@ func TestRawValuesReadsADottedColumn(t *testing.T) {
 	}
 	if n, _ := asInt64(v[4][0], v[4][1:]); n != 7 {
 		t.Error("a two-level path")
+	}
+}
+
+// A translated CHECK nests past sixteen documents; the encoder's stack grows
+// rather than indexing past its first array.
+func TestDeepCommandsEncode(t *testing.T) {
+	deep := strings.Repeat(`{"a":`, 40) + `{"$arg":1}` + strings.Repeat(`}`, 40)
+	tm, err := compile(`{"find":"c","filter":` + deep + `}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, at := startDoc(nil)
+	b, err = tm.encode(b, []any{int32(7)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = endDoc(b, at)
+	_, v, _ := lookup(b, "filter")
+	for i := 0; i < 39; i++ {
+		_, v, _ = lookup(v, "a")
+	}
+	if intField(v, "a") != 7 {
+		t.Errorf("the innermost value: %v", v)
 	}
 }

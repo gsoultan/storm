@@ -232,7 +232,7 @@ func TestTour(t *testing.T) {
 	// Bulk insert: one command per thousand documents.
 	bulk := make([]book.Row, 2500)
 	for i := range bulk {
-		bulk[i] = book.Row{ID: runtime.NewUUIDv7(), Title: fmt.Sprint("bulk ", i), Pages: int32(i),
+		bulk[i] = book.Row{ID: runtime.NewUUIDv7(), Title: fmt.Sprint("bulk ", i), Pages: int32(i + 1),
 			Price: price(int64(i)), AuthorID: octavia.ID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 			Tags: []string{}, Attrs: runtime.JSON(`{}`)}
 	}

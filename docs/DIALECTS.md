@@ -400,6 +400,8 @@ SQL emitter to print pipelines" framing ADR-0004 rejected.
 | version column | `WHERE version = $n`, `version + 1` | the version in the `findAndModify` query, **`$add`** in the update | Same lock, same `runtime.ErrStaleWrite`, same missing `MutateKey` |
 | `Inc` / `Add` / `IncWhen` | `n = n + 1`, `n + CASE WHEN g = $1 …` | an **aggregation-pipeline update**: `{"$add":["$n",…]}`, `$cond` over the document's own `g` | Every update is a pipeline (`[{"$set":{…}}]`) for this: the value read and the value written are one command. `$inc` would turn a NULL into 1 where SQL keeps it NULL. A bound value is wrapped in `$literal`, so a string that starts with `$` is a string, not a path |
 | `ON DELETE CASCADE` / `SET NULL` / `SET DEFAULT` / `RESTRICT` | the foreign key | **performed by the generated package** through `runtime/mgcascade`, inside a transaction it opens or joins | The plan — every collection that references this one, transitively, and what each declared — is written into the package at generate time. A delete reads the referenced values of the documents going, checks every `RESTRICT` first, then cascades, nulls or defaults the children, then deletes. A RESTRICT violation is `runtime.ErrForeignKeyViolation`. `NO ACTION`, the default, stays unenforced, and so does the insert side: a child naming a parent that does not exist is stored, because a check before the insert would race the delete it meant to stop. Handed something that is neither a pool nor a transaction, the steps run in order without one |
+| `CHECK` | SQL text | the validator's **`$expr`**, beside its `$jsonSchema` | Comparisons, `AND`/`OR`/`NOT`, `IS [NOT] NULL`, `IN`, `BETWEEN`, `LIKE`, `+ - *`, `length`, `abs` and `coalesce` over the table's columns and literals. Every operator carries NULL through as SQL's UNKNOWN, and the check fails only on FALSE — MongoDB's own comparison orders null below every number and would refuse `NULL >= 0`. A violation is `runtime.ErrCheckViolation`. Measured on MongoDB 7 against SQL's answer, NULL and missing fields included |
+| partial index | `WHERE` over SQL text | **`partialFilterExpression`** | Equality, `< <= > >=`, `IN`, `BETWEEN`, a boolean column or its `NOT`, `IS NULL` (`{f: null}`) and `IS NOT NULL` (a `$type` test, since `$exists` admits an explicit null), under `AND` and `OR`. A comparison never matches a missing field, which is SQL's NULL, so the documents indexed are the rows SQL's predicate is TRUE for |
 | soft delete | `deleted_at IS NULL` ANDed in front | **`{"$and":[{"deleted_at":null}, <filter>]}`** in front of every read and write | `Delete` marks with `$$NOW` (the server's clock), `HardDelete` removes, `Restore` clears, `WithDeleted` widens a read when the model said `ReadsDeleted`, and `UpdateAll`/`DeleteAll` refuse it. A live document stores the field as an explicit null |
 | live-scoped UNIQUE | a partial index `WHERE deleted_at IS NULL` | `partialFilterExpression: {"deleted_at": null}` | Equality to null in a partial filter covers both a null and an absent field (measured on MongoDB 7), so a returning user can sign up again and two live users still cannot share an address |
 | uuid key | server default, or client v7 | generated **client-side** — v4 for `gen_random_uuid()`, v7 for `uuidv7()` | No generator a write can call; the version the model asked for is the one it gets |
@@ -441,13 +443,21 @@ cannot make, or shapes this back end does not generate yet.
   rewrite every child on every update, and it does not. `SET DEFAULT` to a
   generated uuid is refused too: each child would need its own.
 - Identity and serial keys (no sequence; a counter document is a race),
-  generated columns, `CHECK` and `EXCLUDE` constraints, partitioning, defaults
-  that are SQL expressions rather than `now()`, a uuid generator, or a literal
-  (a number, a string, a boolean, a PostgreSQL array literal of unquoted text,
-  integers or booleans, or a JSON text for a json column).
+  generated columns, `EXCLUDE` constraints, partitioning, and defaults that
+  are SQL expressions rather than `now()`/`CURRENT_TIMESTAMP`, a uuid
+  generator, or a literal (a number, a string, a boolean, a PostgreSQL array
+  literal of unquoted text, integers or booleans, or a JSON text for a json
+  column — parenthesised or cast to its own type, as the catalogue prints it).
+- **`CHECK` constraints outside the translated subset** (`compile/mgexpr`'s
+  package comment has it): any other function, division (SQL's integer
+  division truncates), ordering text or an enum, comparing values of two
+  kinds (a timestamp with a string SQL would cast), a cast of a column, and a
+  decimal against a fraction or a float. The refusal names the construct.
 - **Types**: arrays of json, numeric or bytea, ranges, network types,
   `interval`, `time`, `tsvector`, `hstore`.
-- **Indexes**: partial over SQL text (soft delete's own is translated),
+- **Indexes**: partial over a predicate `partialFilterExpression` cannot state
+  — a negation, `<>`, a comparison between columns, arithmetic, a function,
+  `LIKE` (soft delete's own is translated, and so is the subset below),
   expression keys, methods other than B-tree (GIN on one array or json column
   is translated), `INCLUDE`, storage parameters, operator classes, collations,
   prefix lengths, explicit NULL placement, and a UNIQUE over an array or json
