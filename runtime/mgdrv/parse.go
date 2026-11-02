@@ -110,6 +110,10 @@ func (p *parser) value(name string) error {
 			}
 			return nil
 		}
+		if n, ok := p.numberLong(); ok {
+			p.raw(appendInt64(nil, name, n))
+			return nil
+		}
 		p.noteCols()
 		p.t.ops = append(p.t.ops, op{kind: opOpen, raw: appendName(nil, tDocument, name)})
 		if err := p.members(); err != nil {
@@ -243,6 +247,24 @@ func (p *parser) hole() (int, bool) {
 		n, err := strconv.Atoi(p.s[j:p.i])
 		if err == nil && n >= 1 && p.eat('}') {
 			return n, true
+		}
+	}
+	p.i = save
+	return 0, false
+}
+
+// numberLong recognises canonical extended JSON's {"$numberLong":"N"} after
+// its '{' and consumes it: a 64-bit integer a bare JSON number small enough
+// to be an int32 cannot say.
+func (p *parser) numberLong() (int64, bool) {
+	save := p.i
+	p.ws()
+	if k, err := p.str(); err == nil && k == "$numberLong" && p.eat(':') {
+		p.ws()
+		if v, err := p.str(); err == nil && p.eat('}') {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				return n, true
+			}
 		}
 	}
 	p.i = save

@@ -14,6 +14,109 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: joins and unions
+
+A declared join generates `<Name>Row` and `All<Name>` on the MongoDB query
+as one aggregation: the call-site filter, then a `$lookup` and `$unwind` per
+joined table, the declared `WHERE`, the declared order and the page. Each
+lookup is an equality guarded against a NULL key, so a NULL joins nothing as
+in SQL, and a soft-deleted table joins only its live documents. A declared
+union is one aggregation too — the first branch's collection, the rest
+`$unionWith`, `DISTINCT` a `$group` — generated as a function in the context
+package, with its parameters and the cap on the merged rows. Equality joins
+and predicates of a column against a literal or parameter are the subset;
+CTEs, non-equality joins, expressions and `NOT` are refused by name.
+
+### MongoDB: aggregations
+
+A declared aggregation generates `<Name>Row` and `All<Name>` on the MongoDB
+query, as one `$group` over the call-site filter: grouping by columns, and
+`Count`, `CountOf`, `CountDistinct`, `Sum`, `Avg`, `Min` and `Max` over
+columns, ordered as declared. Each answers as SQL does — a sum or average
+over no values is NULL, an `int8` sum is a decimal, an integer or numeric
+average is a decimal rounded half away from zero to six places, NULL groups
+together and sorts last ascending, and with no grouping columns there is one
+row even over no documents. Grouping sets, `HAVING`, `FILTER`, windows,
+expressions, joins, a declared `WHERE`, parameters, and `min`/`max` of text
+or an enum are refused by name.
+
+### MongoDB: projections
+
+A declared projection generates `<Name>Row` and `All<Name>`/`One<Name>` on
+the MongoDB query, as on SQL: the same filter, sort and paging, with a
+projection document of the declared fields only.
+
+### MongoDB: storm.Embed
+
+`t.Col(&line.Order).OnDelete(storm.Cascade).OnDocument(storm.Embed())`
+stores a child's rows as an array in each parent document, with no
+collection of its own. The child's generated package is parent-scoped —
+`Of`, `Load`, `Add` (which reads the element back, server clock included),
+`Replace` and `Remove`, each one command — and returns the errors SQL's
+constraints would: `ErrForeignKeyViolation` for a missing parent,
+`ErrUniqueViolation` for a key the parent holds. The parent's validator
+checks the elements, an index on a child column becomes a multikey index on
+the parent, and plans load embedded relations with one `$in`. What an array
+cannot be — a nullable or non-cascading reference, uniqueness, CHECK, soft
+delete, versions, nested embedding — is refused.
+
+### MongoDB: relation loading
+
+`codegenmongo.Options.Package` renders the context package the SQL
+generator does: a plan per relation (`BookWithAuthor`) and per declared plan
+(`AuthorShelf`, nested through `storm.Into`), each loading its relations with
+one `$in` per relation — the same round-trip count as on SQL. A to-one
+relation loads into a pointer, nil when the reference dangles, since MongoDB
+enforces none. `storm generate -dialect mongo` passes it.
+
+### MongoDB: CHECK constraints, partial indexes and defaults from SQL text
+
+The new `compile/mgexpr` reads a small subset of SQL expressions and writes
+it with SQL's answer: a `CHECK` becomes the validator's `$expr`, carrying
+NULL through as UNKNOWN so a check fails only on FALSE, and a partial index's
+`WHERE` becomes its `partialFilterExpression`. Comparisons, `AND`/`OR`/`NOT`,
+`IS [NOT] NULL`, `IN`, `BETWEEN`, `LIKE`, `+ - *`, `length`, `abs` and
+`coalesce` are in it; anything else is still refused, naming the construct.
+Defaults may be parenthesised or cast to their own type, as PostgreSQL's
+catalogue prints them. `runtime/mgdrv` no longer panics on a command nested
+more than sixteen documents deep.
+
+### MongoDB: ON DELETE CASCADE, SET NULL, SET DEFAULT and RESTRICT
+
+A MongoDB server has no foreign keys, so these were refused. The generated
+package now performs them, through the new `runtime/mgcascade`: the whole
+reference graph below a collection is written into its package at generate
+time, and `Delete`, `HardDelete` and `DeleteAll` check every `RESTRICT`,
+act on the children — recursively — and then delete, in a transaction the
+pool opens or the caller's `Tx`. A violation is
+`runtime.ErrForeignKeyViolation`. `NO ACTION` stays unenforced, as does the
+insert side; `ON UPDATE` actions are accepted only on a reference to the
+parent's key, which cannot change. The cost is one read of the parent's
+referenced values plus one command per child collection per thousand values.
+
+### MongoDB: composite keys, arrays and json, versions, soft delete
+
+The first of the constructs `storm portable mongo` refused, now generated —
+each with SQL's answer, and each where MongoDB's own differs said in
+`docs/DIALECTS.md`.
+
+- **Composite primary keys** are the `_id` subdocument, in key order, with a
+  `<table>_pkey` index for leading-column lookups. **Composite foreign keys**
+  say how they are stored with the new `FKBuilder.OnDocument`.
+- **Arrays** are BSON arrays (`Contains`, `ContainedBy`, `Overlaps`); **json**
+  is the BSON value its text denotes (`Contains`, `HasAnyKey`, `HasAllKeys`,
+  `IsEmpty`), with containment translated path by path so an array that holds
+  a scalar does not contain it. GIN becomes a multikey or a wildcard index.
+- **Version columns**, **`Inc`/`Add`** and **`IncWhen`**: every update is now an
+  aggregation-pipeline update, so a value read and a value written are one
+  command, a NULL counter stays NULL, and a bound string starting with `$` is
+  a string.
+- **Soft delete**: `Delete` marks, `HardDelete`, `Restore`, `WithDeleted`, and
+  live-scoped UNIQUE as `partialFilterExpression: {"deleted_at": null}`.
+- An `int8` literal default is written as a 64-bit integer and a float's as a
+  double, which the validator requires; `runtime/mgdrv` reads canonical
+  extended JSON's `$numberLong` in a command for it.
+
 ### MongoDB, as a back end (ADR-0004)
 
 ```go

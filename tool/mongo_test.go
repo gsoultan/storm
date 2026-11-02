@@ -46,7 +46,8 @@ func TestGenerateMongoUsesItsOwnGenerator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, err := packageFor(s, codegen.PackageOptions{Import: modulePath, Dialect: codegen.DialectMongo})
+	files, err := packageFor(s, codegen.PackageOptions{Import: modulePath, Dialect: codegen.DialectMongo,
+		Package: "store", PackageImport: modulePath + "/examples/library/store"})
 	if err != nil {
 		t.Fatal(err)
 	}

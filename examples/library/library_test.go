@@ -20,6 +20,8 @@ import (
 	"github.com/gsoultan/storm/examples/library/model"
 	"github.com/gsoultan/storm/examples/library/store/author"
 	"github.com/gsoultan/storm/examples/library/store/book"
+	"github.com/gsoultan/storm/examples/library/store/hold"
+	"github.com/gsoultan/storm/examples/library/store/volume"
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/mgdrv"
 )
@@ -50,7 +52,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	for _, c := range []string{author.Collection, book.Collection} {
+	for _, c := range []string{author.Collection, book.Collection, volume.Collection, hold.Collection} {
 		_, _ = db.Exec(ctx, `{"drop":"`+c+`"}`, nil)
 	}
 	for _, c := range cmds {
@@ -230,8 +232,9 @@ func TestTour(t *testing.T) {
 	// Bulk insert: one command per thousand documents.
 	bulk := make([]book.Row, 2500)
 	for i := range bulk {
-		bulk[i] = book.Row{ID: runtime.NewUUIDv7(), Title: fmt.Sprint("bulk ", i), Pages: int32(i),
-			Price: price(int64(i)), AuthorID: octavia.ID, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		bulk[i] = book.Row{ID: runtime.NewUUIDv7(), Title: fmt.Sprint("bulk ", i), Pages: int32(i + 1),
+			Price: price(int64(i)), AuthorID: octavia.ID, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			Tags: []string{}, Attrs: runtime.JSON(`{}`)}
 	}
 	if n, err := book.InsertAll(ctx, db, bulk); err != nil || n != 2500 {
 		t.Fatalf("InsertAll: %d %v", n, err)
@@ -256,5 +259,325 @@ func TestValidatorRefusesAMissingField(t *testing.T) {
 	_, err := db.Exec(context.Background(), `{"insert":"authors","documents":[{"_id":1,"name":"x"}]}`, nil)
 	if !errors.Is(err, runtime.ErrCheckViolation) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// Soft delete: Delete marks, every read and write treats the document as
+// gone, the unique email is scoped to the live authors, and Restore and
+// HardDelete say the two other things there are to say.
+func TestSoftDelete(t *testing.T) {
+	ctx := context.Background()
+	mk := func(name string) author.Row {
+		n := author.Create()
+		n.SetName(name)
+		n.SetEmail("ghost@example.com")
+		r, err := n.Insert(ctx, db)
+		if err != nil {
+			t.Fatal(name, err)
+		}
+		return r
+	}
+	first := mk("First")
+	if first.DeletedAt.Valid {
+		t.Fatal("a new author is live")
+	}
+	if err := author.Delete(ctx, db, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := author.Delete(ctx, db, first.ID); !errors.Is(err, runtime.ErrNoRow) {
+		t.Fatalf("deleting a deleted author: %v", err)
+	}
+	q := author.New().Where(author.Email.Eq("ghost@example.com"))
+	if n, _ := q.Count(ctx, db); n != 0 {
+		t.Fatalf("a deleted author is counted: %d", n)
+	}
+	if n, _ := q.WithDeleted().Count(ctx, db); n != 1 {
+		t.Fatalf("WithDeleted sees %d", n)
+	}
+	// The address is free again among the live authors…
+	second := mk("Second")
+	// …but not twice.
+	dup := author.Create()
+	dup.SetName("Third")
+	dup.SetEmail("ghost@example.com")
+	if _, err := dup.Insert(ctx, db); !errors.Is(err, runtime.ErrUniqueViolation) {
+		t.Fatalf("two live authors with one email: %v", err)
+	}
+	// A deleted author cannot be updated, and DeleteAll marks live ones only.
+	m := author.Mutate(first)
+	m.SetName("Zombie")
+	if err := m.Update(ctx, db); !errors.Is(err, runtime.ErrNoRow) {
+		t.Fatalf("updating a deleted author: %v", err)
+	}
+	if n, err := q.DeleteAll(ctx, db); err != nil || n != 1 {
+		t.Fatalf("DeleteAll: %d %v", n, err)
+	}
+	if _, err := q.WithDeleted().DeleteAll(ctx, db); err == nil {
+		t.Fatal("DeleteAll WithDeleted must be refused")
+	}
+	if err := author.Restore(ctx, db, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := author.Restore(ctx, db, second.ID); !errors.Is(err, runtime.ErrNoRow) {
+		t.Fatalf("restoring a live author: %v", err)
+	}
+	if err := author.Restore(ctx, db, first.ID); !errors.Is(err, runtime.ErrUniqueViolation) {
+		t.Fatalf("restoring into a taken address: %v", err)
+	}
+	if err := author.HardDelete(ctx, db, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := q.WithDeleted().Count(ctx, db); n != 1 {
+		t.Fatalf("after HardDelete, %d remain", n)
+	}
+}
+
+// Arrays and json are stored as BSON arrays and documents, and the
+// predicates give PostgreSQL's answers.
+func TestArraysAndJSON(t *testing.T) {
+	ctx := context.Background()
+	a := author.Create()
+	a.SetName("Tagger")
+	a.SetEmail("tagger@example.com")
+	who, err := a.Insert(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(title string, tags []string, attrs string) book.Row {
+		b := book.Create()
+		b.SetTitle(title)
+		b.SetPages(1)
+		b.SetPrice(runtime.Decimal{Unscaled: 1})
+		b.SetAuthorID(who.ID)
+		if tags != nil {
+			b.SetTags(tags)
+		}
+		if attrs != "" {
+			b.SetAttrs(runtime.JSON(attrs))
+		}
+		r, err := b.Insert(ctx, db)
+		if err != nil {
+			t.Fatal(title, err)
+		}
+		return r
+	}
+	plain := add("plain", nil, "")
+	if plain.Tags == nil || len(plain.Tags) != 0 || string(plain.Attrs) != "{}" {
+		t.Fatalf("defaults: %#v %s", plain.Tags, plain.Attrs)
+	}
+	add("sale", []string{"sale", "new"}, `{"format":"hardcover","language":"en","signed":true,"dims":{"h":20,"w":13},"awards":["hugo",{"name":"nebula","year":1975}]}`)
+	add("clearance", []string{"clearance"}, `{"format":"paperback","language":["en"]}`)
+	mine := book.New().Where(book.AuthorID.Eq(who.ID))
+	cases := []struct {
+		name string
+		p    book.Pred
+		want int64
+	}{
+		{"contains", book.Tags.Contains("sale"), 1},
+		{"contains all", book.Tags.Contains("sale", "new"), 1},
+		{"contains empty is every array", book.Tags.Contains(), 3},
+		{"contained by", book.Tags.ContainedBy("sale", "new", "clearance"), 3},
+		{"contained by, narrower", book.Tags.ContainedBy("sale"), 1},
+		{"overlaps", book.Tags.Overlaps("new", "clearance"), 2},
+		{"json contains", book.Attrs.Contains(runtime.JSON(`{"format":"hardcover"}`)), 1},
+		{"json contains nested", book.Attrs.Contains(runtime.JSON(`{"dims":{"h":20}}`)), 1},
+		{"json contains element", book.Attrs.Contains(runtime.JSON(`{"awards":["hugo"]}`)), 1},
+		{"json contains object element", book.Attrs.Contains(runtime.JSON(`{"awards":[{"name":"nebula"}]}`)), 1},
+		{"a scalar is not an array holding it", book.Attrs.Contains(runtime.JSON(`{"language":"en"}`)), 1},
+		{"json contains {}", book.Attrs.Contains(runtime.JSON(`{}`)), 3},
+		{"has any key", book.Attrs.HasAnyKey("signed", "nope"), 1},
+		{"has all keys", book.Attrs.HasAllKeys("format", "language"), 2},
+		{"is empty", book.Attrs.IsEmpty(), 1},
+	}
+	for _, c := range cases {
+		n, err := mine.Where(c.p).Count(ctx, db)
+		if err != nil || n != c.want {
+			t.Errorf("%s: %d, want %d (%v)", c.name, n, c.want, err)
+		}
+	}
+	if _, err := mine.Where(book.Attrs.HasAnyKey("a.b")).Count(ctx, db); err == nil {
+		t.Error("a dotted key must be refused, not read as a path")
+	}
+	m := book.Mutate(plain)
+	m.SetTags([]string{"$notapath"})
+	m.SetAttrs(runtime.JSON(`{"note":"$x"}`))
+	if err := m.Update(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if r := m.Row(); len(r.Tags) != 1 || r.Tags[0] != "$notapath" || string(r.Attrs) != `{"note":"$x"}` {
+		t.Fatalf("a value that looks like a path is a value: %#v %s", r.Tags, r.Attrs)
+	}
+}
+
+// A composite key, an optimistic lock and a guarded increment.
+func TestCompositeKeyVersionAndIncWhen(t *testing.T) {
+	ctx := context.Background()
+	b := book.New().Limit(1)
+	any, ok, err := b.One(ctx, db)
+	if err != nil || !ok {
+		t.Fatal("no book", err)
+	}
+	v := volume.Create()
+	v.SetBranch("north")
+	v.SetBarcode("0001")
+	v.SetBookID(any.ID)
+	v.SetOnShelf(true)
+	row, err := v.Insert(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Branch != "north" || row.Barcode != "0001" || row.Version != 0 {
+		t.Fatalf("read-back: %+v", row)
+	}
+	again := volume.Create()
+	again.SetBranch("north")
+	again.SetBarcode("0001")
+	again.SetBookID(any.ID)
+	again.SetOnShelf(true)
+	if _, err := again.Insert(ctx, db); !errors.Is(err, runtime.ErrUniqueViolation) {
+		t.Fatalf("a duplicate composite key: %v", err)
+	}
+	other := volume.Row{Branch: "south", Barcode: "0001", BookID: any.ID}
+	if err := volume.Insert(ctx, db, &other); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := volume.New().Where(volume.Barcode.Eq("0001")).Count(ctx, db); n != 2 {
+		t.Fatalf("a key column is queryable: %d", n)
+	}
+
+	// The guarded increment counts only when the copy was on the shelf, and
+	// the version moves with every write.
+	m := volume.Mutate(row)
+	m.IncCheckoutsWhenOnShelf(true)
+	m.SetOnShelf(false)
+	if err := m.Update(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if r := m.Row(); r.Checkouts != 1 || r.OnShelf || r.Version != 1 {
+		t.Fatalf("checkout: %+v", r)
+	}
+	m.IncCheckoutsWhenOnShelf(true)
+	if err := m.Update(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if r := m.Row(); r.Checkouts != 1 || r.Version != 2 {
+		t.Fatalf("a copy not on the shelf is not checked out again: %+v", r)
+	}
+	stale := volume.Mutate(row) // read at version 0
+	stale.SetOnShelf(true)
+	if err := stale.Update(ctx, db); !errors.Is(err, runtime.ErrStaleWrite) {
+		t.Fatalf("a stale update: %v", err)
+	}
+	m.AddCheckouts(10)
+	if err := m.Update(ctx, db); err != nil || m.Row().Checkouts != 11 {
+		t.Fatalf("Add: %+v %v", m.Row(), err)
+	}
+
+	h := hold.Create()
+	h.SetBranch("north")
+	h.SetBarcode("0001")
+	h.SetReader("ana")
+	if _, err := h.Insert(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := volume.New().Where(volume.Branch.Eq("south")).UpdateAll(ctx, db, func() volume.Mut {
+		var m volume.Mut
+		m.IncCheckouts()
+		return m
+	}()); err != nil || n != 1 {
+		t.Fatalf("UpdateAll: %d %v", n, err)
+	}
+	if err := volume.Delete(ctx, db, "south", "0001"); err != nil {
+		t.Fatal(err)
+	}
+	bulk := []volume.Row{{Branch: "east", Barcode: "1", BookID: any.ID}, {Branch: "east", Barcode: "2", BookID: any.ID}}
+	if n, err := volume.InsertAll(ctx, db, bulk); err != nil || n != 2 {
+		t.Fatalf("InsertAll with a composite key: %d %v", n, err)
+	}
+	got, err := volume.New().Where(volume.Branch.Eq("east")).Order(volume.Barcode.Desc()).List(ctx, db)
+	if err != nil || len(got) != 2 || got[0].Barcode != "2" {
+		t.Fatalf("read back: %+v %v", got, err)
+	}
+}
+
+// TestReferentialActions: MongoDB has no foreign keys, so every ON DELETE
+// below is storm's own work, done in a transaction the pool opens.
+func TestReferentialActions(t *testing.T) {
+	ctx := context.Background()
+	mkAuthor := func(name string) author.Row {
+		n := author.Create()
+		n.SetName(name)
+		n.SetEmail(name + "@refs.example.com")
+		r, err := n.Insert(ctx, db)
+		if err != nil {
+			t.Fatal(name, err)
+		}
+		return r
+	}
+	writer, donor := mkAuthor("writer"), mkAuthor("donor")
+	nb := book.Create()
+	nb.SetTitle("Referenced")
+	nb.SetPages(100)
+	nb.SetPrice(runtime.Decimal{Unscaled: 100, Scale: 2})
+	nb.SetAuthorID(writer.ID)
+	b, err := nb.Insert(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nv := volume.Create()
+	nv.SetBranch("refs")
+	nv.SetBarcode("r1")
+	nv.SetBookID(b.ID)
+	nv.SetDonorID(donor.ID)
+	nv.SetOnShelf(true)
+	if _, err := nv.Insert(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	nh := hold.Create()
+	nh.SetBranch("refs")
+	nh.SetBarcode("r1")
+	nh.SetReader("bo")
+	if _, err := nh.Insert(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+
+	// RESTRICT, two levels down: the writer's book still has a copy on a
+	// shelf, so the writer cannot go, and nothing went with the attempt.
+	if err := author.HardDelete(ctx, db, writer.ID); !errors.Is(err, runtime.ErrForeignKeyViolation) {
+		t.Fatalf("restrict: %v", err)
+	}
+	if n, _ := book.New().Where(book.AuthorID.Eq(writer.ID)).Count(ctx, db); n != 1 {
+		t.Fatalf("a refused delete removed the book: %d", n)
+	}
+
+	// SET NULL: the donor goes; the copy stays, anonymous.
+	if err := author.HardDelete(ctx, db, donor.ID); err != nil {
+		t.Fatal(err)
+	}
+	v, ok, err := volume.New().Where(volume.Branch.Eq("refs")).One(ctx, db)
+	if err != nil || !ok || v.DonorID.Valid {
+		t.Fatalf("set null: %+v %v", v, err)
+	}
+
+	// CASCADE through a composite key: the copy takes its holds with it.
+	if err := volume.Delete(ctx, db, "refs", "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := hold.New().Where(hold.Branch.Eq("refs")).Count(ctx, db); n != 0 {
+		t.Fatalf("cascade left %d holds", n)
+	}
+
+	// And now the writer can go, taking the book.
+	if err := author.HardDelete(ctx, db, writer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := book.New().Where(book.AuthorID.Eq(writer.ID)).Count(ctx, db); n != 0 {
+		t.Fatalf("cascade left %d books", n)
+	}
+
+	// A bulk delete acts on every document it matches, inside the same
+	// transaction as the delete.
+	if n, err := book.New().Where(book.ID.Eq(b.ID)).DeleteAll(ctx, db); err != nil || n != 0 {
+		t.Fatalf("DeleteAll of nothing: %d %v", n, err)
 	}
 }

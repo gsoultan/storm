@@ -42,6 +42,34 @@ var frags = map[string][2]string{
 var argless = map[string]string{
 	"IsNull":    `null`,
 	"IsNotNull": `{"$ne":null}`,
+	// A json column whose value is null, absent, {} or [] — the four texts
+	// PostgreSQL's IsEmpty compares with, as BSON.
+	"JSONIsEmpty": `{"$in":[null,{},[]]}`,
+}
+
+// The array operators, on a column that holds a BSON array. Each states its
+// SQL meaning, because MongoDB's array matching is element-wise and a filter
+// that reads the same can answer differently:
+//
+//   - ArrayContains is `@>`: every bound element is in the column — $all.
+//     $all over an empty list matches nothing, where every array contains
+//     the empty one; the generated method sends IsNotNull instead.
+//   - ArrayContainedBy is `<@`: no element of the column is outside the list.
+//     "$type":"array" keeps a NULL column out, as SQL's NULL <@ x does.
+//   - ArrayOverlaps is `&&`: the two share an element — $in.
+var arrayFrags = map[string][2]string{
+	"ArrayContains":    {`{"$all":`, `}`},
+	"ArrayContainedBy": {`{"$type":"array","$not":{"$elemMatch":{"$nin":`, `}}}`},
+	"ArrayOverlaps":    {`{"$in":`, `}`},
+}
+
+// The json operators bind a FILTER rather than a value: runtime/mgsplice
+// builds it from the caller's document or keys, with the column's path
+// already in it, so the fragment is only the connective it sits in.
+var jsonFrags = map[string][2]string{
+	"JSONContains": {`{"$and":`, `}`},
+	"HasAnyKey":    {`{"$or":`, `}`},
+	"HasAllKeys":   {`{"$and":`, `}`},
 }
 
 // Frag lowers one comparison on field. ok is false for an operator this back
@@ -57,6 +85,12 @@ func Frag(op, field string) (a, b string, hasArg, ok bool) {
 	if t, found := argless[op]; found {
 		return `{` + key + t + `}`, "", false, true
 	}
+	if f, found := arrayFrags[op]; found {
+		return `{` + key + f[0], f[1] + `}`, true, true
+	}
+	if f, found := jsonFrags[op]; found {
+		return f[0], f[1], true, true
+	}
 	f, found := frags[op]
 	if !found {
 		return "", "", false, false
@@ -68,7 +102,9 @@ func Frag(op, field string) (a, b string, hasArg, ok bool) {
 // exactly those and no others.
 func Ops() []string {
 	return []string{"Eq", "NotEq", "Gt", "Gte", "Lt", "Lte", "In", "NotIn",
-		"IsNull", "IsNotNull", "HasPrefix", "HasSuffix", "Contains", "Like", "ILike"}
+		"IsNull", "IsNotNull", "HasPrefix", "HasSuffix", "Contains", "Like", "ILike",
+		"ArrayContains", "ArrayContainedBy", "ArrayOverlaps",
+		"JSONContains", "HasAnyKey", "HasAllKeys", "JSONIsEmpty"}
 }
 
 // The connectives the splicer writes around a group. Prefix notation where

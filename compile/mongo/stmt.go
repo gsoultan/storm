@@ -1,6 +1,10 @@
 package mongo
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/gsoultan/storm/schema"
+)
 
 // The command templates. Each read is split around the two places the splicer
 // writes — the filter and the sort — and numbers its own holes first, so the
@@ -127,9 +131,9 @@ func UpdateDoc(as []Assign) string {
 // RETURNING does. `$nor: [{}]` is the predicate that matches nothing: an empty
 // filter matches everything, and its negation nothing.
 //
-// Hole 1 is the key; u's holes follow.
-func InsertOne(coll, u string, fields []string) string {
-	return `{"findAndModify":` + Str(coll) + `,"query":{"_id":` + Arg(1) +
+// The key's holes come first, in key order; u's holes follow.
+func InsertOne(t *schema.Table, u string, fields []string) string {
+	return `{"findAndModify":` + Str(t.Name) + `,"query":{"_id":` + KeyValue(t, 1) +
 		`,"$nor":[{}]},"update":` + u + `,"upsert":true,"new":true,"fields":` +
 		Projection(fields) + `}`
 }
@@ -137,18 +141,19 @@ func InsertOne(coll, u string, fields []string) string {
 // UpdateOne applies u to the document with key hole 1 and returns it as it now
 // stands — the read-back the SQL targets get from RETURNING, in one command.
 // No document matched means no row, which is how a missing key is reported.
-func UpdateOne(coll, u string, fields []string) string {
-	return `{"findAndModify":` + Str(coll) + `,"query":{"_id":` + Arg(1) +
-		`},"update":` + u + `,"new":true,"fields":` + Projection(fields) + `}`
+func UpdateOne(t *schema.Table, u string, fields []string) string {
+	return `{"findAndModify":` + Str(t.Name) + `,"query":` + KeyFilter(t, 1) +
+		`,"update":` + u + `,"new":true,"fields":` + Projection(fields) + `}`
 }
 
-// DeleteOne deletes the document with key hole 1.
-func DeleteOne(coll string) string {
-	return `{"delete":` + Str(coll) + `,"deletes":[{"limit":1,"q":{"_id":` + Arg(1) + `}}]}`
+// DeleteOne deletes the document with this key, whose values are the first
+// holes.
+func DeleteOne(t *schema.Table) string {
+	return `{"delete":` + Str(t.Name) + `,"deletes":[{"limit":1,"q":` + KeyFilter(t, 1) + `}]}`
 }
 
-// GetOne reads the document with key hole 1.
-func GetOne(coll string, fields []string) string {
-	return `{"find":` + Str(coll) + `,"limit":1,"projection":` + Projection(fields) +
-		`,"filter":{"_id":` + Arg(1) + `}}`
+// GetOne reads the document with this key.
+func GetOne(t *schema.Table, fields []string) string {
+	return `{"find":` + Str(t.Name) + `,"limit":1,"projection":` + Projection(fields) +
+		`,"filter":` + KeyFilter(t, 1) + `}`
 }

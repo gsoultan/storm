@@ -14,12 +14,14 @@ import (
 
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/runtime/mgcascade"
 	"github.com/gsoultan/storm/runtime/mgsplice"
 )
 
 var (
 	_ = time.Time{}
 	_ = errors.New
+	_ = bsondec.Str
 )
 
 // Collection is where these documents live.
@@ -36,10 +38,12 @@ type Row struct {
 	Price       runtime.Decimal
 	PublishedAt runtime.Null[time.Time]
 	Isbn        runtime.Null[string]
+	Tags        []string
+	Attrs       runtime.JSON
 	AuthorID    [16]byte
 }
 
-const nCols = 9
+const nCols = 11
 
 // fields are the stored names, in column order: the projection every read
 // asks for, so a row's values arrive in the order scan reads them.
@@ -52,32 +56,42 @@ var fields = [nCols]string{
 	"price",
 	"published_at",
 	"isbn",
+	"tags",
+	"attrs",
 	"author_id",
 }
 
 // Operator ids, in compile/mongo's order.
 const (
-	opEq        uint8 = 1
-	opNotEq     uint8 = 2
-	opGt        uint8 = 3
-	opGte       uint8 = 4
-	opLt        uint8 = 5
-	opLte       uint8 = 6
-	opIn        uint8 = 7
-	opNotIn     uint8 = 8
-	opIsNull    uint8 = 9
-	opIsNotNull uint8 = 10
-	opHasPrefix uint8 = 11
-	opHasSuffix uint8 = 12
-	opContains  uint8 = 13
-	opLike      uint8 = 14
-	opILike     uint8 = 15
+	opEq               uint8 = 1
+	opNotEq            uint8 = 2
+	opGt               uint8 = 3
+	opGte              uint8 = 4
+	opLt               uint8 = 5
+	opLte              uint8 = 6
+	opIn               uint8 = 7
+	opNotIn            uint8 = 8
+	opIsNull           uint8 = 9
+	opIsNotNull        uint8 = 10
+	opHasPrefix        uint8 = 11
+	opHasSuffix        uint8 = 12
+	opContains         uint8 = 13
+	opLike             uint8 = 14
+	opILike            uint8 = 15
+	opArrayContains    uint8 = 16
+	opArrayContainedBy uint8 = 17
+	opArrayOverlaps    uint8 = 18
+	opJSONContains     uint8 = 19
+	opHasAnyKey        uint8 = 20
+	opHasAllKeys       uint8 = 21
+	opJSONIsEmpty      uint8 = 22
 )
 
 // Pred is one comparison on one column.
 type Pred struct {
 	col, op uint8
 	v       any
+	err     error
 }
 
 // Sort is one ordering term.
@@ -260,6 +274,71 @@ func (h DecimalCol) In(v ...runtime.Decimal) Pred { return Pred{col: h.c, op: op
 // NotIn does not match a null or missing value, as SQL's NOT IN does not.
 func (h DecimalCol) NotIn(v ...runtime.Decimal) Pred { return Pred{col: h.c, op: opNotIn, v: v} }
 
+// TextArrayCol is an array column, stored as a BSON array.
+type TextArrayCol struct{ c uint8 }
+
+// IsNull matches a value that is null or absent.
+func (h TextArrayCol) IsNull() Pred { return Pred{col: h.c, op: opIsNull} }
+
+func (h TextArrayCol) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }
+
+// Contains is `@>`: every element of v is in the column. An empty v is
+// true for every row that has an array, as it is in SQL.
+func (h TextArrayCol) Contains(v ...string) Pred {
+	if len(v) == 0 {
+		return Pred{col: h.c, op: opIsNotNull}
+	}
+	return Pred{col: h.c, op: opArrayContains, v: v}
+}
+
+// ContainedBy is `<@`: every element of the column is in v.
+func (h TextArrayCol) ContainedBy(v ...string) Pred {
+	if v == nil {
+		v = []string{}
+	}
+	return Pred{col: h.c, op: opArrayContainedBy, v: v}
+}
+
+// Overlaps is `&&`: the column and v share an element.
+func (h TextArrayCol) Overlaps(v ...string) Pred {
+	if v == nil {
+		v = []string{}
+	}
+	return Pred{col: h.c, op: opArrayOverlaps, v: v}
+}
+
+// JSONCol is a json column, stored as the BSON value its text denotes.
+type JSONCol struct{ c uint8 }
+
+// IsNull matches a value that is null or absent.
+func (h JSONCol) IsNull() Pred { return Pred{col: h.c, op: opIsNull} }
+
+func (h JSONCol) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }
+
+// IsEmpty matches null, absent, {} and [].
+func (h JSONCol) IsEmpty() Pred { return Pred{col: h.c, op: opJSONIsEmpty} }
+
+// Contains is `@>`: every path v states holds in the column, with
+// PostgreSQL's answer for an array that merely holds a scalar. A key that
+// cannot be a field path — empty, $-prefixed, dotted — is an error the
+// query returns, never a filter that matches something else.
+func (h JSONCol) Contains(v runtime.JSON) Pred {
+	f, err := mgsplice.JSONContains(fields[h.c], v)
+	return Pred{col: h.c, op: opJSONContains, v: f, err: err}
+}
+
+// HasAnyKey is `?|`: the column has at least one of the keys.
+func (h JSONCol) HasAnyKey(v ...string) Pred {
+	f, err := mgsplice.HasKeys(fields[h.c], v, false)
+	return Pred{col: h.c, op: opHasAnyKey, v: f, err: err}
+}
+
+// HasAllKeys is `?&`: the column has every one of the keys.
+func (h JSONCol) HasAllKeys(v ...string) Pred {
+	f, err := mgsplice.HasKeys(fields[h.c], v, true)
+	return Pred{col: h.c, op: opHasAllKeys, v: f, err: err}
+}
+
 // The columns.
 var (
 	ID          = UUIDCol{c: 0}
@@ -270,11 +349,13 @@ var (
 	Price       = DecimalCol{c: 5}
 	PublishedAt = TimeCol{c: 6}
 	Isbn        = TextCol{c: 7}
-	AuthorID    = UUIDCol{c: 8}
+	Tags        = TextArrayCol{c: 8}
+	Attrs       = JSONCol{c: 9}
+	AuthorID    = UUIDCol{c: 10}
 )
 
 // fragTab is every comparison on every column, lowered at generate time.
-var fragTab = [16][nCols]mgsplice.Frag{
+var fragTab = [23][nCols]mgsplice.Frag{
 	{},
 	{ // Eq
 		{A: "{\"_id\":{\"$eq\":", B: "}}", Arg: true},
@@ -285,6 +366,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$eq\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$eq\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$eq\":", B: "}}", Arg: true},
 	},
 	{ // NotEq
@@ -296,6 +379,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"published_at\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"isbn\":{\"$nin\":[", B: ",null]}}", Arg: true},
+		{A: "{\"tags\":{\"$nin\":[", B: ",null]}}", Arg: true},
+		{A: "{\"attrs\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"author_id\":{\"$nin\":[", B: ",null]}}", Arg: true},
 	},
 	{ // Gt
@@ -307,6 +392,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$gt\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$gt\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$gt\":", B: "}}", Arg: true},
 	},
 	{ // Gte
@@ -318,6 +405,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$gte\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$gte\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$gte\":", B: "}}", Arg: true},
 	},
 	{ // Lt
@@ -329,6 +418,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$lt\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$lt\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$lt\":", B: "}}", Arg: true},
 	},
 	{ // Lte
@@ -340,6 +431,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$lte\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$lte\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$lte\":", B: "}}", Arg: true},
 	},
 	{ // In
@@ -351,6 +444,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$in\":", B: "}}", Arg: true},
 	},
 	{ // NotIn
@@ -362,6 +457,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"published_at\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"isbn\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
+		{A: "{\"tags\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
+		{A: "{\"attrs\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"author_id\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 	},
 	{ // IsNull
@@ -373,6 +470,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":null}", B: "", Arg: false},
 		{A: "{\"published_at\":null}", B: "", Arg: false},
 		{A: "{\"isbn\":null}", B: "", Arg: false},
+		{A: "{\"tags\":null}", B: "", Arg: false},
+		{A: "{\"attrs\":null}", B: "", Arg: false},
 		{A: "{\"author_id\":null}", B: "", Arg: false},
 	},
 	{ // IsNotNull
@@ -384,6 +483,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"published_at\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"isbn\":{\"$ne\":null}}", B: "", Arg: false},
+		{A: "{\"tags\":{\"$ne\":null}}", B: "", Arg: false},
+		{A: "{\"attrs\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"author_id\":{\"$ne\":null}}", B: "", Arg: false},
 	},
 	{ // HasPrefix
@@ -395,6 +496,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$regex\":", B: "}}", Arg: true},
 	},
 	{ // HasSuffix
@@ -406,6 +509,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$regex\":", B: "}}", Arg: true},
 	},
 	{ // Contains
@@ -417,6 +522,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$regex\":", B: "}}", Arg: true},
 	},
 	{ // Like
@@ -428,6 +535,8 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"published_at\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"isbn\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"author_id\":{\"$regex\":", B: "}}", Arg: true},
 	},
 	{ // ILike
@@ -439,7 +548,100 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"price\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"published_at\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"isbn\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
+		{A: "{\"tags\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
+		{A: "{\"attrs\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"author_id\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
+	},
+	{ // ArrayContains
+		{A: "{\"_id\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"created_at\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"updated_at\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"title\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"pages\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"price\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"published_at\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"isbn\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"author_id\":{\"$all\":", B: "}}", Arg: true},
+	},
+	{ // ArrayContainedBy
+		{A: "{\"_id\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"created_at\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"updated_at\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"title\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"pages\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"price\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"published_at\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"isbn\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"tags\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"attrs\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"author_id\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+	},
+	{ // ArrayOverlaps
+		{A: "{\"_id\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"created_at\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"updated_at\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"title\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"pages\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"price\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"published_at\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"isbn\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"tags\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"attrs\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"author_id\":{\"$in\":", B: "}}", Arg: true},
+	},
+	{ // JSONContains
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+	},
+	{ // HasAnyKey
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+	},
+	{ // HasAllKeys
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+	},
+	{ // JSONIsEmpty
+		{A: "{\"_id\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"created_at\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"updated_at\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"title\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"pages\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"price\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"published_at\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"isbn\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"tags\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"attrs\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"author_id\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
 	},
 }
 
@@ -455,6 +657,8 @@ var sortTab = [2][nCols]string{
 		"\"price\":1",
 		"\"published_at\":1",
 		"\"isbn\":1",
+		"\"tags\":1",
+		"\"attrs\":1",
 		"\"author_id\":1",
 	},
 	{
@@ -466,6 +670,8 @@ var sortTab = [2][nCols]string{
 		"\"price\":-1",
 		"\"published_at\":-1",
 		"\"isbn\":-1",
+		"\"tags\":-1",
+		"\"attrs\":-1",
 		"\"author_id\":-1",
 	},
 }
@@ -477,6 +683,8 @@ var punct = mgsplice.Punctuation{And: "{\"$and\":[", Or: "{\"$or\":[", Sep: ",",
 // defaultSort is the primary key: a read with no ordering has none, and
 // paging one is a bug waiting for a plan change to expose it.
 var defaultSort = "{\"_id\":1}"
+
+const liveOpen, liveClose = "", ""
 
 const maxToks = 32
 
@@ -490,6 +698,7 @@ type Query struct {
 	limit  int64
 	offset int64
 	paged  bool
+	sorted bool
 	err    error
 }
 
@@ -518,8 +727,14 @@ func (q *Query) push(t runtime.Tok) {
 }
 
 func (q *Query) leaf(p Pred) {
+	if p.err != nil {
+		if q.err == nil {
+			q.err = p.err
+		}
+		return
+	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
-	if fragTab[p.op][p.col].Arg {
+	if fragTab[p.op][p.col].Arg && q.err == nil {
 		q.vals[q.nv] = p.v
 		q.nv++
 	}
@@ -569,6 +784,7 @@ func (q Query) Order(ts ...Sort) Query {
 	for _, t := range ts {
 		q.push(runtime.Tok(t))
 	}
+	q.sorted = q.sorted || len(ts) > 0
 	return q
 }
 
@@ -582,6 +798,8 @@ func (q Query) preds() bool {
 	}
 	return false
 }
+
+func (q Query) scope() int { return 0 }
 
 func (q Query) IDEq(v [16]byte) Query              { return q.Where(ID.Eq(v)) }
 func (q Query) CreatedAtEq(v time.Time) Query      { return q.Where(CreatedAt.Eq(v)) }
@@ -602,29 +820,46 @@ func (q Query) PublishedAtNotEq(v time.Time) Query { return q.Where(PublishedAt.
 func (q Query) IsbnNotEq(v string) Query           { return q.Where(Isbn.NotEq(v)) }
 func (q Query) AuthorIDNotEq(v [16]byte) Query     { return q.Where(AuthorID.NotEq(v)) }
 
+// The statement caches, one per scope: [0] the live documents, [1] every
+// document, for a query that said WithDeleted.
+type caches [2]*runtime.TreeCache
+
+func newCaches() caches { return caches{runtime.NewTreeCache(), runtime.NewTreeCache()} }
+
 var (
-	findCache   = runtime.NewTreeCache()
-	countCache  = runtime.NewTreeCache()
-	existsCache = runtime.NewTreeCache()
-	deleteCache = runtime.NewTreeCache()
-	updateCache = runtime.NewTreeCache()
+	findCache   = newCaches()
+	countCache  = newCaches()
+	existsCache = newCaches()
+	deleteCache = newCaches()
+	updateCache = newCaches()
 	insertCache = runtime.NewMaskCache()
 	mutCache    = runtime.NewMaskCache()
 )
 
 // Shapes reports how many distinct read structures have compiled.
-func Shapes() int { return findCache.Shapes() }
+func Shapes() int { return findCache[0].Shapes() + findCache[1].Shapes() }
 
 // ShapeFlushes should read zero forever; see docs/GENERATED.md.
-func ShapeFlushes() int { return findCache.Flushes() }
+func ShapeFlushes() int { return findCache[0].Flushes() + findCache[1].Flushes() }
+
+// filter splices the predicate tokens into a filter document, holes from
+// first; scope 0 on a soft-delete table puts the liveness test in front.
+func filter(toks []runtime.Tok, first, scope int) (string, int, error) {
+	f, n, err := mgsplice.Splice(toks, fragOf, punct, first)
+	if err == nil && scope == 0 && liveOpen != "" {
+		f = liveOpen + f + liveClose
+	}
+	return f, n, err
+}
 
 // filtered compiles a command whose filter sits between head and tail, its
 // holes numbered from first.
-func filtered(c *runtime.TreeCache, toks []runtime.Tok, head, tail string, first int, sorted bool) *runtime.Stmt {
+func filtered(cs caches, scope int, toks []runtime.Tok, head, tail string, first int, sorted bool) *runtime.Stmt {
+	c := cs[scope]
 	if st := c.Get(toks); st != nil {
 		return st
 	}
-	f, n, err := mgsplice.Splice(toks, fragOf, punct, first)
+	f, n, err := filter(toks, first, scope)
 	st := &runtime.Stmt{Err: err, NArg: first - 1 + n}
 	if err == nil {
 		s := head + f
@@ -637,7 +872,7 @@ func filtered(c *runtime.TreeCache, toks []runtime.Tok, head, tail string, first
 }
 
 var (
-	findHead   = "{\"find\":\"books\",\"limit\":{\"$arg\":1},\"skip\":{\"$arg\":2},\"projection\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"title\":1,\"pages\":1,\"price\":1,\"published_at\":1,\"isbn\":1,\"author_id\":1},\"filter\":"
+	findHead   = "{\"find\":\"books\",\"limit\":{\"$arg\":1},\"skip\":{\"$arg\":2},\"projection\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"title\":1,\"pages\":1,\"price\":1,\"published_at\":1,\"isbn\":1,\"tags\":1,\"attrs\":1,\"author_id\":1},\"filter\":"
 	countHead  = "{\"aggregate\":\"books\",\"cursor\":{},\"pipeline\":[{\"$match\":"
 	existsHead = "{\"find\":\"books\",\"limit\":1,\"projection\":{\"_id\":1},\"filter\":"
 	deleteHead = "{\"delete\":\"books\",\"deletes\":[{\"limit\":0,\"q\":"
@@ -646,7 +881,7 @@ var (
 // SQL is the command this query runs — the name every target shares, for
 // logging and tests. It is a MongoDB command document here.
 func (q Query) SQL() string {
-	return filtered(findCache, q.stream(), findHead, "}", 3, true).SQL
+	return filtered(findCache, q.scope(), q.stream(), findHead, "}", 3, true).SQL
 }
 
 func (q Query) args(lead ...any) []any {
@@ -675,7 +910,7 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 	if q.limit <= 0 {
 		return nil
 	}
-	st := filtered(findCache, q.stream(), findHead, "}", 3, true)
+	st := filtered(findCache, q.scope(), q.stream(), findHead, "}", 3, true)
 	if st.Err != nil {
 		return st.Err
 	}
@@ -726,7 +961,7 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
-	st := filtered(countCache, q.stream(), countHead, "},{\"$count\":\"n\"}]}", 1, false)
+	st := filtered(countCache, q.scope(), q.stream(), countHead, "},{\"$count\":\"n\"}]}", 1, false)
 	if st.Err != nil {
 		return 0, st.Err
 	}
@@ -752,7 +987,7 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 	if q.err != nil {
 		return false, q.err
 	}
-	st := filtered(existsCache, q.stream(), existsHead, "}", 1, false)
+	st := filtered(existsCache, q.scope(), q.stream(), existsHead, "}", 1, false)
 	if st.Err != nil {
 		return false, st.Err
 	}
@@ -765,33 +1000,261 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 	return found, rows.Err()
 }
 
-var (
-	errNoPredicate = errors.New("storm: UpdateAll and DeleteAll need a predicate — a write to every document is not something to reach by forgetting a Where")
-	errPagedWrite  = errors.New("storm: UpdateAll and DeleteAll have no Limit or Offset")
-)
+var errDeletedWrite = errors.New("storm: WithDeleted is for reads; UpdateAll and DeleteAll act on the live documents only")
 
 func (q Query) writeAllErr() error {
 	switch {
 	case q.err != nil:
 		return q.err
 	case !q.preds():
-		return errNoPredicate
+		return runtime.ErrUnfilteredWrite
 	case q.paged:
-		return errPagedWrite
+		return runtime.ErrPagedWrite
+	case q.scope() != 0:
+		return errDeletedWrite
 	}
 	return nil
 }
 
+// filterCache holds DeleteAll's filter alone, for the cascade's first read.
+var filterCache = newCaches()
+
 // DeleteAll deletes every matching row and reports how many.
+// The query needs a predicate (runtime.ErrUnfilteredWrite) and no Limit or
+// Offset (runtime.ErrPagedWrite).
 func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error) {
 	if err := q.writeAllErr(); err != nil {
 		return 0, err
 	}
-	st := filtered(deleteCache, q.stream(), deleteHead, "}]}", 1, false)
+	st := filtered(deleteCache, 0, q.stream(), deleteHead, "}]}", 1, false)
 	if st.Err != nil {
 		return 0, st.Err
 	}
-	return ex.Exec(ctx, st.SQL, q.args())
+	return mgcascade.Delete(ctx, ex, cascade, filtered(filterCache, 0, q.stream(), "", "", 1, false).SQL, q.args(), st.SQL)
+}
+
+// CardRow is the "Card" projection: the same read, 2 field(s) instead of the
+// whole document.
+type CardRow struct {
+	Title string
+	Pages int32
+}
+
+var (
+	cardHead  = "{\"find\":\"books\",\"limit\":{\"$arg\":1},\"skip\":{\"$arg\":2},\"projection\":{\"title\":1,\"pages\":1},\"filter\":"
+	cardCache = newCaches()
+)
+
+func scanCard(rv [][]byte, r *CardRow) error {
+	if len(rv) != 2 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.Title, err = bsondec.Str(rv[0]); err != nil {
+		return errors.Join(errors.New("storm: books.title"), err)
+	}
+	if r.Pages, err = bsondec.Int4(rv[1]); err != nil {
+		return errors.Join(errors.New("storm: books.pages"), err)
+	}
+	return nil
+}
+
+// AllCard runs the query projected to CardRow. Predicates, ordering, limit
+// and offset apply exactly as on All: a projection changes what a row
+// carries, never which rows qualify.
+func (q Query) AllCard(ctx context.Context, ex runtime.Executor) ([]CardRow, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(cardCache, q.scope(), q.stream(), cardHead, "}", 3, true)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CardRow
+	for rows.Next() {
+		var r CardRow
+		if err := scanCard(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// OneCard is AllCard stopped at one row.
+func (q Query) OneCard(ctx context.Context, ex runtime.Executor) (CardRow, bool, error) {
+	out, err := q.Limit(1).AllCard(ctx, ex)
+	if err != nil || len(out) == 0 {
+		return CardRow{}, false, err
+	}
+	return out[0], true, nil
+}
+
+// ByAuthorRow is the "ByAuthor" aggregation over books: one row per group, the grouping
+// columns first, ordered as declared or by the grouping columns.
+type ByAuthorRow struct {
+	AuthorID [16]byte
+	Books    int64
+	WithISBN int64
+	Lengths  int64
+	Pages    runtime.Null[int64]
+	AvgPages runtime.Null[runtime.Decimal]
+	Value    runtime.Null[runtime.Decimal]
+	First    runtime.Null[time.Time]
+	Dearest  runtime.Null[runtime.Decimal]
+}
+
+var (
+	byAuthorHead  = "{\"aggregate\":\"books\",\"cursor\":{},\"pipeline\":[{\"$match\":"
+	byAuthorTail  = "},{\"$group\":{\"_id\":{\"k0\":{\"$ifNull\":[\"$author_id\",null]}},\"t0\":{\"$sum\":1},\"t1\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$isbn\",null]},null]},0,1]}},\"t2\":{\"$addToSet\":{\"$ifNull\":[\"$pages\",null]}},\"t3\":{\"$sum\":{\"$ifNull\":[\"$pages\",null]}},\"n3\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$pages\",null]},null]},0,1]}},\"t4\":{\"$sum\":{\"$toDecimal\":{\"$ifNull\":[\"$pages\",null]}}},\"n4\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$pages\",null]},null]},0,1]}},\"t5\":{\"$sum\":{\"$ifNull\":[\"$price\",null]}},\"n5\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$price\",null]},null]},0,1]}},\"t6\":{\"$min\":{\"$ifNull\":[\"$published_at\",null]}},\"t7\":{\"$max\":{\"$ifNull\":[\"$price\",null]}}}},{\"$project\":{\"AuthorID\":\"$_id.k0\",\"Books\":\"$t0\",\"WithISBN\":\"$t1\",\"Lengths\":{\"$size\":{\"$filter\":{\"input\":\"$t2\",\"cond\":{\"$ne\":[\"$$this\",null]}}}},\"Pages\":{\"$cond\":[{\"$eq\":[\"$n3\",0]},null,\"$t3\"]},\"AvgPages\":{\"$cond\":[{\"$eq\":[\"$n4\",0]},null,{\"$let\":{\"vars\":{\"v\":{\"$divide\":[\"$t4\",\"$n4\"]}},\"in\":{\"$multiply\":[{\"$cond\":[{\"$lt\":[\"$$v\",0]},-1,1]},{\"$floor\":{\"$add\":[{\"$multiply\":[{\"$abs\":\"$$v\"},{\"$toDecimal\":\"1000000\"}]},{\"$toDecimal\":\"0.5\"}]}},{\"$toDecimal\":\"0.000001\"}]}}}]},\"Value\":{\"$cond\":[{\"$eq\":[\"$n5\",0]},null,\"$t5\"]},\"First\":\"$t6\",\"Dearest\":\"$t7\"}},{\"$addFields\":{\"_null0\":{\"$cond\":[{\"$eq\":[\"$Pages\",null]},1,0]},\"_null1\":{\"$cond\":[{\"$eq\":[\"$AuthorID\",null]},1,0]}}},{\"$sort\":{\"_null0\":-1,\"Pages\":-1,\"_null1\":1,\"AuthorID\":1}},{\"$skip\":{\"$arg\":2}},{\"$limit\":{\"$arg\":1}}]}"
+	byAuthorCache = newCaches()
+)
+
+func scanByAuthor(rv [][]byte, r *ByAuthorRow) error {
+	if len(rv) != 9 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.AuthorID, err = bsondec.UUID(rv[0]); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.AuthorID"), err)
+	}
+	if r.Books, err = bsondec.Int8(rv[1]); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Books"), err)
+	}
+	if r.WithISBN, err = bsondec.Int8(rv[2]); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.WithISBN"), err)
+	}
+	if r.Lengths, err = bsondec.Int8(rv[3]); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Lengths"), err)
+	}
+	if r.Pages, err = bsondec.Nullable(rv[4], bsondec.Int8); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Pages"), err)
+	}
+	if r.AvgPages, err = bsondec.Nullable(rv[5], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.AvgPages"), err)
+	}
+	if r.Value, err = bsondec.Nullable(rv[6], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Value"), err)
+	}
+	if r.First, err = bsondec.Nullable(rv[7], bsondec.Time); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.First"), err)
+	}
+	if r.Dearest, err = bsondec.Nullable(rv[8], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Dearest"), err)
+	}
+	return nil
+}
+
+// AllByAuthor runs the "ByAuthor" aggregation. Predicates filter the documents that
+// go INTO the groups; Limit and Offset page the groups. Order is refused —
+// the rows are groups, ordered as the declaration says.
+func (q Query) AllByAuthor(ctx context.Context, ex runtime.Executor) ([]ByAuthorRow, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.sorted {
+		return nil, errors.New("storm: Order() on the ByAuthor aggregation — its rows are groups, ordered as declared")
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(byAuthorCache, q.scope(), q.stream(), byAuthorHead, byAuthorTail, 3, false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ByAuthorRow
+	for rows.Next() {
+		var r ByAuthorRow
+		if err := scanByAuthor(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// TotalsRow is the "Totals" aggregation over books: one row per group, the grouping
+// columns first, ordered as declared or by the grouping columns.
+type TotalsRow struct {
+	Books    int64
+	AvgPrice runtime.Null[runtime.Decimal]
+}
+
+var (
+	totalsHead  = "{\"aggregate\":\"books\",\"cursor\":{},\"pipeline\":[{\"$match\":"
+	totalsTail  = "},{\"$group\":{\"_id\":null,\"t0\":{\"$sum\":1},\"t1\":{\"$sum\":{\"$toDecimal\":{\"$ifNull\":[\"$price\",null]}}},\"n1\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$price\",null]},null]},0,1]}}}},{\"$project\":{\"Books\":\"$t0\",\"AvgPrice\":{\"$cond\":[{\"$eq\":[\"$n1\",0]},null,{\"$let\":{\"vars\":{\"v\":{\"$divide\":[\"$t1\",\"$n1\"]}},\"in\":{\"$multiply\":[{\"$cond\":[{\"$lt\":[\"$$v\",0]},-1,1]},{\"$floor\":{\"$add\":[{\"$multiply\":[{\"$abs\":\"$$v\"},{\"$toDecimal\":\"1000000\"}]},{\"$toDecimal\":\"0.5\"}]}},{\"$toDecimal\":\"0.000001\"}]}}}]}}},{\"$skip\":{\"$arg\":2}},{\"$limit\":{\"$arg\":1}}]}"
+	totalsCache = newCaches()
+)
+
+func scanTotals(rv [][]byte, r *TotalsRow) error {
+	if len(rv) != 2 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.Books, err = bsondec.Int8(rv[0]); err != nil {
+		return errors.Join(errors.New("storm: books.Totals.Books"), err)
+	}
+	if r.AvgPrice, err = bsondec.Nullable(rv[1], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: books.Totals.AvgPrice"), err)
+	}
+	return nil
+}
+
+// AllTotals runs the "Totals" aggregation. Predicates filter the documents that
+// go INTO the groups; Limit and Offset page the groups. Order is refused —
+// the rows are groups, ordered as the declaration says.
+func (q Query) AllTotals(ctx context.Context, ex runtime.Executor) ([]TotalsRow, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.sorted {
+		return nil, errors.New("storm: Order() on the Totals aggregation — its rows are groups, ordered as declared")
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(totalsCache, q.scope(), q.stream(), totalsHead, totalsTail, 3, false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TotalsRow
+	for rows.Next() {
+		var r TotalsRow
+		if err := scanTotals(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	if len(out) == 0 && q.offset == 0 {
+		// No grouping columns: SQL answers one row over no rows — the
+		// counts 0 and everything else NULL — where $group answers none.
+		out = append(out, TotalsRow{})
+	}
+	return out, nil
 }
 
 // Column bits, for the write masks.
@@ -804,12 +1267,18 @@ const (
 	dPrice       uint64 = 1 << 5
 	dPublishedAt uint64 = 1 << 6
 	dIsbn        uint64 = 1 << 7
-	dAuthorID    uint64 = 1 << 8
+	dTags        uint64 = 1 << 8
+	dAttrs       uint64 = 1 << 9
+	dAuthorID    uint64 = 1 << 10
 )
 
-// insertAssign is each column's part of an insert: bound when the caller
-// set it, its default when not, and absent — NULL — otherwise.
-var insertSet = [nCols]string{
+// keyBits are the primary key's columns.
+const keyBits = dID
+
+const nKeys = 1
+
+// setName is each column's quoted stored name, as an update document's key.
+var setName = [nCols]string{
 	"",
 	"\"created_at\"",
 	"\"updated_at\"",
@@ -818,6 +1287,8 @@ var insertSet = [nCols]string{
 	"\"price\"",
 	"\"published_at\"",
 	"\"isbn\"",
+	"\"tags\"",
+	"\"attrs\"",
 	"\"author_id\"",
 }
 
@@ -832,12 +1303,14 @@ var insertDefault = [nCols][2]string{
 	{},
 	{},
 	{},
+	{"$setOnInsert", "\"tags\":[]"},
+	{"$setOnInsert", "\"attrs\":{}"},
 	{},
 }
 
-// updateDoc renders an update document: set columns bound under op from
-// hole first, now columns as $currentDate, plus extra entries.
-func updateDoc(op string, set, now uint64, first int, extra [nCols][2]string, skip uint64) string {
+// insertDoc renders an insert's update document: set columns bound from
+// hole first, the rest their defaults.
+func insertDoc(set uint64, first int) string {
 	var parts = map[string][]string{}
 	var order []string
 	add := func(o, s string) {
@@ -850,16 +1323,14 @@ func updateDoc(op string, set, now uint64, first int, extra [nCols][2]string, sk
 	for i := 0; i < nCols; i++ {
 		bit := uint64(1) << i
 		switch {
-		case skip&bit != 0:
+		case keyBits&bit != 0:
 		case set&bit != 0:
-			add(op, insertSet[i]+":{\"$arg\":"+itoa(n)+"}")
+			add("$setOnInsert", setName[i]+":{\"$arg\":"+itoa(n)+"}")
 			n++
-		case now&bit != 0:
-			add("$currentDate", insertSet[i]+":{\"$type\":\"date\"}")
-		case extra[i][0] == "$currentDate":
-			add("$currentDate", extra[i][1]+":{\"$type\":\"date\"}")
-		case extra[i][0] != "":
-			add(extra[i][0], extra[i][1])
+		case insertDefault[i][0] == "$currentDate":
+			add("$currentDate", insertDefault[i][1]+":{\"$type\":\"date\"}")
+		case insertDefault[i][0] != "":
+			add(insertDefault[i][0], insertDefault[i][1])
 		}
 	}
 	s := "{"
@@ -889,14 +1360,79 @@ func itoa(n int) string {
 	return itoa(n/10) + string(rune('0'+n%10))
 }
 
-const keyBit = dID
+// exprSet is a column's server-side value: the server's clock for a
+// timestamp, one more than itself for a counter.
+var exprSet = [nCols]string{
+	"",
+	"\"created_at\":\"$$NOW\"",
+	"\"updated_at\":\"$$NOW\"",
+	"",
+	"\"pages\":{\"$add\":[\"$pages\",1]}",
+	"",
+	"\"published_at\":\"$$NOW\"",
+	"",
+	"",
+	"",
+	"",
+}
+
+// addOpen opens Add's form: the column plus a bound amount.
+var addOpen = [nCols]string{
+	"",
+	"",
+	"",
+	"",
+	"\"pages\":{\"$add\":[\"$pages\",{\"$literal\":",
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+}
+
+// versionBump moves the version on every update; empty without one.
+const versionBump = ""
+
+// pipeDoc renders an update pipeline: bound values from hole first, in
+// column order, then the guarded increments' values.
+func pipeDoc(dirty, expr uint64, first int) string {
+	s := "[{\"$set\":{"
+	n, k := first, 0
+	add := func(p string) {
+		if k > 0 {
+			s += ","
+		}
+		s += p
+		k++
+	}
+	hole := func() string {
+		h := "{\"$arg\":" + itoa(n) + "}"
+		n++
+		return h
+	}
+	for i := 0; i < nCols; i++ {
+		bit := uint64(1) << i
+		d, e := dirty&bit != 0, expr&bit != 0
+		switch {
+		case keyBits&bit != 0:
+		case d && e:
+			add(addOpen[i] + hole() + "}]}")
+		case d:
+			add(setName[i] + ":{\"$literal\":" + hole() + "}")
+		case e:
+			add(exprSet[i])
+		}
+	}
+	if versionBump != "" {
+		add(versionBump)
+	}
+	return s + "}}]"
+}
 
 var (
 	insertPre  = "{\"findAndModify\":\"books\",\"query\":{\"_id\":{\"$arg\":1},\"$nor\":[{}]},\"update\":"
-	insertPost = ",\"upsert\":true,\"new\":true,\"fields\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"title\":1,\"pages\":1,\"price\":1,\"published_at\":1,\"isbn\":1,\"author_id\":1}}"
-	updatePre  = "{\"findAndModify\":\"books\",\"query\":{\"_id\":{\"$arg\":1}},\"update\":"
-	updatePost = ",\"new\":true,\"fields\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"title\":1,\"pages\":1,\"price\":1,\"published_at\":1,\"isbn\":1,\"author_id\":1}}"
-	deleteOne  = "{\"delete\":\"books\",\"deletes\":[{\"limit\":1,\"q\":{\"_id\":{\"$arg\":1}}}]}"
+	insertPost = ",\"upsert\":true,\"new\":true,\"fields\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"title\":1,\"pages\":1,\"price\":1,\"published_at\":1,\"isbn\":1,\"tags\":1,\"attrs\":1,\"author_id\":1}}"
 )
 
 func insertStmt(set uint64) *runtime.Stmt {
@@ -904,7 +1440,7 @@ func insertStmt(set uint64) *runtime.Stmt {
 	if st := insertCache.Get(k); st != nil {
 		return st
 	}
-	st := &runtime.Stmt{SQL: insertPre + updateDoc("$setOnInsert", set, 0, 2, insertDefault, keyBit) + insertPost}
+	st := &runtime.Stmt{SQL: insertPre + insertDoc(set, nKeys+1) + insertPost}
 	return insertCache.Put(k, st)
 }
 
@@ -935,18 +1471,19 @@ func (n *Ins) SetPublishedAt(v time.Time) {
 	n.row.PublishedAt = runtime.Null[time.Time]{V: v, Valid: true}
 	n.set |= dPublishedAt
 }
-func (n *Ins) SetIsbn(v string)       { n.row.Isbn = runtime.Null[string]{V: v, Valid: true}; n.set |= dIsbn }
-func (n *Ins) SetAuthorID(v [16]byte) { n.row.AuthorID = v; n.set |= dAuthorID }
+func (n *Ins) SetIsbn(v string)        { n.row.Isbn = runtime.Null[string]{V: v, Valid: true}; n.set |= dIsbn }
+func (n *Ins) SetTags(v []string)      { n.row.Tags = v; n.set |= dTags }
+func (n *Ins) SetAttrs(v runtime.JSON) { n.row.Attrs = v; n.set |= dAttrs }
+func (n *Ins) SetAuthorID(v [16]byte)  { n.row.AuthorID = v; n.set |= dAuthorID }
 
 // key fills in a client-side key when the caller set none.
 func (n *Ins) key() error {
-	if n.set&keyBit != 0 {
-		return nil
+	if n.set&dID == 0 {
+		// gen_random_uuid() is a version 4 uuid; MongoDB has no generator a
+		// write can call, so it is made here, as on MySQL.
+		n.row.ID = runtime.NewUUIDv4()
+		n.set |= dID
 	}
-	// gen_random_uuid() is a version 4 uuid; MongoDB has no generator a
-	// write can call, so it is made here, as on MySQL.
-	n.row.ID = runtime.NewUUIDv4()
-	n.set |= keyBit
 	return nil
 }
 
@@ -960,7 +1497,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	st := insertStmt(n.set)
 	args := make([]any, 0, nCols)
 	args = append(args, n.row.ID)
-	args = n.row.values(args, n.set&^keyBit)
+	args = n.row.values(args, n.set&^keyBits)
 	return readBack(ctx, ex, st.SQL, args)
 }
 
@@ -969,7 +1506,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	n := Ins{row: *r, set: 1<<nCols - 1}
 	if runtime.IsZeroUUID(r.ID) {
-		n.set &^= keyBit
+		n.set &^= dID
 	}
 	out, err := n.Insert(ctx, ex)
 	if err != nil {
@@ -996,6 +1533,22 @@ func readBack(ctx context.Context, ex runtime.Executor, cmd string, args []any) 
 		return out, err
 	}
 	return out, rows.Err()
+}
+
+// orNil binds a nil slice as null, which is what it means in a Row.
+func orNil[T any](v []T) any {
+	if v == nil {
+		return nil
+	}
+	return v
+}
+
+// nullable binds a Null as its value, or nil.
+func nullable[T any](n runtime.Null[T]) any {
+	if !n.Valid {
+		return nil
+	}
+	return n.V
 }
 
 // values appends the bound value of every column in mask, in column order.
@@ -1025,128 +1578,175 @@ func (r *Row) values(args []any, mask uint64) []any {
 	if mask&dIsbn != 0 {
 		args = append(args, nullable(r.Isbn))
 	}
+	if mask&dTags != 0 {
+		args = append(args, orNil(r.Tags))
+	}
+	if mask&dAttrs != 0 {
+		args = append(args, r.Attrs)
+	}
 	if mask&dAuthorID != 0 {
 		args = append(args, r.AuthorID)
 	}
 	return args
 }
 
+var (
+	updatePre  = "{\"findAndModify\":\"books\",\"query\":{\"_id\":{\"$arg\":1}},\"update\":"
+	updatePost = ",\"new\":true,\"fields\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"title\":1,\"pages\":1,\"price\":1,\"published_at\":1,\"isbn\":1,\"tags\":1,\"attrs\":1,\"author_id\":1}}"
+)
+
 // Mut stages an update. Only assigned columns are written.
 type Mut struct {
 	row   Row
 	dirty uint64
-	now   uint64
+	expr  uint64
 }
 
 // Mutate stages an update of a row read from the database.
 func Mutate(r Row) Mut { return Mut{row: r} }
 
 // MutateKey stages an update addressed by key alone.
-func MutateKey(k [16]byte) Mut { return Mut{row: Row{ID: k}} }
+func MutateKey(id [16]byte) Mut { return Mut{row: Row{ID: id}} }
 
 // Row returns the staged values — after Update, the row as stored.
 func (m Mut) Row() Row { return m.row }
 
-// Setters. There is none for the key or an Immutable column: the absence
-// of the method is the enforcement.
+// Setters. There is none for the key, an Immutable column or the version
+// column: the absence of the method is the enforcement.
 func (m *Mut) SetUpdatedAt(v time.Time) {
 	m.row.UpdatedAt = v
 	m.dirty |= dUpdatedAt
-	m.now &^= dUpdatedAt
+	m.expr &^= dUpdatedAt
 }
 
 // SetUpdatedAtNow assigns the server's clock, not this process's.
-func (m *Mut) SetUpdatedAtNow()           { m.now |= dUpdatedAt; m.dirty &^= dUpdatedAt }
-func (m *Mut) SetTitle(v string)          { m.row.Title = v; m.dirty |= dTitle; m.now &^= dTitle }
-func (m *Mut) SetPages(v int32)           { m.row.Pages = v; m.dirty |= dPages; m.now &^= dPages }
-func (m *Mut) SetPrice(v runtime.Decimal) { m.row.Price = v; m.dirty |= dPrice; m.now &^= dPrice }
+func (m *Mut) SetUpdatedAtNow()  { m.expr |= dUpdatedAt; m.dirty &^= dUpdatedAt }
+func (m *Mut) SetTitle(v string) { m.row.Title = v; m.dirty |= dTitle; m.expr &^= dTitle }
+func (m *Mut) SetPages(v int32)  { m.row.Pages = v; m.dirty |= dPages; m.expr &^= dPages }
+
+// IncPages adds one to the column's own value, in the database; a null
+// stays null, as it does in SQL.
+func (m *Mut) IncPages() { m.expr |= dPages; m.dirty &^= dPages }
+
+// AddPages adds n to the column's OWN value, in the database. Until the
+// write, Row() holds n, not the column's value.
+func (m *Mut) AddPages(n int32)           { m.row.Pages = n; m.dirty |= dPages; m.expr |= dPages }
+func (m *Mut) SetPrice(v runtime.Decimal) { m.row.Price = v; m.dirty |= dPrice; m.expr &^= dPrice }
 func (m *Mut) SetPublishedAt(v time.Time) {
 	m.row.PublishedAt = runtime.Null[time.Time]{V: v, Valid: true}
 	m.dirty |= dPublishedAt
-	m.now &^= dPublishedAt
+	m.expr &^= dPublishedAt
 }
 func (m *Mut) SetPublishedAtNull() {
 	m.row.PublishedAt = runtime.Null[time.Time]{}
 	m.dirty |= dPublishedAt
-	m.now &^= dPublishedAt
+	m.expr &^= dPublishedAt
 }
 
 // SetPublishedAtNow assigns the server's clock, not this process's.
-func (m *Mut) SetPublishedAtNow() { m.now |= dPublishedAt; m.dirty &^= dPublishedAt }
+func (m *Mut) SetPublishedAtNow() { m.expr |= dPublishedAt; m.dirty &^= dPublishedAt }
 func (m *Mut) SetIsbn(v string) {
 	m.row.Isbn = runtime.Null[string]{V: v, Valid: true}
 	m.dirty |= dIsbn
-	m.now &^= dIsbn
+	m.expr &^= dIsbn
 }
-func (m *Mut) SetIsbnNull()           { m.row.Isbn = runtime.Null[string]{}; m.dirty |= dIsbn; m.now &^= dIsbn }
-func (m *Mut) SetAuthorID(v [16]byte) { m.row.AuthorID = v; m.dirty |= dAuthorID; m.now &^= dAuthorID }
+func (m *Mut) SetIsbnNull()            { m.row.Isbn = runtime.Null[string]{}; m.dirty |= dIsbn; m.expr &^= dIsbn }
+func (m *Mut) SetTags(v []string)      { m.row.Tags = v; m.dirty |= dTags; m.expr &^= dTags }
+func (m *Mut) SetAttrs(v runtime.JSON) { m.row.Attrs = v; m.dirty |= dAttrs; m.expr &^= dAttrs }
+func (m *Mut) SetAuthorID(v [16]byte)  { m.row.AuthorID = v; m.dirty |= dAuthorID; m.expr &^= dAuthorID }
 
-func (m Mut) doc(first int) string {
-	return updateDoc("$set", m.dirty, m.now, first, [nCols][2]string{}, keyBit)
+// args binds a Mut's values: those it assigned, in column order, then the
+// values its guarded increments compare with.
+func (m *Mut) args(args []any) []any {
+	args = m.row.values(args, m.dirty&^keyBits)
+
+	return args
 }
 
 // Update writes the assigned columns of the row with this key and reads the
 // row back into the Mut. A key that matches nothing is runtime.ErrNoRow.
 // Assigning nothing sends nothing.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
-	if m.dirty|m.now == 0 {
+	if m.dirty|m.expr == 0 {
 		return nil
 	}
-	k := runtime.MaskKey{Dirty: m.dirty, Expr: m.now}
+	k := runtime.MaskKey{Dirty: m.dirty, Expr: m.expr}
 	st := mutCache.Get(k)
 	if st == nil {
-		st = mutCache.Put(k, &runtime.Stmt{SQL: updatePre + m.doc(2) + updatePost})
+		st = mutCache.Put(k, &runtime.Stmt{SQL: updatePre + pipeDoc(m.dirty, m.expr, 2) + updatePost})
 	}
-	args := make([]any, 0, nCols)
+	args := make([]any, 0, nCols+1)
 	args = append(args, m.row.ID)
-	args = m.row.values(args, m.dirty)
+	args = m.args(args)
 	out, err := readBack(ctx, ex, st.SQL, args)
+	if errors.Is(err, runtime.ErrNoRow) {
+		return runtime.ErrNoRow
+	}
 	if err != nil {
 		return err
 	}
 	m.row = out
-	m.dirty, m.now = 0, 0
+	m.dirty, m.expr = 0, 0
 	return nil
 }
 
 // UpdateAll applies m's assignments to every matching row and reports how
 // many matched.
+// The query needs a predicate (runtime.ErrUnfilteredWrite) and no Limit or
+// Offset (runtime.ErrPagedWrite).
 func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64, error) {
 	if err := q.writeAllErr(); err != nil {
 		return 0, err
 	}
-	if m.dirty|m.now == 0 {
+	if m.dirty|m.expr == 0 {
 		return 0, nil
 	}
 	var key [maxToks + 4]runtime.Tok
 	toks := append(key[:0], q.stream()...)
-	toks = append(toks, runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32), runtime.Tok(m.now), runtime.Tok(m.now>>32))
-	st := updateCache.Get(toks)
+	toks = append(toks, runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32), runtime.Tok(m.expr), runtime.Tok(m.expr>>32))
+	st := updateCache[0].Get(toks)
 	if st == nil {
-		u := m.doc(1)
-		n := 0
-		for b := m.dirty; b != 0; b &= b - 1 {
-			n++
-		}
-		f, np, err := mgsplice.Splice(q.stream(), fragOf, punct, n+1)
-		st = &runtime.Stmt{Err: err, NArg: n + np}
+		args := m.args(nil)
+		f, np, err := filter(q.stream(), len(args)+1, 0)
+		st = &runtime.Stmt{Err: err, NArg: len(args) + np}
 		if err == nil {
-			st.SQL = "{\"update\":\"books\",\"updates\":[{\"multi\":true,\"u\":" + u + ",\"q\":" + f + "}]}"
+			st.SQL = "{\"update\":\"books\",\"updates\":[{\"multi\":true,\"u\":" + pipeDoc(m.dirty, m.expr, 1) + ",\"q\":" + f + "}]}"
 		}
-		st = updateCache.Put(toks, st)
+		st = updateCache[0].Put(toks, st)
 	}
 	if st.Err != nil {
 		return 0, st.Err
 	}
-	args := m.row.values(make([]any, 0, nCols+int(q.nv)), m.dirty)
+	args := m.args(make([]any, 0, nCols+int(q.nv)))
 	args = append(args, q.vals[:q.nv]...)
 	return ex.Exec(ctx, st.SQL, args)
 }
 
+// cascade is what deleting a document here does to the collections that
+// reference it, as the model declared — MongoDB has no foreign keys, so
+// storm performs the actions itself, in one transaction when it can open
+// or join one. See runtime/mgcascade.
+var cascade = &mgcascade.Plan{Nodes: []mgcascade.Node{
+	{Coll: "books", Edges: []mgcascade.Edge{
+		{Child: 1, Name: "volumes.book_id", From: []string{"book_id"}, To: []string{"_id"}, Action: mgcascade.Restrict, Set: ""},
+	}},
+	{Coll: "volumes"},
+}}
+
+// keyFilter addresses one document by its key, for the plan's first read.
+const keyFilter = "{\"_id\":{\"$arg\":1}}"
+
+var deleteOne = "{\"delete\":\"books\",\"deletes\":[{\"limit\":1,\"q\":{\"_id\":{\"$arg\":1}}}]}"
+
 // Delete deletes the row with this key. A key that matches nothing is
 // runtime.ErrNoRow.
-func Delete(ctx context.Context, ex runtime.Executor, k [16]byte) error {
-	n, err := ex.Exec(ctx, deleteOne, []any{k})
+//
+// The references to it are acted on first, as declared: see cascade.
+func Delete(ctx context.Context, ex runtime.Executor, id [16]byte) error {
+	return exactlyOne(mgcascade.Delete(ctx, ex, cascade, keyFilter, []any{id}, deleteOne))
+}
+
+func exactlyOne(n int64, err error) error {
 	if err != nil {
 		return err
 	}
@@ -1182,14 +1782,6 @@ func (s *rowSource) Values() []any {
 }
 func (s *rowSource) Err() error { return nil }
 
-// nullable binds a Null as its value, or nil.
-func nullable[T any](n runtime.Null[T]) any {
-	if !n.Valid {
-		return nil
-	}
-	return n.V
-}
-
 // scan decodes one document's fields, in projection order. A field of the
 // wrong BSON type is an error naming it, never a plausible zero.
 func scan(rv [][]byte, r *Row) error {
@@ -1221,7 +1813,17 @@ func scan(rv [][]byte, r *Row) error {
 	if r.Isbn, err = bsondec.Nullable(rv[7], bsondec.Str); err != nil {
 		return errors.Join(errors.New("storm: books.isbn"), err)
 	}
-	if r.AuthorID, err = bsondec.UUID(rv[8]); err != nil {
+	if rv[8] != nil {
+		if r.Tags, err = bsondec.Array(rv[8], bsondec.Str); err != nil {
+			return errors.Join(errors.New("storm: books.tags"), err)
+		}
+	}
+	if rv[9] != nil {
+		if r.Attrs, err = bsondec.JSON(rv[9]); err != nil {
+			return errors.Join(errors.New("storm: books.attrs"), err)
+		}
+	}
+	if r.AuthorID, err = bsondec.UUID(rv[10]); err != nil {
 		return errors.Join(errors.New("storm: books.author_id"), err)
 	}
 	return nil

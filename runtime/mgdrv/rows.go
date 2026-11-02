@@ -131,13 +131,22 @@ func (r *rows) RawValues() [][]byte {
 			return true
 		}
 		for i, c := range r.cols {
-			if c == name {
-				at := len(r.scratch)
-				r.scratch = append(r.scratch, t)
-				r.scratch = append(r.scratch, v...)
-				sp[i] = [2]int{at, len(r.scratch)}
-				break
+			et, ev := t, v
+			if c != name {
+				// A dotted column — a composite key's "_id.tenant" — is a
+				// field of the subdocument its head names.
+				if len(c) <= len(name) || c[len(name)] != '.' || c[:len(name)] != name || t != tDocument {
+					continue
+				}
+				var ok bool
+				if et, ev, ok = path(v, c[len(name)+1:]); !ok || et == tNull || et == tUndef {
+					continue
+				}
 			}
+			at := len(r.scratch)
+			r.scratch = append(r.scratch, et)
+			r.scratch = append(r.scratch, ev...)
+			sp[i] = [2]int{at, len(r.scratch)}
 		}
 		return true
 	})
@@ -180,4 +189,28 @@ func (r *rows) finish() {
 		r.done()
 		r.done = nil
 	}
+}
+
+// path looks a dotted path up inside a document.
+func path(doc []byte, p string) (byte, []byte, bool) {
+	for {
+		head, rest, more := cut(p)
+		t, v, ok := lookup(doc, head)
+		if !ok || !more {
+			return t, v, ok
+		}
+		if t != tDocument {
+			return 0, nil, false
+		}
+		doc, p = v, rest
+	}
+}
+
+func cut(p string) (string, string, bool) {
+	for i := 0; i < len(p); i++ {
+		if p[i] == '.' {
+			return p[:i], p[i+1:], true
+		}
+	}
+	return p, "", false
 }

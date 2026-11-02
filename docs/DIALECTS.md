@@ -393,6 +393,23 @@ SQL emitter to print pipelines" framing ADR-0004 rejected.
 | Construct | SQL targets | MongoDB | Why |
 |---|---|---|---|
 | primary key | a column | **`_id`** | The index every collection already has. A second unique index on an `id` field would double the write cost of every insert |
+| composite primary key | several columns | **`_id` as a subdocument** of the key's columns, in key order, plus a `<table>_pkey` index on `_id.<col>…` | Equality on the whole key is one comparison on the `_id` index. That index orders whole keys, so it cannot answer a query on the leading column the way a SQL key's index does; the second index can, at the cost of one more index on every write. A key column is read and filtered as `_id.<col>`, and the Row is the same as on SQL |
+| composite foreign key | a constraint | **`t.ForeignKey(...).References(...).OnDocument(storm.Reference())`** | The fields are stored as they are and nothing is enforced, as for a single-column reference |
+| arrays (`text[]`, `int4[]`, `uuid[]`, …) | an array column | a **BSON array**, `items` typed by the validator | `Contains` is `$all` (and an empty list is "every array", as `@>` is), `ContainedBy` is "no element outside the list" with an explicit array-type test so a NULL column stays out, `Overlaps` is `$in`. There is no `Eq` and no ordering: MongoDB matches equality element-wise and orders an array by its least element, and neither is what SQL means. A NULL element cannot be read into a Go slice and is an error. GIN becomes a plain index, which is multikey |
+| `json` / `jsonb` | a json column | the **BSON value its text denotes** — a document, an array, a string, a number | Stored as text, nothing inside would be queryable as what it is. `Contains` is translated path by path, with a type test beside each scalar so `{"a":["x"]}` does not contain `{"a":"x"}` and an array of objects is not an object, which is PostgreSQL's answer and not MongoDB's. `HasAnyKey`/`HasAllKeys` read a key on an object and an element of an array, as `?` does. A key that cannot be a field path (empty, `$`-prefixed, dotted) is an error, never a filter that matches something else. `ContainedBy` and `TextLikeAny` are not generated — no filter says either. A number comes back as the type it was stored as: an integer as digits, a double in Go's shortest form. GIN becomes a **wildcard index** on `<col>.$**` |
+| version column | `WHERE version = $n`, `version + 1` | the version in the `findAndModify` query, **`$add`** in the update | Same lock, same `runtime.ErrStaleWrite`, same missing `MutateKey` |
+| `Inc` / `Add` / `IncWhen` | `n = n + 1`, `n + CASE WHEN g = $1 …` | an **aggregation-pipeline update**: `{"$add":["$n",…]}`, `$cond` over the document's own `g` | Every update is a pipeline (`[{"$set":{…}}]`) for this: the value read and the value written are one command. `$inc` would turn a NULL into 1 where SQL keeps it NULL. A bound value is wrapped in `$literal`, so a string that starts with `$` is a string, not a path |
+| `ON DELETE CASCADE` / `SET NULL` / `SET DEFAULT` / `RESTRICT` | the foreign key | **performed by the generated package** through `runtime/mgcascade`, inside a transaction it opens or joins | The plan — every collection that references this one, transitively, and what each declared — is written into the package at generate time. A delete reads the referenced values of the documents going, checks every `RESTRICT` first, then cascades, nulls or defaults the children, then deletes. A RESTRICT violation is `runtime.ErrForeignKeyViolation`. `NO ACTION`, the default, stays unenforced, and so does the insert side: a child naming a parent that does not exist is stored, because a check before the insert would race the delete it meant to stop. Handed something that is neither a pool nor a transaction, the steps run in order without one |
+| `CHECK` | SQL text | the validator's **`$expr`**, beside its `$jsonSchema` | Comparisons, `AND`/`OR`/`NOT`, `IS [NOT] NULL`, `IN`, `BETWEEN`, `LIKE`, `+ - *`, `length`, `abs` and `coalesce` over the table's columns and literals. Every operator carries NULL through as SQL's UNKNOWN, and the check fails only on FALSE — MongoDB's own comparison orders null below every number and would refuse `NULL >= 0`. A violation is `runtime.ErrCheckViolation`. Measured on MongoDB 7 against SQL's answer, NULL and missing fields included |
+| partial index | `WHERE` over SQL text | **`partialFilterExpression`** | Equality, `< <= > >=`, `IN`, `BETWEEN`, a boolean column or its `NOT`, `IS NULL` (`{f: null}`) and `IS NOT NULL` (a `$type` test, since `$exists` admits an explicit null), under `AND` and `OR`. A comparison never matches a missing field, which is SQL's NULL, so the documents indexed are the rows SQL's predicate is TRUE for |
+| relation loading (plans) | `= ANY($1)` per relation | **`$in`** per relation, in the context package (`Options.Package`) | One round trip for the parents and one per relation, as on SQL — `$lookup` would make it one, but a `$lookup` over every parent cannot be capped per relation, and the cap is the point. A to-one relation loads into a **pointer**, nil when the key is NULL or names nothing: there is no foreign key, so a dangling reference is a state the data can be in, not a broken constraint. A to-many load at `ChildLimit` is `runtime.ErrChildLimit`, never a partial result |
+| `storm.Embed()` | a child table with a foreign key | **an array in each parent document**, named after the child table; no collection | The child's package is parent-scoped: `Of`/`Load` read a parent's array, `Add` appends and reads the element back (server clock included), `Replace` and `Remove` address it by key — each one command against the parent. A missing parent on `Add` is `runtime.ErrForeignKeyViolation` and a key the parent already holds `runtime.ErrUniqueViolation`, the errors SQL's constraints give. The elements are validated by the parent's `$jsonSchema` (`items`) and indexed by multikey indexes on `<child>.<field>`; they do not store the reference, which is the parent's `_id`. Deleting the parent deletes them, which is the `ON DELETE CASCADE` the model must declare. A plan loads them with one `$in` on the parents |
+| projection | a narrower `SELECT` list | a narrower **`projection`** document | `All<Name>`/`One<Name>` take the query as it stands — filter, sort, paging — and decode only the declared fields into `<Name>Row` |
+| declared aggregation | `GROUP BY` | **`$group`** over the call-site filter, then `$project`, a sort and the page | Grouping by columns; `count(*)`, `count(col)` (a `$sum` of a non-null test), `count(DISTINCT col)` (a set, its NULL dropped), `sum`, `avg`, `min`, `max` over columns. A sum or average over no values is NULL where `$sum` says 0; an `int8` sum is summed as Decimal128, as PostgreSQL's is numeric; an average of integers or numerics is a decimal sum over the count, rounded half away from zero to six places where `$round` rounds half to even; a missing field and a null are one group; NULL sorts last ascending and first descending, by a flag in front of each sort key; the default order is the grouping columns, and they break ties under a declared one. With no grouping columns there is one row over no documents — the counts 0, the rest NULL — where `$group` returns none. `Order()` on the query is refused: the rows are groups. Text groups sort by bytes, as `Order` does on a find |
+| declared join | `JOIN … ON a = b` | a **`$lookup`** per table, then `$unwind` (keeping the row for a LEFT join) | Equality joins only, the ON columns of one kind. Each `$lookup` is the pipeline form with a `$ne: null` guard on the key, because `localField`/`foreignField` would join a NULL key to every document whose field is null or missing, and SQL joins it to nothing. A soft-deleted table joins only its live documents, as `liveIn` does on SQL. The declared `WHERE` is a `$match` after the lookups, the declared order sorts NULLs where SQL does, and `Limit`/`Offset` page the joined rows; call-site predicates filter the declaring collection first. `Order()` is refused, as on SQL |
+| declared union | `UNION [ALL]` | the first branch's collection, each further branch a **`$unionWith`**, `DISTINCT` a `$group` over every column | Each branch is projected to the shared columns with a missing field read as null, so rows from different collections are one shape and DISTINCT groups a NULL with a NULL. Parameters are holes in the one command; the order is over the merged rows, NULLs where SQL puts them unless `NullsFirst` says; `n` caps the merge. Generated into the context package (`Options.Package`), as on SQL |
+| soft delete | `deleted_at IS NULL` ANDed in front | **`{"$and":[{"deleted_at":null}, <filter>]}`** in front of every read and write | `Delete` marks with `$$NOW` (the server's clock), `HardDelete` removes, `Restore` clears, `WithDeleted` widens a read when the model said `ReadsDeleted`, and `UpdateAll`/`DeleteAll` refuse it. A live document stores the field as an explicit null |
+| live-scoped UNIQUE | a partial index `WHERE deleted_at IS NULL` | `partialFilterExpression: {"deleted_at": null}` | Equality to null in a partial filter covers both a null and an absent field (measured on MongoDB 7), so a returning user can sign up again and two live users still cannot share an address |
 | uuid key | server default, or client v7 | generated **client-side** — v4 for `gen_random_uuid()`, v7 for `uuidv7()` | No generator a write can call; the version the model asked for is the one it gets |
 | `now()` default | server default | **`$currentDate`** | Still the SERVER's clock. A client `time.Now()` would make rows written seconds apart land out of order on a skewed host |
 | `Insert` read-back | `RETURNING` | **`findAndModify` + upsert** against a filter that matches nothing | `{"_id": k, "$nor": [{}]}` matches no document, so the upsert path INSERTS — failing with a duplicate key if `k` exists, never overwriting — and returns the stored document, defaults included. One round trip, as `RETURNING` is |
@@ -424,34 +441,62 @@ cannot make, or shapes this back end does not generate yet.
 - **A reference with no `OnDocument`.** `t.Col(&b.Author).OnDocument(storm.Reference())`
   is required for every reference (ADR-0004): embed-versus-reference is a
   modelling decision, and silence never becomes a guess. It changes nothing on
-  a SQL target. `storm.Reference()` keeps the key and enforces nothing —
-  there are no foreign keys. `storm.Embed` is the next form, and not built.
-- **`ON DELETE`/`ON UPDATE` `CASCADE`, `SET NULL`, `SET DEFAULT`.** Nothing
-  would perform them; the rows would simply stay. Do it in the write that
-  deletes the parent. `RESTRICT` and `NO ACTION` are accepted under
-  `Reference()`, which says in its name that nothing is enforced.
-- **Composite primary keys and composite foreign keys**, identity and serial
-  keys (no sequence; a counter document is a race), generated columns, `CHECK`
-  and `EXCLUDE` constraints, partitioning, defaults that are SQL expressions
-  rather than `now()`, a uuid generator or a literal.
-- **Types**: arrays, `json`/`jsonb`, ranges, network types, `interval`, `time`,
-  `tsvector`, `hstore`. Arrays and json have natural BSON forms — an array, an
-  embedded document — and are the next thing this back end should gain; they
-  are refused rather than stored as text nobody could query as what it is.
-- **Indexes**: partial over SQL text, expression keys, non-B-tree methods,
-  `INCLUDE`, storage parameters, operator classes, collations, prefix lengths,
-  explicit NULL placement.
-- **Soft delete.** Its live-scoped UNIQUE needs a partial index on "is null",
-  which `partialFilterExpression` cannot say — MySQL's refusal, for a
-  different reason.
-- **Not generated yet**: named plans (relation loading — `$lookup` or a batch
-  loader by `$in`), projections, declared aggregations, joins, unions
-  (`$unionWith`), version columns, `IncWhen`, keyset `After`, row locks,
-  `Not`/`NotAny`, existence probes, set-based write shapes, sharding, and
-  many-to-many join tables. **`Not` is deliberately absent rather than
-  pending**: `$nor` matches a document whose field is null where SQL's `NOT`
-  over the same comparison is UNKNOWN, so a negation would return rows the SQL
-  targets do not.
+  a SQL target. `storm.Reference()` keeps the key and enforces nothing
+  beyond the `ON DELETE` actions storm performs; `storm.Embed()` stores the
+  row inside its parent's document.
+- **An embedded table that is more than an array of its parent's**: a
+  nullable reference, one that is not `ON DELETE CASCADE` or not to the
+  parent's key, a composite or bytea key, a second parent or any other
+  reference, embedding in an embedded table, anything referencing it, soft
+  delete, versions, guarded increments, `UNIQUE` and `CHECK` (MongoDB's unique
+  index does not see within one array), and plans that start from it or go
+  through it.
+- **`ON UPDATE` actions on a reference to anything but the parent's primary
+  key.** A key never changes here (`_id` is immutable), so `ON UPDATE` on one
+  is accepted and means nothing; on another column it would need storm to
+  rewrite every child on every update, and it does not. `SET DEFAULT` to a
+  generated uuid is refused too: each child would need its own.
+- Identity and serial keys (no sequence; a counter document is a race),
+  generated columns, `EXCLUDE` constraints, partitioning, and defaults that
+  are SQL expressions rather than `now()`/`CURRENT_TIMESTAMP`, a uuid
+  generator, or a literal (a number, a string, a boolean, a PostgreSQL array
+  literal of unquoted text, integers or booleans, or a JSON text for a json
+  column — parenthesised or cast to its own type, as the catalogue prints it).
+- **`CHECK` constraints outside the translated subset** (`compile/mgexpr`'s
+  package comment has it): any other function, division (SQL's integer
+  division truncates), ordering text or an enum, comparing values of two
+  kinds (a timestamp with a string SQL would cast), a cast of a column, and a
+  decimal against a fraction or a float. The refusal names the construct.
+- **Types**: arrays of json, numeric or bytea, ranges, network types,
+  `interval`, `time`, `tsvector`, `hstore`.
+- **Indexes**: partial over a predicate `partialFilterExpression` cannot state
+  — a negation, `<>`, a comparison between columns, arithmetic, a function,
+  `LIKE` (soft delete's own is translated, and so is the subset below),
+  expression keys, methods other than B-tree (GIN on one array or json column
+  is translated), `INCLUDE`, storage parameters, operator classes, collations,
+  prefix lengths, explicit NULL placement, and a UNIQUE over an array or json
+  column — MongoDB's constrains each element, not the value.
+- **Aggregations outside the `$group` subset**: grouping sets, `HAVING`,
+  `FILTER`, windows, `GROUPING()`, arithmetic over aggregates, grouping by or
+  aggregating an expression, an array or a json column, a join, a declared
+  `WHERE`, parameters, `DISTINCT` other than in `count`, and `min`/`max` of
+  text (PostgreSQL orders it by collation, MongoDB by bytes) or an enum
+  (PostgreSQL orders it by declaration).
+- **Joins and unions outside the lowered subset**: a join that is not an
+  equality of columns of one kind, a CTE, a join over json array elements or
+  to an embedded table, an output or an order that is an expression, and a
+  declared predicate (a join's `WHERE`, a union branch's) other than columns
+  compared with a literal or a parameter under `AND`/`OR`, `IS [NOT] NULL`
+  included. `NOT` is refused for the reason it is on the query: `$nor`
+  matches a NULL. So is ordering text or an enum, a decimal against a float
+  literal, and a numeric or timestamp literal in a filter (the command text
+  cannot carry one; a parameter can).
+- **Not generated yet**: plans over a many-to-many or a composite key,
+  `ChildTop`/`After` on a plan, keyset `After`, row locks, `Not`/`NotAny`, existence probes,
+  set-based write shapes, sharding, and many-to-many join tables. **`Not` is
+  deliberately absent rather than pending**: `$nor` matches a document whose
+  field is null where SQL's `NOT` over the same comparison is UNKNOWN, so a
+  negation would return rows the SQL targets do not.
 - **Functions, views and triggers**, and `storm.SQL` — there is no SQL.
 - **`storm diff`, `verify`, `explain`, `import`, `watch`** have no MongoDB form.
   There is no catalogue to diff against beyond the validator, and `import` is

@@ -49,17 +49,51 @@ func Arg(n int) string { return `{"$arg":` + strconv.Itoa(n) + `}` }
 // IDField is the field MongoDB keys every document on.
 const IDField = "_id"
 
-// Field is the stored name of a column: the column's own name, except that a
-// single-column primary key is stored as _id.
+// Field is the stored name of a column: the column's own name, except that
+// the primary key is stored as _id — the column itself for a single-column
+// key, and a field of an _id subdocument for a composite one.
 //
 // Mapping the key onto _id rather than beside it is what makes a lookup by key
 // use the index every collection already has, instead of a second unique index
-// that would double the write cost of every insert.
+// that would double the write cost of every insert. A composite key is a
+// subdocument whose fields are in key order, so equality on the whole key is
+// one comparison on that index.
 func Field(t *schema.Table, col string) string {
 	if len(t.PrimaryKey) == 1 && t.PrimaryKey[0] == col {
 		return IDField
 	}
+	for _, k := range t.PrimaryKey {
+		if k == col {
+			return IDField + "." + col
+		}
+	}
 	return col
+}
+
+// KeyFilter is the filter that addresses one document by its whole key, with
+// the key's values in holes first, first+1, ... in key order.
+func KeyFilter(t *schema.Table, first int) string {
+	return `{"_id":` + KeyValue(t, first) + `}`
+}
+
+// KeyValue is the _id value: the hole itself for a single-column key, and a
+// subdocument of holes in key order for a composite one.
+func KeyValue(t *schema.Table, first int) string {
+	if len(t.PrimaryKey) == 1 {
+		return Arg(first)
+	}
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, k := range t.PrimaryKey {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(Str(k))
+		b.WriteByte(':')
+		b.WriteString(Arg(first + i))
+	}
+	b.WriteByte('}')
+	return b.String()
 }
 
 // Fields maps Field over a column list.

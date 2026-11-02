@@ -206,6 +206,19 @@ type Document string
 // storm says so here rather than pretending otherwise.
 func Reference() Document { return "reference" }
 
+// Embed stores the referring row INSIDE the referenced one: a MongoDB
+// document holds an array of them, named after the referring table, and the
+// referring table has no collection of its own. It is the document shape a
+// child that is only ever read and written through its parent has — an
+// order's lines, a user's addresses.
+//
+// The generated package for the child is then parent-scoped: Of and Load
+// read a parent's children, Add, Replace and Remove write them. The
+// reference must be NOT NULL and ON DELETE CASCADE — an embedded row cannot
+// outlive its parent — and nothing may reference the child. It changes
+// nothing on a SQL target.
+func Embed() Document { return "embed" }
+
 // Interval is a PostgreSQL interval: months, days and microseconds kept
 // separate, because a month has no fixed length and a day is not always 24
 // hours. An alias for the same reason Decimal is — the model's type and the

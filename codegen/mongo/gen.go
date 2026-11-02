@@ -20,6 +20,7 @@ import (
 
 	"github.com/gsoultan/storm/codegen"
 	"github.com/gsoultan/storm/compile/mgddl"
+	"github.com/gsoultan/storm/compile/mongo"
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -29,6 +30,11 @@ type Options struct {
 	Import string
 	// Only restricts generation to these tables; empty means all.
 	Only []string
+	// Package, when set, also renders the context package: <Package>.gen.go
+	// at the output root, holding a plan per relation and per declared plan.
+	// PackageImport is its import path's parent — where the table packages
+	// are — since an import path cannot be derived from a directory.
+	Package, PackageImport string
 }
 
 // Package renders one Go package per table and returns path → contents,
@@ -63,18 +69,36 @@ func Package(s *schema.Schema, o Options) (map[string][]byte, error) {
 			return nil, fmt.Errorf("codegenmongo: tables %q and %q both generate package %q", prev, name, pkg)
 		}
 		seen[pkg] = name
-		src, err := File(t, pkg, o.Import)
+		file := File
+		if mongo.EmbedOf(t) != nil {
+			file = FileEmbedded
+		}
+		src, err := file(s, t, pkg, o.Import)
 		if err != nil {
 			return nil, err
 		}
 		out[filepath.Join(pkg, pkg+".gen.go")] = src
 	}
+	if len(s.Unions) > 0 && o.Package == "" {
+		return nil, fmt.Errorf("codegenmongo: the model declares unions, which belong to the context package — set Options.Package")
+	}
+	if o.Package != "" {
+		if o.PackageImport == "" {
+			return nil, fmt.Errorf("codegenmongo: Options.Package is %q but PackageImport is empty", o.Package)
+		}
+		src, err := Context(s, names, o.Package, o.PackageImport, o.Import)
+		if err != nil {
+			return nil, err
+		}
+		out[o.Package+".gen.go"] = src
+	}
 	return out, nil
 }
 
-// File renders one table's package.
-func File(t *schema.Table, pkg, imp string) ([]byte, error) {
-	g, err := newGen(t, pkg, imp)
+// File renders one table's package. s is the whole model, which a delete's
+// referential actions are read from; nil generates none.
+func File(s *schema.Schema, t *schema.Table, pkg, imp string) ([]byte, error) {
+	g, err := newGen(s, t, pkg, imp)
 	if err != nil {
 		return nil, err
 	}

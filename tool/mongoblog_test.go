@@ -19,10 +19,11 @@ func TestPortableMongoRefusesTheBlogModelByName(t *testing.T) {
 	if err == nil {
 		t.Fatal("the blog model ports to MongoDB, apparently")
 	}
-	for _, want := range []string{"OnDocument(storm.Reference())", "ON DELETE/UPDATE CASCADE",
-		"union Feed", "named plans", "named projections"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal must contain %q:\n%v", want, err)
-		}
+	if !strings.Contains(err.Error(), "OnDocument(storm.Reference())") {
+		t.Errorf("the refusal must name the missing OnDocument:\n%v", err)
+	}
+	// The Feed union is a $unionWith now, so it is no longer refused.
+	if strings.Contains(err.Error(), "union Feed") {
+		t.Errorf("the Feed union lowers to $unionWith, yet:\n%v", err)
 	}
 }
