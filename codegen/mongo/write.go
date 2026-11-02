@@ -739,34 +739,45 @@ func (g *gen) unwrap(i int, f string) string {
 
 func (g *gen) scan() {
 	g.p(`// scan decodes one document's fields, in projection order. A field of the
-// wrong BSON type is an error naming it, never a plausible zero.
-func scan(rv [][]byte, r *Row) error {
-	if len(rv) != nCols {
-		return runtime.ErrShape
+// wrong BSON type is an error naming it, never a plausible zero.`)
+	all := make([]int, len(g.cols))
+	for i := range all {
+		all[i] = i
 	}
-	var err error`)
-	for i, c := range g.cols {
+	g.scanCols("scan", "Row", "nCols", all)
+}
+
+// scanCols emits fn, which decodes the columns cols — rv[j] is cols[j] — into
+// a rowType.
+func (g *gen) scanCols(fn, rowType, n string, cols []int) {
+	g.p("func %s(rv [][]byte, r *%s) error {", fn, rowType)
+	g.p("\tif len(rv) != %s {", n)
+	g.p("\t\treturn runtime.ErrShape")
+	g.p("\t}")
+	g.p("\tvar err error")
+	for j, i := range cols {
+		c := g.cols[i]
 		k := g.kind[i]
 		f := g.field(i)
 		switch {
 		case k.array:
-			g.p("\tif rv[%d] != nil {", i)
-			g.p("\t\tif r.%s, err = bsondec.Array(rv[%d], bsondec.%s); err != nil {", f, i, k.elemDec)
+			g.p("\tif rv[%d] != nil {", j)
+			g.p("\t\tif r.%s, err = bsondec.Array(rv[%d], bsondec.%s); err != nil {", f, j, k.elemDec)
 			g.p("\t\t\treturn errors.Join(errors.New(%q), err)", "storm: "+g.t.Name+"."+c.Name)
 			g.p("\t\t}")
 			g.p("\t}")
 			continue
 		case k.slice:
-			g.p("\tif rv[%d] != nil {", i)
-			g.p("\t\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", f, k.dec, i)
+			g.p("\tif rv[%d] != nil {", j)
+			g.p("\t\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", f, k.dec, j)
 			g.p("\t\t\treturn errors.Join(errors.New(%q), err)", "storm: "+g.t.Name+"."+c.Name)
 			g.p("\t\t}")
 			g.p("\t}")
 			continue
 		case k.nullable(c):
-			g.p("\tif r.%s, err = bsondec.Nullable(rv[%d], bsondec.%s); err != nil {", f, i, k.dec)
+			g.p("\tif r.%s, err = bsondec.Nullable(rv[%d], bsondec.%s); err != nil {", f, j, k.dec)
 		default:
-			g.p("\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", f, k.dec, i)
+			g.p("\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", f, k.dec, j)
 		}
 		g.p("\t\treturn errors.Join(errors.New(%q), err)", "storm: "+g.t.Name+"."+c.Name)
 		g.p("\t}")

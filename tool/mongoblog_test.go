@@ -20,7 +20,7 @@ func TestPortableMongoRefusesTheBlogModelByName(t *testing.T) {
 		t.Fatal("the blog model ports to MongoDB, apparently")
 	}
 	for _, want := range []string{"OnDocument(storm.Reference())",
-		"union Feed", "named projections"} {
+		"union Feed"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal must contain %q:\n%v", want, err)
 		}

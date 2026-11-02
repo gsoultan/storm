@@ -1031,6 +1031,71 @@ func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error
 	return mgcascade.Delete(ctx, ex, cascade, filtered(filterCache, 0, q.stream(), "", "", 1, false).SQL, q.args(), st.SQL)
 }
 
+// CardRow is the "Card" projection: the same read, 2 field(s) instead of the
+// whole document.
+type CardRow struct {
+	Title string
+	Pages int32
+}
+
+var (
+	cardHead  = "{\"find\":\"books\",\"limit\":{\"$arg\":1},\"skip\":{\"$arg\":2},\"projection\":{\"title\":1,\"pages\":1},\"filter\":"
+	cardCache = newCaches()
+)
+
+func scanCard(rv [][]byte, r *CardRow) error {
+	if len(rv) != 2 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.Title, err = bsondec.Str(rv[0]); err != nil {
+		return errors.Join(errors.New("storm: books.title"), err)
+	}
+	if r.Pages, err = bsondec.Int4(rv[1]); err != nil {
+		return errors.Join(errors.New("storm: books.pages"), err)
+	}
+	return nil
+}
+
+// AllCard runs the query projected to CardRow. Predicates, ordering, limit
+// and offset apply exactly as on All: a projection changes what a row
+// carries, never which rows qualify.
+func (q Query) AllCard(ctx context.Context, ex runtime.Executor) ([]CardRow, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(cardCache, q.scope(), q.stream(), cardHead, "}", 3, true)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CardRow
+	for rows.Next() {
+		var r CardRow
+		if err := scanCard(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// OneCard is AllCard stopped at one row.
+func (q Query) OneCard(ctx context.Context, ex runtime.Executor) (CardRow, bool, error) {
+	out, err := q.Limit(1).AllCard(ctx, ex)
+	if err != nil || len(out) == 0 {
+		return CardRow{}, false, err
+	}
+	return out[0], true, nil
+}
+
 // Column bits, for the write masks.
 const (
 	dID          uint64 = 1 << 0

@@ -123,6 +123,7 @@ func (g *gen) emit() {
 	g.handles()
 	g.query()
 	g.reads()
+	g.projections()
 	g.writes()
 	g.scan()
 }

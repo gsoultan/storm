@@ -2,6 +2,7 @@ package codegenmongo
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gsoultan/storm/compile/mongo"
 )
@@ -260,4 +261,75 @@ func (g *gen) deleteAllHead() string {
 // markDoc stamps the soft-delete column with the server's clock.
 func (g *gen) markDoc() string {
 	return `[{"$set":{` + mongo.Str(g.stored(g.soft)) + `:"$$NOW"}}]`
+}
+
+// projections emits each declared projection: a row type of its columns and
+// terminals that read only them — the same filter, sort and paging, a
+// narrower projection document.
+func (g *gen) projections() {
+	for _, pr := range g.t.Projections {
+		var cols []int
+		var fields []string
+		for _, name := range pr.Columns {
+			i := g.index(name)
+			cols = append(cols, i)
+			fields = append(fields, g.stored(i))
+		}
+		row := pr.Name + "Row"
+		lower := strings.ToLower(pr.Name[:1]) + pr.Name[1:]
+		g.p("// %s is the %q projection: the same read, %d field(s) instead of the", row, pr.Name, len(cols))
+		g.p("// whole document.")
+		g.p("type %s struct {", row)
+		for _, i := range cols {
+			g.p("\t%s %s", g.field(i), g.kind[i].fieldType(g.cols[i]))
+		}
+		g.p("}")
+		g.p("")
+		g.p("var (")
+		g.p("\t%sHead  = %s", lower, strconv.Quote(mongo.FindHead(g.t.Name, fields)))
+		g.p("\t%sCache = newCaches()", lower)
+		g.p(")")
+		g.p("")
+		g.scanCols("scan"+pr.Name, row, strconv.Itoa(len(cols)), cols)
+		g.p("")
+		g.p(`// All%[1]s runs the query projected to %[2]s. Predicates, ordering, limit
+// and offset apply exactly as on All: a projection changes what a row
+// carries, never which rows qualify.
+func (q Query) All%[1]s(ctx context.Context, ex runtime.Executor) ([]%[2]s, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(%[3]sCache, q.scope(), q.stream(), %[3]sHead, %[4]s, %[5]d, true)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []%[2]s
+	for rows.Next() {
+		var r %[2]s
+		if err := scan%[1]s(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// One%[1]s is All%[1]s stopped at one row.
+func (q Query) One%[1]s(ctx context.Context, ex runtime.Executor) (%[2]s, bool, error) {
+	out, err := q.Limit(1).All%[1]s(ctx, ex)
+	if err != nil || len(out) == 0 {
+		return %[2]s{}, false, err
+	}
+	return out[0], true, nil
+}
+`, pr.Name, row, lower, strconv.Quote(mongo.FindTail), mongo.FindFirstArg)
+	}
 }

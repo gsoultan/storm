@@ -77,7 +77,10 @@ func TestEmbeddingRefuses(t *testing.T) {
 		}, "soft delete"},
 		"a unique index": {func(s *schema.Schema) { s.Tables[1].Indexes[1].Unique = true }, "a unique index"},
 		"a version":      {func(s *schema.Schema) { s.Tables[1].Columns[3].Version = true }, "a version column"},
-		"a check":        {func(s *schema.Schema) { s.Tables[1].Checks = []*schema.Check{{Expr: "qty > 0"}} }, "a CHECK constraint"},
+		"a projection": {func(s *schema.Schema) {
+			s.Tables[1].Projections = []*schema.Projection{{Name: "P", Columns: []string{"sku"}}}
+		}, "projections"},
+		"a check": {func(s *schema.Schema) { s.Tables[1].Checks = []*schema.Check{{Expr: "qty > 0"}} }, "a CHECK constraint"},
 	} {
 		s := embedded()
 		c.edit(s)

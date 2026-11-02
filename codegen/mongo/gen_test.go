@@ -90,6 +90,7 @@ func shaped() *schema.Schema {
 	return &schema.Schema{Tables: []*schema.Table{{
 		Name: "stock", GoName: "Stock", PrimaryKey: []string{"branch", "id"},
 		SoftDelete: "gone", ReadsDeleted: true,
+		Projections: []*schema.Projection{{Name: "Tagline", Columns: []string{"branch", "tags", "attrs", "maybe", "n"}}},
 		Columns: []*schema.Column{
 			{Name: "branch", Type: schema.Type{Name: schema.TypeText}, NotNull: true},
 			{Name: "id", Type: schema.Type{Name: schema.TypeUUID}, NotNull: true, Default: "gen_random_uuid()"},

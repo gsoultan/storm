@@ -14,6 +14,12 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: projections
+
+A declared projection generates `<Name>Row` and `All<Name>`/`One<Name>` on
+the MongoDB query, as on SQL: the same filter, sort and paging, with a
+projection document of the declared fields only.
+
 ### MongoDB: storm.Embed
 
 `t.Col(&line.Order).OnDelete(storm.Cascade).OnDocument(storm.Embed())`

@@ -3,6 +3,7 @@ package library_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/gsoultan/storm/examples/library/store"
@@ -80,5 +81,34 @@ func TestPlansLoadRelations(t *testing.T) {
 	bw, err := store.BookWithAuthor().Where(book.ID.Eq(books[1].ID)).All(ctx, db)
 	if err != nil || len(bw) != 1 || bw[0].Author == nil || bw[0].Author.Name != "planner" {
 		t.Fatalf("book with author: %+v %v", bw, err)
+	}
+}
+
+// A projection reads the fields it names and nothing else, with the same
+// filter, sort and paging.
+func TestProjection(t *testing.T) {
+	ctx := context.Background()
+	for i, title := range []string{"Card A", "Card B", "Card C"} {
+		nb := book.Create()
+		nb.SetTitle(title)
+		nb.SetPages(int32(100 + i))
+		nb.SetPrice(runtime.Decimal{Unscaled: 1, Scale: 2})
+		nb.SetAuthorID(runtime.NewUUIDv7())
+		if _, err := nb.Insert(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cards, err := book.New().Where(book.Title.HasPrefix("Card ")).Order(book.Title.Desc()).Limit(2).AllCard(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 2 || cards[0].Title != "Card C" || cards[0].Pages != 102 {
+		t.Fatalf("cards: %+v", cards)
+	}
+	if c, ok, err := book.New().Where(book.Title.Eq("no such")).OneCard(ctx, db); err != nil || ok {
+		t.Fatalf("OneCard of nothing: %+v %v %v", c, ok, err)
+	}
+	if !strings.Contains(book.New().SQL(), `"tags"`) {
+		t.Fatal("the full read projects every field")
 	}
 }

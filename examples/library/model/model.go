@@ -35,6 +35,11 @@ func (a *Author) Schema(t *storm.Table) {
 
 // Plans: an author with their books, and each book with its copies — three
 // round trips, whatever the row count, each a $in over the keys before it.
+// Projections: the card a list shows, two fields instead of the document.
+func (b *Book) Projections(p *storm.Projections) {
+	p.Named("Card", &b.Title, &b.Pages)
+}
+
 func (a *Author) Plans(p *storm.Plans) {
 	p.Named("Shelf").With(&a.Books, storm.Into(func(b *Book) any { return &b.Volumes }))
 	p.Named("Reviewed").With(&a.Books, storm.Into(func(b *Book) any { return &b.Reviews }))
