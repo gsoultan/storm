@@ -20,6 +20,7 @@ import (
 
 	"github.com/gsoultan/storm/codegen"
 	"github.com/gsoultan/storm/compile/mgddl"
+	"github.com/gsoultan/storm/compile/mongo"
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -68,7 +69,11 @@ func Package(s *schema.Schema, o Options) (map[string][]byte, error) {
 			return nil, fmt.Errorf("codegenmongo: tables %q and %q both generate package %q", prev, name, pkg)
 		}
 		seen[pkg] = name
-		src, err := File(s, t, pkg, o.Import)
+		file := File
+		if mongo.EmbedOf(t) != nil {
+			file = FileEmbedded
+		}
+		src, err := file(s, t, pkg, o.Import)
 		if err != nil {
 			return nil, err
 		}

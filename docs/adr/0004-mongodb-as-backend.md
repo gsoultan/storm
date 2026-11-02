@@ -84,8 +84,11 @@ for them rather than ignoring it.
 
 **Moved: the spelling.** `s.HasMany(...).OnDocument(storm.Embed(...))` became
 `t.Col(&x.Ref).OnDocument(storm.Reference())`, in the field-pointer form the
-rest of the model API took after this was written. `Reference` is built;
-`Embed` is not, and is the next increment. Relation loading is built: the
+rest of the model API took after this was written. Both forms are built.
+`Embed()` takes no name — the array is named after the child table — and
+makes the child's package parent-scoped (Of, Load, Add, Replace, Remove)
+rather than a second query surface over `$unwind`, which would scan parents
+and could not count what it changed. Relation loading is built too: the
 plans load by `$in`, one round trip per relation, as on SQL.
 
 **Not built yet**, and each is a refusal rather than an approximation:

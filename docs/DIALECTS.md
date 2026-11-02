@@ -403,6 +403,7 @@ SQL emitter to print pipelines" framing ADR-0004 rejected.
 | `CHECK` | SQL text | the validator's **`$expr`**, beside its `$jsonSchema` | Comparisons, `AND`/`OR`/`NOT`, `IS [NOT] NULL`, `IN`, `BETWEEN`, `LIKE`, `+ - *`, `length`, `abs` and `coalesce` over the table's columns and literals. Every operator carries NULL through as SQL's UNKNOWN, and the check fails only on FALSE — MongoDB's own comparison orders null below every number and would refuse `NULL >= 0`. A violation is `runtime.ErrCheckViolation`. Measured on MongoDB 7 against SQL's answer, NULL and missing fields included |
 | partial index | `WHERE` over SQL text | **`partialFilterExpression`** | Equality, `< <= > >=`, `IN`, `BETWEEN`, a boolean column or its `NOT`, `IS NULL` (`{f: null}`) and `IS NOT NULL` (a `$type` test, since `$exists` admits an explicit null), under `AND` and `OR`. A comparison never matches a missing field, which is SQL's NULL, so the documents indexed are the rows SQL's predicate is TRUE for |
 | relation loading (plans) | `= ANY($1)` per relation | **`$in`** per relation, in the context package (`Options.Package`) | One round trip for the parents and one per relation, as on SQL — `$lookup` would make it one, but a `$lookup` over every parent cannot be capped per relation, and the cap is the point. A to-one relation loads into a **pointer**, nil when the key is NULL or names nothing: there is no foreign key, so a dangling reference is a state the data can be in, not a broken constraint. A to-many load at `ChildLimit` is `runtime.ErrChildLimit`, never a partial result |
+| `storm.Embed()` | a child table with a foreign key | **an array in each parent document**, named after the child table; no collection | The child's package is parent-scoped: `Of`/`Load` read a parent's array, `Add` appends and reads the element back (server clock included), `Replace` and `Remove` address it by key — each one command against the parent. A missing parent on `Add` is `runtime.ErrForeignKeyViolation` and a key the parent already holds `runtime.ErrUniqueViolation`, the errors SQL's constraints give. The elements are validated by the parent's `$jsonSchema` (`items`) and indexed by multikey indexes on `<child>.<field>`; they do not store the reference, which is the parent's `_id`. Deleting the parent deletes them, which is the `ON DELETE CASCADE` the model must declare. A plan loads them with one `$in` on the parents |
 | soft delete | `deleted_at IS NULL` ANDed in front | **`{"$and":[{"deleted_at":null}, <filter>]}`** in front of every read and write | `Delete` marks with `$$NOW` (the server's clock), `HardDelete` removes, `Restore` clears, `WithDeleted` widens a read when the model said `ReadsDeleted`, and `UpdateAll`/`DeleteAll` refuse it. A live document stores the field as an explicit null |
 | live-scoped UNIQUE | a partial index `WHERE deleted_at IS NULL` | `partialFilterExpression: {"deleted_at": null}` | Equality to null in a partial filter covers both a null and an absent field (measured on MongoDB 7), so a returning user can sign up again and two live users still cannot share an address |
 | uuid key | server default, or client v7 | generated **client-side** — v4 for `gen_random_uuid()`, v7 for `uuidv7()` | No generator a write can call; the version the model asked for is the one it gets |
@@ -436,8 +437,16 @@ cannot make, or shapes this back end does not generate yet.
 - **A reference with no `OnDocument`.** `t.Col(&b.Author).OnDocument(storm.Reference())`
   is required for every reference (ADR-0004): embed-versus-reference is a
   modelling decision, and silence never becomes a guess. It changes nothing on
-  a SQL target. `storm.Reference()` keeps the key and enforces nothing —
-  there are no foreign keys. `storm.Embed` is the next form, and not built.
+  a SQL target. `storm.Reference()` keeps the key and enforces nothing
+  beyond the `ON DELETE` actions storm performs; `storm.Embed()` stores the
+  row inside its parent's document.
+- **An embedded table that is more than an array of its parent's**: a
+  nullable reference, one that is not `ON DELETE CASCADE` or not to the
+  parent's key, a composite or bytea key, a second parent or any other
+  reference, embedding in an embedded table, anything referencing it, soft
+  delete, versions, guarded increments, `UNIQUE` and `CHECK` (MongoDB's unique
+  index does not see within one array), and plans that start from it or go
+  through it.
 - **`ON UPDATE` actions on a reference to anything but the parent's primary
   key.** A key never changes here (`_id` is immutable), so `ON UPDATE` on one
   is accepted and means nothing; on another column it would need storm to

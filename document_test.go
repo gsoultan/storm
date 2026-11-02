@@ -51,7 +51,7 @@ type docUnknown struct {
 	Org docOrg
 }
 
-func (d *docUnknown) Schema(t *storm.Table) { t.Col(&d.Org).OnDocument("embed") }
+func (d *docUnknown) Schema(t *storm.Table) { t.Col(&d.Org).OnDocument("nest") }
 
 func TestOnDocumentIsRefusedWhereItMeansNothing(t *testing.T) {
 	if _, err := storm.Build(&docWrong{}); err == nil || !strings.Contains(err.Error(), "only meaningful on a reference") {

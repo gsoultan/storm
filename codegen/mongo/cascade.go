@@ -42,6 +42,11 @@ func cascadePlan(s *schema.Schema, root *schema.Table) ([]cascadeNode, error) {
 				if fk.RefTable != name || act == "" {
 					continue
 				}
+				if r := mongo.EmbedOf(child); r != nil && len(fk.Columns) == 1 && fk.Columns[0] == r.Column {
+					// Embedded: the rows are in the parent's document, and
+					// go with it.
+					continue
+				}
 				ci, ok := index[child.Name]
 				if !ok {
 					ci = len(nodes)

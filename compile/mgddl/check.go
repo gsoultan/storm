@@ -86,6 +86,9 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 	for _, c := range t.Columns {
 		checkColumn(t, c, add)
 	}
+	if r := mongo.EmbedOf(t); r != nil {
+		checkEmbed(s, t, r, add)
+	}
 	for _, pl := range t.Plans {
 		checkPlan(s, t, pl.Name, pl.Fields, add)
 	}

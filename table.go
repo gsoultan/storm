@@ -581,9 +581,9 @@ func (b *ColBuilder) OnDocument(d Document) *ColBuilder {
 		b.t.errs.add(fmt.Errorf(
 			"%s.%s: OnDocument is only meaningful on a reference to another model",
 			b.t.out.Name, b.c.sc.Name))
-	case d != Reference():
+	case d != Reference() && d != Embed():
 		b.t.errs.add(fmt.Errorf(
-			"%s.%s: OnDocument(%q) is not a document form storm knows — use storm.Reference()",
+			"%s.%s: OnDocument(%q) is not a document form storm knows — use storm.Reference() or storm.Embed()",
 			b.t.out.Name, b.c.sc.Name, string(d)))
 	default:
 		if b.t.docForms == nil {
@@ -1239,7 +1239,7 @@ func (b *FKBuilder) Named(n string) *FKBuilder { b.d.name = n; return b }
 func (b *FKBuilder) OnDocument(d Document) *FKBuilder {
 	if d != Reference() {
 		b.t.errs.add(fmt.Errorf(
-			"%s: OnDocument(%q) on the foreign key (%s) is not a document form storm knows — use storm.Reference()",
+			"%s: OnDocument(%q) on the foreign key (%s) is not a form a composite key can take — use storm.Reference()",
 			b.t.out.Name, string(d), strings.Join(b.d.cols, ", ")))
 		return b
 	}

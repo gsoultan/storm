@@ -14,6 +14,20 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: storm.Embed
+
+`t.Col(&line.Order).OnDelete(storm.Cascade).OnDocument(storm.Embed())`
+stores a child's rows as an array in each parent document, with no
+collection of its own. The child's generated package is parent-scoped —
+`Of`, `Load`, `Add` (which reads the element back, server clock included),
+`Replace` and `Remove`, each one command — and returns the errors SQL's
+constraints would: `ErrForeignKeyViolation` for a missing parent,
+`ErrUniqueViolation` for a key the parent holds. The parent's validator
+checks the elements, an index on a child column becomes a multikey index on
+the parent, and plans load embedded relations with one `$in`. What an array
+cannot be — a nullable or non-cascading reference, uniqueness, CHECK, soft
+delete, versions, nested embedding — is refused.
+
 ### MongoDB: relation loading
 
 `codegenmongo.Options.Package` renders the context package the SQL

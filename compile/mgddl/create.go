@@ -23,11 +23,18 @@ func Commands(s *schema.Schema) ([]string, error) {
 		enums[e.Name] = e
 	}
 	var out []string
+	// An embedded table has no collection: its rows are an array in its
+	// parent's documents, validated and indexed there.
 	for _, t := range s.Tables {
-		out = append(out, createCollection(t, enums))
+		if mongo.EmbedOf(t) == nil {
+			out = append(out, createCollection(t, enums, elements(s, t, enums)))
+		}
 	}
 	for _, t := range s.Tables {
-		if ix := createIndexes(t); ix != "" {
+		if mongo.EmbedOf(t) != nil {
+			continue
+		}
+		if ix := createIndexes(t, embeddedIndexes(s, t)); ix != "" {
 			out = append(out, ix)
 		}
 	}
@@ -60,7 +67,7 @@ func Create(s *schema.Schema) (string, error) {
 //
 // A NULL is a field that is absent or null, so a nullable field is not
 // required and admits null; a NOT NULL field is required and does not.
-func createCollection(t *schema.Table, enums map[string]*schema.Enum) string {
+func createCollection(t *schema.Table, enums map[string]*schema.Enum, embedded []string) string {
 	var props, required, keyProps, keyRequired []string
 	for _, c := range t.Columns {
 		f := mongo.Field(t, c.Name)
@@ -81,6 +88,7 @@ func createCollection(t *schema.Table, enums map[string]*schema.Enum) string {
 			}
 		}
 	}
+	props = append(props, embedded...)
 	if len(keyProps) > 0 {
 		// A composite key is the _id subdocument: an object of exactly its
 		// columns, all required.
@@ -176,8 +184,8 @@ func labels(e *schema.Enum, null bool) string {
 // missing field as null and lets ONE document do it. A partialFilterExpression
 // requiring every nullable key field to hold a value indexes exactly the rows
 // PostgreSQL's index constrains. NULLS NOT DISTINCT is then the plain form.
-func createIndexes(t *schema.Table) string {
-	var ixs []string
+func createIndexes(t *schema.Table, embedded []string) string {
+	ixs := embedded
 	if len(t.PrimaryKey) > 1 {
 		// The _id index orders whole keys, so it cannot answer a query on
 		// the key's leading column the way a SQL primary key's index does.

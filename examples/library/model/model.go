@@ -37,6 +37,7 @@ func (a *Author) Schema(t *storm.Table) {
 // round trips, whatever the row count, each a $in over the keys before it.
 func (a *Author) Plans(p *storm.Plans) {
 	p.Named("Shelf").With(&a.Books, storm.Into(func(b *Book) any { return &b.Volumes }))
+	p.Named("Reviewed").With(&a.Books, storm.Into(func(b *Book) any { return &b.Reviews }))
 }
 
 // BookAttrs is a json column: stored as a BSON document, so its fields are
@@ -62,6 +63,7 @@ type Book struct {
 
 	Author  Author
 	Volumes []Volume
+	Reviews []Review
 }
 
 func (b *Book) Schema(t *storm.Table) {
@@ -134,5 +136,24 @@ func (h *Hold) Schema(t *storm.Table) {
 		OnDelete(storm.Cascade).OnDocument(storm.Reference())
 }
 
+// Review is embedded: a book's reviews are an array inside the book's own
+// document, read and written through it, and there is no reviews
+// collection. Deleting the book takes them with it, which is the cascade
+// the reference declares — and what a SQL target does with its foreign key.
+type Review struct {
+	storm.Model
+
+	Reader string
+	Stars  int32
+	Body   *string
+
+	Book Book
+}
+
+func (r *Review) Schema(t *storm.Table) {
+	t.Col(&r.Book).OnDelete(storm.Cascade).OnDocument(storm.Embed())
+	t.Index(&r.Stars)
+}
+
 // All is what Build and the generator consume.
-func All() []any { return []any{&Author{}, &Book{}, &Volume{}, &Hold{}} }
+func All() []any { return []any{&Author{}, &Book{}, &Volume{}, &Hold{}, &Review{}} }

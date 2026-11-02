@@ -10,6 +10,7 @@ import (
 
 	"github.com/gsoultan/storm/examples/library/store/author"
 	"github.com/gsoultan/storm/examples/library/store/book"
+	"github.com/gsoultan/storm/examples/library/store/review"
 	"github.com/gsoultan/storm/examples/library/store/volume"
 	"github.com/gsoultan/storm/runtime"
 )
@@ -17,6 +18,138 @@ import (
 // defaultChildLimit caps one relation's load. Reaching it is an error, never
 // a partial result; ChildLimit overrides it per plan.
 const defaultChildLimit = 1 << 20
+
+// AuthorReviewedBooksRow is books with Reviews loaded.
+type AuthorReviewedBooksRow struct {
+	book.Row
+	Reviews []review.Row
+}
+
+// AuthorReviewedRow is authors with Books loaded.
+type AuthorReviewedRow struct {
+	author.Row
+	Books []AuthorReviewedBooksRow
+}
+
+// AuthorReviewedQuery builds the plan over a author query. Every builder method is
+// redeclared, since an embedded Query would return itself from Where.
+type AuthorReviewedQuery struct {
+	q          author.Query
+	childLimit int64
+}
+
+// AuthorReviewed starts the plan. It costs 3 round trips: the parents, and one per
+// relation loaded.
+func AuthorReviewed() AuthorReviewedQuery {
+	return AuthorReviewedQuery{q: author.New(), childLimit: defaultChildLimit}
+}
+
+func (p AuthorReviewedQuery) Where(ps ...author.Pred) AuthorReviewedQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p AuthorReviewedQuery) WhereIf(cond bool, pr author.Pred) AuthorReviewedQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p AuthorReviewedQuery) Any(ps ...author.Pred) AuthorReviewedQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p AuthorReviewedQuery) Order(ts ...author.Sort) AuthorReviewedQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p AuthorReviewedQuery) Limit(n int64) AuthorReviewedQuery { p.q = p.q.Limit(n); return p }
+
+func (p AuthorReviewedQuery) Offset(n int64) AuthorReviewedQuery { p.q = p.q.Offset(n); return p }
+
+// Err reports what the parent query refused while it was built.
+func (p AuthorReviewedQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps each relation's load. A guard, not a page size.
+func (p AuthorReviewedQuery) ChildLimit(n int64) AuthorReviewedQuery { p.childLimit = n; return p }
+
+// All runs the plan.
+func (p AuthorReviewedQuery) All(ctx context.Context, ex runtime.Executor) ([]AuthorReviewedRow, error) {
+	parents, err := p.q.List(ctx, ex)
+	if err != nil || len(parents) == 0 {
+		return nil, err
+	}
+	out := make([]AuthorReviewedRow, len(parents))
+	for i, r := range parents {
+		out[i].Row = r
+	}
+	if err := loadAuthorReviewedBooks(ctx, ex, out, p.childLimit); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// loadAuthorReviewedBooks loads Books for every row in out with one $in.
+func loadAuthorReviewedBooks(ctx context.Context, ex runtime.Executor, out []AuthorReviewedRow, limit int64) error {
+	at := make(map[[16]byte][]int, len(out))
+	keys := make([][16]byte, 0, len(out))
+	for i := range out {
+		k := out[i].ID
+		if _, ok := at[k]; !ok {
+			keys = append(keys, k)
+		}
+		at[k] = append(at[k], i)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	rows, err := book.New().Where(book.AuthorID.In(keys...)).Limit(limit).List(ctx, ex)
+	if err != nil {
+		return err
+	}
+	if int64(len(rows)) >= limit {
+		// A partial load is worse than a failed one: every count made
+		// from it is wrong and nothing says so.
+		return runtime.ErrChildLimit
+	}
+	kids := make([]AuthorReviewedBooksRow, len(rows))
+	for j, r := range rows {
+		kids[j].Row = r
+	}
+	if err := loadAuthorReviewedBooksReviews(ctx, ex, kids, limit); err != nil {
+		return err
+	}
+	for j := range kids {
+		k := kids[j].AuthorID
+		for _, i := range at[k] {
+			out[i].Books = append(out[i].Books, kids[j])
+		}
+	}
+	return nil
+}
+
+// loadAuthorReviewedBooksReviews loads Reviews, held in each parent's document, with one $in.
+func loadAuthorReviewedBooksReviews(ctx context.Context, ex runtime.Executor, out []AuthorReviewedBooksRow, limit int64) error {
+	keys := make([][16]byte, len(out))
+	for i := range out {
+		keys[i] = out[i].ID
+	}
+	by, err := review.Load(ctx, ex, keys...)
+	if err != nil {
+		return err
+	}
+	n := int64(0)
+	for i := range out {
+		rs := by[out[i].ID]
+		n += int64(len(rs))
+		out[i].Reviews = rs
+	}
+	if n >= limit {
+		return runtime.ErrChildLimit
+	}
+	return nil
+}
 
 // AuthorShelfBooksRow is books with Volumes loaded.
 type AuthorShelfBooksRow struct {
@@ -339,6 +472,93 @@ func loadBookWithAuthorAuthor(ctx context.Context, ex runtime.Executor, out []Bo
 				out[i].Author = &v
 			}
 		}
+	}
+	return nil
+}
+
+// BookWithReviewsRow is books with Reviews loaded.
+type BookWithReviewsRow struct {
+	book.Row
+	Reviews []review.Row
+}
+
+// BookWithReviewsQuery builds the plan over a book query. Every builder method is
+// redeclared, since an embedded Query would return itself from Where.
+type BookWithReviewsQuery struct {
+	q          book.Query
+	childLimit int64
+}
+
+// BookWithReviews starts the plan. It costs 2 round trips: the parents, and one per
+// relation loaded.
+func BookWithReviews() BookWithReviewsQuery {
+	return BookWithReviewsQuery{q: book.New(), childLimit: defaultChildLimit}
+}
+
+func (p BookWithReviewsQuery) Where(ps ...book.Pred) BookWithReviewsQuery {
+	p.q = p.q.Where(ps...)
+	return p
+}
+
+func (p BookWithReviewsQuery) WhereIf(cond bool, pr book.Pred) BookWithReviewsQuery {
+	p.q = p.q.WhereIf(cond, pr)
+	return p
+}
+
+func (p BookWithReviewsQuery) Any(ps ...book.Pred) BookWithReviewsQuery {
+	p.q = p.q.Any(ps...)
+	return p
+}
+
+func (p BookWithReviewsQuery) Order(ts ...book.Sort) BookWithReviewsQuery {
+	p.q = p.q.Order(ts...)
+	return p
+}
+
+func (p BookWithReviewsQuery) Limit(n int64) BookWithReviewsQuery { p.q = p.q.Limit(n); return p }
+
+func (p BookWithReviewsQuery) Offset(n int64) BookWithReviewsQuery { p.q = p.q.Offset(n); return p }
+
+// Err reports what the parent query refused while it was built.
+func (p BookWithReviewsQuery) Err() error { return p.q.Err() }
+
+// ChildLimit caps each relation's load. A guard, not a page size.
+func (p BookWithReviewsQuery) ChildLimit(n int64) BookWithReviewsQuery { p.childLimit = n; return p }
+
+// All runs the plan.
+func (p BookWithReviewsQuery) All(ctx context.Context, ex runtime.Executor) ([]BookWithReviewsRow, error) {
+	parents, err := p.q.List(ctx, ex)
+	if err != nil || len(parents) == 0 {
+		return nil, err
+	}
+	out := make([]BookWithReviewsRow, len(parents))
+	for i, r := range parents {
+		out[i].Row = r
+	}
+	if err := loadBookWithReviewsReviews(ctx, ex, out, p.childLimit); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// loadBookWithReviewsReviews loads Reviews, held in each parent's document, with one $in.
+func loadBookWithReviewsReviews(ctx context.Context, ex runtime.Executor, out []BookWithReviewsRow, limit int64) error {
+	keys := make([][16]byte, len(out))
+	for i := range out {
+		keys[i] = out[i].ID
+	}
+	by, err := review.Load(ctx, ex, keys...)
+	if err != nil {
+		return err
+	}
+	n := int64(0)
+	for i := range out {
+		rs := by[out[i].ID]
+		n += int64(len(rs))
+		out[i].Reviews = rs
+	}
+	if n >= limit {
+		return runtime.ErrChildLimit
 	}
 	return nil
 }
