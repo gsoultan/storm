@@ -14,6 +14,15 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: relation loading
+
+`codegenmongo.Options.Package` renders the context package the SQL
+generator does: a plan per relation (`BookWithAuthor`) and per declared plan
+(`AuthorShelf`, nested through `storm.Into`), each loading its relations with
+one `$in` per relation — the same round-trip count as on SQL. A to-one
+relation loads into a pointer, nil when the reference dangles, since MongoDB
+enforces none. `storm generate -dialect mongo` passes it.
+
 ### MongoDB: CHECK constraints, partial indexes and defaults from SQL text
 
 The new `compile/mgexpr` reads a small subset of SQL expressions and writes

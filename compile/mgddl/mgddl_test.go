@@ -84,13 +84,14 @@ func TestEveryRefusalNamesItsConstruct(t *testing.T) {
 	)
 	tb.SoftDelete = "at"
 	tb.Checks = []*schema.Check{{Expr: "lower(nick) = 'x'"}, {Expr: "id IS NOT NULL"}}
-	tb.Plans = []*schema.Plan{{}}
+	tb.Plans = []*schema.Plan{{Name: "Tagged", Fields: []schema.PlanField{{Field: "Tags"}, {Field: "Org"}}}}
 	tb.ForeignKeys = []*schema.ForeignKey{
 		{Columns: []string{"org_id"}, RefTable: "orgs", OnDelete: schema.Cascade, OnUpdate: schema.Cascade, RefColumns: []string{"slug"}},
 		{Columns: []string{"u"}, RefTable: "users", RefColumns: []string{"id"}, OnDelete: schema.SetDefault, Document: "reference"},
 		{Columns: []string{"a", "org_id"}, RefTable: "orgs"},
 	}
-	tb.Relations = []*schema.Relation{{Field: "Org", Owner: true, Column: "org_id"}}
+	tb.Relations = []*schema.Relation{{Field: "Org", Owner: true, Column: "org_id"},
+		{Field: "Tags", Target: "links", ToMany: true, Link: "links"}}
 	tb.Indexes = append(tb.Indexes,
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "nick"}}, Where: "nick <> ''"},
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "nick"}}, Method: "gin"},
@@ -123,7 +124,7 @@ func TestEveryRefusalNamesItsConstruct(t *testing.T) {
 		"users.org_id: ON UPDATE CASCADE on a reference to a column that is not orgs's key",
 		"users.u: ON DELETE SET DEFAULT to a generated uuid",
 		"the foreign key (a, org_id) must say how it is stored",
-		"CHECK (lower(nick) = 'x')", "the function lower()", "named plans",
+		"CHECK (lower(nick) = 'x')", "the function lower()", "plan Tagged loads Tags through a join table",
 		"is partial over SQL text", "uses gist", "INCLUDE columns", "storage parameters",
 		"expression key", "operator class", "places NULLs explicitly",
 		"links: a generated many-to-many",

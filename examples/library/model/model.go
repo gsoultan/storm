@@ -33,6 +33,12 @@ func (a *Author) Schema(t *storm.Table) {
 	t.SoftDelete(&a.DeletedAt).ReadsDeleted()
 }
 
+// Plans: an author with their books, and each book with its copies — three
+// round trips, whatever the row count, each a $in over the keys before it.
+func (a *Author) Plans(p *storm.Plans) {
+	p.Named("Shelf").With(&a.Books, storm.Into(func(b *Book) any { return &b.Volumes }))
+}
+
 // BookAttrs is a json column: stored as a BSON document, so its fields are
 // queryable as what they are.
 type BookAttrs struct {
@@ -54,7 +60,8 @@ type Book struct {
 	Tags  []string
 	Attrs BookAttrs
 
-	Author Author
+	Author  Author
+	Volumes []Volume
 }
 
 func (b *Book) Schema(t *storm.Table) {
@@ -86,7 +93,7 @@ func (b *Book) Schema(t *storm.Table) {
 type Volume struct {
 	Branch    string
 	Barcode   string
-	BookID    storm.UUID
+	Book      Book
 	DonorID   *storm.UUID
 	OnShelf   bool
 	Checkouts int64
@@ -104,8 +111,7 @@ func (c *Volume) Schema(t *storm.Table) {
 	t.Index(&c.Checkouts).Where(storm.RawSQL(`on_shelf AND checkouts > 0`))
 	// A book with copies on the shelves cannot be deleted; a donor who is
 	// removed leaves their donations anonymous.
-	var b Book
-	t.ForeignKey(&c.BookID).References(&b, &b.ID).OnDelete(storm.Restrict).OnDocument(storm.Reference())
+	t.Col(&c.Book).OnDelete(storm.Restrict).OnDocument(storm.Reference())
 	var a Author
 	t.ForeignKey(&c.DonorID).References(&a, &a.ID).OnDelete(storm.SetNull).OnDocument(storm.Reference())
 }

@@ -1216,7 +1216,8 @@ func portable(dialect string, model *schema.Schema) error {
 // own (ADR-0004), and this is the one place the choice is made.
 func packageFor(model *schema.Schema, o codegen.PackageOptions) (map[string][]byte, error) {
 	if o.Dialect == codegen.DialectMongo {
-		return codegenmongo.Package(model, codegenmongo.Options{Import: o.Import})
+		return codegenmongo.Package(model, codegenmongo.Options{Import: o.Import,
+			Package: o.Package, PackageImport: o.PackageImport})
 	}
 	return codegen.Package(model, o)
 }

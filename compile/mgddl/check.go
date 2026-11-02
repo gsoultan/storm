@@ -69,7 +69,6 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 		{t.Partition != nil || t.PartitionOf != "", "partitioning"},
 		{len(t.Excludes) > 0, "EXCLUDE constraints"},
 		{len(t.Arcs) > 0 || len(t.AnyRefs) > 0, "polymorphic references"},
-		{len(t.Plans) > 0, "named plans (relation loading is not generated yet)"},
 		{len(t.Projections) > 0, "named projections (not generated yet)"},
 		{len(t.Aggregates) > 0, "declared aggregations (not generated yet)"},
 		{len(t.Joins) > 0, "declared joins — MongoDB has no non-equality join, and $lookup is not generated yet"},
@@ -86,6 +85,9 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 	}
 	for _, c := range t.Columns {
 		checkColumn(t, c, add)
+	}
+	for _, pl := range t.Plans {
+		checkPlan(s, t, pl.Name, pl.Fields, add)
 	}
 	for _, ck := range t.Checks {
 		if _, err := mgexpr.Check(t, ck.Expr); err != nil {
@@ -289,4 +291,23 @@ func partialErr(t *schema.Table, ix *schema.Index) error {
 // unwrap is a refusal's reason without the sentinel's words.
 func unwrap(err error) string {
 	return strings.TrimPrefix(err.Error(), mgexpr.ErrUnsupported.Error()+"\n")
+}
+
+// checkPlan refuses a plan that loads through a join table: a many-to-many
+// is itself refused here, and so is a plan over one.
+func checkPlan(s *schema.Schema, t *schema.Table, plan string, fs []schema.PlanField, add func(pos, format string, a ...any)) {
+	for _, f := range fs {
+		for _, r := range t.Relations {
+			if r.Field != f.Field {
+				continue
+			}
+			if r.Link != "" {
+				add(t.Pos, "%s: plan %s loads %s through a join table — a many-to-many has no MongoDB form storm generates",
+					t.Name, plan, f.Field)
+			}
+			if child := s.Table(r.Target); child != nil {
+				checkPlan(s, child, plan, f.Nested, add)
+			}
+		}
+	}
 }

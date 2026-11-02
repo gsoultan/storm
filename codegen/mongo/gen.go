@@ -29,6 +29,11 @@ type Options struct {
 	Import string
 	// Only restricts generation to these tables; empty means all.
 	Only []string
+	// Package, when set, also renders the context package: <Package>.gen.go
+	// at the output root, holding a plan per relation and per declared plan.
+	// PackageImport is its import path's parent — where the table packages
+	// are — since an import path cannot be derived from a directory.
+	Package, PackageImport string
 }
 
 // Package renders one Go package per table and returns path → contents,
@@ -68,6 +73,16 @@ func Package(s *schema.Schema, o Options) (map[string][]byte, error) {
 			return nil, err
 		}
 		out[filepath.Join(pkg, pkg+".gen.go")] = src
+	}
+	if o.Package != "" {
+		if o.PackageImport == "" {
+			return nil, fmt.Errorf("codegenmongo: Options.Package is %q but PackageImport is empty", o.Package)
+		}
+		src, err := Context(s, names, o.Package, o.PackageImport, o.Import)
+		if err != nil {
+			return nil, err
+		}
+		out[o.Package+".gen.go"] = src
 	}
 	return out, nil
 }

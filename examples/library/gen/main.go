@@ -33,7 +33,8 @@ func run() error {
 		return err
 	}
 	dir := filepath.Join("examples", "library", "store")
-	files, err := codegenmongo.Package(s, codegenmongo.Options{Import: "github.com/gsoultan/storm"})
+	files, err := codegenmongo.Package(s, codegenmongo.Options{Import: "github.com/gsoultan/storm",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/examples/library/store"})
 	if err != nil {
 		return err
 	}

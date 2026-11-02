@@ -85,10 +85,11 @@ for them rather than ignoring it.
 **Moved: the spelling.** `s.HasMany(...).OnDocument(storm.Embed(...))` became
 `t.Col(&x.Ref).OnDocument(storm.Reference())`, in the field-pointer form the
 rest of the model API took after this was written. `Reference` is built;
-`Embed` is not, and is the next increment, with relation loading.
+`Embed` is not, and is the next increment. Relation loading is built: the
+plans load by `$in`, one round trip per relation, as on SQL.
 
-**Not built yet**, and each is a refusal rather than an approximation: named
-plans, projections, aggregations, joins, unions and keyed upserts. Composite
+**Not built yet**, and each is a refusal rather than an approximation:
+projections, aggregations, joins, unions and keyed upserts. Composite
 keys, arrays and json, version columns, guarded increments, soft delete,
 `ON DELETE` actions, and the translatable part of `CHECK`, partial-index and
 default SQL text followed the first release, each translated to SQL's
