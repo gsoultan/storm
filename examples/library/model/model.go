@@ -40,6 +40,27 @@ func (b *Book) Projections(p *storm.Projections) {
 	p.Named("Card", &b.Title, &b.Pages)
 }
 
+// Aggregates: a shelf report per author, as one $group. The answers are
+// SQL's — a sum or average over no values is NULL, the average of integers
+// is a decimal — and the rows come back by page count, most first.
+func (b *Book) Aggregates(a *storm.Aggregates) {
+	r := a.Named("ByAuthor")
+	r.By(&b.Author)
+	r.Count("Books")
+	r.CountOf(&b.ISBN, "WithISBN")
+	r.CountDistinct(&b.Pages, "Lengths")
+	pages := r.Sum(&b.Pages, "Pages")
+	r.Avg(&b.Pages, "AvgPages")
+	r.Sum(&b.Price, "Value")
+	r.Min(&b.PublishedAt, "First")
+	r.Max(&b.Price, "Dearest")
+	r.OrderDesc(pages)
+
+	all := a.Named("Totals")
+	all.Count("Books")
+	all.Avg(&b.Price, "AvgPrice")
+}
+
 func (a *Author) Plans(p *storm.Plans) {
 	p.Named("Shelf").With(&a.Books, storm.Into(func(b *Book) any { return &b.Volumes }))
 	p.Named("Reviewed").With(&a.Books, storm.Into(func(b *Book) any { return &b.Reviews }))
@@ -121,6 +142,15 @@ func (c *Volume) Schema(t *storm.Table) {
 	t.Col(&c.Book).OnDelete(storm.Restrict).OnDocument(storm.Reference())
 	var a Author
 	t.ForeignKey(&c.DonorID).References(&a, &a.ID).OnDelete(storm.SetNull).OnDocument(storm.Reference())
+}
+
+// Aggregates: circulation by donor. The anonymous copies — a NULL donor —
+// are one group, and it comes last, where SQL sorts NULL ascending.
+func (c *Volume) Aggregates(a *storm.Aggregates) {
+	r := a.Named("ByDonor")
+	r.By(&c.DonorID)
+	r.Count("Copies")
+	r.Sum(&c.Checkouts, "Checkouts")
 }
 
 // Hold is a reader's place in the queue for one copy: a composite reference

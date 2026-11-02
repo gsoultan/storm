@@ -92,7 +92,8 @@ and could not count what it changed. Relation loading is built too: the
 plans load by `$in`, one round trip per relation, as on SQL.
 
 **Not built yet**, and each is a refusal rather than an approximation:
-aggregations, joins, unions and keyed upserts. Composite
+joins, unions and keyed upserts. Declared aggregations are built as one
+`$group`, for the subset that gives SQL's answer. Composite
 keys, arrays and json, version columns, guarded increments, soft delete,
 `ON DELETE` actions, and the translatable part of `CHECK`, partial-index and
 default SQL text followed the first release, each translated to SQL's

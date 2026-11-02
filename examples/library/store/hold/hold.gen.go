@@ -433,6 +433,7 @@ type Query struct {
 	limit  int64
 	offset int64
 	paged  bool
+	sorted bool
 	err    error
 }
 
@@ -518,6 +519,7 @@ func (q Query) Order(ts ...Sort) Query {
 	for _, t := range ts {
 		q.push(runtime.Tok(t))
 	}
+	q.sorted = q.sorted || len(ts) > 0
 	return q
 }
 

@@ -756,32 +756,35 @@ func (g *gen) scanCols(fn, rowType, n string, cols []int) {
 	g.p("\t}")
 	g.p("\tvar err error")
 	for j, i := range cols {
-		c := g.cols[i]
-		k := g.kind[i]
-		f := g.field(i)
-		switch {
-		case k.array:
-			g.p("\tif rv[%d] != nil {", j)
-			g.p("\t\tif r.%s, err = bsondec.Array(rv[%d], bsondec.%s); err != nil {", f, j, k.elemDec)
-			g.p("\t\t\treturn errors.Join(errors.New(%q), err)", "storm: "+g.t.Name+"."+c.Name)
-			g.p("\t\t}")
-			g.p("\t}")
-			continue
-		case k.slice:
-			g.p("\tif rv[%d] != nil {", j)
-			g.p("\t\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", f, k.dec, j)
-			g.p("\t\t\treturn errors.Join(errors.New(%q), err)", "storm: "+g.t.Name+"."+c.Name)
-			g.p("\t\t}")
-			g.p("\t}")
-			continue
-		case k.nullable(c):
-			g.p("\tif r.%s, err = bsondec.Nullable(rv[%d], bsondec.%s); err != nil {", f, j, k.dec)
-		default:
-			g.p("\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", f, k.dec, j)
-		}
-		g.p("\t\treturn errors.Join(errors.New(%q), err)", "storm: "+g.t.Name+"."+c.Name)
-		g.p("\t}")
+		g.decodeField(j, g.field(i), g.kind[i], g.kind[i].nullable(g.cols[i]), g.t.Name+"."+g.cols[i].Name)
 	}
 	g.p("\treturn nil")
 	g.p("}")
+}
+
+// decodeField emits the decode of rv[j] into r.f, a k that is nullable or
+// not; what names it in an error.
+func (g *gen) decodeField(j int, f string, k kind, nullable bool, what string) {
+	switch {
+	case k.array:
+		g.p("\tif rv[%d] != nil {", j)
+		g.p("\t\tif r.%s, err = bsondec.Array(rv[%d], bsondec.%s); err != nil {", f, j, k.elemDec)
+		g.p("\t\t\treturn errors.Join(errors.New(%q), err)", "storm: "+what)
+		g.p("\t\t}")
+		g.p("\t}")
+		return
+	case k.slice:
+		g.p("\tif rv[%d] != nil {", j)
+		g.p("\t\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", f, k.dec, j)
+		g.p("\t\t\treturn errors.Join(errors.New(%q), err)", "storm: "+what)
+		g.p("\t\t}")
+		g.p("\t}")
+		return
+	case nullable:
+		g.p("\tif r.%s, err = bsondec.Nullable(rv[%d], bsondec.%s); err != nil {", f, j, k.dec)
+	default:
+		g.p("\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", f, k.dec, j)
+	}
+	g.p("\t\treturn errors.Join(errors.New(%q), err)", "storm: "+what)
+	g.p("\t}")
 }

@@ -698,6 +698,7 @@ type Query struct {
 	limit  int64
 	offset int64
 	paged  bool
+	sorted bool
 	err    error
 }
 
@@ -783,6 +784,7 @@ func (q Query) Order(ts ...Sort) Query {
 	for _, t := range ts {
 		q.push(runtime.Tok(t))
 	}
+	q.sorted = q.sorted || len(ts) > 0
 	return q
 }
 
@@ -1094,6 +1096,165 @@ func (q Query) OneCard(ctx context.Context, ex runtime.Executor) (CardRow, bool,
 		return CardRow{}, false, err
 	}
 	return out[0], true, nil
+}
+
+// ByAuthorRow is the "ByAuthor" aggregation over books: one row per group, the grouping
+// columns first, ordered as declared or by the grouping columns.
+type ByAuthorRow struct {
+	AuthorID [16]byte
+	Books    int64
+	WithISBN int64
+	Lengths  int64
+	Pages    runtime.Null[int64]
+	AvgPages runtime.Null[runtime.Decimal]
+	Value    runtime.Null[runtime.Decimal]
+	First    runtime.Null[time.Time]
+	Dearest  runtime.Null[runtime.Decimal]
+}
+
+var (
+	byAuthorHead  = "{\"aggregate\":\"books\",\"cursor\":{},\"pipeline\":[{\"$match\":"
+	byAuthorTail  = "},{\"$group\":{\"_id\":{\"k0\":{\"$ifNull\":[\"$author_id\",null]}},\"t0\":{\"$sum\":1},\"t1\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$isbn\",null]},null]},0,1]}},\"t2\":{\"$addToSet\":{\"$ifNull\":[\"$pages\",null]}},\"t3\":{\"$sum\":{\"$ifNull\":[\"$pages\",null]}},\"n3\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$pages\",null]},null]},0,1]}},\"t4\":{\"$sum\":{\"$toDecimal\":{\"$ifNull\":[\"$pages\",null]}}},\"n4\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$pages\",null]},null]},0,1]}},\"t5\":{\"$sum\":{\"$ifNull\":[\"$price\",null]}},\"n5\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$price\",null]},null]},0,1]}},\"t6\":{\"$min\":{\"$ifNull\":[\"$published_at\",null]}},\"t7\":{\"$max\":{\"$ifNull\":[\"$price\",null]}}}},{\"$project\":{\"AuthorID\":\"$_id.k0\",\"Books\":\"$t0\",\"WithISBN\":\"$t1\",\"Lengths\":{\"$size\":{\"$filter\":{\"input\":\"$t2\",\"cond\":{\"$ne\":[\"$$this\",null]}}}},\"Pages\":{\"$cond\":[{\"$eq\":[\"$n3\",0]},null,\"$t3\"]},\"AvgPages\":{\"$cond\":[{\"$eq\":[\"$n4\",0]},null,{\"$let\":{\"vars\":{\"v\":{\"$divide\":[\"$t4\",\"$n4\"]}},\"in\":{\"$multiply\":[{\"$cond\":[{\"$lt\":[\"$$v\",0]},-1,1]},{\"$floor\":{\"$add\":[{\"$multiply\":[{\"$abs\":\"$$v\"},{\"$toDecimal\":\"1000000\"}]},{\"$toDecimal\":\"0.5\"}]}},{\"$toDecimal\":\"0.000001\"}]}}}]},\"Value\":{\"$cond\":[{\"$eq\":[\"$n5\",0]},null,\"$t5\"]},\"First\":\"$t6\",\"Dearest\":\"$t7\"}},{\"$addFields\":{\"_null0\":{\"$cond\":[{\"$eq\":[\"$Pages\",null]},1,0]},\"_null1\":{\"$cond\":[{\"$eq\":[\"$AuthorID\",null]},1,0]}}},{\"$sort\":{\"_null0\":-1,\"Pages\":-1,\"_null1\":1,\"AuthorID\":1}},{\"$skip\":{\"$arg\":2}},{\"$limit\":{\"$arg\":1}}]}"
+	byAuthorCache = newCaches()
+)
+
+func scanByAuthor(rv [][]byte, r *ByAuthorRow) error {
+	if len(rv) != 9 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.AuthorID, err = bsondec.UUID(rv[0]); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.AuthorID"), err)
+	}
+	if r.Books, err = bsondec.Int8(rv[1]); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Books"), err)
+	}
+	if r.WithISBN, err = bsondec.Int8(rv[2]); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.WithISBN"), err)
+	}
+	if r.Lengths, err = bsondec.Int8(rv[3]); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Lengths"), err)
+	}
+	if r.Pages, err = bsondec.Nullable(rv[4], bsondec.Int8); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Pages"), err)
+	}
+	if r.AvgPages, err = bsondec.Nullable(rv[5], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.AvgPages"), err)
+	}
+	if r.Value, err = bsondec.Nullable(rv[6], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Value"), err)
+	}
+	if r.First, err = bsondec.Nullable(rv[7], bsondec.Time); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.First"), err)
+	}
+	if r.Dearest, err = bsondec.Nullable(rv[8], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: books.ByAuthor.Dearest"), err)
+	}
+	return nil
+}
+
+// AllByAuthor runs the "ByAuthor" aggregation. Predicates filter the documents that
+// go INTO the groups; Limit and Offset page the groups. Order is refused —
+// the rows are groups, ordered as the declaration says.
+func (q Query) AllByAuthor(ctx context.Context, ex runtime.Executor) ([]ByAuthorRow, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.sorted {
+		return nil, errors.New("storm: Order() on the ByAuthor aggregation — its rows are groups, ordered as declared")
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(byAuthorCache, q.scope(), q.stream(), byAuthorHead, byAuthorTail, 3, false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ByAuthorRow
+	for rows.Next() {
+		var r ByAuthorRow
+		if err := scanByAuthor(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// TotalsRow is the "Totals" aggregation over books: one row per group, the grouping
+// columns first, ordered as declared or by the grouping columns.
+type TotalsRow struct {
+	Books    int64
+	AvgPrice runtime.Null[runtime.Decimal]
+}
+
+var (
+	totalsHead  = "{\"aggregate\":\"books\",\"cursor\":{},\"pipeline\":[{\"$match\":"
+	totalsTail  = "},{\"$group\":{\"_id\":null,\"t0\":{\"$sum\":1},\"t1\":{\"$sum\":{\"$toDecimal\":{\"$ifNull\":[\"$price\",null]}}},\"n1\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$price\",null]},null]},0,1]}}}},{\"$project\":{\"Books\":\"$t0\",\"AvgPrice\":{\"$cond\":[{\"$eq\":[\"$n1\",0]},null,{\"$let\":{\"vars\":{\"v\":{\"$divide\":[\"$t1\",\"$n1\"]}},\"in\":{\"$multiply\":[{\"$cond\":[{\"$lt\":[\"$$v\",0]},-1,1]},{\"$floor\":{\"$add\":[{\"$multiply\":[{\"$abs\":\"$$v\"},{\"$toDecimal\":\"1000000\"}]},{\"$toDecimal\":\"0.5\"}]}},{\"$toDecimal\":\"0.000001\"}]}}}]}}},{\"$skip\":{\"$arg\":2}},{\"$limit\":{\"$arg\":1}}]}"
+	totalsCache = newCaches()
+)
+
+func scanTotals(rv [][]byte, r *TotalsRow) error {
+	if len(rv) != 2 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.Books, err = bsondec.Int8(rv[0]); err != nil {
+		return errors.Join(errors.New("storm: books.Totals.Books"), err)
+	}
+	if r.AvgPrice, err = bsondec.Nullable(rv[1], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: books.Totals.AvgPrice"), err)
+	}
+	return nil
+}
+
+// AllTotals runs the "Totals" aggregation. Predicates filter the documents that
+// go INTO the groups; Limit and Offset page the groups. Order is refused —
+// the rows are groups, ordered as the declaration says.
+func (q Query) AllTotals(ctx context.Context, ex runtime.Executor) ([]TotalsRow, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.sorted {
+		return nil, errors.New("storm: Order() on the Totals aggregation — its rows are groups, ordered as declared")
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(totalsCache, q.scope(), q.stream(), totalsHead, totalsTail, 3, false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TotalsRow
+	for rows.Next() {
+		var r TotalsRow
+		if err := scanTotals(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	if len(out) == 0 && q.offset == 0 {
+		// No grouping columns: SQL answers one row over no rows — the
+		// counts 0 and everything else NULL — where $group answers none.
+		out = append(out, TotalsRow{})
+	}
+	return out, nil
 }
 
 // Column bits, for the write masks.

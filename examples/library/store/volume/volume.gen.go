@@ -513,6 +513,7 @@ type Query struct {
 	limit  int64
 	offset int64
 	paged  bool
+	sorted bool
 	err    error
 }
 
@@ -598,6 +599,7 @@ func (q Query) Order(ts ...Sort) Query {
 	for _, t := range ts {
 		q.push(runtime.Tok(t))
 	}
+	q.sorted = q.sorted || len(ts) > 0
 	return q
 }
 
@@ -840,6 +842,73 @@ func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error
 		return 0, st.Err
 	}
 	return mgcascade.Delete(ctx, ex, cascade, filtered(filterCache, 0, q.stream(), "", "", 1, false).SQL, q.args(), st.SQL)
+}
+
+// ByDonorRow is the "ByDonor" aggregation over volumes: one row per group, the grouping
+// columns first, ordered as declared or by the grouping columns.
+type ByDonorRow struct {
+	DonorID   runtime.Null[[16]byte]
+	Copies    int64
+	Checkouts runtime.Null[runtime.Decimal]
+}
+
+var (
+	byDonorHead  = "{\"aggregate\":\"volumes\",\"cursor\":{},\"pipeline\":[{\"$match\":"
+	byDonorTail  = "},{\"$group\":{\"_id\":{\"k0\":{\"$ifNull\":[\"$donor_id\",null]}},\"t0\":{\"$sum\":1},\"t1\":{\"$sum\":{\"$toDecimal\":{\"$ifNull\":[\"$checkouts\",null]}}},\"n1\":{\"$sum\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$checkouts\",null]},null]},0,1]}}}},{\"$project\":{\"DonorID\":\"$_id.k0\",\"Copies\":\"$t0\",\"Checkouts\":{\"$cond\":[{\"$eq\":[\"$n1\",0]},null,\"$t1\"]}}},{\"$addFields\":{\"_null0\":{\"$cond\":[{\"$eq\":[\"$DonorID\",null]},1,0]}}},{\"$sort\":{\"_null0\":1,\"DonorID\":1}},{\"$skip\":{\"$arg\":2}},{\"$limit\":{\"$arg\":1}}]}"
+	byDonorCache = newCaches()
+)
+
+func scanByDonor(rv [][]byte, r *ByDonorRow) error {
+	if len(rv) != 3 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.DonorID, err = bsondec.Nullable(rv[0], bsondec.UUID); err != nil {
+		return errors.Join(errors.New("storm: volumes.ByDonor.DonorID"), err)
+	}
+	if r.Copies, err = bsondec.Int8(rv[1]); err != nil {
+		return errors.Join(errors.New("storm: volumes.ByDonor.Copies"), err)
+	}
+	if r.Checkouts, err = bsondec.Nullable(rv[2], bsondec.Decimal); err != nil {
+		return errors.Join(errors.New("storm: volumes.ByDonor.Checkouts"), err)
+	}
+	return nil
+}
+
+// AllByDonor runs the "ByDonor" aggregation. Predicates filter the documents that
+// go INTO the groups; Limit and Offset page the groups. Order is refused —
+// the rows are groups, ordered as the declaration says.
+func (q Query) AllByDonor(ctx context.Context, ex runtime.Executor) ([]ByDonorRow, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.sorted {
+		return nil, errors.New("storm: Order() on the ByDonor aggregation — its rows are groups, ordered as declared")
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(byDonorCache, q.scope(), q.stream(), byDonorHead, byDonorTail, 3, false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ByDonorRow
+	for rows.Next() {
+		var r ByDonorRow
+		if err := scanByDonor(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 // Column bits, for the write masks.

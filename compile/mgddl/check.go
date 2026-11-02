@@ -69,7 +69,6 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 		{t.Partition != nil || t.PartitionOf != "", "partitioning"},
 		{len(t.Excludes) > 0, "EXCLUDE constraints"},
 		{len(t.Arcs) > 0 || len(t.AnyRefs) > 0, "polymorphic references"},
-		{len(t.Aggregates) > 0, "declared aggregations (not generated yet)"},
 		{len(t.Joins) > 0, "declared joins — MongoDB has no non-equality join, and $lookup is not generated yet"},
 		{len(t.Matches) > 0 || len(t.Probes) > 0, "existence probes"},
 		{t.Takes || t.Tallies || len(t.InsertSelects) > 0, "set-based write shapes (Take, Tally, InsertSelect)"},
@@ -87,6 +86,9 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 	}
 	if r := mongo.EmbedOf(t); r != nil {
 		checkEmbed(s, t, r, add)
+	}
+	for _, a := range t.Aggregates {
+		checkAggregate(t, a, add)
 	}
 	for _, pl := range t.Plans {
 		checkPlan(s, t, pl.Name, pl.Fields, add)

@@ -14,6 +14,19 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: aggregations
+
+A declared aggregation generates `<Name>Row` and `All<Name>` on the MongoDB
+query, as one `$group` over the call-site filter: grouping by columns, and
+`Count`, `CountOf`, `CountDistinct`, `Sum`, `Avg`, `Min` and `Max` over
+columns, ordered as declared. Each answers as SQL does — a sum or average
+over no values is NULL, an `int8` sum is a decimal, an integer or numeric
+average is a decimal rounded half away from zero to six places, NULL groups
+together and sorts last ascending, and with no grouping columns there is one
+row even over no documents. Grouping sets, `HAVING`, `FILTER`, windows,
+expressions, joins, a declared `WHERE`, parameters, and `min`/`max` of text
+or an enum are refused by name.
+
 ### MongoDB: projections
 
 A declared projection generates `<Name>Row` and `All<Name>`/`One<Name>` on

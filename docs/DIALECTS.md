@@ -405,6 +405,7 @@ SQL emitter to print pipelines" framing ADR-0004 rejected.
 | relation loading (plans) | `= ANY($1)` per relation | **`$in`** per relation, in the context package (`Options.Package`) | One round trip for the parents and one per relation, as on SQL — `$lookup` would make it one, but a `$lookup` over every parent cannot be capped per relation, and the cap is the point. A to-one relation loads into a **pointer**, nil when the key is NULL or names nothing: there is no foreign key, so a dangling reference is a state the data can be in, not a broken constraint. A to-many load at `ChildLimit` is `runtime.ErrChildLimit`, never a partial result |
 | `storm.Embed()` | a child table with a foreign key | **an array in each parent document**, named after the child table; no collection | The child's package is parent-scoped: `Of`/`Load` read a parent's array, `Add` appends and reads the element back (server clock included), `Replace` and `Remove` address it by key — each one command against the parent. A missing parent on `Add` is `runtime.ErrForeignKeyViolation` and a key the parent already holds `runtime.ErrUniqueViolation`, the errors SQL's constraints give. The elements are validated by the parent's `$jsonSchema` (`items`) and indexed by multikey indexes on `<child>.<field>`; they do not store the reference, which is the parent's `_id`. Deleting the parent deletes them, which is the `ON DELETE CASCADE` the model must declare. A plan loads them with one `$in` on the parents |
 | projection | a narrower `SELECT` list | a narrower **`projection`** document | `All<Name>`/`One<Name>` take the query as it stands — filter, sort, paging — and decode only the declared fields into `<Name>Row` |
+| declared aggregation | `GROUP BY` | **`$group`** over the call-site filter, then `$project`, a sort and the page | Grouping by columns; `count(*)`, `count(col)` (a `$sum` of a non-null test), `count(DISTINCT col)` (a set, its NULL dropped), `sum`, `avg`, `min`, `max` over columns. A sum or average over no values is NULL where `$sum` says 0; an `int8` sum is summed as Decimal128, as PostgreSQL's is numeric; an average of integers or numerics is a decimal sum over the count, rounded half away from zero to six places where `$round` rounds half to even; a missing field and a null are one group; NULL sorts last ascending and first descending, by a flag in front of each sort key; the default order is the grouping columns, and they break ties under a declared one. With no grouping columns there is one row over no documents — the counts 0, the rest NULL — where `$group` returns none. `Order()` on the query is refused: the rows are groups. Text groups sort by bytes, as `Order` does on a find |
 | soft delete | `deleted_at IS NULL` ANDed in front | **`{"$and":[{"deleted_at":null}, <filter>]}`** in front of every read and write | `Delete` marks with `$$NOW` (the server's clock), `HardDelete` removes, `Restore` clears, `WithDeleted` widens a read when the model said `ReadsDeleted`, and `UpdateAll`/`DeleteAll` refuse it. A live document stores the field as an explicit null |
 | live-scoped UNIQUE | a partial index `WHERE deleted_at IS NULL` | `partialFilterExpression: {"deleted_at": null}` | Equality to null in a partial filter covers both a null and an absent field (measured on MongoDB 7), so a returning user can sign up again and two live users still cannot share an address |
 | uuid key | server default, or client v7 | generated **client-side** — v4 for `gen_random_uuid()`, v7 for `uuidv7()` | No generator a write can call; the version the model asked for is the one it gets |
@@ -473,8 +474,14 @@ cannot make, or shapes this back end does not generate yet.
   is translated), `INCLUDE`, storage parameters, operator classes, collations,
   prefix lengths, explicit NULL placement, and a UNIQUE over an array or json
   column — MongoDB's constrains each element, not the value.
+- **Aggregations outside the `$group` subset**: grouping sets, `HAVING`,
+  `FILTER`, windows, `GROUPING()`, arithmetic over aggregates, grouping by or
+  aggregating an expression, an array or a json column, a join, a declared
+  `WHERE`, parameters, `DISTINCT` other than in `count`, and `min`/`max` of
+  text (PostgreSQL orders it by collation, MongoDB by bytes) or an enum
+  (PostgreSQL orders it by declaration).
 - **Not generated yet**: plans over a many-to-many or a composite key,
-  `ChildTop`/`After` on a plan, declared aggregations, joins, unions
+  `ChildTop`/`After` on a plan, joins, unions
   (`$unionWith`), keyset `After`, row locks, `Not`/`NotAny`, existence probes,
   set-based write shapes, sharding, and many-to-many join tables. **`Not` is
   deliberately absent rather than pending**: `$nor` matches a document whose

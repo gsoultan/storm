@@ -124,6 +124,7 @@ func (g *gen) emit() {
 	g.query()
 	g.reads()
 	g.projections()
+	g.aggregates()
 	g.writes()
 	g.scan()
 }
