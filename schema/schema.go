@@ -484,6 +484,12 @@ type ForeignKey struct {
 	OnDelete   Action
 	OnUpdate   Action
 	Deferrable bool
+
+	// Document is how a document back end stores this reference — "reference"
+	// — or "" where the model said nothing (ADR-0004). It is set for a key
+	// declared with t.ForeignKey(...).OnDocument; a relation field's form is
+	// on its Relation.
+	Document string
 }
 
 // Check is a table-level CHECK constraint.

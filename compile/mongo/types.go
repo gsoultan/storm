@@ -1,23 +1,55 @@
 package mongo
 
-import "github.com/gsoultan/storm/schema"
+import (
+	"encoding/json"
+	"io"
+	"strconv"
+	"strings"
+
+	"github.com/gsoultan/storm/schema"
+)
 
 // BSONType is the $jsonSchema bsonType a column is stored as, or ok=false for
 // a type this back end does not carry.
 //
-// The refusals are the PostgreSQL-only types — ranges, network addresses,
-// intervals, tsvector, hstore — plus, for now, arrays and json/jsonb. Those
-// two have natural BSON forms (an array, an embedded document) and are the
-// next thing this back end should gain; they are refused rather than stored
-// as text, because text would be a schema nobody could query as what it is.
+// An array is a BSON array of its element type (ElemType says which). json
+// and jsonb are stored as the BSON value the JSON text denotes — a document,
+// an array, a string, a number, a bool — rather than as text, so the fields
+// inside are queryable as what they are; their bsonType is "" because the
+// column admits any of those. The refusals are the PostgreSQL-only types —
+// ranges, network addresses, intervals, tsvector, hstore — and arrays of
+// anything but a scalar this back end carries.
 func BSONType(c *schema.Column) (string, bool) {
 	if c.Type.Array {
+		if _, ok := ElemType(c); !ok {
+			return "", false
+		}
+		return "array", true
+	}
+	return scalarType(c.Type)
+}
+
+// ElemType is an array column's element bsonType.
+func ElemType(c *schema.Column) (string, bool) {
+	if !c.Type.Array {
 		return "", false
 	}
-	if c.Type.Enum {
+	e := c.Type
+	e.Array = false
+	switch e.Name {
+	case schema.TypeJSON, schema.TypeJSONB, schema.TypeNumeric, schema.TypeBytea:
+		// An array of documents is an embedded relation, not a column; an
+		// array of decimals or byte strings has no decoder yet.
+		return "", false
+	}
+	return scalarType(e)
+}
+
+func scalarType(t schema.Type) (string, bool) {
+	if t.Enum {
 		return "string", true
 	}
-	switch c.Type.Name {
+	switch t.Name {
 	case schema.TypeBool:
 		return "bool", true
 	case schema.TypeInt2, schema.TypeInt4:
@@ -36,8 +68,15 @@ func BSONType(c *schema.Column) (string, bool) {
 		return "date", true
 	case schema.TypeNumeric:
 		return "decimal", true
+	case schema.TypeJSON, schema.TypeJSONB:
+		return "", true
 	}
 	return "", false
+}
+
+// IsJSON reports a json or jsonb column.
+func IsJSON(c *schema.Column) bool {
+	return !c.Type.Array && (c.Type.Name == schema.TypeJSON || c.Type.Name == schema.TypeJSONB)
 }
 
 // DefaultKind classifies a column default by who computes it.
@@ -83,17 +122,26 @@ func ClassifyDefault(c *schema.Column) (DefaultKind, string) {
 		return DefaultUnsupported, ""
 	}
 	if lit, ok := sqlStringLiteral(d); ok {
+		if c.Type.Array {
+			if j, ok := arrayLiteral(lit, c); ok {
+				return DefaultLiteral, j
+			}
+			return DefaultUnsupported, ""
+		}
+		if IsJSON(c) {
+			if j, ok := JSONLiteral(lit); ok {
+				return DefaultLiteral, j
+			}
+			return DefaultUnsupported, ""
+		}
 		t, _ := BSONType(c)
 		if t != "string" {
 			return DefaultUnsupported, ""
 		}
 		return DefaultLiteral, Str(lit)
 	}
-	if isNumber(d) {
-		switch c.Type.Name {
-		case schema.TypeInt2, schema.TypeInt4, schema.TypeInt8, schema.TypeFloat4, schema.TypeFloat8:
-			return DefaultLiteral, d
-		}
+	if isNumber(d) && !c.Type.Array {
+		return numberLiteral(c.Type.Name, d)
 	}
 	return DefaultUnsupported, ""
 }
@@ -142,4 +190,150 @@ func isNumber(s string) bool {
 		}
 	}
 	return digits
+}
+
+// arrayLiteral reads PostgreSQL's array literal — '{}' or '{a,b}' — as a JSON
+// array, for text and integer elements without quoting or NULLs. Anything
+// richer is refused rather than guessed at.
+func arrayLiteral(lit string, c *schema.Column) (string, bool) {
+	if len(lit) < 2 || lit[0] != '{' || lit[len(lit)-1] != '}' {
+		return "", false
+	}
+	body := lit[1 : len(lit)-1]
+	if body == "" {
+		return "[]", true
+	}
+	et, _ := ElemType(c)
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, e := range strings.Split(body, ",") {
+		if e == "" || strings.ContainsAny(e, `"\{} `) || strings.EqualFold(e, "null") {
+			return "", false
+		}
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		switch et {
+		case "string":
+			b.WriteString(Str(e))
+		case "int", "long", "double":
+			if !isNumber(e) {
+				return "", false
+			}
+			b.WriteString(e)
+		case "bool":
+			switch strings.ToLower(e) {
+			case "t", "true":
+				b.WriteString("true")
+			case "f", "false":
+				b.WriteString("false")
+			default:
+				return "", false
+			}
+		default:
+			return "", false
+		}
+	}
+	b.WriteByte(']')
+	return b.String(), true
+}
+
+// JSONLiteral re-renders a JSON text in this package's canonical spelling —
+// compact, keys in their written order — or ok=false for text that is not
+// one JSON value. A literal default is written into a command, so it must be
+// JSON the driver compiles, never SQL.
+func JSONLiteral(s string) (string, bool) {
+	var b strings.Builder
+	d := json.NewDecoder(strings.NewReader(s))
+	d.UseNumber()
+	if !canon(d, &b) {
+		return "", false
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return "", false
+	}
+	return b.String(), true
+}
+
+func canon(d *json.Decoder, b *strings.Builder) bool {
+	tok, err := d.Token()
+	if err != nil {
+		return false
+	}
+	switch v := tok.(type) {
+	case json.Delim:
+		switch v {
+		case '{':
+			b.WriteByte('{')
+			for i := 0; d.More(); i++ {
+				k, err := d.Token()
+				ks, ok := k.(string)
+				if err != nil || !ok {
+					return false
+				}
+				if i > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(Str(ks))
+				b.WriteByte(':')
+				if !canon(d, b) {
+					return false
+				}
+			}
+			b.WriteByte('}')
+		case '[':
+			b.WriteByte('[')
+			for i := 0; d.More(); i++ {
+				if i > 0 {
+					b.WriteByte(',')
+				}
+				if !canon(d, b) {
+					return false
+				}
+			}
+			b.WriteByte(']')
+		default:
+			return false
+		}
+		_, err := d.Token() // the closing delimiter
+		return err == nil
+	case string:
+		b.WriteString(Str(v))
+	case json.Number:
+		b.WriteString(string(v))
+	case bool:
+		b.WriteString(strconv.FormatBool(v))
+	case nil:
+		b.WriteString("null")
+	}
+	return true
+}
+
+// numberLiteral types a numeric default the way the validator stores the
+// column: an int8 as a 64-bit integer — in canonical extended JSON, since a
+// bare small number would be written as int32 and refused — and a float as a
+// double, which a bare integer would not be.
+func numberLiteral(typ, d string) (DefaultKind, string) {
+	switch typ {
+	case schema.TypeInt2, schema.TypeInt4:
+		if strings.Contains(d, ".") {
+			return DefaultUnsupported, ""
+		}
+		n, err := strconv.ParseInt(d, 10, 32)
+		if err != nil || (typ == schema.TypeInt2 && (n < -32768 || n > 32767)) {
+			return DefaultUnsupported, ""
+		}
+		return DefaultLiteral, d
+	case schema.TypeInt8:
+		if _, err := strconv.ParseInt(d, 10, 64); err != nil {
+			return DefaultUnsupported, ""
+		}
+		return DefaultLiteral, `{"$numberLong":` + Str(d) + `}`
+	case schema.TypeFloat4, schema.TypeFloat8:
+		if !strings.Contains(d, ".") {
+			d += ".0"
+		}
+		return DefaultLiteral, d
+	}
+	return DefaultUnsupported, ""
 }

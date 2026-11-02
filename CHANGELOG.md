@@ -14,6 +14,29 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: composite keys, arrays and json, versions, soft delete
+
+The first of the constructs `storm portable mongo` refused, now generated —
+each with SQL's answer, and each where MongoDB's own differs said in
+`docs/DIALECTS.md`.
+
+- **Composite primary keys** are the `_id` subdocument, in key order, with a
+  `<table>_pkey` index for leading-column lookups. **Composite foreign keys**
+  say how they are stored with the new `FKBuilder.OnDocument`.
+- **Arrays** are BSON arrays (`Contains`, `ContainedBy`, `Overlaps`); **json**
+  is the BSON value its text denotes (`Contains`, `HasAnyKey`, `HasAllKeys`,
+  `IsEmpty`), with containment translated path by path so an array that holds
+  a scalar does not contain it. GIN becomes a multikey or a wildcard index.
+- **Version columns**, **`Inc`/`Add`** and **`IncWhen`**: every update is now an
+  aggregation-pipeline update, so a value read and a value written are one
+  command, a NULL counter stays NULL, and a bound string starting with `$` is
+  a string.
+- **Soft delete**: `Delete` marks, `HardDelete`, `Restore`, `WithDeleted`, and
+  live-scoped UNIQUE as `partialFilterExpression: {"deleted_at": null}`.
+- An `int8` literal default is written as a 64-bit integer and a float's as a
+  double, which the validator requires; `runtime/mgdrv` reads canonical
+  extended JSON's `$numberLong` in a command for it.
+
 ### MongoDB, as a back end (ADR-0004)
 
 ```go

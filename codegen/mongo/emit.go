@@ -3,8 +3,6 @@ package codegenmongo
 import (
 	"bytes"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/gsoultan/storm/compile/mongo"
 	"github.com/gsoultan/storm/schema"
@@ -18,14 +16,17 @@ type gen struct {
 	imp  string
 	cols []*schema.Column
 	kind []kind
-	key  int // index of the primary key column
+	// keys are the primary key's columns, in key order.
+	keys []int
+	// version and soft are the version and soft-delete columns, or -1.
+	version, soft int
+	// guards are the counters with a guarded increment (IncWhen), in column
+	// order; guard j takes expression bit nCols+j.
+	guards []int
 }
 
 func newGen(t *schema.Table, pkg, imp string) (*gen, error) {
-	g := &gen{t: t, pkg: pkg, imp: imp, key: -1}
-	if len(t.Columns) > 64 {
-		return nil, fmt.Errorf("codegenmongo: %s has %d columns; a write's column mask holds 64", t.Name, len(t.Columns))
-	}
+	g := &gen{t: t, pkg: pkg, imp: imp, version: -1, soft: -1}
 	for i, c := range t.Columns {
 		k, ok := kindOf(c)
 		if !ok {
@@ -33,14 +34,65 @@ func newGen(t *schema.Table, pkg, imp string) (*gen, error) {
 		}
 		g.cols = append(g.cols, c)
 		g.kind = append(g.kind, k)
-		if c.Name == t.PrimaryKey[0] {
-			g.key = i
+		if c.Version {
+			g.version = i
+		}
+		if c.Name == t.SoftDelete {
+			g.soft = i
+		}
+		if c.IncWhen != "" {
+			g.guards = append(g.guards, i)
 		}
 	}
-	if g.key < 0 {
-		return nil, fmt.Errorf("codegenmongo: %s: primary key %s is not a column", t.Name, t.PrimaryKey[0])
+	for _, k := range t.PrimaryKey {
+		i := g.index(k)
+		if i < 0 {
+			return nil, fmt.Errorf("codegenmongo: %s: primary key %s is not a column", t.Name, k)
+		}
+		g.keys = append(g.keys, i)
+	}
+	if len(g.keys) == 0 {
+		return nil, fmt.Errorf("codegenmongo: %s has no primary key", t.Name)
+	}
+	if len(g.cols)+len(g.guards) > 64 {
+		return nil, fmt.Errorf("codegenmongo: %s has %d columns and %d guarded increments; a write's masks hold 64",
+			t.Name, len(g.cols), len(g.guards))
+	}
+	if t.SoftDeletes() && g.soft < 0 {
+		return nil, fmt.Errorf("codegenmongo: %s: soft-delete column %s is not a column", t.Name, t.SoftDelete)
+	}
+	if g.version >= 0 && !g.kind[g.version].counter {
+		return nil, fmt.Errorf("codegenmongo: %s.%s: a version column must be an integer", t.Name, g.cols[g.version].Name)
+	}
+	for _, i := range g.guards {
+		c := g.cols[i]
+		w := g.index(c.IncWhen)
+		if !g.kind[i].counter || !c.NotNull {
+			return nil, fmt.Errorf("codegenmongo: %s: IncWhen on %s: the counter must be a NOT NULL integer", t.Name, c.Name)
+		}
+		if w < 0 || !g.kind[w].scalar() || g.kind[w].slice {
+			return nil, fmt.Errorf("codegenmongo: %s: IncWhen on %s reads %s, which is not a column = can compare", t.Name, c.Name, c.IncWhen)
+		}
 	}
 	return g, nil
+}
+
+func (g *gen) index(name string) int {
+	for i, c := range g.cols {
+		if c.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func (g *gen) isKey(i int) bool {
+	for _, k := range g.keys {
+		if k == i {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *gen) p(format string, a ...any) {
@@ -92,6 +144,7 @@ func (g *gen) header() {
 	g.p("var (")
 	g.p("\t_ = time.Time{}")
 	g.p("\t_ = errors.New")
+	g.p("\t_ = bsondec.Str")
 	g.p(")")
 	g.p("")
 	g.p("// Collection is where these documents live.")
@@ -101,7 +154,11 @@ func (g *gen) header() {
 
 func (g *gen) row() {
 	g.p("// Row is one document: the model's columns, with *T rewritten to Null[T].")
-	g.p("// The primary key is stored as _id.")
+	if len(g.keys) == 1 {
+		g.p("// The primary key is stored as _id.")
+	} else {
+		g.p("// The primary key is stored as _id, a subdocument of its columns in key order.")
+	}
 	g.p("type Row struct {")
 	for i, c := range g.cols {
 		g.p("\t%s %s", g.field(i), g.kind[i].fieldType(c))
@@ -120,16 +177,6 @@ func (g *gen) row() {
 	g.p("")
 }
 
-// opNames are the operator ids, 1-based in compile/mongo's order.
-func opID(op string) int {
-	for i, o := range mongo.Ops() {
-		if o == op {
-			return i + 1
-		}
-	}
-	panic("codegenmongo: unknown operator " + op)
-}
-
 func (g *gen) handles() {
 	g.p("// Operator ids, in compile/mongo's order.")
 	g.p("const (")
@@ -142,6 +189,7 @@ func (g *gen) handles() {
 	g.p("type Pred struct {")
 	g.p("\tcol, op uint8")
 	g.p("\tv       any")
+	g.p("\terr     error")
 	g.p("}")
 	g.p("")
 	g.p("// Sort is one ordering term.")
@@ -155,7 +203,14 @@ func (g *gen) handles() {
 			continue
 		}
 		seen[k.handle] = true
-		g.handle(k)
+		switch {
+		case k.array:
+			g.arrayHandle(k)
+		case k.json:
+			g.jsonHandle(k)
+		default:
+			g.handle(k)
+		}
 	}
 	g.p("// The columns.")
 	g.p("var (")
@@ -163,6 +218,14 @@ func (g *gen) handles() {
 		g.p("\t%s = %s{c: %d}", g.field(i), g.kind[i].handle, i)
 	}
 	g.p(")")
+	g.p("")
+}
+
+func (g *gen) nullOps(h string) {
+	g.p("// IsNull matches a value that is null or absent.")
+	g.p("func (h %s) IsNull() Pred { return Pred{col: h.c, op: opIsNull} }", h)
+	g.p("")
+	g.p("func (h %s) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }", h)
 	g.p("")
 }
 
@@ -184,11 +247,7 @@ func (g *gen) handle(k kind) {
 	g.p("// NotEq does not match a null or missing value, as SQL's <> does not.")
 	g.p("func (h %s) NotEq(v %s) Pred { return Pred{col: h.c, op: opNotEq, v: v} }", h, t)
 	g.p("")
-	g.p("// IsNull matches a value that is null or absent.")
-	g.p("func (h %s) IsNull() Pred { return Pred{col: h.c, op: opIsNull} }", h)
-	g.p("")
-	g.p("func (h %s) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }", h)
-	g.p("")
+	g.nullOps(h)
 	if k.ordered {
 		for _, op := range []string{"Gt", "Gte", "Lt", "Lte"} {
 			g.p("func (h %s) %s(v %s) Pred { return Pred{col: h.c, op: op%s, v: v} }", h, op, t, op)
@@ -224,791 +283,74 @@ func (g *gen) handle(k kind) {
 	}
 }
 
-func (g *gen) query() {
-	ops := mongo.Ops()
-	g.p("// fragTab is every comparison on every column, lowered at generate time.")
-	g.p("var fragTab = [%d][nCols]mgsplice.Frag{", len(ops)+1)
-	g.p("\t{},")
-	for _, op := range ops {
-		g.p("\t{ // %s", op)
-		for i := range g.cols {
-			a, b, arg, ok := mongo.Frag(op, g.stored(i))
-			if !ok {
-				g.p("\t\t{},")
-				continue
-			}
-			g.p("\t\t{A: %s, B: %s, Arg: %v},", strconv.Quote(a), strconv.Quote(b), arg)
-		}
-		g.p("\t},")
-	}
-	g.p("}")
+// arrayHandle is an array column's operators: the three set comparisons
+// PostgreSQL has, with its answers. There is no ordering and no equality —
+// MongoDB orders an array by its least element and matches equality
+// element-wise, and neither is what SQL means.
+func (g *gen) arrayHandle(k kind) {
+	h, e := k.handle, k.elem
+	g.p("// %s is an array column, stored as a BSON array.", h)
+	g.p("type %s struct{ c uint8 }", h)
 	g.p("")
-	g.p("func fragOf(op, col uint32) mgsplice.Frag { return fragTab[op][col] }")
-	g.p("")
-	g.p("var sortTab = [2][nCols]string{")
-	for _, desc := range []bool{false, true} {
-		g.p("\t{")
-		for i := range g.cols {
-			g.p("\t\t%s,", strconv.Quote(mongo.SortTerm(g.stored(i), desc)))
-		}
-		g.p("\t},")
-	}
-	g.p("}")
-	g.p("")
-	g.p("func sortOf(dir, col uint32) string { return sortTab[dir&1][col] }")
-	g.p("")
-	g.p("var punct = mgsplice.Punctuation{And: %s, Or: %s, Sep: %s, End: %s, Empty: %s}",
-		strconv.Quote(mongo.AndOpen), strconv.Quote(mongo.OrOpen), strconv.Quote(mongo.GroupSep),
-		strconv.Quote(mongo.GroupEnd), strconv.Quote(mongo.NoFilter))
-	g.p("")
-	g.p("// defaultSort is the primary key: a read with no ordering has none, and")
-	g.p("// paging one is a bug waiting for a plan change to expose it.")
-	g.p("var defaultSort = %s", strconv.Quote(mongo.SortOpen+mongo.SortTerm(mongo.IDField, false)+mongo.SortClose))
-	g.p("")
-	g.p("const maxToks = 32")
-	g.p("")
-	g.p(`// Query is a value type: composing one copies it, and q2 := q1.Where(x)
-// never changes q1. Predicates are a postfix token stream, the same one the
-// SQL back ends key their statements on.
-type Query struct {
-	toks   [maxToks]runtime.Tok
-	vals   [maxToks]any
-	nt, nv uint8
-	limit  int64
-	offset int64
-	paged  bool
-	err    error
-}
-
-// New starts a query: every document, the first 1000, by primary key.
-func New() Query { return Query{limit: 1000} }
-
-// Limit caps the rows returned. Zero returns none, as LIMIT 0 does.
-func (q Query) Limit(n int64) Query { q.limit = n; q.paged = true; return q }
-
-// Offset skips n rows. The server still walks them; prefer a predicate on
-// the sort key for deep pages.
-func (q Query) Offset(n int64) Query { q.offset = n; q.paged = true; return q }
-
-// Err reports a query that could not be built.
-func (q Query) Err() error { return q.err }
-
-var errTooComplex = errors.New("storm: query has more predicates than its token buffer holds")
-
-func (q *Query) push(t runtime.Tok) {
-	if int(q.nt) >= maxToks {
-		q.err = errTooComplex
-		return
-	}
-	q.toks[q.nt] = t
-	q.nt++
-}
-
-func (q *Query) leaf(p Pred) {
-	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
-	if fragTab[p.op][p.col].Arg {
-		q.vals[q.nv] = p.v
-		q.nv++
-	}
-}
-
-// Where ANDs its predicates onto the query.
-func (q Query) Where(ps ...Pred) Query {
-	for _, p := range ps {
-		q.leaf(p)
-	}
-	return q
-}
-
-// WhereIf adds p only when cond holds. p is built either way, so it must
-// not dereference something cond guards — use WhenSet for that.
-func (q Query) WhereIf(cond bool, p Pred) Query {
-	if cond {
-		return q.Where(p)
-	}
-	return q
-}
-
-// WhenSet adds f(*v) only when v is non-nil.
-func WhenSet[T any](q Query, v *T, f func(T) Pred) Query {
-	if v == nil {
-		return q
-	}
-	return q.Where(f(*v))
-}
-
-// Any ORs its predicates, and ANDs the group onto the query.
-func (q Query) Any(ps ...Pred) Query {
-	if len(ps) == 0 {
-		return q
-	}
-	for _, p := range ps {
-		q.leaf(p)
-	}
-	if len(ps) > 1 {
-		q.push(runtime.MakeGroup(runtime.KOr, uint32(len(ps))))
-	}
-	return q
-}
-
-// Order sets the ordering. It is part of the statement's identity.
-func (q Query) Order(ts ...Sort) Query {
-	for _, t := range ts {
-		q.push(runtime.Tok(t))
-	}
-	return q
-}
-
-func (q Query) stream() []runtime.Tok { return q.toks[:q.nt] }
-
-func (q Query) preds() bool {
-	for _, t := range q.toks[:q.nt] {
-		if t.Kind() != runtime.KOrder {
-			return true
-		}
-	}
-	return false
-}
-`)
-	for _, op := range []string{"Eq", "NotEq"} {
-		for i := range g.cols {
-			g.p("func (q Query) %s%s(v %s) Query { return q.Where(%s.%s(v)) }",
-				g.field(i), op, g.kind[i].goType, g.field(i), op)
-		}
-	}
-	g.p("")
-	_ = opID
-}
-
-func (g *gen) reads() {
-	fs := g.fields()
-	g.p("var (")
-	g.p("\tfindCache   = runtime.NewTreeCache()")
-	g.p("\tcountCache  = runtime.NewTreeCache()")
-	g.p("\texistsCache = runtime.NewTreeCache()")
-	g.p("\tdeleteCache = runtime.NewTreeCache()")
-	g.p("\tupdateCache = runtime.NewTreeCache()")
-	g.p("\tinsertCache = runtime.NewMaskCache()")
-	g.p("\tmutCache    = runtime.NewMaskCache()")
-	g.p(")")
-	g.p("")
-	g.p("// Shapes reports how many distinct read structures have compiled.")
-	g.p("func Shapes() int { return findCache.Shapes() }")
-	g.p("")
-	g.p("// ShapeFlushes should read zero forever; see docs/GENERATED.md.")
-	g.p("func ShapeFlushes() int { return findCache.Flushes() }")
-	g.p("")
-	g.p(`// filtered compiles a command whose filter sits between head and tail, its
-// holes numbered from first.
-func filtered(c *runtime.TreeCache, toks []runtime.Tok, head, tail string, first int, sorted bool) *runtime.Stmt {
-	if st := c.Get(toks); st != nil {
-		return st
-	}
-	f, n, err := mgsplice.Splice(toks, fragOf, punct, first)
-	st := &runtime.Stmt{Err: err, NArg: first - 1 + n}
-	if err == nil {
-		s := head + f
-		if sorted {
-			s += %s + mgsplice.Sort(toks, sortOf, %s, %s, %s, defaultSort)
-		}
-		st.SQL = s + tail
-	}
-	return c.Put(toks, st)
-}
-`, strconv.Quote(mongo.FindSort), strconv.Quote(mongo.SortOpen), strconv.Quote(mongo.SortSep), strconv.Quote(mongo.SortClose))
-	g.p("var (")
-	g.p("\tfindHead   = %s", strconv.Quote(mongo.FindHead(g.t.Name, fs)))
-	g.p("\tcountHead  = %s", strconv.Quote(mongo.CountHead(g.t.Name)))
-	g.p("\texistsHead = %s", strconv.Quote(mongo.ExistsHead(g.t.Name)))
-	g.p("\tdeleteHead = %s", strconv.Quote(mongo.DeleteHead(g.t.Name)))
-	g.p(")")
-	g.p("")
-	g.p(`// SQL is the command this query runs — the name every target shares, for
-// logging and tests. It is a MongoDB command document here.
-func (q Query) SQL() string {
-	return filtered(findCache, q.stream(), findHead, %s, %d, true).SQL
-}
-
-func (q Query) args(lead ...any) []any {
-	args := make([]any, 0, len(lead)+int(q.nv))
-	args = append(args, lead...)
-	return append(args, q.vals[:q.nv]...)
-}
-
-// All runs the query and appends every row to dst.
-func (q Query) All(ctx context.Context, ex runtime.Executor, dst []Row) ([]Row, error) {
-	err := q.Each(ctx, ex, func(r Row) error { dst = append(dst, r); return nil })
-	return dst, err
-}
-
-// List is All into a new slice.
-func (q Query) List(ctx context.Context, ex runtime.Executor) ([]Row, error) {
-	return q.All(ctx, ex, nil)
-}
-
-// Each runs the query and calls fn with each row in turn. The row is fn's to
-// keep. An error from fn stops the read and is returned as it is.
-func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error) error {
-	if q.err != nil {
-		return q.err
-	}
-	if q.limit <= 0 {
-		return nil
-	}
-	st := filtered(findCache, q.stream(), findHead, %s, %d, true)
-	if st.Err != nil {
-		return st.Err
-	}
-	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var r Row
-		if err := scan(rows.RawValues(), &r); err != nil {
-			return err
-		}
-		if err := fn(r); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-// Rows is Each as a range-over-func iterator.
-func (q Query) Rows(ctx context.Context, ex runtime.Executor) func(yield func(Row, error) bool) {
-	return func(yield func(Row, error) bool) {
-		stop := errors.New("stop")
-		err := q.Each(ctx, ex, func(r Row) error {
-			if !yield(r, nil) {
-				return stop
-			}
-			return nil
-		})
-		if err != nil && err != stop {
-			yield(Row{}, err)
-		}
-	}
-}
-
-// One returns the first row, and false when there is none.
-func (q Query) One(ctx context.Context, ex runtime.Executor) (Row, bool, error) {
-	var out Row
-	found := false
-	q.limit = 1
-	err := q.Each(ctx, ex, func(r Row) error { out, found = r, true; return nil })
-	return out, found, err
-}
-
-// Count counts the matching rows, ignoring Limit and Offset.
-func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if q.err != nil {
-		return 0, q.err
-	}
-	st := filtered(countCache, q.stream(), countHead, %s, 1, false)
-	if st.Err != nil {
-		return 0, st.Err
-	}
-	rows, err := ex.Query(ctx, st.SQL, q.args())
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		// $count produces no document at all when nothing matched.
-		return 0, rows.Err()
-	}
-	n, err := bsondec.Int8(rows.RawValues()[0])
-	if err != nil {
-		return 0, err
-	}
-	return n, rows.Err()
-}
-
-// Exists reports whether any row matches, reading one key and sorting
-// nothing.
-func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
-	if q.err != nil {
-		return false, q.err
-	}
-	st := filtered(existsCache, q.stream(), existsHead, %s, 1, false)
-	if st.Err != nil {
-		return false, st.Err
-	}
-	rows, err := ex.Query(ctx, st.SQL, q.args())
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	found := rows.Next()
-	return found, rows.Err()
-}
-
-var (
-	errNoPredicate = errors.New("storm: UpdateAll and DeleteAll need a predicate — a write to every document is not something to reach by forgetting a Where")
-	errPagedWrite  = errors.New("storm: UpdateAll and DeleteAll have no Limit or Offset")
-)
-
-func (q Query) writeAllErr() error {
-	switch {
-	case q.err != nil:
-		return q.err
-	case !q.preds():
-		return errNoPredicate
-	case q.paged:
-		return errPagedWrite
-	}
-	return nil
-}
-
-// DeleteAll deletes every matching row and reports how many.
-func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error) {
-	if err := q.writeAllErr(); err != nil {
-		return 0, err
-	}
-	st := filtered(deleteCache, q.stream(), deleteHead, %s, 1, false)
-	if st.Err != nil {
-		return 0, st.Err
-	}
-	return ex.Exec(ctx, st.SQL, q.args())
-}
-`, strconv.Quote(mongo.FindTail), mongo.FindFirstArg,
-		strconv.Quote(mongo.FindTail), mongo.FindFirstArg,
-		strconv.Quote(mongo.CountTail), strconv.Quote(mongo.ExistsTail), strconv.Quote(mongo.DeleteTail))
-}
-
-// insertable reports whether a column takes a value on insert.
-func (g *gen) writes() {
-	fs := g.fields()
-	key := g.key
-	kc := g.cols[key]
-	kdef, _ := mongo.ClassifyDefault(kc)
-
-	g.p("// Column bits, for the write masks.")
-	g.p("const (")
-	for i := range g.cols {
-		g.p("\td%s uint64 = 1 << %d", g.field(i), i)
-	}
-	g.p(")")
-	g.p("")
-
-	// The insert's update document, per mask. Rendered at run time on the
-	// cold path from tables computed here, so no JSON is assembled in the
-	// generated code beyond concatenating compile/mongo's pieces.
-	g.p("// insertAssign is each column's part of an insert: bound when the caller")
-	g.p("// set it, its default when not, and absent — NULL — otherwise.")
-	g.p("var insertSet = [nCols]string{")
-	for i := range g.cols {
-		if i == key {
-			g.p("\t\"\",")
-			continue
-		}
-		g.p("\t%q,", mongo.Str(g.stored(i)))
-	}
-	g.p("}")
-	g.p("")
-	g.p("// insertDefault is the $setOnInsert literal or the $currentDate a column")
-	g.p("// gets when the caller left it unset.")
-	g.p("var insertDefault = [nCols][2]string{")
-	for i, c := range g.cols {
-		if i == key {
-			g.p("\t{},")
-			continue
-		}
-		switch k, lit := mongo.ClassifyDefault(c); k {
-		case mongo.DefaultServerTime:
-			g.p("\t{\"$currentDate\", %q},", mongo.Str(g.stored(i)))
-		case mongo.DefaultLiteral:
-			g.p("\t{\"$setOnInsert\", %q},", mongo.Str(g.stored(i))+":"+lit)
-		default:
-			g.p("\t{},")
-		}
-	}
-	g.p("}")
-	g.p("")
-	g.p(`// updateDoc renders an update document: set columns bound under op from
-// hole first, now columns as $currentDate, plus extra entries.
-func updateDoc(op string, set, now uint64, first int, extra [nCols][2]string, skip uint64) string {
-	var parts = map[string][]string{}
-	var order []string
-	add := func(o, s string) {
-		if _, ok := parts[o]; !ok {
-			order = append(order, o)
-		}
-		parts[o] = append(parts[o], s)
-	}
-	n := first
-	for i := 0; i < nCols; i++ {
-		bit := uint64(1) << i
-		switch {
-		case skip&bit != 0:
-		case set&bit != 0:
-			add(op, insertSet[i]+":{\"$arg\":"+itoa(n)+"}")
-			n++
-		case now&bit != 0:
-			add("$currentDate", insertSet[i]+":{\"$type\":\"date\"}")
-		case extra[i][0] == "$currentDate":
-			add("$currentDate", extra[i][1]+":{\"$type\":\"date\"}")
-		case extra[i][0] != "":
-			add(extra[i][0], extra[i][1])
-		}
-	}
-	s := "{"
-	for i, o := range order {
-		if i > 0 {
-			s += ","
-		}
-		s += "\"" + o + "\":{"
-		for j, p := range parts[o] {
-			if j > 0 {
-				s += ","
-			}
-			s += p
-		}
-		s += "}"
-	}
-	if len(order) == 0 {
-		s += "\"$setOnInsert\":{}"
-	}
-	return s + "}"
-}
-
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return itoa(n/10) + string(rune('0'+n%%10))
-}
-`)
-	g.p("const keyBit = d%s", g.field(key))
-	g.p("")
-	g.p("var (")
-	g.p("\tinsertPre  = %q", `{"findAndModify":`+mongo.Str(g.t.Name)+`,"query":{"_id":{"$arg":1},"$nor":[{}]},"update":`)
-	g.p("\tinsertPost = %q", `,"upsert":true,"new":true,"fields":`+mongo.Projection(fs)+`}`)
-	g.p("\tupdatePre  = %q", `{"findAndModify":`+mongo.Str(g.t.Name)+`,"query":{"_id":{"$arg":1}},"update":`)
-	g.p("\tupdatePost = %q", `,"new":true,"fields":`+mongo.Projection(fs)+`}`)
-	g.p("\tdeleteOne  = %q", mongo.DeleteOne(g.t.Name))
-	g.p(")")
-	g.p("")
-	g.p(`func insertStmt(set uint64) *runtime.Stmt {
-	k := runtime.MaskKey{Dirty: set}
-	if st := insertCache.Get(k); st != nil {
-		return st
-	}
-	st := &runtime.Stmt{SQL: insertPre + updateDoc("$setOnInsert", set, 0, 2, insertDefault, keyBit) + insertPost}
-	return insertCache.Put(k, st)
-}
-
-// Inserts reports how many distinct insert column sets have compiled.
-func Inserts() int { return insertCache.Masks() }
-
-// Ins stages a new row, with a setter for every column. A column left unset
-// gets its default — now() from the SERVER's clock — or is absent, which
-// reads back as NULL.
-type Ins struct {
-	row Row
-	set uint64
-}
-
-// Create starts an insert.
-func Create() Ins { return Ins{} }
-
-// Assigned reports the columns set so far.
-func (n Ins) Assigned() uint64 { return n.set }
-`)
-	for i := range g.cols {
-		g.p("func (n *Ins) Set%s(v %s) { n.row.%s = %s; n.set |= d%s }",
-			g.field(i), g.kind[i].goType, g.field(i), g.wrap(i, "v"), g.field(i))
-	}
-	g.p("")
-	g.p("// key fills in a client-side key when the caller set none.")
-	g.p("func (n *Ins) key() error {")
-	g.p("\tif n.set&keyBit != 0 {")
-	g.p("\t\treturn nil")
+	g.nullOps(h)
+	g.p("// Contains is `@>`: every element of v is in the column. An empty v is")
+	g.p("// true for every row that has an array, as it is in SQL.")
+	g.p("func (h %s) Contains(v ...%s) Pred {", h, e)
+	g.p("\tif len(v) == 0 {")
+	g.p("\t\treturn Pred{col: h.c, op: opIsNotNull}")
 	g.p("\t}")
-	switch kdef {
-	case mongo.DefaultUUIDv7:
-		g.p("\tn.row.%s = runtime.NewUUIDv7()", g.field(key))
-		g.p("\tn.set |= keyBit")
-		g.p("\treturn nil")
-	case mongo.DefaultUUIDv4:
-		g.p("\t// gen_random_uuid() is a version 4 uuid; MongoDB has no generator a")
-		g.p("\t// write can call, so it is made here, as on MySQL.")
-		g.p("\tn.row.%s = runtime.NewUUIDv4()", g.field(key))
-		g.p("\tn.set |= keyBit")
-		g.p("\treturn nil")
-	default:
-		g.p("\treturn errors.New(%q)", "storm: "+g.t.Name+": the key has no default, so an insert must set "+g.field(key))
-	}
+	g.p("\treturn Pred{col: h.c, op: opArrayContains, v: v}")
 	g.p("}")
 	g.p("")
-	g.p(`// Insert writes the staged row and reads it back, so server-side defaults
-// land in the returned Row. A duplicate key or unique field is
-// runtime.ErrUniqueViolation.
-func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
-	if err := n.key(); err != nil {
-		return Row{}, err
-	}
-	st := insertStmt(n.set)
-	args := make([]any, 0, nCols)
-	args = append(args, n.row.%s)
-	args = n.row.values(args, n.set&^keyBit)
-	return readBack(ctx, ex, st.SQL, args)
-}
-
-// Insert writes every column of r, zero values included, and reads the row
-// back into r. A zero key is filled in when the key has a default.
-func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
-	n := Ins{row: *r, set: 1<<nCols - 1}
-	if %s {
-		n.set &^= keyBit
-	}
-	out, err := n.Insert(ctx, ex)
-	if err != nil {
-		return err
-	}
-	*r = out
-	return nil
-}
-
-func readBack(ctx context.Context, ex runtime.Executor, cmd string, args []any) (Row, error) {
-	var out Row
-	rows, err := ex.Query(ctx, cmd, args)
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return out, err
-		}
-		return out, runtime.ErrNoRow
-	}
-	if err := scan(rows.RawValues(), &out); err != nil {
-		return out, err
-	}
-	return out, rows.Err()
-}
-`, g.field(key), g.zeroKey(key, kdef))
-
-	g.p("// values appends the bound value of every column in mask, in column order.")
-	g.p("// A Null that is not Valid binds null.")
-	g.p("func (r *Row) values(args []any, mask uint64) []any {")
-	for i := range g.cols {
-		g.p("\tif mask&d%s != 0 {", g.field(i))
-		g.p("\t\targs = append(args, %s)", g.unwrap(i, "r."+g.field(i)))
-		g.p("\t}")
-	}
-	g.p("\treturn args")
+	g.p("// ContainedBy is `<@`: every element of the column is in v.")
+	g.p("func (h %s) ContainedBy(v ...%s) Pred {", h, e)
+	g.p("\tif v == nil {")
+	g.p("\t\tv = []%s{}", e)
+	g.p("\t}")
+	g.p("\treturn Pred{col: h.c, op: opArrayContainedBy, v: v}")
 	g.p("}")
 	g.p("")
-
-	g.p(`// Mut stages an update. Only assigned columns are written.
-type Mut struct {
-	row   Row
-	dirty uint64
-	now   uint64
-}
-
-// Mutate stages an update of a row read from the database.
-func Mutate(r Row) Mut { return Mut{row: r} }
-
-// MutateKey stages an update addressed by key alone.
-func MutateKey(k %s) Mut { return Mut{row: Row{%s: k}} }
-
-// Row returns the staged values — after Update, the row as stored.
-func (m Mut) Row() Row { return m.row }
-`, g.kind[key].goType, g.field(key))
-	g.p("// Setters. There is none for the key or an Immutable column: the absence")
-	g.p("// of the method is the enforcement.")
-	for i, c := range g.cols {
-		if i == key || c.Immutable {
-			continue
-		}
-		g.p("func (m *Mut) Set%s(v %s) { m.row.%s = %s; m.dirty |= d%s; m.now &^= d%s }",
-			g.field(i), g.kind[i].goType, g.field(i), g.wrap(i, "v"), g.field(i), g.field(i))
-		if !g.kind[i].nullable(c) && g.kind[i].slice {
-			continue
-		}
-		if g.kind[i].nullable(c) {
-			g.p("func (m *Mut) Set%sNull() { m.row.%s = runtime.Null[%s]{}; m.dirty |= d%s; m.now &^= d%s }",
-				g.field(i), g.field(i), g.kind[i].goType, g.field(i), g.field(i))
-		}
-		if c.Type.Name == schema.TypeTimestamptz {
-			g.p("// Set%sNow assigns the server's clock, not this process's.", g.field(i))
-			g.p("func (m *Mut) Set%sNow() { m.now |= d%s; m.dirty &^= d%s }", g.field(i), g.field(i), g.field(i))
-		}
-	}
-	g.p("")
-	g.p(`func (m Mut) doc(first int) string {
-	return updateDoc("$set", m.dirty, m.now, first, [nCols][2]string{}, keyBit)
-}
-
-// Update writes the assigned columns of the row with this key and reads the
-// row back into the Mut. A key that matches nothing is runtime.ErrNoRow.
-// Assigning nothing sends nothing.
-func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
-	if m.dirty|m.now == 0 {
-		return nil
-	}
-	k := runtime.MaskKey{Dirty: m.dirty, Expr: m.now}
-	st := mutCache.Get(k)
-	if st == nil {
-		st = mutCache.Put(k, &runtime.Stmt{SQL: updatePre + m.doc(2) + updatePost})
-	}
-	args := make([]any, 0, nCols)
-	args = append(args, m.row.%s)
-	args = m.row.values(args, m.dirty)
-	out, err := readBack(ctx, ex, st.SQL, args)
-	if err != nil {
-		return err
-	}
-	m.row = out
-	m.dirty, m.now = 0, 0
-	return nil
-}
-
-// UpdateAll applies m's assignments to every matching row and reports how
-// many matched.
-func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64, error) {
-	if err := q.writeAllErr(); err != nil {
-		return 0, err
-	}
-	if m.dirty|m.now == 0 {
-		return 0, nil
-	}
-	var key [maxToks + 4]runtime.Tok
-	toks := append(key[:0], q.stream()...)
-	toks = append(toks, runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32), runtime.Tok(m.now), runtime.Tok(m.now>>32))
-	st := updateCache.Get(toks)
-	if st == nil {
-		u := m.doc(1)
-		n := 0
-		for b := m.dirty; b != 0; b &= b - 1 {
-			n++
-		}
-		f, np, err := mgsplice.Splice(q.stream(), fragOf, punct, n+1)
-		st = &runtime.Stmt{Err: err, NArg: n + np}
-		if err == nil {
-			st.SQL = %s + u + %s + f + %s
-		}
-		st = updateCache.Put(toks, st)
-	}
-	if st.Err != nil {
-		return 0, st.Err
-	}
-	args := m.row.values(make([]any, 0, nCols+int(q.nv)), m.dirty)
-	args = append(args, q.vals[:q.nv]...)
-	return ex.Exec(ctx, st.SQL, args)
-}
-
-// Delete deletes the row with this key. A key that matches nothing is
-// runtime.ErrNoRow.
-func Delete(ctx context.Context, ex runtime.Executor, k %s) error {
-	n, err := ex.Exec(ctx, deleteOne, []any{k})
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return runtime.ErrNoRow
-	}
-	return nil
-}
-
-// InsertAll inserts rows as documents, a thousand per round trip. There is
-// no read-back, so every key must be set: a zero key is refused rather
-// than stored, and no defaults apply.
-func InsertAll(ctx context.Context, ex runtime.Executor, rows []Row) (int64, error) {
-	for i := range rows {
-		if %s {
-			return 0, errors.New("storm: InsertAll: row " + itoa(i) + " has no key")
-		}
-	}
-	return ex.CopyFrom(ctx, Collection, fields[:], &rowSource{rows: rows})
-}
-
-// rowSource walks a []Row for CopyFrom without copying it.
-type rowSource struct {
-	rows []Row
-	i    int
-	buf  []any
-}
-
-func (s *rowSource) Next() bool { s.i++; return s.i <= len(s.rows) }
-func (s *rowSource) Values() []any {
-	s.buf = s.rows[s.i-1].values(s.buf[:0], 1<<nCols-1)
-	return s.buf
-}
-func (s *rowSource) Err() error { return nil }
-`, g.field(key),
-		strconv.Quote(`{"update":`+mongo.Str(g.t.Name)+`,"updates":[{"multi":true,"u":`),
-		strconv.Quote(`,"q":`), strconv.Quote(mongo.UpdateTail),
-		g.kind[key].goType, g.zeroRowKey(key))
-}
-
-// zeroKey is the Go condition that the staged row's key is unset, for a key
-// with a default; "false" for one without, which the caller must set.
-func (g *gen) zeroKey(i int, d mongo.DefaultKind) string {
-	if d != mongo.DefaultUUIDv4 && d != mongo.DefaultUUIDv7 {
-		return "false"
-	}
-	return "runtime.IsZeroUUID(r." + g.field(i) + ")"
-}
-
-func (g *gen) zeroRowKey(i int) string {
-	switch g.kind[i].goType {
-	case "[16]byte":
-		return "runtime.IsZeroUUID(rows[i]." + g.field(i) + ")"
-	case "string":
-		return "rows[i]." + g.field(i) + ` == ""`
-	}
-	return "false"
-}
-
-// wrap turns a value of the base type into the Row field's type.
-func (g *gen) wrap(i int, v string) string {
-	if g.kind[i].nullable(g.cols[i]) {
-		return "runtime.Null[" + g.kind[i].goType + "]{V: " + v + ", Valid: true}"
-	}
-	return v
-}
-
-// unwrap turns a Row field into what is bound: nil for a NULL.
-func (g *gen) unwrap(i int, f string) string {
-	if g.kind[i].nullable(g.cols[i]) {
-		return "nullable(" + f + ")"
-	}
-	return f
-}
-
-func (g *gen) scan() {
-	g.p(`// nullable binds a Null as its value, or nil.
-func nullable[T any](n runtime.Null[T]) any {
-	if !n.Valid {
-		return nil
-	}
-	return n.V
-}
-
-// scan decodes one document's fields, in projection order. A field of the
-// wrong BSON type is an error naming it, never a plausible zero.
-func scan(rv [][]byte, r *Row) error {
-	if len(rv) != nCols {
-		return runtime.ErrShape
-	}
-	var err error`)
-	for i, c := range g.cols {
-		k := g.kind[i]
-		if k.nullable(c) {
-			g.p("\tif r.%s, err = bsondec.Nullable(rv[%d], bsondec.%s); err != nil {", g.field(i), i, k.dec)
-		} else {
-			g.p("\tif r.%s, err = bsondec.%s(rv[%d]); err != nil {", g.field(i), k.dec, i)
-		}
-		g.p("\t\treturn errors.Join(errors.New(%q), err)", "storm: "+g.t.Name+"."+c.Name)
-		g.p("\t}")
-	}
-	g.p("\treturn nil")
+	g.p("// Overlaps is `&&`: the column and v share an element.")
+	g.p("func (h %s) Overlaps(v ...%s) Pred {", h, e)
+	g.p("\tif v == nil {")
+	g.p("\t\tv = []%s{}", e)
+	g.p("\t}")
+	g.p("\treturn Pred{col: h.c, op: opArrayOverlaps, v: v}")
 	g.p("}")
-	_ = strings.Join
+	g.p("")
+}
+
+// jsonHandle is a json column's operators. Contains, HasAnyKey and HasAllKeys
+// bind a filter mgsplice builds from the caller's document; ContainedBy and
+// TextLikeAny are not generated — MongoDB has no filter that says either.
+func (g *gen) jsonHandle(k kind) {
+	h := k.handle
+	g.p("// %s is a json column, stored as the BSON value its text denotes.", h)
+	g.p("type %s struct{ c uint8 }", h)
+	g.p("")
+	g.nullOps(h)
+	g.p("// IsEmpty matches null, absent, {} and [].")
+	g.p("func (h %s) IsEmpty() Pred { return Pred{col: h.c, op: opJSONIsEmpty} }", h)
+	g.p("")
+	g.p("// Contains is `@>`: every path v states holds in the column, with")
+	g.p("// PostgreSQL's answer for an array that merely holds a scalar. A key that")
+	g.p("// cannot be a field path — empty, $-prefixed, dotted — is an error the")
+	g.p("// query returns, never a filter that matches something else.")
+	g.p("func (h %s) Contains(v runtime.JSON) Pred {", h)
+	g.p("\tf, err := mgsplice.JSONContains(fields[h.c], v)")
+	g.p("\treturn Pred{col: h.c, op: opJSONContains, v: f, err: err}")
+	g.p("}")
+	g.p("")
+	g.p("// HasAnyKey is `?|`: the column has at least one of the keys.")
+	g.p("func (h %s) HasAnyKey(v ...string) Pred {", h)
+	g.p("\tf, err := mgsplice.HasKeys(fields[h.c], v, false)")
+	g.p("\treturn Pred{col: h.c, op: opHasAnyKey, v: f, err: err}")
+	g.p("}")
+	g.p("")
+	g.p("// HasAllKeys is `?&`: the column has every one of the keys.")
+	g.p("func (h %s) HasAllKeys(v ...string) Pred {", h)
+	g.p("\tf, err := mgsplice.HasKeys(fields[h.c], v, true)")
+	g.p("\treturn Pred{col: h.c, op: opHasAllKeys, v: f, err: err}")
+	g.p("}")
+	g.p("")
 }

@@ -53,9 +53,8 @@ func Check(s *schema.Schema) error {
 
 func checkTable(t *schema.Table, add func(pos, format string, a ...any)) {
 	n := t.Name
-	if len(t.PrimaryKey) != 1 {
-		add(t.Pos, "%s: needs a single-column primary key — it is stored as _id, "+
-			"and a composite key would be a subdocument no other table could reference", n)
+	if len(t.PrimaryKey) == 0 {
+		add(t.Pos, "%s: needs a primary key — it is stored as _id", n)
 	}
 	if t.Generated {
 		add(t.Pos, "%s: a generated many-to-many join table — a document store models "+
@@ -65,8 +64,6 @@ func checkTable(t *schema.Table, add func(pos, format string, a ...any)) {
 		on   bool
 		what string
 	}{
-		{t.SoftDeletes(), "soft delete (a live-scoped UNIQUE needs a partial index on " +
-			"\"is null\", which partialFilterExpression cannot say)"},
 		{t.Sharded(), "a shard key"},
 		{t.Partition != nil || t.PartitionOf != "", "partitioning"},
 		{len(t.Checks) > 0, "CHECK constraints (SQL text)"},
@@ -96,6 +93,14 @@ func checkTable(t *schema.Table, add func(pos, format string, a ...any)) {
 	for _, ix := range t.Indexes {
 		checkIndex(t, ix, add)
 	}
+	for _, u := range t.Uniques {
+		for _, col := range u.Columns {
+			if c := t.Column(col); c != nil && (c.Type.Array || mongo.IsJSON(c)) {
+				add(colPos(t, c), "%s: UNIQUE over %s, an array or json column — MongoDB's unique "+
+					"index on one constrains each ELEMENT or field, not the value", t.Name, col)
+			}
+		}
+	}
 }
 
 func checkColumn(t *schema.Table, c *schema.Column, add func(pos, format string, a ...any)) {
@@ -110,13 +115,6 @@ func checkColumn(t *schema.Table, c *schema.Column, add func(pos, format string,
 	if c.Identity || c.Serial {
 		add(pos, "%s.%s: MongoDB has no sequence; an auto-incrementing key is a counter "+
 			"document and a race — use storm.Model's uuid key", t.Name, c.Name)
-	}
-	if c.Version {
-		add(pos, "%s.%s: version columns (optimistic locking) are not generated for MongoDB yet",
-			t.Name, c.Name)
-	}
-	if c.IncWhen != "" {
-		add(pos, "%s.%s: IncWhen is not generated for MongoDB yet", t.Name, c.Name)
 	}
 	switch k, _ := mongo.ClassifyDefault(c); k {
 	case mongo.DefaultUnsupported:
@@ -137,8 +135,13 @@ func checkColumn(t *schema.Table, c *schema.Column, add func(pos, format string,
 // because on this target nothing would take it and the rows would simply stay.
 func checkReference(t *schema.Table, fk *schema.ForeignKey, add func(pos, format string, a ...any)) {
 	if len(fk.Columns) != 1 {
-		add(t.Pos, "%s: composite foreign key (%s) has no MongoDB form",
-			t.Name, strings.Join(fk.Columns, ", "))
+		if fk.Document == "" {
+			add(t.Pos, "%s: the foreign key (%s) must say how it is stored in a document — "+
+				"t.ForeignKey(...).References(...).OnDocument(storm.Reference()) — because "+
+				"embed-versus-reference is a modelling decision storm will not guess (ADR-0004)",
+				t.Name, strings.Join(fk.Columns, ", "))
+		}
+		checkActions(t, fk, t.Pos, add)
 		return
 	}
 	c := t.Column(fk.Columns[0])
@@ -149,7 +152,7 @@ func checkReference(t *schema.Table, fk *schema.ForeignKey, add func(pos, format
 			rel = r
 		}
 	}
-	if rel == nil || rel.Document == "" {
+	if fk.Document == "" && (rel == nil || rel.Document == "") {
 		field := fk.Columns[0]
 		if rel != nil {
 			field = rel.Field
@@ -158,11 +161,16 @@ func checkReference(t *schema.Table, fk *schema.ForeignKey, add func(pos, format
 			"t.Col(&x.%s).OnDocument(storm.Reference()) — because embed-versus-reference is a "+
 			"modelling decision storm will not guess (ADR-0004)", t.Name, fk.Columns[0], field)
 	}
+	checkActions(t, fk, pos, add)
+}
+
+func checkActions(t *schema.Table, fk *schema.ForeignKey, pos string, add func(pos, format string, a ...any)) {
 	for _, a := range []schema.Action{fk.OnDelete, fk.OnUpdate} {
 		switch a {
 		case schema.Cascade, schema.SetNull, schema.SetDefault:
 			add(pos, "%s.%s: ON DELETE/UPDATE %s — MongoDB has no foreign keys, so nothing "+
-				"would perform it; do it in the write that deletes the parent", t.Name, fk.Columns[0], a)
+				"would perform it; do it in the write that deletes the parent",
+				t.Name, strings.Join(fk.Columns, ", "), a)
 		}
 	}
 }
@@ -174,15 +182,27 @@ func checkIndex(t *schema.Table, ix *schema.Index, add func(pos, format string, 
 	}
 	name := t.IndexName(ix)
 	switch {
-	case ix.Where != "":
+	case ix.Where != "" && ix.LiveCol == "":
 		add(pos, "%s: index %s is partial over SQL text (%s), which partialFilterExpression "+
 			"cannot evaluate", t.Name, name, ix.Where)
+	case ix.Method == "gin" && ginable(t, ix):
+		// An array's index is multikey and a json column's a wildcard index
+		// over its fields: each answers the containment GIN answers.
 	case ix.Method != "" && ix.Method != "btree":
 		add(pos, "%s: index %s uses %s; MongoDB indexes are B-trees", t.Name, name, ix.Method)
 	case len(ix.Include) > 0:
 		add(pos, "%s: index %s has INCLUDE columns; MongoDB has no covering clause", t.Name, name)
 	case len(ix.With) > 0:
 		add(pos, "%s: index %s has storage parameters", t.Name, name)
+	}
+	if ix.Unique {
+		for _, k := range ix.Columns {
+			if c := t.Column(k.Name); c != nil && (c.Type.Array || mongo.IsJSON(c)) {
+				add(pos, "%s: unique index %s covers %s, an array or json column — MongoDB's "+
+					"unique index on one constrains each ELEMENT or field, not the value",
+					t.Name, name, k.Name)
+			}
+		}
 	}
 	for _, k := range ix.Columns {
 		switch {
@@ -196,6 +216,16 @@ func checkIndex(t *schema.Table, ix *schema.Index, add func(pos, format string, 
 				t.Name, name, k.Name)
 		}
 	}
+}
+
+// ginable reports a GIN index this back end can answer: one column, an array
+// or a json value.
+func ginable(t *schema.Table, ix *schema.Index) bool {
+	if len(ix.Columns) != 1 || ix.Columns[0].Expr {
+		return false
+	}
+	c := t.Column(ix.Columns[0].Name)
+	return c != nil && (c.Type.Array || mongo.IsJSON(c))
 }
 
 func at(pos string) string {

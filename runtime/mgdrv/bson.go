@@ -2,9 +2,12 @@ package mgdrv
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gsoultan/storm/runtime"
@@ -252,6 +255,13 @@ func appendValue(b []byte, name string, v any) ([]byte, error) {
 		return appendArray(b, name, len(x), func(b []byte, i int) ([]byte, error) {
 			return appendValue(b, argName(i), x[i])
 		})
+	case runtime.JSON:
+		return appendJSON(b, name, x)
+	case *runtime.JSON:
+		if x == nil {
+			return appendName(b, tNull, name), nil
+		}
+		return appendJSON(b, name, *x)
 	case []runtime.Decimal:
 		return appendArray(b, name, len(x), func(b []byte, i int) ([]byte, error) {
 			return appendDecimal(b, argName(i), x[i]), nil
@@ -424,4 +434,129 @@ func strField(doc []byte, key string) string {
 	}
 	s, _ := asString(t, v)
 	return s
+}
+
+// appendJSON binds a json or jsonb value as the BSON value its text denotes:
+// an object as a document with its keys in written order, an array as an
+// array, a number as int32, int64 or double — the narrowest that holds it
+// exactly. Stored that way rather than as text, a field inside is queryable
+// as what it is. An empty or nil value binds null, as the SQL back ends'
+// JSON.OrNull does.
+func appendJSON(b []byte, name string, j runtime.JSON) ([]byte, error) {
+	if len(j) == 0 {
+		return appendName(b, tNull, name), nil
+	}
+	d := json.NewDecoder(strings.NewReader(string(j)))
+	d.UseNumber()
+	b, err := jsonValue(b, name, d, 0)
+	if err != nil {
+		return b, err
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return b, errJSON
+	}
+	return b, nil
+}
+
+var errJSON = errors.New("mgdrv: a json value is not one JSON document")
+
+// maxJSONDepth bounds the recursion on a value the caller supplied. MongoDB
+// refuses documents nested deeper than 100 levels anyway.
+const maxJSONDepth = 100
+
+func jsonValue(b []byte, name string, d *json.Decoder, depth int) ([]byte, error) {
+	if depth > maxJSONDepth {
+		return b, errJSON
+	}
+	tok, err := d.Token()
+	if err != nil {
+		return b, errJSON
+	}
+	switch v := tok.(type) {
+	case json.Delim:
+		t := byte(tDocument)
+		if v == '[' {
+			t = tArray
+		} else if v != '{' {
+			return b, errJSON
+		}
+		b = appendName(b, t, name)
+		b, at := startDoc(b)
+		for i := 0; d.More(); i++ {
+			key := argName(i)
+			if t == tDocument {
+				k, err := d.Token()
+				ks, ok := k.(string)
+				if err != nil || !ok || strings.IndexByte(ks, 0) >= 0 {
+					return b, errJSON
+				}
+				key = ks
+			}
+			if b, err = jsonValue(b, key, d, depth+1); err != nil {
+				return b, err
+			}
+		}
+		if _, err := d.Token(); err != nil {
+			return b, errJSON
+		}
+		return endDoc(b, at), nil
+	case string:
+		return appendStr(b, name, v), nil
+	case bool:
+		return appendBool(b, name, v), nil
+	case nil:
+		return appendName(b, tNull, name), nil
+	case json.Number:
+		s := string(v)
+		if !strings.ContainsAny(s, ".eE") {
+			if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+				if n >= math.MinInt32 && n <= math.MaxInt32 {
+					return appendInt32(b, name, int32(n)), nil
+				}
+				return appendInt64(b, name, n), nil
+			}
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return b, errJSON
+		}
+		return appendValue(b, name, f)
+	}
+	return b, errJSON
+}
+
+// appendFields writes one document's fields, nesting a dotted name — a
+// composite key's "_id.tenant" — into the subdocument its head names. Fields
+// that share a head are gathered under it in the order they first appear,
+// which for a key is key order.
+func appendFields(b []byte, cols []string, vals []any) ([]byte, error) {
+	done := make([]bool, len(cols))
+	var err error
+	for i, col := range cols {
+		if done[i] || i >= len(vals) {
+			continue
+		}
+		head, _, nested := strings.Cut(col, ".")
+		if !nested {
+			if b, err = appendValue(b, col, vals[i]); err != nil {
+				return b, errors.New("mgdrv: field " + col + ": unsupported Go type")
+			}
+			continue
+		}
+		b = appendName(b, tDocument, head)
+		var at int
+		b, at = startDoc(b)
+		for j := i; j < len(cols) && j < len(vals); j++ {
+			h, rest, ok := strings.Cut(cols[j], ".")
+			if !ok || h != head {
+				continue
+			}
+			if b, err = appendValue(b, rest, vals[j]); err != nil {
+				return b, errors.New("mgdrv: field " + cols[j] + ": unsupported Go type")
+			}
+			done[j] = true
+		}
+		b = endDoc(b, at)
+	}
+	return b, nil
 }

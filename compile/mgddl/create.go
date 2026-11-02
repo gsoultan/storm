@@ -60,37 +60,33 @@ func Create(s *schema.Schema) (string, error) {
 // A NULL is a field that is absent or null, so a nullable field is not
 // required and admits null; a NOT NULL field is required and does not.
 func createCollection(t *schema.Table, enums map[string]*schema.Enum) string {
-	var props, required []string
+	var props, required, keyProps, keyRequired []string
 	for _, c := range t.Columns {
 		f := mongo.Field(t, c.Name)
-		bt, _ := mongo.BSONType(c)
-		var p strings.Builder
-		p.WriteString(mongo.Str(f))
-		p.WriteString(`:{"bsonType":`)
-		if c.NotNull {
-			p.WriteString(mongo.Str(bt))
-			required = append(required, mongo.Str(f))
-		} else {
-			p.WriteString(`[` + mongo.Str(bt) + `,"null"]`)
+		name := f
+		composite := strings.HasPrefix(f, mongo.IDField+".")
+		if composite {
+			name = c.Name
 		}
-		if c.Type.Name == schema.TypeVarchar && c.Type.Size > 0 {
-			p.WriteString(`,"maxLength":` + strconv.Itoa(c.Type.Size))
-		}
-		if e, ok := enums[c.Type.Name]; ok && c.Type.Enum {
-			p.WriteString(`,"enum":[`)
-			for i, l := range e.Labels {
-				if i > 0 {
-					p.WriteByte(',')
-				}
-				p.WriteString(mongo.Str(l))
+		p := mongo.Str(name) + `:` + property(c, enums)
+		switch {
+		case composite:
+			keyProps = append(keyProps, p)
+			keyRequired = append(keyRequired, mongo.Str(name))
+		default:
+			props = append(props, p)
+			if c.NotNull {
+				required = append(required, mongo.Str(f))
 			}
-			if !c.NotNull {
-				p.WriteString(`,null`)
-			}
-			p.WriteByte(']')
 		}
-		p.WriteByte('}')
-		props = append(props, p.String())
+	}
+	if len(keyProps) > 0 {
+		// A composite key is the _id subdocument: an object of exactly its
+		// columns, all required.
+		props = append([]string{mongo.Str(mongo.IDField) + `:{"bsonType":"object","required":[` +
+			strings.Join(keyRequired, ",") + `],"additionalProperties":false,"properties":{` +
+			strings.Join(keyProps, ",") + `}}`}, props...)
+		required = append([]string{mongo.Str(mongo.IDField)}, required...)
 	}
 	var b strings.Builder
 	b.WriteString(`{"create":` + mongo.Str(t.Name) + `,"validator":{"$jsonSchema":{"bsonType":"object"`)
@@ -99,6 +95,60 @@ func createCollection(t *schema.Table, enums map[string]*schema.Enum) string {
 	}
 	b.WriteString(`,"properties":{` + strings.Join(props, ",") + `}}}`)
 	b.WriteString(`,"validationLevel":"strict","validationAction":"error"}`)
+	return b.String()
+}
+
+// property is one column's $jsonSchema.
+//
+// A json column admits any BSON value its text could denote, so its only
+// constraint is NOT NULL's. An array admits arrays of its element type.
+func property(c *schema.Column, enums map[string]*schema.Enum) string {
+	if mongo.IsJSON(c) {
+		if c.NotNull {
+			return `{"not":{"bsonType":"null"}}`
+		}
+		return `{}`
+	}
+	bt, _ := mongo.BSONType(c)
+	var p strings.Builder
+	p.WriteString(`{"bsonType":`)
+	if c.NotNull {
+		p.WriteString(mongo.Str(bt))
+	} else {
+		p.WriteString(`[` + mongo.Str(bt) + `,"null"]`)
+	}
+	if c.Type.Array {
+		et, _ := mongo.ElemType(c)
+		p.WriteString(`,"items":{"bsonType":` + mongo.Str(et))
+		if e, ok := enums[c.Type.Name]; ok && c.Type.Enum {
+			p.WriteString(`,"enum":` + labels(e, false))
+		}
+		p.WriteString(`}}`)
+		return p.String()
+	}
+	if c.Type.Name == schema.TypeVarchar && c.Type.Size > 0 {
+		p.WriteString(`,"maxLength":` + strconv.Itoa(c.Type.Size))
+	}
+	if e, ok := enums[c.Type.Name]; ok && c.Type.Enum {
+		p.WriteString(`,"enum":` + labels(e, !c.NotNull))
+	}
+	p.WriteByte('}')
+	return p.String()
+}
+
+func labels(e *schema.Enum, null bool) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, l := range e.Labels {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(mongo.Str(l))
+	}
+	if null {
+		b.WriteString(`,null`)
+	}
+	b.WriteByte(']')
 	return b.String()
 }
 
@@ -112,6 +162,17 @@ func createCollection(t *schema.Table, enums map[string]*schema.Enum) string {
 // PostgreSQL's index constrains. NULLS NOT DISTINCT is then the plain form.
 func createIndexes(t *schema.Table) string {
 	var ixs []string
+	if len(t.PrimaryKey) > 1 {
+		// The _id index orders whole keys, so it cannot answer a query on
+		// the key's leading column the way a SQL primary key's index does.
+		// This one can — the cost is a second index on every write, which
+		// is what a composite key's leading-column lookups are worth.
+		keys := make([]schema.IndexColumn, len(t.PrimaryKey))
+		for i, k := range t.PrimaryKey {
+			keys[i] = schema.IndexColumn{Name: k}
+		}
+		ixs = append(ixs, index(t, t.Name+"_pkey", keys, false, false, false, ""))
+	}
 	for _, u := range t.Uniques {
 		keys := make([]schema.IndexColumn, len(u.Columns))
 		for i, c := range u.Columns {
@@ -121,14 +182,18 @@ func createIndexes(t *schema.Table) string {
 		if name == "" {
 			name = t.UniqueName(u)
 		}
-		ixs = append(ixs, index(t, name, keys, true, false, false))
+		ixs = append(ixs, index(t, name, keys, true, false, false, ""))
 	}
 	for _, ix := range t.Indexes {
 		name := ix.Name
 		if name == "" {
 			name = t.IndexName(ix)
 		}
-		ixs = append(ixs, index(t, name, ix.Columns, ix.Unique, ix.NullsNotDistinct, ix.Invisible))
+		if ix.Method == "gin" {
+			ixs = append(ixs, gin(t, name, ix))
+			continue
+		}
+		ixs = append(ixs, index(t, name, ix.Columns, ix.Unique, ix.NullsNotDistinct, ix.Invisible, ix.LiveCol))
 	}
 	if len(ixs) == 0 {
 		return ""
@@ -136,7 +201,23 @@ func createIndexes(t *schema.Table) string {
 	return `{"createIndexes":` + mongo.Str(t.Name) + `,"indexes":[` + strings.Join(ixs, ",") + `]}`
 }
 
-func index(t *schema.Table, name string, keys []schema.IndexColumn, unique, nullsEqual, hidden bool) string {
+// gin is a GIN index's MongoDB counterpart: an array's plain index, which is
+// multikey and answers $all and $in by element, or a json column's wildcard
+// index, which indexes every field inside it.
+func gin(t *schema.Table, name string, ix *schema.Index) string {
+	c := t.Column(ix.Columns[0].Name)
+	f := mongo.Field(t, c.Name)
+	if mongo.IsJSON(c) {
+		f += ".$**"
+	}
+	return `{"key":{` + mongo.Str(f) + `:1},"name":` + mongo.Str(name) + `}`
+}
+
+// index is one index. live names a soft-delete column when the index is a
+// unique key scoped to the live documents, which partialFilterExpression
+// says as `live: null` — matching a field that is null or absent, the same
+// documents every read here calls live.
+func index(t *schema.Table, name string, keys []schema.IndexColumn, unique, nullsEqual, hidden bool, live string) string {
 	var key, partial []string
 	for _, k := range keys {
 		f := mongo.Field(t, k.Name)
@@ -149,6 +230,9 @@ func index(t *schema.Table, name string, keys []schema.IndexColumn, unique, null
 			bt, _ := mongo.BSONType(c)
 			partial = append(partial, mongo.Str(f)+`:{"$type":`+mongo.Str(bt)+`}`)
 		}
+	}
+	if live != "" {
+		partial = append(partial, mongo.Str(mongo.Field(t, live))+`:null`)
 	}
 	s := `{"key":{` + strings.Join(key, ",") + `},"name":` + mongo.Str(name)
 	if unique {

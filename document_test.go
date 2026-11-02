@@ -61,3 +61,47 @@ func TestOnDocumentIsRefusedWhereItMeansNothing(t *testing.T) {
 		t.Errorf("an unknown form: %v", err)
 	}
 }
+
+// The composite form, on t.ForeignKey.
+type docSite struct {
+	Tenant string
+	Code   string
+}
+
+func (s *docSite) Schema(t *storm.Table) { t.PrimaryKey(&s.Tenant, &s.Code) }
+
+type docVisit struct {
+	storm.Model
+	Tenant string
+	Code   string
+}
+
+func (v *docVisit) Schema(t *storm.Table) {
+	var s docSite
+	t.ForeignKey(&v.Tenant, &v.Code).References(&s, &s.Tenant, &s.Code).OnDocument(storm.Reference())
+}
+
+type docBadVisit struct {
+	storm.Model
+	Tenant string
+	Code   string
+}
+
+func (v *docBadVisit) Schema(t *storm.Table) {
+	var s docSite
+	t.ForeignKey(&v.Tenant, &v.Code).References(&s, &s.Tenant, &s.Code).OnDocument("embed")
+}
+
+func TestForeignKeyOnDocument(t *testing.T) {
+	s, err := storm.Build(&docSite{}, &docVisit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fks := s.Table("doc_visits").ForeignKeys
+	if len(fks) != 1 || fks[0].Document != string(storm.Reference()) || len(fks[0].Columns) != 2 {
+		t.Fatalf("%+v", fks)
+	}
+	if _, err := storm.Build(&docSite{}, &docBadVisit{}); err == nil || !strings.Contains(err.Error(), "storm.Reference()") {
+		t.Errorf("an unknown form: %v", err)
+	}
+}

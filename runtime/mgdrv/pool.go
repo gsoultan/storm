@@ -328,15 +328,9 @@ func copyFrom(ctx context.Context, c *conn, coll string, cols []string, src runt
 				b = appendName(b, tDocument, argName(n))
 				var d int
 				b, d = startDoc(b)
-				vals := src.Values()
-				for i, col := range cols {
-					if i >= len(vals) {
-						break
-					}
-					var err error
-					if b, err = appendValue(b, col, vals[i]); err != nil {
-						return b, errors.New("mgdrv: CopyFrom field " + col + ": unsupported Go type")
-					}
+				var err error
+				if b, err = appendFields(b, cols, src.Values()); err != nil {
+					return b, errors.New("mgdrv: CopyFrom: " + err.Error())
 				}
 				b = endDoc(b, d)
 				more = src.Next()

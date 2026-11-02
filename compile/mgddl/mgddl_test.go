@@ -93,6 +93,7 @@ func TestEveryRefusalNamesItsConstruct(t *testing.T) {
 	tb.Indexes = append(tb.Indexes,
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "nick"}}, Where: "nick <> ''"},
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "nick"}}, Method: "gin"},
+		&schema.Index{Columns: []schema.IndexColumn{{Name: "nick"}}, Method: "gist"},
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "nick"}}, Include: []string{"email"}},
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "nick"}}, With: []schema.StorageParam{{Name: "fillfactor", Value: "70"}}},
 		&schema.Index{Columns: []schema.IndexColumn{{Name: "lower(nick)", Expr: true}}},
@@ -111,22 +112,19 @@ func TestEveryRefusalNamesItsConstruct(t *testing.T) {
 		t.Fatal("nothing refused")
 	}
 	for _, want := range []string{
-		"model.go:1: users: soft delete",
 		"users.span: type tstzrange",
 		"users.g: a generated column",
 		"users.seq: MongoDB has no sequence",
-		"users.v: version columns",
-		"users.w: IncWhen",
 		"users.lc: default lower('x')",
 		"users.u: a uuid default on a text column",
 		"model.go:9: users.org_id: a reference must say how it is stored",
 		"t.Col(&x.Org).OnDocument(storm.Reference())",
 		"ON DELETE/UPDATE CASCADE",
-		"composite foreign key (a, org_id)",
+		"the foreign key (a, org_id) must say how it is stored",
 		"CHECK constraints", "named plans",
-		"is partial over SQL text", "uses gin", "INCLUDE columns", "storage parameters",
+		"is partial over SQL text", "uses gist", "INCLUDE columns", "storage parameters",
 		"expression key", "operator class", "places NULLs explicitly",
-		"links: needs a single-column primary key", "links: a generated many-to-many",
+		"links: a generated many-to-many",
 		"union Feed", "function f", "view v", "trigger t",
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -146,5 +144,83 @@ func TestADeclaredReferencePorts(t *testing.T) {
 	tb.Relations = []*schema.Relation{{Field: "Org", Owner: true, Column: "org_id", Document: "reference"}}
 	if err := Check(s); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTheShapesRoundOneAdded(t *testing.T) {
+	text := func(name string, notNull bool) *schema.Column {
+		return &schema.Column{Name: name, Type: schema.Type{Name: schema.TypeText}, NotNull: notNull}
+	}
+	s := &schema.Schema{
+		Enums: []*schema.Enum{{Name: "mood", Labels: []string{"ok"}}},
+		Tables: []*schema.Table{{
+			Name:       "stock",
+			PrimaryKey: []string{"branch", "sku"},
+			SoftDelete: "gone",
+			Columns: []*schema.Column{
+				text("branch", true), text("sku", true),
+				{Name: "tags", Type: schema.Type{Name: schema.TypeText, Array: true}, NotNull: true},
+				{Name: "moods", Type: schema.Type{Name: "mood", Enum: true, Array: true}},
+				{Name: "attrs", Type: schema.Type{Name: schema.TypeJSONB}, NotNull: true},
+				{Name: "extra", Type: schema.Type{Name: schema.TypeJSON}},
+				{Name: "v", Type: schema.Type{Name: schema.TypeInt4}, NotNull: true, Version: true},
+				{Name: "n", Type: schema.Type{Name: schema.TypeInt8}, NotNull: true, IncWhen: "v"},
+				text("email", false),
+				{Name: "gone", Type: schema.Type{Name: schema.TypeTimestamptz}},
+			},
+			Indexes: []*schema.Index{
+				{Columns: []schema.IndexColumn{{Name: "tags"}}, Method: "gin"},
+				{Columns: []schema.IndexColumn{{Name: "attrs"}}, Method: "gin"},
+				{Name: "uq_stock_email", Columns: []schema.IndexColumn{{Name: "email"}}, Unique: true,
+					Where: "gone IS NULL", LiveCol: "gone"},
+			},
+			ForeignKeys: []*schema.ForeignKey{{Columns: []string{"branch", "sku"}, RefTable: "x",
+				RefColumns: []string{"a", "b"}, Document: "reference"}},
+		}},
+	}
+	cmds, err := Commands(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(cmds, "\n")
+	for _, want := range []string{
+		`"_id":{"bsonType":"object","required":["branch","sku"],"additionalProperties":false,"properties":{"branch":{"bsonType":"string"},"sku":{"bsonType":"string"}}}`,
+		`"required":["_id","tags","attrs","v","n"]`,
+		`"tags":{"bsonType":"array","items":{"bsonType":"string"}}`,
+		`"moods":{"bsonType":["array","null"],"items":{"bsonType":"string","enum":["ok"]}}`,
+		`"attrs":{"not":{"bsonType":"null"}}`,
+		`"extra":{}`,
+		`{"key":{"_id.branch":1,"_id.sku":1},"name":"stock_pkey"}`,
+		`{"key":{"tags":1},"name":"ix_stock_tags"}`,
+		`{"key":{"attrs.$**":1},"name":"ix_stock_attrs"}`,
+		`"name":"uq_stock_email","unique":true,"partialFilterExpression":{"email":{"$type":"string"},"gone":null}`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing %s in\n%s", want, all)
+		}
+	}
+	for _, c := range cmds {
+		var v map[string]any
+		if err := json.Unmarshal([]byte(c), &v); err != nil {
+			t.Fatalf("%s: %v", c, err)
+		}
+	}
+
+	// What still does not port about these shapes.
+	tb := s.Tables[0]
+	tb.Uniques = []*schema.Unique{{Columns: []string{"tags"}}}
+	tb.Indexes = append(tb.Indexes,
+		&schema.Index{Columns: []schema.IndexColumn{{Name: "attrs"}}, Unique: true},
+		&schema.Index{Columns: []schema.IndexColumn{{Name: "email"}}, Method: "gin"})
+	tb.ForeignKeys[0].Document = ""
+	tb.ForeignKeys[0].OnDelete = schema.Cascade
+	err = Check(s)
+	for _, want := range []string{
+		"stock: UNIQUE over tags", "unique index ix_stock_attrs covers attrs",
+		"uses gin", "the foreign key (branch, sku) must say", "stock.branch, sku: ON DELETE/UPDATE CASCADE",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must contain %q: %v", want, err)
+		}
 	}
 }

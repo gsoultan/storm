@@ -20,6 +20,7 @@ import (
 var (
 	_ = time.Time{}
 	_ = errors.New
+	_ = bsondec.Str
 )
 
 // Collection is where these documents live.
@@ -34,9 +35,10 @@ type Row struct {
 	Name      string
 	Email     string
 	Bio       runtime.Null[string]
+	DeletedAt runtime.Null[time.Time]
 }
 
-const nCols = 6
+const nCols = 7
 
 // fields are the stored names, in column order: the projection every read
 // asks for, so a row's values arrive in the order scan reads them.
@@ -47,31 +49,40 @@ var fields = [nCols]string{
 	"name",
 	"email",
 	"bio",
+	"deleted_at",
 }
 
 // Operator ids, in compile/mongo's order.
 const (
-	opEq        uint8 = 1
-	opNotEq     uint8 = 2
-	opGt        uint8 = 3
-	opGte       uint8 = 4
-	opLt        uint8 = 5
-	opLte       uint8 = 6
-	opIn        uint8 = 7
-	opNotIn     uint8 = 8
-	opIsNull    uint8 = 9
-	opIsNotNull uint8 = 10
-	opHasPrefix uint8 = 11
-	opHasSuffix uint8 = 12
-	opContains  uint8 = 13
-	opLike      uint8 = 14
-	opILike     uint8 = 15
+	opEq               uint8 = 1
+	opNotEq            uint8 = 2
+	opGt               uint8 = 3
+	opGte              uint8 = 4
+	opLt               uint8 = 5
+	opLte              uint8 = 6
+	opIn               uint8 = 7
+	opNotIn            uint8 = 8
+	opIsNull           uint8 = 9
+	opIsNotNull        uint8 = 10
+	opHasPrefix        uint8 = 11
+	opHasSuffix        uint8 = 12
+	opContains         uint8 = 13
+	opLike             uint8 = 14
+	opILike            uint8 = 15
+	opArrayContains    uint8 = 16
+	opArrayContainedBy uint8 = 17
+	opArrayOverlaps    uint8 = 18
+	opJSONContains     uint8 = 19
+	opHasAnyKey        uint8 = 20
+	opHasAllKeys       uint8 = 21
+	opJSONIsEmpty      uint8 = 22
 )
 
 // Pred is one comparison on one column.
 type Pred struct {
 	col, op uint8
 	v       any
+	err     error
 }
 
 // Sort is one ordering term.
@@ -198,10 +209,11 @@ var (
 	Name      = TextCol{c: 3}
 	Email     = TextCol{c: 4}
 	Bio       = TextCol{c: 5}
+	DeletedAt = TimeCol{c: 6}
 )
 
 // fragTab is every comparison on every column, lowered at generate time.
-var fragTab = [16][nCols]mgsplice.Frag{
+var fragTab = [23][nCols]mgsplice.Frag{
 	{},
 	{ // Eq
 		{A: "{\"_id\":{\"$eq\":", B: "}}", Arg: true},
@@ -210,6 +222,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$eq\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$eq\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$eq\":", B: "}}", Arg: true},
 	},
 	{ // NotEq
 		{A: "{\"_id\":{\"$nin\":[", B: ",null]}}", Arg: true},
@@ -218,6 +231,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"email\":{\"$nin\":[", B: ",null]}}", Arg: true},
 		{A: "{\"bio\":{\"$nin\":[", B: ",null]}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$nin\":[", B: ",null]}}", Arg: true},
 	},
 	{ // Gt
 		{A: "{\"_id\":{\"$gt\":", B: "}}", Arg: true},
@@ -226,6 +240,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$gt\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$gt\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$gt\":", B: "}}", Arg: true},
 	},
 	{ // Gte
 		{A: "{\"_id\":{\"$gte\":", B: "}}", Arg: true},
@@ -234,6 +249,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$gte\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$gte\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$gte\":", B: "}}", Arg: true},
 	},
 	{ // Lt
 		{A: "{\"_id\":{\"$lt\":", B: "}}", Arg: true},
@@ -242,6 +258,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$lt\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$lt\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$lt\":", B: "}}", Arg: true},
 	},
 	{ // Lte
 		{A: "{\"_id\":{\"$lte\":", B: "}}", Arg: true},
@@ -250,6 +267,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$lte\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$lte\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$lte\":", B: "}}", Arg: true},
 	},
 	{ // In
 		{A: "{\"_id\":{\"$in\":", B: "}}", Arg: true},
@@ -258,6 +276,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$in\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$in\":", B: "}}", Arg: true},
 	},
 	{ // NotIn
 		{A: "{\"_id\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
@@ -266,6 +285,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"email\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 		{A: "{\"bio\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$nin\":", B: ",\"$ne\":null}}", Arg: true},
 	},
 	{ // IsNull
 		{A: "{\"_id\":null}", B: "", Arg: false},
@@ -274,6 +294,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":null}", B: "", Arg: false},
 		{A: "{\"email\":null}", B: "", Arg: false},
 		{A: "{\"bio\":null}", B: "", Arg: false},
+		{A: "{\"deleted_at\":null}", B: "", Arg: false},
 	},
 	{ // IsNotNull
 		{A: "{\"_id\":{\"$ne\":null}}", B: "", Arg: false},
@@ -282,6 +303,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"email\":{\"$ne\":null}}", B: "", Arg: false},
 		{A: "{\"bio\":{\"$ne\":null}}", B: "", Arg: false},
+		{A: "{\"deleted_at\":{\"$ne\":null}}", B: "", Arg: false},
 	},
 	{ // HasPrefix
 		{A: "{\"_id\":{\"$regex\":", B: "}}", Arg: true},
@@ -290,6 +312,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$regex\":", B: "}}", Arg: true},
 	},
 	{ // HasSuffix
 		{A: "{\"_id\":{\"$regex\":", B: "}}", Arg: true},
@@ -298,6 +321,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$regex\":", B: "}}", Arg: true},
 	},
 	{ // Contains
 		{A: "{\"_id\":{\"$regex\":", B: "}}", Arg: true},
@@ -306,6 +330,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$regex\":", B: "}}", Arg: true},
 	},
 	{ // Like
 		{A: "{\"_id\":{\"$regex\":", B: "}}", Arg: true},
@@ -314,6 +339,7 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"email\":{\"$regex\":", B: "}}", Arg: true},
 		{A: "{\"bio\":{\"$regex\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$regex\":", B: "}}", Arg: true},
 	},
 	{ // ILike
 		{A: "{\"_id\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
@@ -322,6 +348,70 @@ var fragTab = [16][nCols]mgsplice.Frag{
 		{A: "{\"name\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"email\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
 		{A: "{\"bio\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$regex\":", B: ",\"$options\":\"i\"}}", Arg: true},
+	},
+	{ // ArrayContains
+		{A: "{\"_id\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"created_at\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"updated_at\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"name\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"email\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"bio\":{\"$all\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$all\":", B: "}}", Arg: true},
+	},
+	{ // ArrayContainedBy
+		{A: "{\"_id\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"created_at\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"updated_at\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"name\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"email\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"bio\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$type\":\"array\",\"$not\":{\"$elemMatch\":{\"$nin\":", B: "}}}}", Arg: true},
+	},
+	{ // ArrayOverlaps
+		{A: "{\"_id\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"created_at\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"updated_at\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"name\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"email\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"bio\":{\"$in\":", B: "}}", Arg: true},
+		{A: "{\"deleted_at\":{\"$in\":", B: "}}", Arg: true},
+	},
+	{ // JSONContains
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+	},
+	{ // HasAnyKey
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+		{A: "{\"$or\":", B: "}", Arg: true},
+	},
+	{ // HasAllKeys
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+		{A: "{\"$and\":", B: "}", Arg: true},
+	},
+	{ // JSONIsEmpty
+		{A: "{\"_id\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"created_at\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"updated_at\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"name\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"email\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"bio\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
+		{A: "{\"deleted_at\":{\"$in\":[null,{},[]]}}", B: "", Arg: false},
 	},
 }
 
@@ -335,6 +425,7 @@ var sortTab = [2][nCols]string{
 		"\"name\":1",
 		"\"email\":1",
 		"\"bio\":1",
+		"\"deleted_at\":1",
 	},
 	{
 		"\"_id\":-1",
@@ -343,6 +434,7 @@ var sortTab = [2][nCols]string{
 		"\"name\":-1",
 		"\"email\":-1",
 		"\"bio\":-1",
+		"\"deleted_at\":-1",
 	},
 }
 
@@ -354,19 +446,30 @@ var punct = mgsplice.Punctuation{And: "{\"$and\":[", Or: "{\"$or\":[", Sep: ",",
 // paging one is a bug waiting for a plan change to expose it.
 var defaultSort = "{\"_id\":1}"
 
+// liveOpen and liveClose AND the soft-delete test in FRONT of the caller's
+// filter, in every read and every write this package generates: a
+// marked document is gone, and no call site can widen that by
+// forgetting a predicate. Only a query that says WithDeleted is spliced
+// without it.
+const (
+	liveOpen  = "{\"$and\":[{\"deleted_at\":null},"
+	liveClose = "]}"
+)
+
 const maxToks = 32
 
 // Query is a value type: composing one copies it, and q2 := q1.Where(x)
 // never changes q1. Predicates are a postfix token stream, the same one the
 // SQL back ends key their statements on.
 type Query struct {
-	toks   [maxToks]runtime.Tok
-	vals   [maxToks]any
-	nt, nv uint8
-	limit  int64
-	offset int64
-	paged  bool
-	err    error
+	toks    [maxToks]runtime.Tok
+	vals    [maxToks]any
+	nt, nv  uint8
+	limit   int64
+	offset  int64
+	paged   bool
+	err     error
+	deleted bool
 }
 
 // New starts a query: every document, the first 1000, by primary key.
@@ -394,8 +497,14 @@ func (q *Query) push(t runtime.Tok) {
 }
 
 func (q *Query) leaf(p Pred) {
+	if p.err != nil {
+		if q.err == nil {
+			q.err = p.err
+		}
+		return
+	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
-	if fragTab[p.op][p.col].Arg {
+	if fragTab[p.op][p.col].Arg && q.err == nil {
 		q.vals[q.nv] = p.v
 		q.nv++
 	}
@@ -459,42 +568,74 @@ func (q Query) preds() bool {
 	return false
 }
 
+// WithDeleted reads the marked documents as well as the live ones. All,
+// One, Each, Rows, Count and Exists honour it; UpdateAll and DeleteAll
+// refuse it, rather than writing to documents every other read calls gone.
+func (q Query) WithDeleted() Query { q.deleted = true; return q }
+
+// scope is 1 for a read that includes marked documents, 0 otherwise.
+func (q Query) scope() int {
+	if q.deleted {
+		return 1
+	}
+	return 0
+}
+
 func (q Query) IDEq(v [16]byte) Query            { return q.Where(ID.Eq(v)) }
 func (q Query) CreatedAtEq(v time.Time) Query    { return q.Where(CreatedAt.Eq(v)) }
 func (q Query) UpdatedAtEq(v time.Time) Query    { return q.Where(UpdatedAt.Eq(v)) }
 func (q Query) NameEq(v string) Query            { return q.Where(Name.Eq(v)) }
 func (q Query) EmailEq(v string) Query           { return q.Where(Email.Eq(v)) }
 func (q Query) BioEq(v string) Query             { return q.Where(Bio.Eq(v)) }
+func (q Query) DeletedAtEq(v time.Time) Query    { return q.Where(DeletedAt.Eq(v)) }
 func (q Query) IDNotEq(v [16]byte) Query         { return q.Where(ID.NotEq(v)) }
 func (q Query) CreatedAtNotEq(v time.Time) Query { return q.Where(CreatedAt.NotEq(v)) }
 func (q Query) UpdatedAtNotEq(v time.Time) Query { return q.Where(UpdatedAt.NotEq(v)) }
 func (q Query) NameNotEq(v string) Query         { return q.Where(Name.NotEq(v)) }
 func (q Query) EmailNotEq(v string) Query        { return q.Where(Email.NotEq(v)) }
 func (q Query) BioNotEq(v string) Query          { return q.Where(Bio.NotEq(v)) }
+func (q Query) DeletedAtNotEq(v time.Time) Query { return q.Where(DeletedAt.NotEq(v)) }
+
+// The statement caches, one per scope: [0] the live documents, [1] every
+// document, for a query that said WithDeleted.
+type caches [2]*runtime.TreeCache
+
+func newCaches() caches { return caches{runtime.NewTreeCache(), runtime.NewTreeCache()} }
 
 var (
-	findCache   = runtime.NewTreeCache()
-	countCache  = runtime.NewTreeCache()
-	existsCache = runtime.NewTreeCache()
-	deleteCache = runtime.NewTreeCache()
-	updateCache = runtime.NewTreeCache()
+	findCache   = newCaches()
+	countCache  = newCaches()
+	existsCache = newCaches()
+	deleteCache = newCaches()
+	updateCache = newCaches()
 	insertCache = runtime.NewMaskCache()
 	mutCache    = runtime.NewMaskCache()
 )
 
 // Shapes reports how many distinct read structures have compiled.
-func Shapes() int { return findCache.Shapes() }
+func Shapes() int { return findCache[0].Shapes() + findCache[1].Shapes() }
 
 // ShapeFlushes should read zero forever; see docs/GENERATED.md.
-func ShapeFlushes() int { return findCache.Flushes() }
+func ShapeFlushes() int { return findCache[0].Flushes() + findCache[1].Flushes() }
+
+// filter splices the predicate tokens into a filter document, holes from
+// first; scope 0 on a soft-delete table puts the liveness test in front.
+func filter(toks []runtime.Tok, first, scope int) (string, int, error) {
+	f, n, err := mgsplice.Splice(toks, fragOf, punct, first)
+	if err == nil && scope == 0 && liveOpen != "" {
+		f = liveOpen + f + liveClose
+	}
+	return f, n, err
+}
 
 // filtered compiles a command whose filter sits between head and tail, its
 // holes numbered from first.
-func filtered(c *runtime.TreeCache, toks []runtime.Tok, head, tail string, first int, sorted bool) *runtime.Stmt {
+func filtered(cs caches, scope int, toks []runtime.Tok, head, tail string, first int, sorted bool) *runtime.Stmt {
+	c := cs[scope]
 	if st := c.Get(toks); st != nil {
 		return st
 	}
-	f, n, err := mgsplice.Splice(toks, fragOf, punct, first)
+	f, n, err := filter(toks, first, scope)
 	st := &runtime.Stmt{Err: err, NArg: first - 1 + n}
 	if err == nil {
 		s := head + f
@@ -507,16 +648,16 @@ func filtered(c *runtime.TreeCache, toks []runtime.Tok, head, tail string, first
 }
 
 var (
-	findHead   = "{\"find\":\"authors\",\"limit\":{\"$arg\":1},\"skip\":{\"$arg\":2},\"projection\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"name\":1,\"email\":1,\"bio\":1},\"filter\":"
+	findHead   = "{\"find\":\"authors\",\"limit\":{\"$arg\":1},\"skip\":{\"$arg\":2},\"projection\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"name\":1,\"email\":1,\"bio\":1,\"deleted_at\":1},\"filter\":"
 	countHead  = "{\"aggregate\":\"authors\",\"cursor\":{},\"pipeline\":[{\"$match\":"
 	existsHead = "{\"find\":\"authors\",\"limit\":1,\"projection\":{\"_id\":1},\"filter\":"
-	deleteHead = "{\"delete\":\"authors\",\"deletes\":[{\"limit\":0,\"q\":"
+	deleteHead = "{\"update\":\"authors\",\"updates\":[{\"multi\":true,\"u\":[{\"$set\":{\"deleted_at\":\"$$NOW\"}}],\"q\":"
 )
 
 // SQL is the command this query runs — the name every target shares, for
 // logging and tests. It is a MongoDB command document here.
 func (q Query) SQL() string {
-	return filtered(findCache, q.stream(), findHead, "}", 3, true).SQL
+	return filtered(findCache, q.scope(), q.stream(), findHead, "}", 3, true).SQL
 }
 
 func (q Query) args(lead ...any) []any {
@@ -545,7 +686,7 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 	if q.limit <= 0 {
 		return nil
 	}
-	st := filtered(findCache, q.stream(), findHead, "}", 3, true)
+	st := filtered(findCache, q.scope(), q.stream(), findHead, "}", 3, true)
 	if st.Err != nil {
 		return st.Err
 	}
@@ -596,7 +737,7 @@ func (q Query) Count(ctx context.Context, ex runtime.Executor) (int64, error) {
 	if q.err != nil {
 		return 0, q.err
 	}
-	st := filtered(countCache, q.stream(), countHead, "},{\"$count\":\"n\"}]}", 1, false)
+	st := filtered(countCache, q.scope(), q.stream(), countHead, "},{\"$count\":\"n\"}]}", 1, false)
 	if st.Err != nil {
 		return 0, st.Err
 	}
@@ -622,7 +763,7 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 	if q.err != nil {
 		return false, q.err
 	}
-	st := filtered(existsCache, q.stream(), existsHead, "}", 1, false)
+	st := filtered(existsCache, q.scope(), q.stream(), existsHead, "}", 1, false)
 	if st.Err != nil {
 		return false, st.Err
 	}
@@ -635,29 +776,32 @@ func (q Query) Exists(ctx context.Context, ex runtime.Executor) (bool, error) {
 	return found, rows.Err()
 }
 
-var (
-	errNoPredicate = errors.New("storm: UpdateAll and DeleteAll need a predicate — a write to every document is not something to reach by forgetting a Where")
-	errPagedWrite  = errors.New("storm: UpdateAll and DeleteAll have no Limit or Offset")
-)
+var errDeletedWrite = errors.New("storm: WithDeleted is for reads; UpdateAll and DeleteAll act on the live documents only")
 
 func (q Query) writeAllErr() error {
 	switch {
 	case q.err != nil:
 		return q.err
 	case !q.preds():
-		return errNoPredicate
+		return runtime.ErrUnfilteredWrite
 	case q.paged:
-		return errPagedWrite
+		return runtime.ErrPagedWrite
+	case q.scope() != 0:
+		return errDeletedWrite
 	}
 	return nil
 }
 
-// DeleteAll deletes every matching row and reports how many.
+// DeleteAll marks every live document the query matches deleted, in ONE
+// command, and reports how many it marked. Like Delete it removes nothing;
+// documents already marked are not stamped again.
+// The query needs a predicate (runtime.ErrUnfilteredWrite) and no Limit or
+// Offset (runtime.ErrPagedWrite).
 func (q Query) DeleteAll(ctx context.Context, ex runtime.Executor) (int64, error) {
 	if err := q.writeAllErr(); err != nil {
 		return 0, err
 	}
-	st := filtered(deleteCache, q.stream(), deleteHead, "}]}", 1, false)
+	st := filtered(deleteCache, 0, q.stream(), deleteHead, "}]}", 1, false)
 	if st.Err != nil {
 		return 0, st.Err
 	}
@@ -672,17 +816,23 @@ const (
 	dName      uint64 = 1 << 3
 	dEmail     uint64 = 1 << 4
 	dBio       uint64 = 1 << 5
+	dDeletedAt uint64 = 1 << 6
 )
 
-// insertAssign is each column's part of an insert: bound when the caller
-// set it, its default when not, and absent — NULL — otherwise.
-var insertSet = [nCols]string{
+// keyBits are the primary key's columns.
+const keyBits = dID
+
+const nKeys = 1
+
+// setName is each column's quoted stored name, as an update document's key.
+var setName = [nCols]string{
 	"",
 	"\"created_at\"",
 	"\"updated_at\"",
 	"\"name\"",
 	"\"email\"",
 	"\"bio\"",
+	"\"deleted_at\"",
 }
 
 // insertDefault is the $setOnInsert literal or the $currentDate a column
@@ -694,11 +844,12 @@ var insertDefault = [nCols][2]string{
 	{},
 	{},
 	{},
+	{"$setOnInsert", "\"deleted_at\":null"},
 }
 
-// updateDoc renders an update document: set columns bound under op from
-// hole first, now columns as $currentDate, plus extra entries.
-func updateDoc(op string, set, now uint64, first int, extra [nCols][2]string, skip uint64) string {
+// insertDoc renders an insert's update document: set columns bound from
+// hole first, the rest their defaults.
+func insertDoc(set uint64, first int) string {
 	var parts = map[string][]string{}
 	var order []string
 	add := func(o, s string) {
@@ -711,16 +862,14 @@ func updateDoc(op string, set, now uint64, first int, extra [nCols][2]string, sk
 	for i := 0; i < nCols; i++ {
 		bit := uint64(1) << i
 		switch {
-		case skip&bit != 0:
+		case keyBits&bit != 0:
 		case set&bit != 0:
-			add(op, insertSet[i]+":{\"$arg\":"+itoa(n)+"}")
+			add("$setOnInsert", setName[i]+":{\"$arg\":"+itoa(n)+"}")
 			n++
-		case now&bit != 0:
-			add("$currentDate", insertSet[i]+":{\"$type\":\"date\"}")
-		case extra[i][0] == "$currentDate":
-			add("$currentDate", extra[i][1]+":{\"$type\":\"date\"}")
-		case extra[i][0] != "":
-			add(extra[i][0], extra[i][1])
+		case insertDefault[i][0] == "$currentDate":
+			add("$currentDate", insertDefault[i][1]+":{\"$type\":\"date\"}")
+		case insertDefault[i][0] != "":
+			add(insertDefault[i][0], insertDefault[i][1])
 		}
 	}
 	s := "{"
@@ -750,14 +899,71 @@ func itoa(n int) string {
 	return itoa(n/10) + string(rune('0'+n%10))
 }
 
-const keyBit = dID
+// exprSet is a column's server-side value: the server's clock for a
+// timestamp, one more than itself for a counter.
+var exprSet = [nCols]string{
+	"",
+	"\"created_at\":\"$$NOW\"",
+	"\"updated_at\":\"$$NOW\"",
+	"",
+	"",
+	"",
+	"\"deleted_at\":\"$$NOW\"",
+}
+
+// addOpen opens Add's form: the column plus a bound amount.
+var addOpen = [nCols]string{
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+	"",
+}
+
+// versionBump moves the version on every update; empty without one.
+const versionBump = ""
+
+// pipeDoc renders an update pipeline: bound values from hole first, in
+// column order, then the guarded increments' values.
+func pipeDoc(dirty, expr uint64, first int) string {
+	s := "[{\"$set\":{"
+	n, k := first, 0
+	add := func(p string) {
+		if k > 0 {
+			s += ","
+		}
+		s += p
+		k++
+	}
+	hole := func() string {
+		h := "{\"$arg\":" + itoa(n) + "}"
+		n++
+		return h
+	}
+	for i := 0; i < nCols; i++ {
+		bit := uint64(1) << i
+		d, e := dirty&bit != 0, expr&bit != 0
+		switch {
+		case keyBits&bit != 0:
+		case d && e:
+			add(addOpen[i] + hole() + "}]}")
+		case d:
+			add(setName[i] + ":{\"$literal\":" + hole() + "}")
+		case e:
+			add(exprSet[i])
+		}
+	}
+	if versionBump != "" {
+		add(versionBump)
+	}
+	return s + "}}]"
+}
 
 var (
 	insertPre  = "{\"findAndModify\":\"authors\",\"query\":{\"_id\":{\"$arg\":1},\"$nor\":[{}]},\"update\":"
-	insertPost = ",\"upsert\":true,\"new\":true,\"fields\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"name\":1,\"email\":1,\"bio\":1}}"
-	updatePre  = "{\"findAndModify\":\"authors\",\"query\":{\"_id\":{\"$arg\":1}},\"update\":"
-	updatePost = ",\"new\":true,\"fields\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"name\":1,\"email\":1,\"bio\":1}}"
-	deleteOne  = "{\"delete\":\"authors\",\"deletes\":[{\"limit\":1,\"q\":{\"_id\":{\"$arg\":1}}}]}"
+	insertPost = ",\"upsert\":true,\"new\":true,\"fields\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"name\":1,\"email\":1,\"bio\":1,\"deleted_at\":1}}"
 )
 
 func insertStmt(set uint64) *runtime.Stmt {
@@ -765,7 +971,7 @@ func insertStmt(set uint64) *runtime.Stmt {
 	if st := insertCache.Get(k); st != nil {
 		return st
 	}
-	st := &runtime.Stmt{SQL: insertPre + updateDoc("$setOnInsert", set, 0, 2, insertDefault, keyBit) + insertPost}
+	st := &runtime.Stmt{SQL: insertPre + insertDoc(set, nKeys+1) + insertPost}
 	return insertCache.Put(k, st)
 }
 
@@ -792,16 +998,19 @@ func (n *Ins) SetUpdatedAt(v time.Time) { n.row.UpdatedAt = v; n.set |= dUpdated
 func (n *Ins) SetName(v string)         { n.row.Name = v; n.set |= dName }
 func (n *Ins) SetEmail(v string)        { n.row.Email = v; n.set |= dEmail }
 func (n *Ins) SetBio(v string)          { n.row.Bio = runtime.Null[string]{V: v, Valid: true}; n.set |= dBio }
+func (n *Ins) SetDeletedAt(v time.Time) {
+	n.row.DeletedAt = runtime.Null[time.Time]{V: v, Valid: true}
+	n.set |= dDeletedAt
+}
 
 // key fills in a client-side key when the caller set none.
 func (n *Ins) key() error {
-	if n.set&keyBit != 0 {
-		return nil
+	if n.set&dID == 0 {
+		// gen_random_uuid() is a version 4 uuid; MongoDB has no generator a
+		// write can call, so it is made here, as on MySQL.
+		n.row.ID = runtime.NewUUIDv4()
+		n.set |= dID
 	}
-	// gen_random_uuid() is a version 4 uuid; MongoDB has no generator a
-	// write can call, so it is made here, as on MySQL.
-	n.row.ID = runtime.NewUUIDv4()
-	n.set |= keyBit
 	return nil
 }
 
@@ -815,7 +1024,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	st := insertStmt(n.set)
 	args := make([]any, 0, nCols)
 	args = append(args, n.row.ID)
-	args = n.row.values(args, n.set&^keyBit)
+	args = n.row.values(args, n.set&^keyBits)
 	return readBack(ctx, ex, st.SQL, args)
 }
 
@@ -824,7 +1033,7 @@ func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
 	n := Ins{row: *r, set: 1<<nCols - 1}
 	if runtime.IsZeroUUID(r.ID) {
-		n.set &^= keyBit
+		n.set &^= dID
 	}
 	out, err := n.Insert(ctx, ex)
 	if err != nil {
@@ -853,6 +1062,22 @@ func readBack(ctx context.Context, ex runtime.Executor, cmd string, args []any) 
 	return out, rows.Err()
 }
 
+// orNil binds a nil slice as null, which is what it means in a Row.
+func orNil[T any](v []T) any {
+	if v == nil {
+		return nil
+	}
+	return v
+}
+
+// nullable binds a Null as its value, or nil.
+func nullable[T any](n runtime.Null[T]) any {
+	if !n.Valid {
+		return nil
+	}
+	return n.V
+}
+
 // values appends the bound value of every column in mask, in column order.
 // A Null that is not Valid binds null.
 func (r *Row) values(args []any, mask uint64) []any {
@@ -874,110 +1099,160 @@ func (r *Row) values(args []any, mask uint64) []any {
 	if mask&dBio != 0 {
 		args = append(args, nullable(r.Bio))
 	}
+	if mask&dDeletedAt != 0 {
+		args = append(args, nullable(r.DeletedAt))
+	}
 	return args
 }
+
+var (
+	updatePre  = "{\"findAndModify\":\"authors\",\"query\":{\"_id\":{\"$arg\":1},\"deleted_at\":null},\"update\":"
+	updatePost = ",\"new\":true,\"fields\":{\"_id\":1,\"created_at\":1,\"updated_at\":1,\"name\":1,\"email\":1,\"bio\":1,\"deleted_at\":1}}"
+)
 
 // Mut stages an update. Only assigned columns are written.
 type Mut struct {
 	row   Row
 	dirty uint64
-	now   uint64
+	expr  uint64
 }
 
 // Mutate stages an update of a row read from the database.
 func Mutate(r Row) Mut { return Mut{row: r} }
 
 // MutateKey stages an update addressed by key alone.
-func MutateKey(k [16]byte) Mut { return Mut{row: Row{ID: k}} }
+func MutateKey(id [16]byte) Mut { return Mut{row: Row{ID: id}} }
 
 // Row returns the staged values — after Update, the row as stored.
 func (m Mut) Row() Row { return m.row }
 
-// Setters. There is none for the key or an Immutable column: the absence
-// of the method is the enforcement.
+// Setters. There is none for the key, an Immutable column or the version
+// column: the absence of the method is the enforcement.
 func (m *Mut) SetUpdatedAt(v time.Time) {
 	m.row.UpdatedAt = v
 	m.dirty |= dUpdatedAt
-	m.now &^= dUpdatedAt
+	m.expr &^= dUpdatedAt
 }
 
 // SetUpdatedAtNow assigns the server's clock, not this process's.
-func (m *Mut) SetUpdatedAtNow()  { m.now |= dUpdatedAt; m.dirty &^= dUpdatedAt }
-func (m *Mut) SetName(v string)  { m.row.Name = v; m.dirty |= dName; m.now &^= dName }
-func (m *Mut) SetEmail(v string) { m.row.Email = v; m.dirty |= dEmail; m.now &^= dEmail }
+func (m *Mut) SetUpdatedAtNow()  { m.expr |= dUpdatedAt; m.dirty &^= dUpdatedAt }
+func (m *Mut) SetName(v string)  { m.row.Name = v; m.dirty |= dName; m.expr &^= dName }
+func (m *Mut) SetEmail(v string) { m.row.Email = v; m.dirty |= dEmail; m.expr &^= dEmail }
 func (m *Mut) SetBio(v string) {
 	m.row.Bio = runtime.Null[string]{V: v, Valid: true}
 	m.dirty |= dBio
-	m.now &^= dBio
+	m.expr &^= dBio
 }
-func (m *Mut) SetBioNull() { m.row.Bio = runtime.Null[string]{}; m.dirty |= dBio; m.now &^= dBio }
+func (m *Mut) SetBioNull() { m.row.Bio = runtime.Null[string]{}; m.dirty |= dBio; m.expr &^= dBio }
+func (m *Mut) SetDeletedAt(v time.Time) {
+	m.row.DeletedAt = runtime.Null[time.Time]{V: v, Valid: true}
+	m.dirty |= dDeletedAt
+	m.expr &^= dDeletedAt
+}
+func (m *Mut) SetDeletedAtNull() {
+	m.row.DeletedAt = runtime.Null[time.Time]{}
+	m.dirty |= dDeletedAt
+	m.expr &^= dDeletedAt
+}
 
-func (m Mut) doc(first int) string {
-	return updateDoc("$set", m.dirty, m.now, first, [nCols][2]string{}, keyBit)
+// SetDeletedAtNow assigns the server's clock, not this process's.
+func (m *Mut) SetDeletedAtNow() { m.expr |= dDeletedAt; m.dirty &^= dDeletedAt }
+
+// args binds a Mut's values: those it assigned, in column order, then the
+// values its guarded increments compare with.
+func (m *Mut) args(args []any) []any {
+	args = m.row.values(args, m.dirty&^keyBits)
+
+	return args
 }
 
 // Update writes the assigned columns of the row with this key and reads the
 // row back into the Mut. A key that matches nothing is runtime.ErrNoRow.
+// A deleted row is not updatable: every read here says it is gone.
 // Assigning nothing sends nothing.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
-	if m.dirty|m.now == 0 {
+	if m.dirty|m.expr == 0 {
 		return nil
 	}
-	k := runtime.MaskKey{Dirty: m.dirty, Expr: m.now}
+	k := runtime.MaskKey{Dirty: m.dirty, Expr: m.expr}
 	st := mutCache.Get(k)
 	if st == nil {
-		st = mutCache.Put(k, &runtime.Stmt{SQL: updatePre + m.doc(2) + updatePost})
+		st = mutCache.Put(k, &runtime.Stmt{SQL: updatePre + pipeDoc(m.dirty, m.expr, 2) + updatePost})
 	}
-	args := make([]any, 0, nCols)
+	args := make([]any, 0, nCols+1)
 	args = append(args, m.row.ID)
-	args = m.row.values(args, m.dirty)
+	args = m.args(args)
 	out, err := readBack(ctx, ex, st.SQL, args)
+	if errors.Is(err, runtime.ErrNoRow) {
+		return runtime.ErrNoRow
+	}
 	if err != nil {
 		return err
 	}
 	m.row = out
-	m.dirty, m.now = 0, 0
+	m.dirty, m.expr = 0, 0
 	return nil
 }
 
 // UpdateAll applies m's assignments to every matching row and reports how
 // many matched.
+// The query needs a predicate (runtime.ErrUnfilteredWrite) and no Limit or
+// Offset (runtime.ErrPagedWrite).
 func (q Query) UpdateAll(ctx context.Context, ex runtime.Executor, m Mut) (int64, error) {
 	if err := q.writeAllErr(); err != nil {
 		return 0, err
 	}
-	if m.dirty|m.now == 0 {
+	if m.dirty|m.expr == 0 {
 		return 0, nil
 	}
 	var key [maxToks + 4]runtime.Tok
 	toks := append(key[:0], q.stream()...)
-	toks = append(toks, runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32), runtime.Tok(m.now), runtime.Tok(m.now>>32))
-	st := updateCache.Get(toks)
+	toks = append(toks, runtime.Tok(m.dirty), runtime.Tok(m.dirty>>32), runtime.Tok(m.expr), runtime.Tok(m.expr>>32))
+	st := updateCache[0].Get(toks)
 	if st == nil {
-		u := m.doc(1)
-		n := 0
-		for b := m.dirty; b != 0; b &= b - 1 {
-			n++
-		}
-		f, np, err := mgsplice.Splice(q.stream(), fragOf, punct, n+1)
-		st = &runtime.Stmt{Err: err, NArg: n + np}
+		args := m.args(nil)
+		f, np, err := filter(q.stream(), len(args)+1, 0)
+		st = &runtime.Stmt{Err: err, NArg: len(args) + np}
 		if err == nil {
-			st.SQL = "{\"update\":\"authors\",\"updates\":[{\"multi\":true,\"u\":" + u + ",\"q\":" + f + "}]}"
+			st.SQL = "{\"update\":\"authors\",\"updates\":[{\"multi\":true,\"u\":" + pipeDoc(m.dirty, m.expr, 1) + ",\"q\":" + f + "}]}"
 		}
-		st = updateCache.Put(toks, st)
+		st = updateCache[0].Put(toks, st)
 	}
 	if st.Err != nil {
 		return 0, st.Err
 	}
-	args := m.row.values(make([]any, 0, nCols+int(q.nv)), m.dirty)
+	args := m.args(make([]any, 0, nCols+int(q.nv)))
 	args = append(args, q.vals[:q.nv]...)
 	return ex.Exec(ctx, st.SQL, args)
 }
 
-// Delete deletes the row with this key. A key that matches nothing is
-// runtime.ErrNoRow.
-func Delete(ctx context.Context, ex runtime.Executor, k [16]byte) error {
-	n, err := ex.Exec(ctx, deleteOne, []any{k})
+var (
+	softDeleteOne = "{\"update\":\"authors\",\"updates\":[{\"q\":{\"_id\":{\"$arg\":1},\"deleted_at\":null},\"u\":[{\"$set\":{\"deleted_at\":\"$$NOW\"}}]}]}"
+	restoreOne    = "{\"update\":\"authors\",\"updates\":[{\"q\":{\"_id\":{\"$arg\":1},\"deleted_at\":{\"$ne\":null}},\"u\":[{\"$set\":{\"deleted_at\":null}}]}]}"
+	hardDeleteOne = "{\"delete\":\"authors\",\"deletes\":[{\"limit\":1,\"q\":{\"_id\":{\"$arg\":1}}}]}"
+)
+
+// Delete marks one row deleted with the server's clock. The document stays
+// and keeps its key; every read generated in this package stops returning
+// it. A row that was already deleted is runtime.ErrNoRow, not success — the
+// same answer a hard delete gives for a row that is not there.
+func Delete(ctx context.Context, ex runtime.Executor, id [16]byte) error {
+	return exactlyOne(ex.Exec(ctx, softDeleteOne, []any{id}))
+}
+
+// HardDelete removes the document for real, deleted or not. It is the only
+// function in this package that destroys data, which is why it is not
+// spelled Delete.
+func HardDelete(ctx context.Context, ex runtime.Executor, id [16]byte) error {
+	return exactlyOne(ex.Exec(ctx, hardDeleteOne, []any{id}))
+}
+
+// Restore clears the mark. A row that was not deleted is runtime.ErrNoRow.
+func Restore(ctx context.Context, ex runtime.Executor, id [16]byte) error {
+	return exactlyOne(ex.Exec(ctx, restoreOne, []any{id}))
+}
+
+func exactlyOne(n int64, err error) error {
 	if err != nil {
 		return err
 	}
@@ -1013,14 +1288,6 @@ func (s *rowSource) Values() []any {
 }
 func (s *rowSource) Err() error { return nil }
 
-// nullable binds a Null as its value, or nil.
-func nullable[T any](n runtime.Null[T]) any {
-	if !n.Valid {
-		return nil
-	}
-	return n.V
-}
-
 // scan decodes one document's fields, in projection order. A field of the
 // wrong BSON type is an error naming it, never a plausible zero.
 func scan(rv [][]byte, r *Row) error {
@@ -1045,6 +1312,9 @@ func scan(rv [][]byte, r *Row) error {
 	}
 	if r.Bio, err = bsondec.Nullable(rv[5], bsondec.Str); err != nil {
 		return errors.Join(errors.New("storm: authors.bio"), err)
+	}
+	if r.DeletedAt, err = bsondec.Nullable(rv[6], bsondec.Time); err != nil {
+		return errors.Join(errors.New("storm: authors.deleted_at"), err)
 	}
 	return nil
 }

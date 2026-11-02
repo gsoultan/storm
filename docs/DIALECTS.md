@@ -393,6 +393,14 @@ SQL emitter to print pipelines" framing ADR-0004 rejected.
 | Construct | SQL targets | MongoDB | Why |
 |---|---|---|---|
 | primary key | a column | **`_id`** | The index every collection already has. A second unique index on an `id` field would double the write cost of every insert |
+| composite primary key | several columns | **`_id` as a subdocument** of the key's columns, in key order, plus a `<table>_pkey` index on `_id.<col>…` | Equality on the whole key is one comparison on the `_id` index. That index orders whole keys, so it cannot answer a query on the leading column the way a SQL key's index does; the second index can, at the cost of one more index on every write. A key column is read and filtered as `_id.<col>`, and the Row is the same as on SQL |
+| composite foreign key | a constraint | **`t.ForeignKey(...).References(...).OnDocument(storm.Reference())`** | The fields are stored as they are and nothing is enforced, as for a single-column reference |
+| arrays (`text[]`, `int4[]`, `uuid[]`, …) | an array column | a **BSON array**, `items` typed by the validator | `Contains` is `$all` (and an empty list is "every array", as `@>` is), `ContainedBy` is "no element outside the list" with an explicit array-type test so a NULL column stays out, `Overlaps` is `$in`. There is no `Eq` and no ordering: MongoDB matches equality element-wise and orders an array by its least element, and neither is what SQL means. A NULL element cannot be read into a Go slice and is an error. GIN becomes a plain index, which is multikey |
+| `json` / `jsonb` | a json column | the **BSON value its text denotes** — a document, an array, a string, a number | Stored as text, nothing inside would be queryable as what it is. `Contains` is translated path by path, with a type test beside each scalar so `{"a":["x"]}` does not contain `{"a":"x"}` and an array of objects is not an object, which is PostgreSQL's answer and not MongoDB's. `HasAnyKey`/`HasAllKeys` read a key on an object and an element of an array, as `?` does. A key that cannot be a field path (empty, `$`-prefixed, dotted) is an error, never a filter that matches something else. `ContainedBy` and `TextLikeAny` are not generated — no filter says either. A number comes back as the type it was stored as: an integer as digits, a double in Go's shortest form. GIN becomes a **wildcard index** on `<col>.$**` |
+| version column | `WHERE version = $n`, `version + 1` | the version in the `findAndModify` query, **`$add`** in the update | Same lock, same `runtime.ErrStaleWrite`, same missing `MutateKey` |
+| `Inc` / `Add` / `IncWhen` | `n = n + 1`, `n + CASE WHEN g = $1 …` | an **aggregation-pipeline update**: `{"$add":["$n",…]}`, `$cond` over the document's own `g` | Every update is a pipeline (`[{"$set":{…}}]`) for this: the value read and the value written are one command. `$inc` would turn a NULL into 1 where SQL keeps it NULL. A bound value is wrapped in `$literal`, so a string that starts with `$` is a string, not a path |
+| soft delete | `deleted_at IS NULL` ANDed in front | **`{"$and":[{"deleted_at":null}, <filter>]}`** in front of every read and write | `Delete` marks with `$$NOW` (the server's clock), `HardDelete` removes, `Restore` clears, `WithDeleted` widens a read when the model said `ReadsDeleted`, and `UpdateAll`/`DeleteAll` refuse it. A live document stores the field as an explicit null |
+| live-scoped UNIQUE | a partial index `WHERE deleted_at IS NULL` | `partialFilterExpression: {"deleted_at": null}` | Equality to null in a partial filter covers both a null and an absent field (measured on MongoDB 7), so a returning user can sign up again and two live users still cannot share an address |
 | uuid key | server default, or client v7 | generated **client-side** — v4 for `gen_random_uuid()`, v7 for `uuidv7()` | No generator a write can call; the version the model asked for is the one it gets |
 | `now()` default | server default | **`$currentDate`** | Still the SERVER's clock. A client `time.Now()` would make rows written seconds apart land out of order on a skewed host |
 | `Insert` read-back | `RETURNING` | **`findAndModify` + upsert** against a filter that matches nothing | `{"_id": k, "$nor": [{}]}` matches no document, so the upsert path INSERTS — failing with a duplicate key if `k` exists, never overwriting — and returns the stored document, defaults included. One round trip, as `RETURNING` is |
@@ -430,28 +438,25 @@ cannot make, or shapes this back end does not generate yet.
   would perform them; the rows would simply stay. Do it in the write that
   deletes the parent. `RESTRICT` and `NO ACTION` are accepted under
   `Reference()`, which says in its name that nothing is enforced.
-- **Composite primary keys and composite foreign keys**, identity and serial
-  keys (no sequence; a counter document is a race), generated columns, `CHECK`
-  and `EXCLUDE` constraints, partitioning, defaults that are SQL expressions
-  rather than `now()`, a uuid generator or a literal.
-- **Types**: arrays, `json`/`jsonb`, ranges, network types, `interval`, `time`,
-  `tsvector`, `hstore`. Arrays and json have natural BSON forms — an array, an
-  embedded document — and are the next thing this back end should gain; they
-  are refused rather than stored as text nobody could query as what it is.
-- **Indexes**: partial over SQL text, expression keys, non-B-tree methods,
-  `INCLUDE`, storage parameters, operator classes, collations, prefix lengths,
-  explicit NULL placement.
-- **Soft delete.** Its live-scoped UNIQUE needs a partial index on "is null",
-  which `partialFilterExpression` cannot say — MySQL's refusal, for a
-  different reason.
+- Identity and serial keys (no sequence; a counter document is a race),
+  generated columns, `CHECK` and `EXCLUDE` constraints, partitioning, defaults
+  that are SQL expressions rather than `now()`, a uuid generator, or a literal
+  (a number, a string, a boolean, a PostgreSQL array literal of unquoted text,
+  integers or booleans, or a JSON text for a json column).
+- **Types**: arrays of json, numeric or bytea, ranges, network types,
+  `interval`, `time`, `tsvector`, `hstore`.
+- **Indexes**: partial over SQL text (soft delete's own is translated),
+  expression keys, methods other than B-tree (GIN on one array or json column
+  is translated), `INCLUDE`, storage parameters, operator classes, collations,
+  prefix lengths, explicit NULL placement, and a UNIQUE over an array or json
+  column — MongoDB's constrains each element, not the value.
 - **Not generated yet**: named plans (relation loading — `$lookup` or a batch
   loader by `$in`), projections, declared aggregations, joins, unions
-  (`$unionWith`), version columns, `IncWhen`, keyset `After`, row locks,
-  `Not`/`NotAny`, existence probes, set-based write shapes, sharding, and
-  many-to-many join tables. **`Not` is deliberately absent rather than
-  pending**: `$nor` matches a document whose field is null where SQL's `NOT`
-  over the same comparison is UNKNOWN, so a negation would return rows the SQL
-  targets do not.
+  (`$unionWith`), keyset `After`, row locks, `Not`/`NotAny`, existence probes,
+  set-based write shapes, sharding, and many-to-many join tables. **`Not` is
+  deliberately absent rather than pending**: `$nor` matches a document whose
+  field is null where SQL's `NOT` over the same comparison is UNKNOWN, so a
+  negation would return rows the SQL targets do not.
 - **Functions, views and triggers**, and `storm.SQL` — there is no SQL.
 - **`storm diff`, `verify`, `explain`, `import`, `watch`** have no MongoDB form.
   There is no catalogue to diff against beyond the validator, and `import` is

@@ -74,6 +74,7 @@ type fkDecl struct {
 	onUpdate  schema.Action
 	resolved  bool // References was called
 	noIndex   bool
+	document  Document
 }
 
 // throughDecl is one t.Through call, held until the join model's own keys are
@@ -1232,6 +1233,19 @@ func (b *FKBuilder) References(target any, cols ...any) *FKBuilder {
 
 // Named sets the constraint name. Without it storm generates one.
 func (b *FKBuilder) Named(n string) *FKBuilder { b.d.name = n; return b }
+
+// OnDocument says how a document back end stores this key — the composite
+// counterpart of ColBuilder.OnDocument. It changes nothing on a SQL target.
+func (b *FKBuilder) OnDocument(d Document) *FKBuilder {
+	if d != Reference() {
+		b.t.errs.add(fmt.Errorf(
+			"%s: OnDocument(%q) on the foreign key (%s) is not a document form storm knows — use storm.Reference()",
+			b.t.out.Name, string(d), strings.Join(b.d.cols, ", ")))
+		return b
+	}
+	b.d.document = d
+	return b
+}
 
 // OnDelete sets the referential action for a deleted parent.
 func (b *FKBuilder) OnDelete(a Action) *FKBuilder { b.d.onDelete = schema.Action(a); return b }

@@ -1513,6 +1513,7 @@ func (b *builder) resolveExplicitFKs(mi *modelInfo) {
 			RefColumns: refCols,
 			OnDelete:   d.onDelete,
 			OnUpdate:   d.onUpdate,
+			Document:   string(d.document),
 		})
 	}
 }
