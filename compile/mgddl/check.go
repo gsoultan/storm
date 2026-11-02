@@ -30,8 +30,9 @@ func Check(s *schema.Schema) error {
 		p = append(p, "  "+at(pos)+fmt.Sprintf(format, a...))
 	}
 	for _, u := range s.Unions {
-		add("", "union %s: a UNION reads several tables into one result, and MongoDB's "+
-			"$unionWith is not generated yet — declare it on a SQL target", u.Name)
+		if _, err := mongo.Union(s, u); err != nil {
+			add("", "union %s: %v, which this back end does not generate", u.Name, err)
+		}
 	}
 	for _, f := range s.Functions {
 		add("", "function %s: a SQL-bodied routine has no MongoDB form", f.Name)
@@ -69,7 +70,6 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 		{t.Partition != nil || t.PartitionOf != "", "partitioning"},
 		{len(t.Excludes) > 0, "EXCLUDE constraints"},
 		{len(t.Arcs) > 0 || len(t.AnyRefs) > 0, "polymorphic references"},
-		{len(t.Joins) > 0, "declared joins — MongoDB has no non-equality join, and $lookup is not generated yet"},
 		{len(t.Matches) > 0 || len(t.Probes) > 0, "existence probes"},
 		{t.Takes || t.Tallies || len(t.InsertSelects) > 0, "set-based write shapes (Take, Tally, InsertSelect)"},
 		{t.Turns != "", "TakesTurns"},
@@ -86,6 +86,11 @@ func checkTable(s *schema.Schema, t *schema.Table, add func(pos, format string, 
 	}
 	if r := mongo.EmbedOf(t); r != nil {
 		checkEmbed(s, t, r, add)
+	}
+	for _, j := range t.Joins {
+		if _, err := mongo.Join(s, t, j); err != nil {
+			add(t.Pos, "%s: join %s: %v, which this back end does not generate", n, j.Name, err)
+		}
 	}
 	for _, a := range t.Aggregates {
 		checkAggregate(t, a, add)

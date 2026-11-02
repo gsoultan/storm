@@ -25,6 +25,8 @@ type gen struct {
 	guards []int
 	// plan is the referential actions a delete performs, or nil.
 	plan []cascadeNode
+	// joins are the declared joins' stages after the call-site $match.
+	joins []string
 }
 
 func newGen(s *schema.Schema, t *schema.Table, pkg, imp string) (*gen, error) {
@@ -32,6 +34,16 @@ func newGen(s *schema.Schema, t *schema.Table, pkg, imp string) (*gen, error) {
 	var err error
 	if g.plan, err = cascadePlan(s, t); err != nil {
 		return nil, err
+	}
+	for _, j := range t.Joins {
+		if s == nil {
+			return nil, fmt.Errorf("codegenmongo: %s: join %s needs the whole model", t.Name, j.Name)
+		}
+		tail, err := mongo.Join(s, t, j)
+		if err != nil {
+			return nil, fmt.Errorf("codegenmongo: %s: join %s: %w", t.Name, j.Name, err)
+		}
+		g.joins = append(g.joins, tail)
 	}
 	for i, c := range t.Columns {
 		k, ok := kindOf(c)
@@ -125,6 +137,7 @@ func (g *gen) emit() {
 	g.reads()
 	g.projections()
 	g.aggregates()
+	g.declaredJoins()
 	g.writes()
 	g.scan()
 }

@@ -406,6 +406,8 @@ SQL emitter to print pipelines" framing ADR-0004 rejected.
 | `storm.Embed()` | a child table with a foreign key | **an array in each parent document**, named after the child table; no collection | The child's package is parent-scoped: `Of`/`Load` read a parent's array, `Add` appends and reads the element back (server clock included), `Replace` and `Remove` address it by key — each one command against the parent. A missing parent on `Add` is `runtime.ErrForeignKeyViolation` and a key the parent already holds `runtime.ErrUniqueViolation`, the errors SQL's constraints give. The elements are validated by the parent's `$jsonSchema` (`items`) and indexed by multikey indexes on `<child>.<field>`; they do not store the reference, which is the parent's `_id`. Deleting the parent deletes them, which is the `ON DELETE CASCADE` the model must declare. A plan loads them with one `$in` on the parents |
 | projection | a narrower `SELECT` list | a narrower **`projection`** document | `All<Name>`/`One<Name>` take the query as it stands — filter, sort, paging — and decode only the declared fields into `<Name>Row` |
 | declared aggregation | `GROUP BY` | **`$group`** over the call-site filter, then `$project`, a sort and the page | Grouping by columns; `count(*)`, `count(col)` (a `$sum` of a non-null test), `count(DISTINCT col)` (a set, its NULL dropped), `sum`, `avg`, `min`, `max` over columns. A sum or average over no values is NULL where `$sum` says 0; an `int8` sum is summed as Decimal128, as PostgreSQL's is numeric; an average of integers or numerics is a decimal sum over the count, rounded half away from zero to six places where `$round` rounds half to even; a missing field and a null are one group; NULL sorts last ascending and first descending, by a flag in front of each sort key; the default order is the grouping columns, and they break ties under a declared one. With no grouping columns there is one row over no documents — the counts 0, the rest NULL — where `$group` returns none. `Order()` on the query is refused: the rows are groups. Text groups sort by bytes, as `Order` does on a find |
+| declared join | `JOIN … ON a = b` | a **`$lookup`** per table, then `$unwind` (keeping the row for a LEFT join) | Equality joins only, the ON columns of one kind. Each `$lookup` is the pipeline form with a `$ne: null` guard on the key, because `localField`/`foreignField` would join a NULL key to every document whose field is null or missing, and SQL joins it to nothing. A soft-deleted table joins only its live documents, as `liveIn` does on SQL. The declared `WHERE` is a `$match` after the lookups, the declared order sorts NULLs where SQL does, and `Limit`/`Offset` page the joined rows; call-site predicates filter the declaring collection first. `Order()` is refused, as on SQL |
+| declared union | `UNION [ALL]` | the first branch's collection, each further branch a **`$unionWith`**, `DISTINCT` a `$group` over every column | Each branch is projected to the shared columns with a missing field read as null, so rows from different collections are one shape and DISTINCT groups a NULL with a NULL. Parameters are holes in the one command; the order is over the merged rows, NULLs where SQL puts them unless `NullsFirst` says; `n` caps the merge. Generated into the context package (`Options.Package`), as on SQL |
 | soft delete | `deleted_at IS NULL` ANDed in front | **`{"$and":[{"deleted_at":null}, <filter>]}`** in front of every read and write | `Delete` marks with `$$NOW` (the server's clock), `HardDelete` removes, `Restore` clears, `WithDeleted` widens a read when the model said `ReadsDeleted`, and `UpdateAll`/`DeleteAll` refuse it. A live document stores the field as an explicit null |
 | live-scoped UNIQUE | a partial index `WHERE deleted_at IS NULL` | `partialFilterExpression: {"deleted_at": null}` | Equality to null in a partial filter covers both a null and an absent field (measured on MongoDB 7), so a returning user can sign up again and two live users still cannot share an address |
 | uuid key | server default, or client v7 | generated **client-side** — v4 for `gen_random_uuid()`, v7 for `uuidv7()` | No generator a write can call; the version the model asked for is the one it gets |
@@ -480,9 +482,17 @@ cannot make, or shapes this back end does not generate yet.
   `WHERE`, parameters, `DISTINCT` other than in `count`, and `min`/`max` of
   text (PostgreSQL orders it by collation, MongoDB by bytes) or an enum
   (PostgreSQL orders it by declaration).
+- **Joins and unions outside the lowered subset**: a join that is not an
+  equality of columns of one kind, a CTE, a join over json array elements or
+  to an embedded table, an output or an order that is an expression, and a
+  declared predicate (a join's `WHERE`, a union branch's) other than columns
+  compared with a literal or a parameter under `AND`/`OR`, `IS [NOT] NULL`
+  included. `NOT` is refused for the reason it is on the query: `$nor`
+  matches a NULL. So is ordering text or an enum, a decimal against a float
+  literal, and a numeric or timestamp literal in a filter (the command text
+  cannot carry one; a parameter can).
 - **Not generated yet**: plans over a many-to-many or a composite key,
-  `ChildTop`/`After` on a plan, joins, unions
-  (`$unionWith`), keyset `After`, row locks, `Not`/`NotAny`, existence probes,
+  `ChildTop`/`After` on a plan, keyset `After`, row locks, `Not`/`NotAny`, existence probes,
   set-based write shapes, sharding, and many-to-many join tables. **`Not` is
   deliberately absent rather than pending**: `$nor` matches a document whose
   field is null where SQL's `NOT` over the same comparison is UNKNOWN, so a

@@ -14,6 +14,19 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### MongoDB: joins and unions
+
+A declared join generates `<Name>Row` and `All<Name>` on the MongoDB query
+as one aggregation: the call-site filter, then a `$lookup` and `$unwind` per
+joined table, the declared `WHERE`, the declared order and the page. Each
+lookup is an equality guarded against a NULL key, so a NULL joins nothing as
+in SQL, and a soft-deleted table joins only its live documents. A declared
+union is one aggregation too — the first branch's collection, the rest
+`$unionWith`, `DISTINCT` a `$group` — generated as a function in the context
+package, with its parameters and the cap on the merged rows. Equality joins
+and predicates of a column against a literal or parameter are the subset;
+CTEs, non-equality joins, expressions and `NOT` are refused by name.
+
 ### MongoDB: aggregations
 
 A declared aggregation generates `<Name>Row` and `All<Name>` on the MongoDB

@@ -153,6 +153,51 @@ func (c *Volume) Aggregates(a *storm.Aggregates) {
 	r.Sum(&c.Checkouts, "Checkouts")
 }
 
+// Joins: the copies on a branch's shelves with their book's title and their
+// donor's name — a $lookup per table, each an equality with SQL's NULL: a
+// copy with no donor, or one whose donor was removed, keeps its row with no
+// name, and a copy whose book is gone has no row at all.
+func (c *Volume) Joins(j *storm.Joins) {
+	var b Book
+	var a Author
+	j.Named("Shelved").
+		Inner(&b, &c.Book).
+		Left(&a, &c.DonorID).
+		Take(&c.Barcode, "Barcode").
+		Take(&b.Title, "Title").
+		Take(&b.Pages, "Pages").
+		Take(&a.Name, "Donor").
+		Where(j.Eq(&c.OnShelf, true)).
+		OrderAsc(&a.Name).
+		OrderAsc(&c.Barcode)
+}
+
+// Activity is one author's catalogue as a feed: the author's own entry and
+// each of their books, merged and ordered as one — a $unionWith, narrowed by
+// a parameter both branches use.
+var Activity = storm.Union("Activity", func(u *storm.UnionSpec) {
+	author := u.Param("AuthorID")
+
+	var a Author
+	authors := u.From(&a)
+	authors.Take(&a.CreatedAt, "At")
+	authors.Take(&a.Name, "Text")
+	authors.Const("Kind", "author")
+	authors.Where(storm.Exprs{}.Eq(&a.ID, author))
+
+	var b Book
+	books := u.From(&b)
+	books.Take(&b.CreatedAt, "At")
+	books.Take(&b.Title, "Text")
+	books.Const("Kind", "book")
+	books.Where(storm.Exprs{}.And(
+		storm.Exprs{}.Eq(&b.Author, author),
+		storm.Exprs{}.Gt(&b.Pages, 10),
+	))
+
+	u.OrderDesc("At")
+})
+
 // Hold is a reader's place in the queue for one copy: a composite reference
 // to a composite key.
 type Hold struct {
@@ -191,4 +236,4 @@ func (r *Review) Schema(t *storm.Table) {
 }
 
 // All is what Build and the generator consume.
-func All() []any { return []any{&Author{}, &Book{}, &Volume{}, &Hold{}, &Review{}} }
+func All() []any { return []any{&Author{}, &Book{}, &Volume{}, &Hold{}, &Review{}, Activity} }

@@ -79,6 +79,9 @@ func Package(s *schema.Schema, o Options) (map[string][]byte, error) {
 		}
 		out[filepath.Join(pkg, pkg+".gen.go")] = src
 	}
+	if len(s.Unions) > 0 && o.Package == "" {
+		return nil, fmt.Errorf("codegenmongo: the model declares unions, which belong to the context package — set Options.Package")
+	}
 	if o.Package != "" {
 		if o.PackageImport == "" {
 			return nil, fmt.Errorf("codegenmongo: Options.Package is %q but PackageImport is empty", o.Package)

@@ -554,3 +554,81 @@ func roundHalfAway(v string, scale int) string {
 		`{"$floor":{"$add":[{"$multiply":[{"$abs":"$$v"},{"$toDecimal":"` + pow + `"}]},{"$toDecimal":"0.5"}]}},` +
 		`{"$toDecimal":"` + unit + `"}]}}}`
 }
+
+// declaredJoins emits each declared join as one aggregation: the call-site
+// filter on this collection, then a $lookup and $unwind per joined table
+// (compile/mongo.Join), the declared filter, the declared order, the page.
+func (g *gen) declaredJoins() {
+	for i, j := range g.t.Joins {
+		row := j.Name + "Row"
+		lower := strings.ToLower(j.Name[:1]) + j.Name[1:]
+		g.p("// %s is the %q join: one flat row per match, a column taken through", row, j.Name)
+		g.p("// a LEFT join nullable whatever its own constraint says.")
+		g.p("type %s struct {", row)
+		type out struct {
+			k        kind
+			nullable bool
+		}
+		outs := make([]out, len(j.Select))
+		for n, c := range j.Select {
+			res := &schema.Column{Type: c.Type, NotNull: !c.Nullable}
+			k, _ := kindOf(res)
+			outs[n] = out{k, k.nullable(res)}
+			g.p("\t%s %s", c.As, k.fieldType(res))
+		}
+		g.p("}")
+		g.p("")
+		head := `{"aggregate":` + mongo.Str(g.t.Name) + `,"cursor":{},"pipeline":[{"$match":`
+		g.p("var (")
+		g.p("\t%sHead  = %s", lower, strconv.Quote(head))
+		g.p("\t%sTail  = %s", lower, strconv.Quote("}"+g.joins[i]))
+		g.p("\t%sCache = newCaches()", lower)
+		g.p(")")
+		g.p("")
+		g.p("func scan%s(rv [][]byte, r *%s) error {", j.Name, row)
+		g.p("\tif len(rv) != %d {", len(outs))
+		g.p("\t\treturn runtime.ErrShape")
+		g.p("\t}")
+		g.p("\tvar err error")
+		for n, o := range outs {
+			g.decodeField(n, j.Select[n].As, o.k, o.nullable, g.t.Name+"."+j.Name+"."+j.Select[n].As)
+		}
+		g.p("\treturn nil")
+		g.p("}")
+		g.p("")
+		g.p(`// All%[1]s runs the %[1]q join. Predicates filter %[4]s before it is
+// joined; Limit and Offset page the joined rows, in the declared order.
+// Order is refused: it would name a column of one table in a result of
+// several.
+func (q Query) All%[1]s(ctx context.Context, ex runtime.Executor) ([]%[2]s, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.sorted {
+		return nil, errors.New("storm: Order() on the %[1]s join — it is ordered as declared")
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(%[3]sCache, q.scope(), q.stream(), %[3]sHead, %[3]sTail, %[5]d, false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []%[2]s
+	for rows.Next() {
+		var r %[2]s
+		if err := scan%[1]s(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+`, j.Name, row, lower, g.t.Name, mongo.FindFirstArg)
+	}
+}

@@ -7,13 +7,18 @@ package store
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/gsoultan/storm/examples/library/store/author"
 	"github.com/gsoultan/storm/examples/library/store/book"
 	"github.com/gsoultan/storm/examples/library/store/review"
 	"github.com/gsoultan/storm/examples/library/store/volume"
 	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/bsondec"
 )
+
+var _ = time.Time{}
 
 // defaultChildLimit caps one relation's load. Reaching it is an error, never
 // a partial result; ChildLimit overrides it per plan.
@@ -755,4 +760,53 @@ func loadVolumeWithBookBook(ctx context.Context, ex runtime.Executor, out []Volu
 		}
 	}
 	return nil
+}
+
+// ActivityRow is the "Activity" union: 3 column(s) merged from 2 collection(s), a
+// column nullable when any branch can leave it NULL.
+type ActivityRow struct {
+	At   time.Time
+	Text string
+	Kind string
+}
+
+const activityCommand = "{\"aggregate\":\"authors\",\"cursor\":{},\"pipeline\":[{\"$match\":{\"$and\":[{\"deleted_at\":null},{\"_id\":{\"$eq\":{\"$arg\":1}}}]}},{\"$project\":{\"At\":{\"$ifNull\":[\"$created_at\",null]},\"Text\":{\"$ifNull\":[\"$name\",null]},\"Kind\":{\"$literal\":\"author\"}}},{\"$unionWith\":{\"coll\":\"books\",\"pipeline\":[{\"$match\":{\"$and\":[{\"author_id\":{\"$eq\":{\"$arg\":1}}},{\"pages\":{\"$gt\":10}}]}},{\"$project\":{\"At\":{\"$ifNull\":[\"$created_at\",null]},\"Text\":{\"$ifNull\":[\"$title\",null]},\"Kind\":{\"$literal\":\"book\"}}}]}},{\"$addFields\":{\"_null0\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$At\",null]},null]},1,0]}}},{\"$sort\":{\"_null0\":-1,\"At\":-1}},{\"$limit\":{\"$arg\":2}}]}"
+
+func scanActivity(rv [][]byte, r *ActivityRow) error {
+	if len(rv) != 3 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.At, err = bsondec.Time(rv[0]); err != nil {
+		return errors.Join(errors.New("storm: union Activity.At"), err)
+	}
+	if r.Text, err = bsondec.Str(rv[1]); err != nil {
+		return errors.Join(errors.New("storm: union Activity.Text"), err)
+	}
+	if r.Kind, err = bsondec.Str(rv[2]); err != nil {
+		return errors.Join(errors.New("storm: union Activity.Kind"), err)
+	}
+	return nil
+}
+
+// Activity runs the "Activity" union: every branch, merged, ordered as one, in one
+// round trip. n caps the merged rows, not any one branch.
+func Activity(ctx context.Context, ex runtime.Executor, authorID [16]byte, n int64) ([]ActivityRow, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	rows, err := ex.Query(ctx, activityCommand, []any{authorID, n})
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ActivityRow
+	for rows.Next() {
+		var r ActivityRow
+		if err := scanActivity(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

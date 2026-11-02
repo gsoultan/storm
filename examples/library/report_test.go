@@ -2,9 +2,12 @@ package library_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gsoultan/storm/examples/library/store"
+	"github.com/gsoultan/storm/examples/library/store/author"
 	"github.com/gsoultan/storm/examples/library/store/book"
 	"github.com/gsoultan/storm/examples/library/store/volume"
 	"github.com/gsoultan/storm/runtime"
@@ -117,5 +120,127 @@ func TestAggregationGroupsNull(t *testing.T) {
 	if len(rows) != 2 || rows[0].DonorID.V != donor || rows[0].Copies != 2 || rows[0].Checkouts != five ||
 		rows[1].DonorID.Valid || rows[1].Copies != 1 || rows[1].Checkouts != five {
 		t.Fatalf("by donor: %+v", rows)
+	}
+}
+
+// A declared join is a $lookup per table with SQL's NULL: a copy with no
+// donor, or whose donor was removed, keeps its row with no name and sorts
+// last; a copy whose book is missing has no row.
+func TestJoinedShelf(t *testing.T) {
+	ctx := context.Background()
+	nb := book.Create()
+	nb.SetTitle("Joined")
+	nb.SetPages(42)
+	nb.SetPrice(runtime.Decimal{Unscaled: 1})
+	nb.SetAuthorID(runtime.NewUUIDv7())
+	bk, err := nb.Insert(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	donors := map[string][16]byte{}
+	for _, name := range []string{"Zed", "Ada"} {
+		na := author.Create()
+		na.SetName(name)
+		na.SetEmail(name + "@join.example.com")
+		a, err := na.Insert(ctx, db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		donors[name] = a.ID
+	}
+	gone := donors["Zed"]
+	for _, v := range []struct {
+		code  string
+		book  [16]byte
+		donor *[16]byte
+		shelf bool
+	}{
+		{"j1", bk.ID, &gone, true},
+		{"j2", bk.ID, nil, true},
+		{"j3", bk.ID, ptr(donors["Ada"]), true},
+		{"j4", runtime.NewUUIDv7(), nil, true}, // no such book
+		{"j5", bk.ID, nil, false},              // off the shelf
+	} {
+		nv := volume.Create()
+		nv.SetBranch("join")
+		nv.SetBarcode(v.code)
+		nv.SetBookID(v.book)
+		nv.SetOnShelf(v.shelf)
+		if v.donor != nil {
+			nv.SetDonorID(*v.donor)
+		}
+		if _, err := nv.Insert(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := author.Delete(ctx, db, gone); err != nil { // soft: the document stays
+		t.Fatal(err)
+	}
+	rows, err := volume.New().Where(volume.Branch.Eq("join")).AllShelved(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.Barcode+":"+r.Donor.V)
+		if r.Title != "Joined" || r.Pages != 42 {
+			t.Fatalf("the book's side: %+v", r)
+		}
+	}
+	if strings.Join(got, " ") != "j3:Ada j1: j2:" {
+		t.Fatalf("shelved: %v", got)
+	}
+	if page, err := volume.New().Where(volume.Branch.Eq("join")).Offset(1).Limit(1).AllShelved(ctx, db); err != nil ||
+		len(page) != 1 || page[0].Barcode != "j1" {
+		t.Fatalf("paging the join: %+v %v", page, err)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// A declared union is one aggregation over the first branch's collection,
+// the rest $unionWith, ordered and capped as one.
+func TestUnionFeed(t *testing.T) {
+	ctx := context.Background()
+	na := author.Create()
+	na.SetName("Feeder")
+	na.SetEmail("feeder@union.example.com")
+	a, err := na.Insert(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []struct {
+		title string
+		pages int32
+	}{{"Thin", 5}, {"First", 100}, {"Second", 200}} {
+		time.Sleep(2 * time.Millisecond) // created_at is the server's clock, in milliseconds
+		nb := book.Create()
+		nb.SetTitle(x.title)
+		nb.SetPages(x.pages)
+		nb.SetPrice(runtime.Decimal{Unscaled: 1})
+		nb.SetAuthorID(a.ID)
+		if _, err := nb.Insert(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	feed, err := store.Activity(ctx, db, a.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range feed {
+		got = append(got, r.Kind+":"+r.Text)
+	}
+	if strings.Join(got, " ") != "book:Second book:First author:Feeder" {
+		t.Fatalf("feed: %v", got)
+	}
+	if two, err := store.Activity(ctx, db, a.ID, 2); err != nil || len(two) != 2 {
+		t.Fatalf("the cap applies to the merge: %+v %v", two, err)
+	}
+	if err := author.Delete(ctx, db, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if feed, err := store.Activity(ctx, db, a.ID, 10); err != nil || len(feed) != 2 {
+		t.Fatalf("a removed author's own entry leaves the feed: %+v %v", feed, err)
 	}
 }

@@ -69,6 +69,7 @@ func checkEmbed(s *schema.Schema, t *schema.Table, r *schema.Relation, add func(
 		{len(t.Plans) > 0, "plans"},
 		{len(t.Projections) > 0, "projections — it has no query of its own"},
 		{len(t.Aggregates) > 0, "aggregations — it has no query of its own"},
+		{len(t.Joins) > 0, "joins — it has no query of its own"},
 	}
 	for _, c := range t.Columns {
 		refuse = append(refuse, struct {

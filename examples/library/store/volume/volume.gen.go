@@ -911,6 +911,75 @@ func (q Query) AllByDonor(ctx context.Context, ex runtime.Executor) ([]ByDonorRo
 	return out, nil
 }
 
+// ShelvedRow is the "Shelved" join: one flat row per match, a column taken through
+// a LEFT join nullable whatever its own constraint says.
+type ShelvedRow struct {
+	Barcode string
+	Title   string
+	Pages   int32
+	Donor   runtime.Null[string]
+}
+
+var (
+	shelvedHead  = "{\"aggregate\":\"volumes\",\"cursor\":{},\"pipeline\":[{\"$match\":"
+	shelvedTail  = "},{\"$lookup\":{\"from\":\"books\",\"let\":{\"v0\":{\"$ifNull\":[\"$book_id\",null]}},\"pipeline\":[{\"$match\":{\"$expr\":{\"$and\":[{\"$ne\":[\"$$v0\",null]},{\"$eq\":[\"$_id\",\"$$v0\"]}]}}}],\"as\":\"_j0\"}},{\"$unwind\":{\"path\":\"$_j0\",\"preserveNullAndEmptyArrays\":false}},{\"$lookup\":{\"from\":\"authors\",\"let\":{\"v0\":{\"$ifNull\":[\"$donor_id\",null]}},\"pipeline\":[{\"$match\":{\"$expr\":{\"$and\":[{\"$ne\":[\"$$v0\",null]},{\"$eq\":[\"$_id\",\"$$v0\"]}]}}},{\"$match\":{\"deleted_at\":null}}],\"as\":\"_j1\"}},{\"$unwind\":{\"path\":\"$_j1\",\"preserveNullAndEmptyArrays\":true}},{\"$match\":{\"on_shelf\":{\"$eq\":true}}},{\"$addFields\":{\"_null0\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$_j1.name\",null]},null]},1,0]},\"_null1\":{\"$cond\":[{\"$eq\":[{\"$ifNull\":[\"$_id.barcode\",null]},null]},1,0]}}},{\"$sort\":{\"_null0\":1,\"_j1.name\":1,\"_null1\":1,\"_id.barcode\":1}},{\"$skip\":{\"$arg\":2}},{\"$limit\":{\"$arg\":1}},{\"$project\":{\"Barcode\":\"$_id.barcode\",\"Title\":\"$_j0.title\",\"Pages\":\"$_j0.pages\",\"Donor\":\"$_j1.name\"}}]}"
+	shelvedCache = newCaches()
+)
+
+func scanShelved(rv [][]byte, r *ShelvedRow) error {
+	if len(rv) != 4 {
+		return runtime.ErrShape
+	}
+	var err error
+	if r.Barcode, err = bsondec.Str(rv[0]); err != nil {
+		return errors.Join(errors.New("storm: volumes.Shelved.Barcode"), err)
+	}
+	if r.Title, err = bsondec.Str(rv[1]); err != nil {
+		return errors.Join(errors.New("storm: volumes.Shelved.Title"), err)
+	}
+	if r.Pages, err = bsondec.Int4(rv[2]); err != nil {
+		return errors.Join(errors.New("storm: volumes.Shelved.Pages"), err)
+	}
+	if r.Donor, err = bsondec.Nullable(rv[3], bsondec.Str); err != nil {
+		return errors.Join(errors.New("storm: volumes.Shelved.Donor"), err)
+	}
+	return nil
+}
+
+// AllShelved runs the "Shelved" join. Predicates filter volumes before it is
+// joined; Limit and Offset page the joined rows, in the declared order.
+// Order is refused: it would name a column of one table in a result of
+// several.
+func (q Query) AllShelved(ctx context.Context, ex runtime.Executor) ([]ShelvedRow, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
+	if q.sorted {
+		return nil, errors.New("storm: Order() on the Shelved join — it is ordered as declared")
+	}
+	if q.limit <= 0 {
+		return nil, nil
+	}
+	st := filtered(shelvedCache, q.scope(), q.stream(), shelvedHead, shelvedTail, 3, false)
+	if st.Err != nil {
+		return nil, st.Err
+	}
+	rows, err := ex.Query(ctx, st.SQL, q.args(q.limit, q.offset))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ShelvedRow
+	for rows.Next() {
+		var r ShelvedRow
+		if err := scanShelved(rows.RawValues(), &r); err != nil {
+			return out, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // Column bits, for the write masks.
 const (
 	dBranch        uint64 = 1 << 0
