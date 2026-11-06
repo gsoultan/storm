@@ -11,6 +11,9 @@ exotic — polymorphic associations, many-to-many with a payload, self-referenti
 hierarchies — lives in [[REFERENCE]] and you can ignore it until you need it.
 [[API]] is the same ground in more depth.
 
+Installing the tool, applying the schema and opening a connection are in
+[GETTING-STARTED.md](GETTING-STARTED.md); this page assumes they are done.
+
 This file tracks [`examples/blog`](../examples/blog) deliberately. That module
 runs as a test in CI against a real PostgreSQL, so if the two ever disagree,
 it is right and this is a bug.

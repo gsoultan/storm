@@ -418,6 +418,11 @@ for a, err := range article.New().Order(article.ID.Asc()).Rows(ctx, pool) {
 `List(ctx, ex)` is `All(ctx, ex, nil)`, for the common read that has no slice
 to reuse.
 
+**Every query starts with `LIMIT 1000`.** `New()` sets it, and `All`, `List`,
+`Each` and `Rows` all honour it, so a read that matches more rows returns the
+first thousand without an error. `Count` ignores it. Set `Limit` yourself for
+a larger read — the streaming export above needs one — or page with `After`.
+
 `AllDistinctOn(ctx, ex, n, dst)` keeps one row for each distinct value of the
 query's first `n` ORDER BY terms: the first, in the query's order. Order by the
 key and then by what picks the row:

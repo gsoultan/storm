@@ -135,6 +135,17 @@ Every claim below is a test or a benchmark in this repository. The quickstart
 is executable: [`examples/blog`](examples/blog) runs as a test in CI, so it
 cannot drift from the library the way prose does.
 
+## Start here
+
+- **New to storm:** [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) — from
+  an empty module to a running query, migrations and CI checks included.
+- **Coming from GORM:** [docs/MIGRATING-FROM-GORM.md](docs/MIGRATING-FROM-GORM.md)
+  — adopt the tables GORM created without renaming anything, then port one
+  bounded context at a time.
+- **Coming from sqlc:** [docs/MIGRATING-FROM-SQLC.md](docs/MIGRATING-FROM-SQLC.md).
+- **The tour, once you are set up:** [docs/EXAMPLE.md](docs/EXAMPLE.md), then
+  [docs/API.md](docs/API.md) and [docs/REFERENCE.md](docs/REFERENCE.md).
+
 ## The sixty-second tour
 
 ```go
