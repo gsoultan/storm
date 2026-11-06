@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/compile/pgddl"
 )
 
 // docEvery exercises the type-mapping table in REFERENCE.md §1.
@@ -286,5 +287,190 @@ func TestComplexQueriesDocDeclarationsBuild(t *testing.T) {
 		&cqOrder{}, &cqCustomer{})
 	if err != nil {
 		t.Fatalf("a declaration COMPLEX-QUERIES.md documents was refused:\n%v", err)
+	}
+}
+
+// docs/GETTING-STARTED.md, built: the model the walkthrough declares, plus the
+// integer-key variant it shows beside storm.Model.
+type gsUser struct {
+	storm.Model
+	Email string
+	Name  string
+	Notes []gsNote
+}
+
+func (u *gsUser) Schema(t *storm.Table) {
+	t.Name("users")
+	t.Col(&u.Email).Size(320)
+	t.Unique(&u.Email)
+}
+
+type gsNote struct {
+	storm.Model
+	Title    string
+	Body     string
+	Archived bool
+	PinnedAt *time.Time
+	User     gsUser
+}
+
+func (n *gsNote) Schema(t *storm.Table) {
+	t.Name("notes")
+	t.Col(&n.User).OnDelete(storm.Cascade)
+	t.Col(&n.Archived).Default("false")
+}
+
+type gsInvoice struct {
+	ID    int64
+	Total storm.Decimal
+}
+
+func (i *gsInvoice) Schema(t *storm.Table) {
+	t.Name("invoices")
+	t.PrimaryKey(&i.ID)
+	t.Col(&i.ID).Serial()
+	t.Col(&i.Total).Numeric(12, 2)
+}
+
+func TestGettingStartedDocDeclarationsBuild(t *testing.T) {
+	s, err := storm.Build(&gsUser{}, &gsNote{}, &gsInvoice{})
+	if err != nil {
+		t.Fatalf("a declaration GETTING-STARTED.md documents was refused:\n%v", err)
+	}
+	ddl := pgddl.Create(s)
+	for _, want := range []string{
+		`"user_id" uuid NOT NULL`,
+		`CONSTRAINT "uq_users_email" UNIQUE ("email")`,
+		`REFERENCES "users" ("id") ON DELETE CASCADE`,
+		`"archived" bool DEFAULT false NOT NULL`,
+		`"pinned_at" timestamptz,`,
+		`"id" bigserial`,
+		`"total" numeric(12,2)`,
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Errorf("GETTING-STARTED.md's model no longer emits %s:\n%s", want, ddl)
+		}
+	}
+}
+
+// docs/MIGRATING-FROM-GORM.md, built: the draft `storm import` wrote for the
+// tables GORM v1.31.2 AutoMigrate created, with the three additions step 2 of
+// the guide makes. The claims checked here are the ones the guide rests on:
+// that AcrossDeleted keeps GORM's unique index a plain one on a soft-delete
+// table, that leaving it off makes the index partial, and that Through over
+// GORM's own join table declares a many-to-many without new DDL.
+type gormCustomer struct {
+	ID        int64
+	CreatedAt *time.Time
+	UpdatedAt *time.Time
+	DeletedAt *time.Time
+	Email     string
+	Name      string
+	Orders    []gormOrder
+}
+
+func (m *gormCustomer) Schema(t *storm.Table) {
+	t.Name("customers")
+	t.PrimaryKey(&m.ID)
+	t.Col(&m.ID).Serial()
+	t.Col(&m.Email).Size(320)
+	t.SoftDelete(&m.DeletedAt)
+	t.Col(&m.CreatedAt).Default(storm.Now())
+	t.Col(&m.UpdatedAt).Default(storm.Now())
+	t.Index(&m.DeletedAt).Named("idx_customers_deleted_at")
+	t.Index(&m.Email).Unique().Named("idx_customers_email").AcrossDeleted()
+}
+
+type gormOrderTag struct {
+	Order gormOrder
+	Tag   gormTag
+}
+
+func (m *gormOrderTag) Schema(t *storm.Table) {
+	t.Name("order_tags")
+	t.PrimaryKey(&m.Order, &m.Tag)
+	t.Col(&m.Order).ConstraintName("fk_order_tags_order")
+	t.Col(&m.Tag).ConstraintName("fk_order_tags_tag")
+	t.Col(&m.Tag).NoIndex()
+}
+
+type gormOrder struct {
+	ID        int64
+	CreatedAt *time.Time
+	UpdatedAt *time.Time
+	Customer  gormCustomer
+	Status    string
+	Total     int64
+	Note      *string
+	Tags      []gormTag
+}
+
+func (m *gormOrder) Schema(t *storm.Table) {
+	t.Name("orders")
+	t.PrimaryKey(&m.ID)
+	t.Col(&m.ID).Serial()
+	t.Through(&m.Tags, &gormOrderTag{})
+	t.Col(&m.Customer).ConstraintName("fk_customers_orders")
+	t.Col(&m.Status).Size(20).Default("'pending'::character varying")
+	t.Index(&m.Customer).Named("idx_orders_customer_id")
+	t.Index(&m.Status).Named("idx_orders_status")
+}
+
+type gormTag struct {
+	ID   int64
+	Name string
+}
+
+func (m *gormTag) Schema(t *storm.Table) {
+	t.Name("tags")
+	t.PrimaryKey(&m.ID)
+	t.Col(&m.ID).Serial()
+	t.Index(&m.Name).Unique().Named("idx_tags_name")
+}
+
+// gormCustomerPartial is gormCustomer without AcrossDeleted: the form whose
+// unique index the guide says storm rebuilds as a partial one.
+type gormCustomerPartial struct {
+	ID        int64
+	DeletedAt *time.Time
+	Email     string
+}
+
+func (m *gormCustomerPartial) Schema(t *storm.Table) {
+	t.Name("customers")
+	t.PrimaryKey(&m.ID)
+	t.Col(&m.ID).Serial()
+	t.SoftDelete(&m.DeletedAt)
+	t.Index(&m.Email).Unique().Named("idx_customers_email")
+}
+
+func TestGormMigrationDocDeclarationsBuild(t *testing.T) {
+	s, err := storm.Build(&gormCustomer{}, &gormOrderTag{}, &gormOrder{}, &gormTag{})
+	if err != nil {
+		t.Fatalf("a declaration MIGRATING-FROM-GORM.md documents was refused:\n%v", err)
+	}
+	ddl := pgddl.Create(s)
+	for _, want := range []string{
+		`CREATE UNIQUE INDEX "idx_customers_email" ON "customers" ("email");`,
+		`"created_at" timestamptz DEFAULT now()`,
+		`"id" bigserial`,
+		`CONSTRAINT "fk_customers_orders" FOREIGN KEY ("customer_id")`,
+		`CONSTRAINT "fk_order_tags_tag" FOREIGN KEY ("tag_id")`,
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Errorf("MIGRATING-FROM-GORM.md's model no longer emits %s:\n%s", want, ddl)
+		}
+	}
+	// Through names GORM's existing join table; it must not add one of its own.
+	if n := strings.Count(ddl, "CREATE TABLE"); n != 4 {
+		t.Errorf("want 4 tables (Through reuses order_tags), got %d:\n%s", n, ddl)
+	}
+
+	p, err := storm.Build(&gormCustomerPartial{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `CREATE UNIQUE INDEX "idx_customers_email" ON "customers" ("email") WHERE deleted_at IS NULL;`; !strings.Contains(pgddl.Create(p), want) {
+		t.Errorf("without AcrossDeleted the guide says the index becomes %s; got:\n%s", want, pgddl.Create(p))
 	}
 }

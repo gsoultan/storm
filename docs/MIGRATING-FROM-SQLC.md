@@ -1,6 +1,6 @@
 ---
 tags: [storm, migration, sqlc]
-updated: 2026-08-27
+updated: 2026-11-06
 ---
 
 # Migrating from sqlc
@@ -11,13 +11,17 @@ per-query structs, and the hand-rolled dynamic-filter builders that grow beside
 every sqlc project. This guide migrates one bounded context; do one, ship it,
 repeat.
 
+New to storm? [GETTING-STARTED.md](GETTING-STARTED.md) covers installing the
+tool, connecting and the CI checks; this page covers what changes coming from
+sqlc.
+
 ## What maps to what
 
 | sqlc | storm |
 |---|---|
 | `schema.sql` (hand-written) | the Go model — `storm import` writes the first draft from your live schema |
 | `queries.sql` static queries | generated typed queries: `user.New().Where(...)` |
-| `queries.sql` `:one` by PK | `user.New().Where(user.ID.Eq(id)).One(ctx, ex)` |
+| `queries.sql` `:one` by PK | `u, ok, err := user.New().IDEq(id).One(ctx, ex)` — not-found is `ok == false`, not `pgx.ErrNoRows` |
 | hand-rolled dynamic filters | the same builder — every combination compiles once, 0 allocs warm |
 | N `LEFT JOIN` + regroup in Go | a named plan: `store.UserFeed()`, 1 + relations round trips, asserted |
 | `EXISTS` subqueries | `user.HasPosts()` / `store.UserHavingPosts(q, ps...)` |
@@ -25,7 +29,7 @@ repeat.
 | `:exec` statements | `storm.SQLExec(...)` — same PREPARE check, must return zero columns |
 | `SELECT fn(...)` calls | `storm.SQL[T]` on the function's row; wrap void as `(fn($1) IS NULL) AS done` |
 | migration files (hand-written) | `storm diff <name>` emits them; you still review and apply |
-| `db.WithTx(tx)` | `pgxdrv.Tx{T: tx}` — same idea, four-method port |
+| `db.WithTx(tx)` | `storm.InTx(ctx, ex, func(tx storm.Executor) error {…})`, or wrap a pgx transaction you already hold as `pgxdrv.Tx{T: tx}` |
 
 ## The steps
 
@@ -37,9 +41,10 @@ repeat.
 
 1. **Adopt the schema**: `storm import -dsn $DEV > model/model.go`. The draft
    lists everything it could not express as a comment block — re-declare those
-   in `Schema` methods before trusting a diff. Then prove the fixpoint:
-   `storm diff init` against a scratch database must produce your schema, and
-   a second diff must be empty.
+   in `Schema` methods before trusting a diff. Then prove the fixpoint
+   against the database the draft came from: `storm verify` must print
+   `✓ database matches the model`, and `storm diff adopt` must print
+   `no changes`. Do not go on until both do.
 2. **Generate**: `storm generate internal/store`, commit the output, add
    `storm verify -stale` and `-pending` to CI next to your existing checks.
 3. **Port reads**: static sqlc queries become builder calls; anything sqlc
@@ -54,7 +59,9 @@ repeat.
 6. **Port writes last**: sqlc's `INSERT ... RETURNING` becomes `Create()`;
    note the semantic upgrade — unset columns take DATABASE defaults, because
    absence is a mask, not a zero value. Bulk paths get `InsertAll` (COPY) and
-   the `Unit` (FK-ordered, atomic).
+   the `Unit` (FK-ordered, atomic). An update writes only the columns you
+   set (`m := user.Mutate(row); m.SetName(x); m.Update(ctx, ex)`), and
+   `updated_at` moves only if you call `m.SetUpdatedAtNow()`.
 
 ## What you gain that sqlc cannot express
 
@@ -62,8 +69,10 @@ Compile-time-safe dynamic queries; relations with asserted round-trip counts;
 unloaded relations that do not compile; keyset pagination as a first-class
 cursor; `verify -pending` ("changed the model, forgot the migration" fails
 CI); `explain` and `lint` as gates. Measured side by side in
-`bench/RESULTS.md`: same wall clock, **6 vs 5,022 allocations** and 22× less
-memory per thousand-row scan.
+[`bench/RESULTS.md`](../bench/RESULTS.md) (v1.2.0 re-measurement, 2026-09-25):
+**6 vs 5,022 allocations** and 41 KB vs 912 KB per thousand-row scan, about
+22× less memory. Wall clock is round-trip-dominated for both; re-run
+`make bench` before quoting any of it.
 
 ## What to watch
 
@@ -80,7 +89,17 @@ memory per thousand-row scan.
 - Two queries may share a row type only if their SELECT lists agree column
   for column — scanners decode by position, and generation enforces the
   agreement rather than transposing silently.
-- In raw rows, nullable columns are `runtime.Null[T]`, not `*T`.
+- In raw rows, nullable columns are `runtime.Null[T]`, not `*T`. The same is
+  true of every generated `Row`.
+- A builder query has a **default limit of 1,000 rows**: `New()` starts with
+  `LIMIT 1000`, and `All`, `List`, `Each` and `Rows` apply it without an
+  error when rows are cut off. A sqlc `:many` with no `LIMIT` returned every
+  row, so set `Limit` explicitly wherever a port can read more.
+- **On MySQL**, `storm.SQL` declarations are refused at generate time: storm
+  validates each one on a server of the target's kind, and has no such check
+  for MySQL yet. `storm import`, `diff` and `verify` have no MySQL form
+  either. A sqlc project on MySQL can move its builder-shaped queries now and
+  keep sqlc for the rest until that lands.
 
 ## What the first real migration taught (anubis/authz, 2026-08-25)
 
@@ -99,11 +118,15 @@ statement schema-checked at build time — covers both forms equally.
 **PREPARE against the live dev database when migrations are the schema of
 record.** storm's own `generate` PREPAREs against the *model* in a scratch
 schema, so the model vouches for every query. If your functions and views
-live only in migrations, the model cannot vouch for calls into them — write
-a small adopter-owned generate command (anubis's is ~100 lines: connect,
-PREPARE each declaration, `codegen.ResolveRawScanner`, `codegen.Package`)
-and point it at the dev database. Say in its doc comment that the model is a
-projection and migrations remain the truth.
+live only in migrations, the model cannot vouch for calls into them. anubis
+first solved this with its own ~100-line generate command; that is now a flag,
+`storm generate -raw-schema live`, which PREPAREs against the connected
+database as it is. The cost is the one anubis wrote down: the model no longer
+vouches for those statements, so point it at a database built by applying
+your migrations from scratch (which CI has anyway), never a long-lived dev
+database that may have drifted. (Since v0.14.0 functions, views and triggers
+can also be declared in the model — `storm.Function`, `storm.View`,
+`storm.Trigger` — which lets the default `-raw-schema model` cover them.)
 
 **PREPARE proves shape, not argument order.** The one thing generate-time
 checking cannot see is whether call sites pass `$1, $2` in the order you

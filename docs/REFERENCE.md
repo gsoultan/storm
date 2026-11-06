@@ -481,5 +481,9 @@ it were:
   already takes on its own.
 - **Package-level `user.Get(ctx, db, id)` one-liners.** It is
   `user.New().IDEq(id).One(ctx, ex)`, plus a generated shorthand per column.
-- **MySQL at run time.** There is a MySQL DDL back end, but it is not a runtime
-  target ([ADR-0007](adr/0007-mysql-runtime-needs-a-second-decoder-family.md)).
+- **MySQL tooling beyond generation.** MySQL 8.4 and MariaDB 11.4 *are* runtime
+  targets now (`storm generate -dialect mysql`, `runtime/mydrv`; ADR-0007 is
+  history). What is not built for them is `storm import`, `diff`, `verify` and
+  `explain`, and `storm.SQL` declarations are refused at generate time there,
+  because storm has no MySQL server-side check to validate them against yet.
+  See [[DIALECTS]].
