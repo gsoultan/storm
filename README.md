@@ -137,6 +137,9 @@ cannot drift from the library the way prose does.
 
 ## Start here
 
+- **Deciding whether to use it:** [docs/WHY-STORM.md](docs/WHY-STORM.md) —
+  storm against sqlc, GORM, Ent, Bun and raw pgx, the numbers, and where
+  storm is weaker, MySQL included.
 - **New to storm:** [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) — from
   an empty module to a running query, migrations and CI checks included.
 - **Coming from GORM:** [docs/MIGRATING-FROM-GORM.md](docs/MIGRATING-FROM-GORM.md)
