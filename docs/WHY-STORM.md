@@ -34,7 +34,9 @@ What you get from that:
 - **Mistakes caught by the compiler.** That covers a misspelt column, a
   predicate that does not fit the column's type, and a relation you read
   without loading it.
-- **Relations in one query, with no N+1.** That includes "the newest N
+- **Relations without N+1.** A relation load takes a fixed number of
+  queries however many parents match, and tests assert the count. That
+  includes "the newest N
   children of each parent", which GORM, Ent and Bun cannot express
   correctly.
 
@@ -55,7 +57,7 @@ How each tool works, not how fast it is. The tools are as of November 2026.
 | SQL text written | build time, dynamic queries too | build time, static queries only | at run time, every call | at run time, by a builder | at run time, by a builder | by you |
 | Row mapping | generated, binary wire | generated, over your driver | reflection per row | generated, via `database/sql` | reflection, metadata cached | by you |
 | Dynamic filters | yes, one compiled statement per shape, bounded cache | no | yes | yes | yes | by you |
-| Relations | one shaped query, round trips asserted in tests | none | `Preload`: one extra query per association | extra queries; edge is silently empty if not loaded | extra queries | by you |
+| Relations | a fixed number of queries per load, asserted in tests | none | `Preload`: one extra query per association | extra queries; edge is silently empty if not loaded | extra queries | by you |
 | Newest N children per parent | `Latest`, `LatestN` | no | limit applies to the whole set | same | same | by you |
 | Where a value can reach SQL text | nowhere; the escape hatch only runs text it PREPAREd at generate time | nowhere | string conditions, `any` arguments | `.Modify()`, raw selectors | string identifiers in some clauses | your code |
 | Schema changes | reviewable migration files; `migrate.Auto` is opt-in | your DDL | `AutoMigrate` at startup | Atlas | your DDL or Bun's migrator | your DDL |
