@@ -14,6 +14,16 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Go 1.27.3 is the minimum
+
+`go.mod` now says `go 1.27.3`, and CI builds with it. On 1.27.0 and 1.27.1,
+`govulncheck ./...` finds two standard-library vulnerabilities that storm's
+own TLS handshakes reach — mydrv, mgdrv and msdrv: GO-2026-6607 (malformed
+ECH outer extensions in crypto/tls, fixed in 1.27.2) and GO-2026-6809
+(compromised intermediates in crypto/x509, fixed in 1.27.3). On 1.27.3 the
+scan reports none. A module that requires storm on an older 1.27 patch is
+asked to move to 1.27.3.
+
 ### MongoDB: joins and unions
 
 A declared join generates `<Name>Row` and `All<Name>` on the MongoDB query

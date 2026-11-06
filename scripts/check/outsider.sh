@@ -25,7 +25,7 @@ mkdir -p model cmd/storm
 cat > go.mod <<EOF
 module example.com/outsider
 
-go 1.27
+go 1.27.3
 EOF
 
 # A model with a relation and a nullable column: enough shape that the
@@ -347,7 +347,7 @@ cd "$TMP2/m"
 cat > go.mod <<EOF
 module example.com/nobootstrap
 
-go 1.27
+go 1.27.3
 EOF
 
 # The same shapes as the module above, plus a MIXIN — exported, with its own

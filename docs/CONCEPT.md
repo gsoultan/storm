@@ -10,7 +10,7 @@ status: proposed
 > including the dynamic queries.**
 
 An embeddable Postgres ORM for Go. Generated, not reflected. Compiled, not
-interpreted. Module `github.com/gsoultan/storm`, Go 1.27.
+interpreted. Module `github.com/gsoultan/storm`, Go 1.27.3.
 
 Read [[COMPARISON]] first — this document only makes sense as a response to it.
 
