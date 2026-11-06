@@ -1,6 +1,6 @@
 module example.com/orders
 
-go 1.27
+go 1.27.3
 
 replace github.com/gsoultan/storm => ../..
 

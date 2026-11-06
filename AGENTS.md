@@ -1,7 +1,7 @@
 # storm — engineering conventions & developer profile roster
 
 An embeddable ORM library for Go. Imported, not deployed. Compiled, not
-interpreted. Module `github.com/gsoultan/storm` · Go 1.27.
+interpreted. Module `github.com/gsoultan/storm` · Go 1.27.3.
 
 **Postgres first**, then MySQL/MariaDB, SQL Server, Oracle, MongoDB — the
 dialect is a compile-time parameter, never a runtime branch ([[docs/DIALECTS]]).

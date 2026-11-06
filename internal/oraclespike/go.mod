@@ -2,7 +2,7 @@
 // for a measurement, exactly as internal/mssqlspike gains it no SQL Server one.
 module github.com/gsoultan/storm/internal/oraclespike
 
-go 1.27
+go 1.27.3
 
 replace github.com/gsoultan/storm => ../..
 
