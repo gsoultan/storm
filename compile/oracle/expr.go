@@ -3,8 +3,10 @@ package oracle
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gsoultan/storm/schema"
 )
@@ -104,7 +106,7 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 		w.b.WriteString("*")
 
 	case schema.ExprLit:
-		w.b.WriteString(e.Lit.SQL())
+		w.literal(e.Lit)
 
 	case schema.ExprParam:
 		// Numbered at generate time, not counted at splice time: a union has no
@@ -345,4 +347,69 @@ func (w *exprWriter) writeBound(bound schema.FrameBound) {
 	case schema.UnboundedFollowing:
 		w.b.WriteString("UNBOUNDED FOLLOWING")
 	}
+}
+
+// literal renders a declaration-time constant in Oracle's spelling.
+//
+// Not schema.Literal.SQL, which is PostgreSQL's: `'1.50'::numeric` is a
+// syntax error in Oracle, and a timestamp rendered there as NULL. Oracle reads
+// no backslash escapes, so doubling the quote is the whole of text escaping.
+func (w *exprWriter) literal(l schema.Literal) {
+	switch l.Kind {
+	case schema.TypeText, schema.TypeVarchar:
+		w.b.WriteString("'" + strings.ReplaceAll(l.S, "'", "''") + "'")
+	case schema.TypeInt2, schema.TypeInt4, schema.TypeInt8:
+		w.b.WriteString(strconv.FormatInt(l.I, 10))
+	case schema.TypeFloat4, schema.TypeFloat8:
+		switch {
+		case math.IsNaN(l.F):
+			w.b.WriteString("BINARY_DOUBLE_NAN")
+		case math.IsInf(l.F, 1):
+			w.b.WriteString("BINARY_DOUBLE_INFINITY")
+		case math.IsInf(l.F, -1):
+			w.b.WriteString("-BINARY_DOUBLE_INFINITY")
+		default:
+			w.b.WriteString(strconv.FormatFloat(l.F, 'e', -1, 64) + "D") // BINARY_DOUBLE
+		}
+	case schema.TypeNumeric:
+		if !isDecimalText(l.S) {
+			w.fail(fmt.Errorf("compile/oracle: decimal literal %q", l.S))
+			return
+		}
+		w.b.WriteString(l.S) // a fixed-point literal is a NUMBER
+	case schema.TypeTimestamptz:
+		ts, err := time.Parse(time.RFC3339Nano, l.S)
+		if err != nil {
+			w.fail(fmt.Errorf("compile/oracle: timestamp literal %q: %w", l.S, err))
+			return
+		}
+		w.b.WriteString("TIMESTAMP '" + ts.UTC().Format("2006-01-02 15:04:05.000000") + " +00:00'")
+	case schema.TypeBool:
+		if l.B {
+			w.b.WriteString("TRUE")
+		} else {
+			w.b.WriteString("FALSE")
+		}
+	default:
+		w.fail(fmt.Errorf("compile/oracle: a %s literal has no Oracle spelling storm writes", l.Kind))
+	}
+}
+
+// isDecimalText reports whether s is an optionally signed decimal numeral.
+func isDecimalText(s string) bool {
+	if s != "" && s[0] == '-' {
+		s = s[1:]
+	}
+	digits, dot := 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9':
+			digits++
+		case c == '.' && !dot:
+			dot = true
+		default:
+			return false
+		}
+	}
+	return digits > 0
 }
