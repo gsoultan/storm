@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 // The quickstart, as a test CI runs: every claim below executes against a real
 // PostgreSQL, so the example cannot drift from the library the way prose does.
 // Read it top to bottom — it is the tour.
