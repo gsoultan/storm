@@ -884,7 +884,10 @@ func (q Query) AllDistinctOn(ctx context.Context, ex runtime.Executor, n int, ds
 		return dst, st.Err
 	}
 	var sl runtime.Slab
-	sl.Reserve(st.SlabHint())
+	rh, bh := st.ReadHint(q.limit)
+	sl.Reserve(bh)
+	dst = runtime.Grow(dst, rh)
+	n0, s0 := len(dst), sl.Size()
 	b := binders.Get()
 	defer putBinder(b)
 	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
@@ -898,7 +901,7 @@ func (q Query) AllDistinctOn(ctx context.Context, ex runtime.Executor, n int, ds
 			return dst, err
 		}
 	}
-	st.ObserveSlab(sl.Size())
+	st.ObserveRead(len(dst)-n0, sl.Size()-s0)
 	return dst, rows.Err()
 }
 
@@ -1113,7 +1116,10 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 		// A malformed token stream is a codegen bug: never run it.
 		return dst, st.Err
 	}
-	sl.Reserve(st.SlabHint())
+	rh, bh := st.ReadHint(q.limit)
+	sl.Reserve(bh)
+	dst = runtime.Grow(dst, rh)
+	n0, s0 := len(dst), sl.Size()
 	b := binders.Get()
 	defer putBinder(b)
 
@@ -1128,7 +1134,7 @@ func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *
 			return dst, err
 		}
 	}
-	st.ObserveSlab(sl.Size())
+	st.ObserveRead(len(dst)-n0, sl.Size()-s0)
 	return dst, rows.Err()
 }
 
@@ -1419,7 +1425,10 @@ func (q Query) AllContactInto(ctx context.Context, ex runtime.Executor, dst []Co
 	if st.Err != nil {
 		return dst, st.Err
 	}
-	sl.Reserve(st.SlabHint())
+	rh, bh := st.ReadHint(q.limit)
+	sl.Reserve(bh)
+	dst = runtime.Grow(dst, rh)
+	n0, s0 := len(dst), sl.Size()
 	b := binders.Get()
 	defer putBinder(b)
 	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
@@ -1433,7 +1442,7 @@ func (q Query) AllContactInto(ctx context.Context, ex runtime.Executor, dst []Co
 			return dst, err
 		}
 	}
-	st.ObserveSlab(sl.Size())
+	st.ObserveRead(len(dst)-n0, sl.Size()-s0)
 	return dst, rows.Err()
 }
 
@@ -1520,7 +1529,10 @@ func (q Query) AllByStatusInto(ctx context.Context, ex runtime.Executor, dst []B
 	if st.Err != nil {
 		return dst, st.Err
 	}
-	sl.Reserve(st.SlabHint())
+	rh, bh := st.ReadHint(q.limit)
+	sl.Reserve(bh)
+	dst = runtime.Grow(dst, rh)
+	n0, s0 := len(dst), sl.Size()
 	b := binders.Get()
 	defer putBinder(b)
 	rows, err := ex.Query(ctx, st.SQL, q.bind(b))
@@ -1534,7 +1546,7 @@ func (q Query) AllByStatusInto(ctx context.Context, ex runtime.Executor, dst []B
 			return dst, err
 		}
 	}
-	st.ObserveSlab(sl.Size())
+	st.ObserveRead(len(dst)-n0, sl.Size()-s0)
 	return dst, rows.Err()
 }
 

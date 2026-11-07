@@ -16,6 +16,8 @@ BenchmarkGenBuild_OneCall 0
 BenchmarkGenDynamic6 13
 BenchmarkGenEach1000 6
 BenchmarkGenGetOne 6
+BenchmarkGenList1000 7
+BenchmarkGenPage20AfterList1000 7
 BenchmarkGenPrepare_Warm 0
 BenchmarkGenScan1000 6
 BenchmarkGenScan1000_Contact 5

@@ -931,6 +931,24 @@ func (g *gen) scanner() {
 	g.p("")
 }
 
+// readHint emits the pre-sizing every slice-returning read does before its
+// loop: the arena and the result slice, from what the statement's last read
+// needed, scaled to limit (a Go expression; "0" leaves it unscaled). Without
+// the slice half, List of 1,000 rows grows its result through ten doublings and
+// copies every row read so far at each one: 531 KB to return 41 KB of rows.
+func (g *gen) readHint(limit string) {
+	g.p("\trh, bh := st.ReadHint(%s)", limit)
+	g.p("\tsl.Reserve(bh)")
+	g.p("\tdst = runtime.Grow(dst, rh)")
+	g.p("\tn0, s0 := len(dst), sl.Size()")
+}
+
+// observeRead records what this read used, for readHint's next one. Only what
+// THIS read added: a caller's slice or arena may arrive already holding rows.
+func (g *gen) observeRead() {
+	g.p("\tst.ObserveRead(len(dst)-n0, sl.Size()-s0)")
+}
+
 func (g *gen) terminals() {
 	g.p("// All runs the query and decodes every row.")
 	g.p("func (q Query) All(ctx context.Context, ex %s, dst []Row) ([]Row, error) {", g.execType())
@@ -949,7 +967,7 @@ func (g *gen) terminals() {
 	g.p("\t\t// A malformed token stream is a codegen bug: never run it.")
 	g.p("\t\treturn dst, st.Err")
 	g.p("\t}")
-	g.p("\tsl.Reserve(st.SlabHint())")
+	g.readHint("q.limit")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
 	g.p("")
@@ -964,7 +982,7 @@ func (g *gen) terminals() {
 	g.p("\t\t\treturn dst, err")
 	g.p("\t\t}")
 	g.p("\t}")
-	g.p("\tst.ObserveSlab(sl.Size())")
+	g.observeRead()
 	g.p("\treturn dst, rows.Err()")
 	g.p("}")
 	g.p("")
