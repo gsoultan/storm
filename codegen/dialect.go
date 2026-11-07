@@ -135,6 +135,24 @@ type decoders struct {
 	// values carry their own length and whose decoders already return an error
 	// for one that does not match.
 	width map[kind]int
+
+	// minWidth is, for the little-endian families, the fewest bytes each
+	// fixed-width kind needs. Their integer decoders return 0 for a value
+	// narrower than that — a NULL where the model says NOT NULL, or an INT
+	// where it says BIGINT — which is a plausible wrong number with no
+	// error. A WIDER value is legitimate here: MySQL widens a computed integer
+	// to BIGINT and a boolean expression to BIGINT, and the low bytes of a
+	// little-endian value are the value, so only a short one is refused.
+	minWidth map[kind]int
+}
+
+// leWidths are the fixed widths both little-endian families need: the
+// MySQL binary protocol's and TDS's sizes for the types storm maps these kinds
+// to (TINYINT/BIT, SMALLINT, INT, BIGINT, FLOAT/REAL, DOUBLE/FLOAT, BINARY(16)
+// and uniqueidentifier).
+var leWidths = map[kind]int{
+	kindBool: 1, kindInt2: 2, kindInt4: 4, kindInt8: 8,
+	kindFloat4: 4, kindFloat8: 8, kindUUID: 16,
 }
 
 // rowsType is the scanner's parameter type: `[][]byte` unless the family says
@@ -252,6 +270,7 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 			text: func(field string, i int) string {
 				return fmt.Sprintf("r.%s = msdec.Str(rv[%d], sl)", field, i)
 			},
+			minWidth: leWidths,
 		}
 	}
 	if d == DialectMySQL || d == DialectMariaDB {
@@ -286,6 +305,7 @@ func decodersFor(d Dialect, runtimeImport string) decoders {
 				kindTimestamptz: true,
 				kindDate:        true, kindTimeOfDay: true, kindNumeric: true,
 			},
+			minWidth: leWidths,
 		}
 	}
 	return decoders{
