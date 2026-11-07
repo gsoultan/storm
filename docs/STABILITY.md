@@ -118,6 +118,11 @@ impossible; mixed-version generated trees are not a supported state.
   `runtime/shard` or the sharded generated surface, with its gates green on
   PostgreSQL, MySQL and SQL Server.
 
+- **Hooks, while they are experimental.** `runtime/hooks` and the generated
+  `Hooks` variable may change in a minor. What will not change: an unwrapped
+  Executor and an unset hook cost nothing, and a hook receives the Executor
+  the call was given.
+
 - **The Redis query cache, while it is experimental.** `runtime/qcache` and
   `runtime/redisdrv` are new and may change in a minor. What will not change:
   a read is cached only when its call site marks it, and a marked read without

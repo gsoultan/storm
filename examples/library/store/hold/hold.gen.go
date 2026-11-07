@@ -14,6 +14,7 @@ import (
 
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/runtime/hooks"
 	"github.com/gsoultan/storm/runtime/mgsplice"
 )
 
@@ -648,9 +649,13 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 		return err
 	}
 	defer rows.Close()
+	find := Hooks.AfterFind
 	for rows.Next() {
 		var r Row
 		if err := scan(rows.RawValues(), &r); err != nil {
+			return err
+		}
+		if err := hooks.Apply(ctx, ex, find, &r); err != nil {
 			return err
 		}
 		if err := fn(r); err != nil {
@@ -783,6 +788,12 @@ var setName = [nCols]string{
 	"\"barcode\"",
 	"\"reader\"",
 }
+
+// Hooks are this collection's lifecycle callbacks. Unset, each costs one
+// nil check; set them at program start. hooks.Lifecycle says which calls
+// run which hook. Every read here runs AfterFind per row as it arrives,
+// with the result still open.
+var Hooks hooks.Lifecycle[Ins, Mut, Row]
 
 // insertDefault is the $setOnInsert literal or the $currentDate a column
 // gets when the caller left it unset.
@@ -960,6 +971,17 @@ func (n *Ins) key() error {
 // land in the returned Row. A duplicate key or unique field is
 // runtime.ErrUniqueViolation.
 func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, n); err != nil {
+		return Row{}, err
+	}
+	r, err := n.insert(ctx, ex)
+	if err == nil {
+		err = hooks.Apply(ctx, ex, Hooks.AfterCreate, &r)
+	}
+	return r, err
+}
+
+func (n *Ins) insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	if err := n.key(); err != nil {
 		return Row{}, err
 	}
@@ -1091,6 +1113,16 @@ func (m *Mut) args(args []any) []any {
 // row back into the Mut. A key that matches nothing is runtime.ErrNoRow.
 // Assigning nothing sends nothing.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeUpdate, m); err != nil {
+		return err
+	}
+	if err := m.update(ctx, ex); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterUpdate, m)
+}
+
+func (m *Mut) update(ctx context.Context, ex runtime.Executor) error {
 	if m.dirty|m.expr == 0 {
 		return nil
 	}
@@ -1151,6 +1183,20 @@ var deleteOne = "{\"delete\":\"holds\",\"deletes\":[{\"limit\":1,\"q\":{\"_id\":
 // Delete deletes the row with this key. A key that matches nothing is
 // runtime.ErrNoRow.
 func Delete(ctx context.Context, ex runtime.Executor, id [16]byte) error {
+	if Hooks.BeforeDelete == nil && Hooks.AfterDelete == nil {
+		return deleteKey(ctx, ex, id)
+	}
+	key := Row{ID: id}
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &key); err != nil {
+		return err
+	}
+	if err := deleteKey(ctx, ex, id); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterDelete, &key)
+}
+
+func deleteKey(ctx context.Context, ex runtime.Executor, id [16]byte) error {
 	return exactlyOne(ex.Exec(ctx, deleteOne, []any{id}))
 }
 

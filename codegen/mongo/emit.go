@@ -159,6 +159,7 @@ func (g *gen) header() {
 	g.p("")
 	g.p("\t%q", g.imp+"/runtime")
 	g.p("\t%q", g.imp+"/runtime/bsondec")
+	g.p("\t%q", g.imp+"/runtime/hooks")
 	if g.plan != nil {
 		g.p("\t%q", g.imp+"/runtime/mgcascade")
 	}
