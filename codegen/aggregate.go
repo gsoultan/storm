@@ -176,7 +176,7 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\tif st.Err != nil {")
 	g.p("\t\treturn dst, st.Err")
 	g.p("\t}")
-	g.p("\tsl.Reserve(st.SlabHint())")
+	g.readHint("q.limit")
 	g.p("\tb := binders.Get()")
 	g.p("\tdefer putBinder(b)")
 	if len(agg.Params) > 0 {
@@ -195,7 +195,7 @@ func (g *gen) aggregate(agg *schema.Aggregate) {
 	g.p("\t\t\treturn dst, err")
 	g.p("\t\t}")
 	g.p("\t}")
-	g.p("\tst.ObserveSlab(sl.Size())")
+	g.observeRead()
 	g.p("\treturn dst, rows.Err()")
 	g.p("}")
 	g.p("")
