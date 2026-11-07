@@ -394,6 +394,24 @@ case runtime.Retryable(err):                          // 40001/40P01 — run it 
 value**; PostgreSQL's own diagnostic does, and it stays reachable through
 `Unwrap`. Anything storm has no opinion about comes back unchanged.
 
+## Hooks
+
+```go
+db := hooks.WrapDB(pool, hooks.Hooks{After: func(ctx context.Context, s *hooks.Statement) {
+    slog.DebugContext(ctx, "sql", "sql", s.SQL, "rows", s.Rows, "took", s.Duration, "err", s.Err)
+}})
+
+article.Hooks.BeforeCreate = func(ctx context.Context, ex storm.Executor, n *article.Ins) error {
+    n.SetAuthorID(authorFrom(ctx))
+    return nil
+}
+```
+
+Statement hooks see every statement through one wrapped Executor; lifecycle
+hooks run around each table's Insert, Update, Delete and full-row reads, in
+the caller's transaction. Both cost nothing when unset. See
+[docs/API.md § 8d](docs/API.md).
+
 ## Caching reads in Redis
 
 ```go

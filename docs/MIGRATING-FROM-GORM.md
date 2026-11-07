@@ -50,8 +50,11 @@ What you give up:
 - **A generate step.** You run `storm generate` after every model change, or
   leave `storm watch` running. A forgotten regeneration fails the build, so
   it is never silent.
-- **Hooks.** storm has no `BeforeCreate`, `AfterFind` or callback pipeline.
-  Put that logic in your service code, where it is visible at the call site.
+- **A narrower hook surface.** Each table package has `Hooks` with
+  `BeforeCreate`, `AfterCreate`, `BeforeUpdate`, `AfterUpdate`,
+  `BeforeDelete`, `AfterDelete` and `AfterFind`, and `hooks.Wrap` sees every
+  statement. There is no `BeforeSave`, no callback registry to reorder, and no
+  hook around batches, bulk loads or set-based writes.
 - **Ad-hoc query shapes.** `Select("a, b")`, `Group(...)` and `Joins(...)` at
   a call site have no equivalent. Shapes are declared on the model
   (projections, aggregations, joins), because a generated scanner needs to
@@ -385,9 +388,12 @@ the pattern the first adopter used for sqlc, and it applies here unchanged.
   `Row` to your domain type at the repository boundary, which is also where
   GORM code tends to leak `*gorm.DB` today.
 - **`updated_at` is not automatic.** See step 2.
-- **No hooks.** List your `BeforeCreate`, `BeforeSave`, `AfterFind` and other
-  hooks before you start, and move each into the service method that does the
-  write. Hooks that set ids or timestamps usually become database defaults.
+- **Hooks move to the table package.** A GORM `BeforeCreate` on the model
+  becomes `article.Hooks.BeforeCreate`, set at program start, and it receives
+  the `Ins` (call its setters) and the transaction's `Executor`. `BeforeSave`
+  is `BeforeCreate` plus `BeforeUpdate`. Hooks that set ids or timestamps
+  usually become database defaults instead. Logging and tracing callbacks
+  become one `hooks.Wrap` around the pool. See [API.md § 8d](API.md).
 - **Preload's cost does not change, but its safety does.** GORM's `Preload`
   issues one extra query per association, and so does a storm plan. The
   difference is that reading a relation you did not load fails to compile in
