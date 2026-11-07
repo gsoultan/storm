@@ -3,7 +3,7 @@ package msdrv
 import (
 	"context"
 	"errors"
-	"sync"
+	"time"
 
 	"github.com/gsoultan/storm/runtime"
 )
@@ -28,6 +28,17 @@ type Conn struct {
 	// list. The shape is read from the server, and reading it per load would
 	// make a thousand-row COPY two round trips instead of one.
 	bulk map[bulkKey][]column
+
+	// The cancellation watch for the statement in flight: AfterFunc's stop,
+	// the callback (one method value per connection, made once), the signal
+	// it sends when it returns, and what it did. attnSent and attnErr are
+	// written by the callback and read only after cancelDone, which orders
+	// the two.
+	stopWatch  func() bool
+	onCancel   func()
+	cancelDone chan struct{}
+	attnSent   bool
+	attnErr    error
 }
 
 // ErrRowsOpen is returned when a second statement is issued while a result set
@@ -53,33 +64,87 @@ func Open(ctx context.Context, cfg Config) (*Conn, error) {
 // Close ends the connection.
 func (c *Conn) Close() error { return c.x.c.Close() }
 
-// watch cancels the running statement when ctx is done.
+// watch arranges for the running statement to be cancelled when ctx is done;
+// unwatch ends it, and every path that calls watch must call it.
 //
 // TDS cancellation is an ATTENTION packet on the same connection, which is the
 // one place this protocol is kinder than MySQL's: mydrv has to open a second
 // connection and issue KILL QUERY, because a MySQL connection running a
 // statement will not read anything else. Here the server watches for it.
 //
-// The server answers with a DONE carrying the attention bit, and that answer
-// must still be read — the returned function does that, so the connection stays
-// usable rather than being thrown away for having been cancelled.
-func (c *Conn) watch(ctx context.Context) func() {
+// context.AfterFunc rather than a goroutine per statement: for a request's
+// context it registers a callback and starts nothing, and the callback is one
+// method value per connection, made once.
+func (c *Conn) watch(ctx context.Context) {
 	if ctx.Done() == nil {
-		return func() {}
+		return
 	}
-	done := make(chan struct{})
-	var once sync.Once
-	go func() {
-		select {
-		case <-ctx.Done():
-			// Best effort. A failed attention means the connection is already
-			// broken, which the read below will report with a better error than
-			// this goroutine could.
-			_ = c.x.attention()
-		case <-done:
+	if c.onCancel == nil {
+		c.onCancel = c.cancelled
+		c.cancelDone = make(chan struct{}, 1)
+	}
+	c.stopWatch = context.AfterFunc(ctx, c.onCancel)
+}
+
+// cancelled is the watch's callback: send the attention. It signals
+// cancelDone when it returns, always, which is what lets unwatch wait it out.
+func (c *Conn) cancelled() {
+	defer func() { c.cancelDone <- struct{}{} }()
+	// A failed attention means the connection is already broken, which the
+	// read in flight reports with a better error than this could.
+	c.attnErr = c.x.attention()
+	c.attnSent = true
+}
+
+// unwatch ends the watch and reports whether an attention was sent.
+//
+// It waits for a callback that had already started. Without that wait — the
+// old goroutine's race — an attention landing after the reply was read went
+// out on whatever this connection ran NEXT, cancelling someone else's
+// statement (error 3980), and its acknowledgement sat on the socket to be read
+// as that statement's answer.
+func (c *Conn) unwatch() (sent bool, err error) {
+	if c.stopWatch == nil {
+		return false, nil
+	}
+	if !c.stopWatch() {
+		<-c.cancelDone
+	}
+	c.stopWatch = nil
+	sent, err = c.attnSent, c.attnErr
+	c.attnSent, c.attnErr = false, nil
+	return sent, err
+}
+
+// settleAttention reads up to the server's acknowledgement of an attention
+// that the reply read so far did not include: a DONE with the attention bit,
+// which TDS says the client must read before the connection carries anything
+// else. Bounded, so a server that never answers costs the connection rather
+// than the caller's goroutine.
+func (c *Conn) settleAttention() {
+	_ = c.x.c.SetReadDeadline(time.Now().Add(attnWait))
+	defer c.x.c.SetReadDeadline(time.Time{})
+	for {
+		_, _, attn, err := c.execReply()
+		if err != nil {
+			c.bad = true
+			return
 		}
-	}()
-	return func() { once.Do(func() { close(done) }) }
+		if attn {
+			return
+		}
+	}
+}
+
+// attnWait bounds how long settleAttention waits for the acknowledgement.
+var attnWait = 5 * time.Second
+
+// cancelErr is the caller's own reason, for a statement it cancelled.
+func cancelErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return context.Canceled
 }
 
 // Query runs a statement that returns rows.
@@ -107,11 +172,37 @@ func (c *Conn) Exec(ctx context.Context, sql string, args []any) (int64, error) 
 	if err := c.send(ctx, sql, args); err != nil {
 		return 0, err
 	}
-	stop := c.watch(ctx)
-	defer stop()
+	c.watch(ctx)
+	affected, first, attn, err := c.execReply()
+	sent, attnErr := c.unwatch()
+	if err != nil {
+		c.bad = true
+		if sent {
+			return 0, cancelErr(ctx)
+		}
+		return 0, err
+	}
+	if sent || attn {
+		// The cancellation OVERRIDES whatever the server said: a cancelled
+		// statement reports error 3980 or nothing at all, and before this
+		// check a cancelled write came back as success with a partial count.
+		if attnErr != nil {
+			c.bad = true
+		} else if sent && !attn {
+			c.settleAttention()
+		}
+		return 0, cancelErr(ctx)
+	}
+	if first != nil {
+		return 0, classify(first)
+	}
+	return affected, nil
+}
 
-	var affected int64
-	var first error
+// execReply reads one reply message to a statement: the rows it affected, the
+// first error the server reported, and whether a DONE carried the attention
+// bit. err is the stream failing, after which the connection is not reusable.
+func (c *Conn) execReply() (affected int64, first error, attn bool, err error) {
 	var cols []column
 	var scratch []byte
 	var ar arena
@@ -121,86 +212,73 @@ func (c *Conn) Exec(ctx context.Context, sql string, args []any) (int64, error) 
 			if errors.Is(err, errEndOfMessage) {
 				break
 			}
-			c.bad = true
-			return 0, err
+			return 0, nil, attn, err
 		}
 		switch t {
 		case tokDone, tokDoneProc, tokDoneInProc:
 			st, n, err := c.x.readDone()
 			if err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 			affected += countOf(t, st, n)
+			if st&doneAttn != 0 {
+				attn = true
+			}
 			if st&doneError != 0 && first == nil {
 				first = protoErr("the server reported an error with no message")
 			}
 		case tokError:
 			e, err := c.x.readMessage()
 			if err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 			if first == nil {
 				first = e
 			}
 		case tokInfo:
 			if _, err := c.x.readMessage(); err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 		case tokEnvChange:
 			if err := c.x.readEnvChange(); err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 		case tokReturnStatus:
 			if _, err := c.x.readU32(); err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 		case tokReturnValue:
 			if err := c.skipReturnValue(); err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 		case tokColMetadata:
 			// An Exec whose statement happens to return rows — an INSERT with
 			// an OUTPUT clause reached through Exec rather than Query. The rows
 			// are drained rather than refused: the count is what the caller
 			// asked for and the stream still has to be consumed.
-			cols, err = c.x.readColMetadata(cols)
-			if err != nil {
-				c.bad = true
-				return 0, err
+			if cols, err = c.x.readColMetadata(cols); err != nil {
+				return 0, nil, attn, err
 			}
 		case tokRow, tokNBCRow:
 			if err := c.skipRow(cols, t == tokNBCRow, &scratch, &ar); err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 		case tokOrder:
 			n, err := c.x.readU16()
 			if err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 			if err := c.x.skip(int(n)); err != nil {
-				c.bad = true
-				return 0, err
+				return 0, nil, attn, err
 			}
 		default:
-			c.bad = true
-			return 0, protoErr("unexpected token 0x%02X in a statement reply", t)
+			return 0, nil, attn, protoErr("unexpected token 0x%02X in a statement reply", t)
 		}
 		if !c.x.inMsg {
 			break
 		}
 	}
-	if first != nil {
-		return 0, classify(first)
-	}
-	return affected, nil
+	return affected, first, attn, nil
 }
 
 // countOf is how many rows a DONE token contributes to the affected total.
