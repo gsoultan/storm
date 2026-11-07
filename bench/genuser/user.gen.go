@@ -31,48 +31,6 @@ type Row struct {
 	UpdatedAt time.Time
 }
 
-// Operator ids. Argument-taking operators are numbered first, so the
-// bind loop tests `op-1 < opsWithArg` with one unsigned compare.
-const (
-	opEq               runtime.Op = 1
-	opNotEq            runtime.Op = 2
-	opGt               runtime.Op = 3
-	opGte              runtime.Op = 4
-	opLt               runtime.Op = 5
-	opLte              runtime.Op = 6
-	opEqLower          runtime.Op = 7
-	opLike             runtime.Op = 8
-	opILike            runtime.Op = 9
-	opMatches          runtime.Op = 10
-	opWebSearch        runtime.Op = 11
-	opOverlaps         runtime.Op = 12
-	opContainsRange    runtime.Op = 13
-	opContainedBy      runtime.Op = 14
-	opIn               runtime.Op = 15
-	opNotIn            runtime.Op = 16
-	opArrayContains    runtime.Op = 17
-	opArrayContainedBy runtime.Op = 18
-	opArrayOverlaps    runtime.Op = 19
-	opJSONContains     runtime.Op = 20
-	opJSONContainedBy  runtime.Op = 21
-	opHasAnyKey        runtime.Op = 22
-	opHasAllKeys       runtime.Op = 23
-	opJSONTextLikeAny  runtime.Op = 24
-	opTextHasPrefix    runtime.Op = 25
-	opTextHasSuffix    runtime.Op = 26
-	opTextContains     runtime.Op = 27
-	opIsNull           runtime.Op = 28
-	opIsNotNull        runtime.Op = 29
-	opJSONIsEmpty      runtime.Op = 30
-	opNullOrEmpty      runtime.Op = 31
-	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
-	// the real columns in the frag table. Argless, like IsNull: the
-	// fragment is constant, which is what lets a semi-join ride the
-	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 32
-	opNotExists runtime.Op = 33
-)
-
 const nCols = 8
 
 // Query is a value type: composing one allocates nothing. Predicates
@@ -94,30 +52,19 @@ type Query struct {
 	anyI32          [3][]int32
 	nar, nas, nai32 uint8
 
-	// Order terms live in their own buffer and are appended to the stream
-	// after the predicate tree. Sharing one buffer would let a Where after
-	// an Order interleave the two, and the stream's order is its meaning.
+	// Order terms, appended to the stream after the predicate tree.
 	otoks [4]runtime.Tok
 	no    uint8
 
-	// lock is the row-lock mode: 0 none, then the dialect's mode order.
-	// It is part of the STATEMENT, so it selects the cache as well as
-	// the suffix.
-	lock uint8
+	lock uint8 // row-lock mode, 0 none; selects the cache and the suffix
 
 	limit  int64
 	offset int64
-	// over records that the query outgrew its fixed buffers. Terminals
-	// return it as an error rather than silently dropping a predicate.
-	over bool
 
-	// mixed records an After() over an ordering that is not all in one
-	// direction. No single row comparison expresses that.
-	mixed bool
-
-	// noOrder suppresses the default ordering. See Unordered.
-	noOrder  bool
-	badAfter bool
+	// Errors the terminals return: outgrown buffers, an After over a mixed
+	// ordering, an After with no ordering at all.
+	over, mixed, badAfter bool
+	noOrder               bool // see Unordered
 }
 
 // New starts a query.
@@ -133,99 +80,43 @@ func (q Query) Offset(n int64) Query { q.offset = n; return q }
 // active ordering. An ordering that mixes ascending and descending terms
 // is a query error.
 func (q Query) After(r Row) Query {
-	terms := q.otoks[:q.no]
-	if q.no == 0 {
-		if q.noOrder {
-			// A keyset cursor without an order is a position in nothing.
-			q.badAfter = true
-			return q
-		}
-		terms = defaultOrder[:]
-	}
+	terms, cmp, bad := runtime.Keyset(q.otoks[:q.no], defaultOrder[:], q.noOrder)
+	q.badAfter = q.badAfter || bad == runtime.KeysetUnordered
+	q.mixed = q.mixed || bad == runtime.KeysetMixed
 	if len(terms) == 0 {
 		return q
-	}
-	desc := terms[0].Op() == runtime.Desc || terms[0].Op() == runtime.DescNullsLast
-	for _, t := range terms {
-		d := t.Op() == runtime.Desc || t.Op() == runtime.DescNullsLast
-		if d != desc {
-			q.mixed = true
-			return q
-		}
 	}
 	for _, t := range terms {
 		q.push(runtime.MakeCol(t.Col()))
 		q.cursor(t.Col(), r)
 	}
-	op := runtime.CmpGt
-	if desc {
-		op = runtime.CmpLt
-	}
-	q.push(runtime.MakeRowCmp(op, uint32(len(terms))))
+	q.push(runtime.MakeRowCmp(cmp, uint32(len(terms))))
 	q.top++
 	return q
 }
 
 // cursor stores the bound value for one column of a keyset comparison.
 func (q *Query) cursor(col uint32, r Row) {
+	ok := true
 	switch col {
 	case 0:
-		if int(q.nr) >= len(q.raws) {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = r.ID
-		q.nr++
+		ok = runtime.Stash(q.raws[:], &q.nr, r.ID)
 	case 1:
-		if int(q.nr) >= len(q.raws) {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = r.OrgID
-		q.nr++
+		ok = runtime.Stash(q.raws[:], &q.nr, r.OrgID)
 	case 2:
-		if int(q.ns) >= len(q.strs) {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = r.Email
-		q.ns++
+		ok = runtime.Stash(q.strs[:], &q.ns, r.Email)
 	case 3:
-		if int(q.ns) >= len(q.strs) {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = r.Name
-		q.ns++
+		ok = runtime.Stash(q.strs[:], &q.ns, r.Name)
 	case 4:
-		if int(q.nn) >= len(q.nums) {
-			q.over = true
-			return
-		}
-		q.nums[q.nn] = int64(r.Age.V)
-		q.nn++
+		ok = runtime.Stash(q.nums[:], &q.nn, int64(r.Age.V))
 	case 5:
-		if int(q.ns) >= len(q.strs) {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = r.Status
-		q.ns++
+		ok = runtime.Stash(q.strs[:], &q.ns, r.Status)
 	case 6:
-		if int(q.ntm) >= len(q.tims) {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = r.CreatedAt
-		q.ntm++
+		ok = runtime.Stash(q.tims[:], &q.ntm, r.CreatedAt)
 	case 7:
-		if int(q.ntm) >= len(q.tims) {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = r.UpdatedAt
-		q.ntm++
+		ok = runtime.Stash(q.tims[:], &q.ntm, r.UpdatedAt)
 	}
+	q.over = q.over || !ok
 }
 
 // Unordered drops the default ordering, for reads nobody pages. An explicit
@@ -299,19 +190,13 @@ func (q Query) readErr() error {
 		return errTooComplex
 	}
 	if q.mixed {
-		return errMixedOrder
+		return runtime.ErrMixedOrder
 	}
 	if q.badAfter {
-		return errAfterUnordered
+		return runtime.ErrAfterUnordered
 	}
 	return nil
 }
-
-var errAfterUnordered = errors.New(
-	"storm: After() on an Unordered() query with no explicit Order — a keyset cursor without an ordering is a position in nothing")
-
-var errMixedOrder = errors.New(
-	"storm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
 
 var errCountLocked = errors.New(
 	"storm: a locked read cannot be counted — the server refuses a row lock with an aggregate; count first, then lock the rows you take")
@@ -322,8 +207,7 @@ var errExistsLocked = errors.New(
 var errTooComplex = errors.New(
 	"storm: query has more predicates than the generated buffers hold (scale 1); split the query, or regenerate with a larger codegen.Budgets{Scale}")
 
-// push and leaf mutate through a pointer and are only called on a local, so
-// the public API keeps value semantics.
+// push and leaf mutate a local copy only, so the API keeps value semantics.
 func (q *Query) push(t runtime.Tok) {
 	if int(q.nt) >= len(q.toks) {
 		q.over = true
@@ -333,9 +217,7 @@ func (q *Query) push(t runtime.Tok) {
 	q.nt++
 }
 
-// preds returns the predicate stream with top-level conjuncts ANDed.
-// A count uses this: ordering a scalar is wasted work, and including the
-// terms would compile a second statement per ordering for no difference.
+// preds is the predicate stream with top-level conjuncts ANDed, no order.
 func (q Query) preds(buf *[21]runtime.Tok) []runtime.Tok {
 	n := copy(buf[:], q.toks[:q.nt])
 	if q.top > 1 {
@@ -345,8 +227,7 @@ func (q Query) preds(buf *[21]runtime.Tok) []runtime.Tok {
 	return buf[:n]
 }
 
-// stream is the predicates followed by the ordering — the whole statement
-// key. Order tokens go last so a splicer can find the boundary by kind.
+// stream is the predicates, then the ordering: the whole statement key.
 func (q Query) stream(buf *[21]runtime.Tok) []runtime.Tok {
 	n := len(q.preds(buf))
 	if q.no == 0 {
@@ -375,6 +256,9 @@ type Pred struct {
 	anyI32 []int32
 }
 
+// ord is one column handle's ORDER BY term in direction dir.
+func ord(dir uint32, c uint8) Sort { return Sort(runtime.MakeOrder(dir, uint32(c))) }
+
 // Typed column handles. The type of the handle is what makes
 // Age.Like(...) fail to compile.
 var (
@@ -391,107 +275,93 @@ var (
 // UUIDCol addresses a uuid column.
 type UUIDCol struct{ c uint8 }
 
-func (h UUIDCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h UUIDCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h UUIDCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h UUIDCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h UUIDCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h UUIDCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h UUIDCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h UUIDCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
-func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
+func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: runtime.OpEq, raw: v} }
+func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: runtime.OpNotEq, raw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: runtime.OpIn, anyRaw: runtime.List(v)}
+}
 
 // NotIn is `<> ALL($1)`: a NULL in v matches no row, as NOT IN does.
 func (h UUIDCol) NotIn(v ...[16]byte) Pred {
-	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+	return Pred{col: h.c, op: runtime.OpNotIn, anyRaw: runtime.List(v)}
 }
 
 // TextCol addresses a text column.
 type TextCol struct{ c uint8 }
 
-func (h TextCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h TextCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h TextCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h TextCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h TextCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h TextCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h TextCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h TextCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h TextCol) Eq(v string) Pred      { return Pred{col: h.c, op: opEq, str: v} }
-func (h TextCol) NotEq(v string) Pred   { return Pred{col: h.c, op: opNotEq, str: v} }
-func (h TextCol) Gt(v string) Pred      { return Pred{col: h.c, op: opGt, str: v} }
-func (h TextCol) Gte(v string) Pred     { return Pred{col: h.c, op: opGte, str: v} }
-func (h TextCol) Lt(v string) Pred      { return Pred{col: h.c, op: opLt, str: v} }
-func (h TextCol) Lte(v string) Pred     { return Pred{col: h.c, op: opLte, str: v} }
-func (h TextCol) EqLower(v string) Pred { return Pred{col: h.c, op: opEqLower, str: v} }
-func (h TextCol) Like(v string) Pred    { return Pred{col: h.c, op: opLike, str: v} }
-func (h TextCol) ILike(v string) Pred   { return Pred{col: h.c, op: opILike, str: v} }
-func (h TextCol) In(v ...string) Pred   { return Pred{col: h.c, op: opIn, anyStr: runtime.List(v)} }
+func (h TextCol) Eq(v string) Pred      { return Pred{col: h.c, op: runtime.OpEq, str: v} }
+func (h TextCol) NotEq(v string) Pred   { return Pred{col: h.c, op: runtime.OpNotEq, str: v} }
+func (h TextCol) Gt(v string) Pred      { return Pred{col: h.c, op: runtime.OpGt, str: v} }
+func (h TextCol) Gte(v string) Pred     { return Pred{col: h.c, op: runtime.OpGte, str: v} }
+func (h TextCol) Lt(v string) Pred      { return Pred{col: h.c, op: runtime.OpLt, str: v} }
+func (h TextCol) Lte(v string) Pred     { return Pred{col: h.c, op: runtime.OpLte, str: v} }
+func (h TextCol) EqLower(v string) Pred { return Pred{col: h.c, op: runtime.OpEqLower, str: v} }
+func (h TextCol) Like(v string) Pred    { return Pred{col: h.c, op: runtime.OpLike, str: v} }
+func (h TextCol) ILike(v string) Pred   { return Pred{col: h.c, op: runtime.OpILike, str: v} }
+func (h TextCol) In(v ...string) Pred {
+	return Pred{col: h.c, op: runtime.OpIn, anyStr: runtime.List(v)}
+}
 
 // NotIn is `<> ALL($1)`: a NULL in v matches no row, as NOT IN does.
-func (h TextCol) NotIn(v ...string) Pred { return Pred{col: h.c, op: opNotIn, anyStr: runtime.List(v)} }
+func (h TextCol) NotIn(v ...string) Pred {
+	return Pred{col: h.c, op: runtime.OpNotIn, anyStr: runtime.List(v)}
+}
 
-// HasPrefix matches v literally: a % or _ in v is that character, not a
-// wildcard.
-func (h TextCol) HasPrefix(v string) Pred { return Pred{col: h.c, op: opTextHasPrefix, str: v} }
-
-// HasSuffix matches v literally: a % or _ in v is that character, not a
-// wildcard.
-func (h TextCol) HasSuffix(v string) Pred { return Pred{col: h.c, op: opTextHasSuffix, str: v} }
-
-// Contains matches v literally: a % or _ in v is that character, not a
-// wildcard.
-func (h TextCol) Contains(v string) Pred { return Pred{col: h.c, op: opTextContains, str: v} }
+// HasPrefix, HasSuffix and Contains match v literally: a % or _ in v
+// is that character, not a wildcard.
+func (h TextCol) HasPrefix(v string) Pred { return Pred{col: h.c, op: runtime.OpTextHasPrefix, str: v} }
+func (h TextCol) HasSuffix(v string) Pred { return Pred{col: h.c, op: runtime.OpTextHasSuffix, str: v} }
+func (h TextCol) Contains(v string) Pred  { return Pred{col: h.c, op: runtime.OpTextContains, str: v} }
 
 // NullInt32Col addresses a int4 column.
 type NullInt32Col struct{ c uint8 }
 
-func (h NullInt32Col) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h NullInt32Col) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h NullInt32Col) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h NullInt32Col) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h NullInt32Col) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h NullInt32Col) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h NullInt32Col) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h NullInt32Col) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h NullInt32Col) Eq(v int32) Pred    { return Pred{col: h.c, op: opEq, num: int64(v)} }
-func (h NullInt32Col) NotEq(v int32) Pred { return Pred{col: h.c, op: opNotEq, num: int64(v)} }
-func (h NullInt32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: opGt, num: int64(v)} }
-func (h NullInt32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: opGte, num: int64(v)} }
-func (h NullInt32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: opLt, num: int64(v)} }
-func (h NullInt32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: opLte, num: int64(v)} }
-func (h NullInt32Col) In(v ...int32) Pred { return Pred{col: h.c, op: opIn, anyI32: runtime.List(v)} }
+func (h NullInt32Col) Eq(v int32) Pred    { return Pred{col: h.c, op: runtime.OpEq, num: int64(v)} }
+func (h NullInt32Col) NotEq(v int32) Pred { return Pred{col: h.c, op: runtime.OpNotEq, num: int64(v)} }
+func (h NullInt32Col) Gt(v int32) Pred    { return Pred{col: h.c, op: runtime.OpGt, num: int64(v)} }
+func (h NullInt32Col) Gte(v int32) Pred   { return Pred{col: h.c, op: runtime.OpGte, num: int64(v)} }
+func (h NullInt32Col) Lt(v int32) Pred    { return Pred{col: h.c, op: runtime.OpLt, num: int64(v)} }
+func (h NullInt32Col) Lte(v int32) Pred   { return Pred{col: h.c, op: runtime.OpLte, num: int64(v)} }
+func (h NullInt32Col) In(v ...int32) Pred {
+	return Pred{col: h.c, op: runtime.OpIn, anyI32: runtime.List(v)}
+}
 
 // NotIn is `<> ALL($1)`: a NULL in v matches no row, as NOT IN does.
 func (h NullInt32Col) NotIn(v ...int32) Pred {
-	return Pred{col: h.c, op: opNotIn, anyI32: runtime.List(v)}
+	return Pred{col: h.c, op: runtime.OpNotIn, anyI32: runtime.List(v)}
 }
-func (h NullInt32Col) IsNull() Pred    { return Pred{col: h.c, op: opIsNull} }
-func (h NullInt32Col) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullInt32Col) IsNull() Pred    { return Pred{col: h.c, op: runtime.OpIsNull} }
+func (h NullInt32Col) IsNotNull() Pred { return Pred{col: h.c, op: runtime.OpIsNotNull} }
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
-func (h TimeCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h TimeCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h TimeCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h TimeCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h TimeCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h TimeCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h TimeCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h TimeCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h TimeCol) Eq(v time.Time) Pred    { return Pred{col: h.c, op: opEq, tim: v} }
-func (h TimeCol) NotEq(v time.Time) Pred { return Pred{col: h.c, op: opNotEq, tim: v} }
-func (h TimeCol) Gt(v time.Time) Pred    { return Pred{col: h.c, op: opGt, tim: v} }
-func (h TimeCol) Gte(v time.Time) Pred   { return Pred{col: h.c, op: opGte, tim: v} }
-func (h TimeCol) Lt(v time.Time) Pred    { return Pred{col: h.c, op: opLt, tim: v} }
-func (h TimeCol) Lte(v time.Time) Pred   { return Pred{col: h.c, op: opLte, tim: v} }
+func (h TimeCol) Eq(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpEq, tim: v} }
+func (h TimeCol) NotEq(v time.Time) Pred { return Pred{col: h.c, op: runtime.OpNotEq, tim: v} }
+func (h TimeCol) Gt(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpGt, tim: v} }
+func (h TimeCol) Gte(v time.Time) Pred   { return Pred{col: h.c, op: runtime.OpGte, tim: v} }
+func (h TimeCol) Lt(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpLt, tim: v} }
+func (h TimeCol) Lte(v time.Time) Pred   { return Pred{col: h.c, op: runtime.OpLte, tim: v} }
 
 // Where applies predicates, ANDed together.
 func (q Query) Where(ps ...Pred) Query {
@@ -604,69 +474,35 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 	return q
 }
 
-// leaf records one predicate: its value goes to the arena for its type,
-// its structure to the token stream.
+// leaf stores one predicate's value in its type's arena and its token.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
+	ok := true
+	switch {
+	case runtime.ArglessOp(p.op):
+	case runtime.ListOp(p.op):
 		switch p.col {
 		case 0, 1:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
+			ok = runtime.Stash(q.anyRaw[:], &q.nar, p.anyRaw)
 		case 2, 3, 5:
-			if int(q.nas) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyStr[q.nas] = p.anyStr
-			q.nas++
+			ok = runtime.Stash(q.anyStr[:], &q.nas, p.anyStr)
 		case 4:
-			if int(q.nai32) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyI32[q.nai32] = p.anyI32
-			q.nai32++
+			ok = runtime.Stash(q.anyI32[:], &q.nai32, p.anyI32)
 		}
-		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
-		return
+	default:
+		switch p.col {
+		case 0, 1:
+			ok = runtime.Stash(q.raws[:], &q.nr, p.raw)
+		case 2, 3, 5:
+			ok = runtime.Stash(q.strs[:], &q.ns, p.str)
+		case 4:
+			ok = runtime.Stash(q.nums[:], &q.nn, p.num)
+		case 6, 7:
+			ok = runtime.Stash(q.tims[:], &q.ntm, p.tim)
+		}
 	}
-	if p.op == opIsNull || p.op == opIsNotNull || p.op == opJSONIsEmpty || p.op == opNullOrEmpty {
-		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
+	if !ok {
+		q.over = true
 		return
-	}
-	switch p.col {
-	case 0, 1:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = p.raw
-		q.nr++
-	case 2, 3, 5:
-		if int(q.ns) >= 6 {
-			q.over = true
-			return
-		}
-		q.strs[q.ns] = p.str
-		q.ns++
-	case 4:
-		if int(q.nn) >= 6 {
-			q.over = true
-			return
-		}
-		q.nums[q.nn] = p.num
-		q.nn++
-	case 6, 7:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
 	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 }
@@ -804,21 +640,11 @@ var identTable = [nCols]string{
 }
 
 var lowering = runtime.Lowering{
-	Frag:  fragOf,
-	Order: orderOf,
-	OB:    runtime.Order{Lead: " ORDER BY ", Sep: ", "},
-	Ident: func(col uint32) string {
-		if col >= nCols {
-			return ""
-		}
-		return identTable[col]
-	},
-	RowCmp: func(op uint32) string {
-		if op == runtime.CmpLt {
-			return " < "
-		}
-		return " > "
-	},
+	Frag:       fragOf,
+	Order:      orderOf,
+	OB:         runtime.Order{Lead: " ORDER BY ", Sep: ", "},
+	Ident:      func(col uint32) string { return runtime.Pick(identTable[:], col) },
+	RowCmp:     runtime.RowCmpOps(" > ", " < "),
 	TupleOpen:  "(",
 	TupleSep:   ", ",
 	TupleClose: ")",
@@ -835,99 +661,98 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [8][34]runtime.Frag{
 	{ // id
-		opEq:    {A: "\"id\" = $"},
-		opNotEq: {A: "\"id\" <> $"},
-		opIn:    {A: "\"id\" = ANY($", B: ")"},
-		opNotIn: {A: "\"id\" <> ALL($", B: ")"},
+		runtime.OpEq:    {A: "\"id\" = $"},
+		runtime.OpNotEq: {A: "\"id\" <> $"},
+		runtime.OpIn:    {A: "\"id\" = ANY($", B: ")"},
+		runtime.OpNotIn: {A: "\"id\" <> ALL($", B: ")"},
 	},
 	{ // org_id
-		opEq:    {A: "\"org_id\" = $"},
-		opNotEq: {A: "\"org_id\" <> $"},
-		opIn:    {A: "\"org_id\" = ANY($", B: ")"},
-		opNotIn: {A: "\"org_id\" <> ALL($", B: ")"},
+		runtime.OpEq:    {A: "\"org_id\" = $"},
+		runtime.OpNotEq: {A: "\"org_id\" <> $"},
+		runtime.OpIn:    {A: "\"org_id\" = ANY($", B: ")"},
+		runtime.OpNotIn: {A: "\"org_id\" <> ALL($", B: ")"},
 	},
 	{ // email
-		opEq:            {A: "\"email\" = $"},
-		opNotEq:         {A: "\"email\" <> $"},
-		opGt:            {A: "\"email\" > $"},
-		opGte:           {A: "\"email\" >= $"},
-		opLt:            {A: "\"email\" < $"},
-		opLte:           {A: "\"email\" <= $"},
-		opEqLower:       {A: "lower(\"email\") = lower($", B: ")"},
-		opLike:          {A: "\"email\" LIKE $"},
-		opILike:         {A: "\"email\" ILIKE $"},
-		opIn:            {A: "\"email\" = ANY($", B: ")"},
-		opNotIn:         {A: "\"email\" <> ALL($", B: ")"},
-		opTextHasPrefix: {A: "\"email\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		opTextHasSuffix: {A: "\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		opTextContains:  {A: "\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		runtime.OpEq:            {A: "\"email\" = $"},
+		runtime.OpNotEq:         {A: "\"email\" <> $"},
+		runtime.OpGt:            {A: "\"email\" > $"},
+		runtime.OpGte:           {A: "\"email\" >= $"},
+		runtime.OpLt:            {A: "\"email\" < $"},
+		runtime.OpLte:           {A: "\"email\" <= $"},
+		runtime.OpEqLower:       {A: "lower(\"email\") = lower($", B: ")"},
+		runtime.OpLike:          {A: "\"email\" LIKE $"},
+		runtime.OpILike:         {A: "\"email\" ILIKE $"},
+		runtime.OpIn:            {A: "\"email\" = ANY($", B: ")"},
+		runtime.OpNotIn:         {A: "\"email\" <> ALL($", B: ")"},
+		runtime.OpTextHasPrefix: {A: "\"email\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		runtime.OpTextHasSuffix: {A: "\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		runtime.OpTextContains:  {A: "\"email\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // name
-		opEq:            {A: "\"name\" = $"},
-		opNotEq:         {A: "\"name\" <> $"},
-		opGt:            {A: "\"name\" > $"},
-		opGte:           {A: "\"name\" >= $"},
-		opLt:            {A: "\"name\" < $"},
-		opLte:           {A: "\"name\" <= $"},
-		opEqLower:       {A: "lower(\"name\") = lower($", B: ")"},
-		opLike:          {A: "\"name\" LIKE $"},
-		opILike:         {A: "\"name\" ILIKE $"},
-		opIn:            {A: "\"name\" = ANY($", B: ")"},
-		opNotIn:         {A: "\"name\" <> ALL($", B: ")"},
-		opTextHasPrefix: {A: "\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		opTextHasSuffix: {A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		opTextContains:  {A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		runtime.OpEq:            {A: "\"name\" = $"},
+		runtime.OpNotEq:         {A: "\"name\" <> $"},
+		runtime.OpGt:            {A: "\"name\" > $"},
+		runtime.OpGte:           {A: "\"name\" >= $"},
+		runtime.OpLt:            {A: "\"name\" < $"},
+		runtime.OpLte:           {A: "\"name\" <= $"},
+		runtime.OpEqLower:       {A: "lower(\"name\") = lower($", B: ")"},
+		runtime.OpLike:          {A: "\"name\" LIKE $"},
+		runtime.OpILike:         {A: "\"name\" ILIKE $"},
+		runtime.OpIn:            {A: "\"name\" = ANY($", B: ")"},
+		runtime.OpNotIn:         {A: "\"name\" <> ALL($", B: ")"},
+		runtime.OpTextHasPrefix: {A: "\"name\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		runtime.OpTextHasSuffix: {A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		runtime.OpTextContains:  {A: "\"name\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // age
-		opEq:        {A: "\"age\" = $"},
-		opNotEq:     {A: "\"age\" <> $"},
-		opGt:        {A: "\"age\" > $"},
-		opGte:       {A: "\"age\" >= $"},
-		opLt:        {A: "\"age\" < $"},
-		opLte:       {A: "\"age\" <= $"},
-		opIn:        {A: "\"age\" = ANY($", B: ")"},
-		opNotIn:     {A: "\"age\" <> ALL($", B: ")"},
-		opIsNull:    {A: "\"age\" IS NULL"},
-		opIsNotNull: {A: "\"age\" IS NOT NULL"},
+		runtime.OpEq:        {A: "\"age\" = $"},
+		runtime.OpNotEq:     {A: "\"age\" <> $"},
+		runtime.OpGt:        {A: "\"age\" > $"},
+		runtime.OpGte:       {A: "\"age\" >= $"},
+		runtime.OpLt:        {A: "\"age\" < $"},
+		runtime.OpLte:       {A: "\"age\" <= $"},
+		runtime.OpIn:        {A: "\"age\" = ANY($", B: ")"},
+		runtime.OpNotIn:     {A: "\"age\" <> ALL($", B: ")"},
+		runtime.OpIsNull:    {A: "\"age\" IS NULL"},
+		runtime.OpIsNotNull: {A: "\"age\" IS NOT NULL"},
 	},
 	{ // status
-		opEq:            {A: "\"status\" = $"},
-		opNotEq:         {A: "\"status\" <> $"},
-		opGt:            {A: "\"status\" > $"},
-		opGte:           {A: "\"status\" >= $"},
-		opLt:            {A: "\"status\" < $"},
-		opLte:           {A: "\"status\" <= $"},
-		opEqLower:       {A: "lower(\"status\") = lower($", B: ")"},
-		opLike:          {A: "\"status\" LIKE $"},
-		opILike:         {A: "\"status\" ILIKE $"},
-		opIn:            {A: "\"status\" = ANY($", B: ")"},
-		opNotIn:         {A: "\"status\" <> ALL($", B: ")"},
-		opTextHasPrefix: {A: "\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
-		opTextHasSuffix: {A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
-		opTextContains:  {A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		runtime.OpEq:            {A: "\"status\" = $"},
+		runtime.OpNotEq:         {A: "\"status\" <> $"},
+		runtime.OpGt:            {A: "\"status\" > $"},
+		runtime.OpGte:           {A: "\"status\" >= $"},
+		runtime.OpLt:            {A: "\"status\" < $"},
+		runtime.OpLte:           {A: "\"status\" <= $"},
+		runtime.OpEqLower:       {A: "lower(\"status\") = lower($", B: ")"},
+		runtime.OpLike:          {A: "\"status\" LIKE $"},
+		runtime.OpILike:         {A: "\"status\" ILIKE $"},
+		runtime.OpIn:            {A: "\"status\" = ANY($", B: ")"},
+		runtime.OpNotIn:         {A: "\"status\" <> ALL($", B: ")"},
+		runtime.OpTextHasPrefix: {A: "\"status\" LIKE (replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
+		runtime.OpTextHasSuffix: {A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_')) ESCAPE '!'"},
+		runtime.OpTextContains:  {A: "\"status\" LIKE ('%' || replace(replace(replace($", B: ", '!', '!!'), '%', '!%'), '_', '!_') || '%') ESCAPE '!'"},
 	},
 	{ // created_at
-		opEq:    {A: "\"created_at\" = $"},
-		opNotEq: {A: "\"created_at\" <> $"},
-		opGt:    {A: "\"created_at\" > $"},
-		opGte:   {A: "\"created_at\" >= $"},
-		opLt:    {A: "\"created_at\" < $"},
-		opLte:   {A: "\"created_at\" <= $"},
+		runtime.OpEq:    {A: "\"created_at\" = $"},
+		runtime.OpNotEq: {A: "\"created_at\" <> $"},
+		runtime.OpGt:    {A: "\"created_at\" > $"},
+		runtime.OpGte:   {A: "\"created_at\" >= $"},
+		runtime.OpLt:    {A: "\"created_at\" < $"},
+		runtime.OpLte:   {A: "\"created_at\" <= $"},
 	},
 	{ // updated_at
-		opEq:    {A: "\"updated_at\" = $"},
-		opNotEq: {A: "\"updated_at\" <> $"},
-		opGt:    {A: "\"updated_at\" > $"},
-		opGte:   {A: "\"updated_at\" >= $"},
-		opLt:    {A: "\"updated_at\" < $"},
-		opLte:   {A: "\"updated_at\" <= $"},
+		runtime.OpEq:    {A: "\"updated_at\" = $"},
+		runtime.OpNotEq: {A: "\"updated_at\" <> $"},
+		runtime.OpGt:    {A: "\"updated_at\" > $"},
+		runtime.OpGte:   {A: "\"updated_at\" >= $"},
+		runtime.OpLt:    {A: "\"updated_at\" < $"},
+		runtime.OpLte:   {A: "\"updated_at\" <= $"},
 	},
 }
 
 func fragOf(op, col uint32) runtime.Frag {
 	// Bounded by the table, not nCols: existence pseudo-columns live past
-	// the real ones. Order, ident and arena lookups stay nCols-bounded,
-	// so a pseudo-column can never be ordered by, cursored on, or bound.
+	// the real ones, and only here.
 	if int(col) >= len(fragTable) || int(op) >= len(fragTable[0]) {
 		return runtime.Frag{}
 	}
@@ -1208,74 +1033,49 @@ type Binder = binder
 func GetBinder() *Binder  { return binders.Get() }
 func PutBinder(b *Binder) { putBinder(b) }
 
-// putBinder drops every reference to the caller's memory before pooling, so
-// a pooled binder pins nothing.
+// putBinder drops every reference to caller memory, so a pooled binder pins nothing.
 func putBinder(b *binder) {
-	for i := range b.strs {
-		b.strs[i] = ""
-	}
-	for i := range b.anyRaw {
-		b.anyRaw[i] = nil
-	}
-	for i := range b.anyStr {
-		b.anyStr[i] = nil
-	}
-	for i := range b.anyI32 {
-		b.anyI32[i] = nil
-	}
+	clear(b.strs[:])
+	clear(b.anyRaw[:])
+	clear(b.anyStr[:])
+	clear(b.anyI32[:])
 	binders.Put(b)
 }
 
-// bindPreds copies arena values into the pooled buffer and points the
-// []any at the buffer's own fields — boxing a pointer does not allocate.
-// Count and Exists stop here: their statements carry no LIMIT or OFFSET.
+// bindPreds binds the predicate values, in stream order, from the binder's
+// own copies. Count and Exists stop here: they have no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
 	var ns, nn, nr, ntm, nar, nas, nai32 uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
-		// KLeaf binds a predicate's value, KCol a keyset cursor's; both
-		// share the per-type arenas, and a KCol's opNone matches no op case.
+		// A predicate's value or a keyset cursor's: both use the arenas.
 		if k := t.Kind(); k != runtime.KLeaf && k != runtime.KCol {
 			continue
 		}
-		switch runtime.Op(t.Op()) {
-		case opIsNull, opIsNotNull, opJSONIsEmpty, opNullOrEmpty:
+		switch op := runtime.Op(t.Op()); {
+		case runtime.ArglessOp(op):
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
+		case runtime.ListOp(op):
 			switch t.Col() {
 			case 0, 1:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
+				v = runtime.Bind(v, b.anyRaw[:], q.anyRaw[:], &nar)
 			case 2, 3, 5:
-				b.anyStr[nas] = q.anyStr[nas]
-				v = append(v, &b.anyStr[nas])
-				nas++
+				v = runtime.Bind(v, b.anyStr[:], q.anyStr[:], &nas)
 			case 4:
-				b.anyI32[nai32] = q.anyI32[nai32]
-				v = append(v, &b.anyI32[nai32])
-				nai32++
+				v = runtime.Bind(v, b.anyI32[:], q.anyI32[:], &nai32)
 			}
 			continue
 		}
 		switch t.Col() {
 		case 0, 1:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
+			v = runtime.Bind(v, b.raws[:], q.raws[:], &nr)
 		case 2, 3, 5:
-			b.strs[ns] = q.strs[ns]
-			v = append(v, &b.strs[ns])
-			ns++
+			v = runtime.Bind(v, b.strs[:], q.strs[:], &ns)
 		case 4:
-			b.nums[nn] = q.nums[nn]
-			v = append(v, &b.nums[nn])
-			nn++
+			v = runtime.Bind(v, b.nums[:], q.nums[:], &nn)
 		case 6, 7:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
+			v = runtime.Bind(v, b.tims[:], q.tims[:], &ntm)
 		}
 	}
 	b.vals = v
@@ -1287,8 +1087,7 @@ func (q Query) bind(b *binder) []any {
 	v := q.bindPreds(b)
 	b.limit = q.limit
 	v = append(v, &b.limit)
-	// An offset of zero is absent from the statement, so binding it
-	// would leave an argument nothing consumes.
+	// An offset of zero is absent from the statement, so it binds nothing.
 	if q.offset > 0 {
 		b.offset = q.offset
 		v = append(v, &b.offset)

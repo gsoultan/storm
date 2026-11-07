@@ -570,21 +570,10 @@ var ops = []opDef{
 
 const opNone = 0 // nibble 0 means "no predicate on this column"
 
+// opConstants used to emit the operator ids into every package; they are
+// runtime.Op* now, shared by all of them, and only the column count is the
+// table's own.
 func (g *gen) opConstants() {
-	g.p("// Operator ids. Argument-taking operators are numbered first, so the")
-	g.p("// bind loop tests `op-1 < opsWithArg` with one unsigned compare.")
-	g.p("const (")
-	for i, op := range ops {
-		g.p("\top%s runtime.Op = %d", op.name, i+1)
-	}
-	g.p("\t// Existence operators apply to PSEUDO-COLUMNS — relation slots past")
-	g.p("\t// the real columns in the frag table. Argless, like IsNull: the")
-	g.p("\t// fragment is constant, which is what lets a semi-join ride the")
-	g.p("\t// ordinary predicate machinery and compose under And/Or/Not free.")
-	g.p("\topExists    runtime.Op = %d", len(ops)+1)
-	g.p("\topNotExists runtime.Op = %d", len(ops)+2)
-	g.p(")")
-	g.p("")
 	g.p("const nCols = %d", len(g.cols))
 	g.p("")
 }
@@ -690,18 +679,8 @@ func (g *gen) compile() {
 	g.p("\tFrag:  fragOf,")
 	g.p("\tOrder: orderOf,")
 	g.p("\tOB:    runtime.Order{Lead: %q, Sep: %q},", g.lw.OrderLead, g.lw.OrderSep)
-	g.p("\tIdent: func(col uint32) string {")
-	g.p("\t\tif col >= nCols {")
-	g.p("\t\t\treturn \"\"")
-	g.p("\t\t}")
-	g.p("\t\treturn identTable[col]")
-	g.p("\t},")
-	g.p("\tRowCmp: func(op uint32) string {")
-	g.p("\t\tif op == runtime.CmpLt {")
-	g.p("\t\t\treturn %q", g.lw.RowCmpOp(1))
-	g.p("\t\t}")
-	g.p("\t\treturn %q", g.lw.RowCmpOp(0))
-	g.p("\t},")
+	g.p("\tIdent:  func(col uint32) string { return runtime.Pick(identTable[:], col) },")
+	g.p("\tRowCmp: runtime.RowCmpOps(%q, %q),", g.lw.RowCmpOp(0), g.lw.RowCmpOp(1))
 	g.p("\tTupleOpen:  %q,", g.lw.TupleOpen)
 	g.p("\tTupleSep:   %q,", g.lw.TupleSep)
 	g.p("\tTupleClose: %q,", g.lw.TupleClose)
@@ -739,8 +718,7 @@ func (g *gen) compile() {
 	}
 	g.p("func fragOf(op, col uint32) runtime.Frag {")
 	g.p("\t// Bounded by the table, not nCols: existence pseudo-columns live past")
-	g.p("\t// the real ones. Order, ident and arena lookups stay nCols-bounded,")
-	g.p("\t// so a pseudo-column can never be ordered by, cursored on, or bound.")
+	g.p("\t// the real ones, and only here.")
 	g.p("\tif int(col) >= len(fragTable) || int(op) >= len(fragTable[0]) {")
 	g.p("\t\treturn runtime.Frag{}")
 	g.p("\t}")
@@ -1322,7 +1300,7 @@ func (g *gen) fragTable(name string, ident func(string) string) {
 					g.t.Name, c.Name(), g.lw.name, op.name)
 				return
 			}
-			g.p("\t\top%s: %s,", op.name, fragLit(a, b))
+			g.p("\t\truntime.Op%s: %s,", op.name, fragLit(a, b))
 		}
 		g.p("\t},")
 	}

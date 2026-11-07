@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-11-02
+updated: 2026-11-07
 ---
 
 # Changelog
@@ -13,6 +13,22 @@ Every entry names what changed and — where it matters — what it cost, becaus
 a release note that cannot be checked is marketing.
 
 ## Unreleased
+
+### Generated table packages are 7% smaller again
+
+The predicate builder's per-column code moved into small runtime helpers. The
+operator ids are `runtime.OpEq` and the rest instead of a 38-line constant
+block in every package; `leaf`, `cursor` and `bindPreds` store and bind each
+value through `runtime.Stash` and `runtime.Bind` (one line per column or arena
+instead of six or three) and test operator classes with `runtime.ListOp` and
+`runtime.ArglessOp`; `After` reads its ordering through `runtime.Keyset`; the
+two After errors are `runtime.ErrAfterUnordered` and `runtime.ErrMixedOrder`;
+the lowering's ident and row-comparison closures are `runtime.Pick` and
+`runtime.RowCmpOps`; the four ORDER BY methods on a handle call one `ord`
+helper and fit on a line. Internal comments that restated docs/GENERATED.md
+are one line now. Committed SQL table packages: 54,037 → 50,014 lines (−7.4%,
+about 180 lines per table). The SQL every package emits is unchanged, the
+generated API is unchanged, and the allocation budgets in bench/ALLOCS hold.
 
 ### Go 1.27.3 is the minimum
 

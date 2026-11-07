@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -72,6 +73,150 @@ const (
 	CmpGt uint32 = iota
 	CmpLt
 )
+
+// Operator ids. codegen's ops table lists the same operators in the same
+// order — TestOpIdsMatchRuntime holds the two together — and every generated
+// package uses these, so a token means the same thing in every package.
+//
+// Argument-taking operators come first and the argless ones last, so
+// ArglessOp is one compare. The existence operators apply to PSEUDO-COLUMNS,
+// relation slots past the real columns in a fragment table: argless like
+// IsNull, so a semi-join rides the ordinary predicate machinery.
+const (
+	OpEq Op = iota + 1
+	OpNotEq
+	OpGt
+	OpGte
+	OpLt
+	OpLte
+	OpEqLower
+	OpLike
+	OpILike
+	OpMatches
+	OpWebSearch
+	OpOverlaps
+	OpContainsRange
+	OpContainedBy
+	OpIn
+	OpNotIn
+	OpArrayContains
+	OpArrayContainedBy
+	OpArrayOverlaps
+	OpJSONContains
+	OpJSONContainedBy
+	OpHasAnyKey
+	OpHasAllKeys
+	OpJSONTextLikeAny
+	OpTextHasPrefix
+	OpTextHasSuffix
+	OpTextContains
+	OpIsNull
+	OpIsNotNull
+	OpJSONIsEmpty
+	OpNullOrEmpty
+	OpExists
+	OpNotExists
+)
+
+// listOps is every operator whose argument is a LIST, bound whole into one
+// placeholder from a list slot rather than one value from an arena.
+const listOps = 1<<OpIn | 1<<OpNotIn | 1<<OpArrayContains | 1<<OpArrayContainedBy |
+	1<<OpArrayOverlaps | 1<<OpHasAnyKey | 1<<OpHasAllKeys | 1<<OpJSONTextLikeAny
+
+// ListOp reports an operator whose argument is a list.
+func ListOp(op Op) bool { return op < 64 && listOps>>op&1 != 0 }
+
+// ArglessOp reports an operator that binds nothing, and so must not spend an
+// arena slot: a leaf that did would put every later value of that type one
+// slot early.
+func ArglessOp(op Op) bool { return op >= OpIsNull }
+
+// Stash appends v to a query's fixed arena at *n, or reports false when the
+// arena is full. The caller marks the query too complex rather than drop the
+// predicate.
+func Stash[T any](arena []T, n *uint8, v T) bool {
+	i := int(*n)
+	if i >= len(arena) {
+		return false
+	}
+	arena[i] = v
+	*n++
+	return true
+}
+
+// Bind copies the arena value at *n into the pooled binder's own slot and
+// appends a pointer to it: boxing a pointer does not allocate, and the
+// statement reads the binder's copy, never the caller's query.
+func Bind[T any](v []any, dst, src []T, n *uint8) []any {
+	i := *n
+	dst[i] = src[i]
+	*n = i + 1
+	return append(v, &dst[i])
+}
+
+// ErrAfterUnordered and ErrMixedOrder are what a generated query's terminals
+// return for an After the ordering cannot express.
+var (
+	ErrAfterUnordered = errors.New(
+		"storm: After() on an Unordered() query with no explicit Order — a keyset cursor without an ordering is a position in nothing")
+	ErrMixedOrder = errors.New(
+		"storm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
+)
+
+// Pick is table[i], or "" past its end: a generated package's bounded
+// lookup into one of its lowered tables.
+func Pick(table []string, i uint32) string {
+	if int(i) >= len(table) {
+		return ""
+	}
+	return table[i]
+}
+
+// RowCmpOps is a Lowering.RowCmp over the back end's two operator texts.
+func RowCmpOps(gt, lt string) func(op uint32) string {
+	return func(op uint32) string {
+		if op == CmpLt {
+			return lt
+		}
+		return gt
+	}
+}
+
+// Keyset failures, as After reports them.
+const (
+	KeysetOK uint8 = iota
+	KeysetUnordered
+	KeysetMixed
+)
+
+// Keyset reads the ordering After pages by: the explicit terms, or def when
+// there are none and the query is ordered at all. It returns the terms the
+// cursor follows and the row comparison that walks away from rows already
+// seen — CmpGt for ascending, CmpLt for descending — or a failure: a cursor
+// without an ordering is a position in nothing, and a mixed ordering has no
+// single row comparison.
+func Keyset(explicit, def []Tok, noOrder bool) (terms []Tok, cmp uint32, bad uint8) {
+	terms = explicit
+	if len(terms) == 0 {
+		if noOrder {
+			return nil, 0, KeysetUnordered
+		}
+		terms = def
+	}
+	if len(terms) == 0 {
+		return nil, 0, KeysetOK
+	}
+	desc := terms[0].Op() == Desc || terms[0].Op() == DescNullsLast
+	for _, t := range terms {
+		if d := t.Op() == Desc || t.Op() == DescNullsLast; d != desc {
+			return nil, 0, KeysetMixed
+		}
+	}
+	if desc {
+		return terms, CmpLt, KeysetOK
+	}
+	return terms, CmpGt, KeysetOK
+}
 
 // MaxCols is how many columns a token can address in ONE table.
 //

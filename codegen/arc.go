@@ -33,7 +33,7 @@ func (g *gen) arcPredicates(arc *schema.Arc) {
 		}
 		g.p("// %sIs%s matches rows whose %s is a %s.", field, v.GoName, arc.Field, v.Table)
 		g.p("func %sIs%s() Pred {", field, v.GoName)
-		g.p("\treturn Pred{col: %d, op: opIsNotNull}", i)
+		g.p("\treturn Pred{col: %d, op: runtime.OpIsNotNull}", i)
 		g.p("}")
 		g.p("")
 	}

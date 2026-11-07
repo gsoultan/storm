@@ -354,3 +354,109 @@ func TestTreeCacheGetDoesNotAllocateWhenShapesAlternate(t *testing.T) {
 		t.Fatalf("Get allocated %v times per alternating pair, want 0", n)
 	}
 }
+
+// Stash is the bound check every generated arena write goes through: a full
+// arena refuses, and the cursor does not move, so the query can be marked too
+// complex instead of writing past the end or dropping the value silently.
+func TestStashBoundsTheArena(t *testing.T) {
+	var arena [2]string
+	var n uint8
+	if !runtime.Stash(arena[:], &n, "a") || !runtime.Stash(arena[:], &n, "b") {
+		t.Fatal("Stash refused a value the arena had room for")
+	}
+	if runtime.Stash(arena[:], &n, "c") {
+		t.Fatal("Stash accepted a third value into a two-slot arena")
+	}
+	if n != 2 || arena != [2]string{"a", "b"} {
+		t.Fatalf("after overflow: n = %d, arena = %q", n, arena)
+	}
+}
+
+// Bind copies at the cursor, advances it, and appends a pointer to the
+// binder's copy — not the query's — without allocating.
+func TestBindCopiesAtTheCursor(t *testing.T) {
+	src := [3]int64{10, 20, 30}
+	var dst [3]int64
+	v := make([]any, 0, 3)
+	var n uint8
+	v = runtime.Bind(v, dst[:], src[:], &n)
+	v = runtime.Bind(v, dst[:], src[:], &n)
+	if n != 2 || len(v) != 2 {
+		t.Fatalf("n = %d, len(v) = %d", n, len(v))
+	}
+	if p := v[1].(*int64); p != &dst[1] || *p != 20 {
+		t.Fatalf("second argument points at %p (%d), want the binder's slot %p", p, *p, &dst[1])
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		v = v[:0]
+		n = 0
+		v = runtime.Bind(v, dst[:], src[:], &n)
+	})
+	if allocs != 0 {
+		t.Fatalf("Bind allocated %.0f times", allocs)
+	}
+}
+
+func TestOperatorClasses(t *testing.T) {
+	list := map[runtime.Op]bool{
+		runtime.OpIn: true, runtime.OpNotIn: true, runtime.OpArrayContains: true,
+		runtime.OpArrayContainedBy: true, runtime.OpArrayOverlaps: true, runtime.OpHasAnyKey: true,
+		runtime.OpHasAllKeys: true, runtime.OpJSONTextLikeAny: true,
+	}
+	argless := map[runtime.Op]bool{
+		runtime.OpIsNull: true, runtime.OpIsNotNull: true, runtime.OpJSONIsEmpty: true,
+		runtime.OpNullOrEmpty: true, runtime.OpExists: true, runtime.OpNotExists: true,
+	}
+	for op := runtime.Op(0); op < 70; op++ {
+		if got := runtime.ListOp(op); got != list[op] {
+			t.Errorf("ListOp(%d) = %v", op, got)
+		}
+		if op > runtime.OpNotExists {
+			continue
+		}
+		if got := runtime.ArglessOp(op); got != argless[op] {
+			t.Errorf("ArglessOp(%d) = %v", op, got)
+		}
+	}
+}
+
+func TestKeyset(t *testing.T) {
+	asc := []runtime.Tok{runtime.MakeOrder(runtime.Asc, 0), runtime.MakeOrder(runtime.AscNullsFirst, 1)}
+	desc := []runtime.Tok{runtime.MakeOrder(runtime.Desc, 2), runtime.MakeOrder(runtime.DescNullsLast, 0)}
+	mixed := []runtime.Tok{runtime.MakeOrder(runtime.Asc, 0), runtime.MakeOrder(runtime.Desc, 1)}
+	def := []runtime.Tok{runtime.MakeOrder(runtime.Asc, 0)}
+	for _, c := range []struct {
+		name      string
+		explicit  []runtime.Tok
+		def       []runtime.Tok
+		noOrder   bool
+		wantTerms int
+		wantCmp   uint32
+		wantBad   uint8
+	}{
+		{"explicit ascending", asc, def, false, 2, runtime.CmpGt, runtime.KeysetOK},
+		{"explicit descending", desc, def, false, 2, runtime.CmpLt, runtime.KeysetOK},
+		{"explicit wins over unordered", asc, def, true, 2, runtime.CmpGt, runtime.KeysetOK},
+		{"default order", nil, def, false, 1, runtime.CmpGt, runtime.KeysetOK},
+		{"no order at all", nil, def, true, 0, 0, runtime.KeysetUnordered},
+		{"mixed", mixed, def, false, 0, 0, runtime.KeysetMixed},
+		{"nothing to page by", nil, nil, false, 0, 0, runtime.KeysetOK},
+	} {
+		terms, cmp, bad := runtime.Keyset(c.explicit, c.def, c.noOrder)
+		if len(terms) != c.wantTerms || cmp != c.wantCmp || bad != c.wantBad {
+			t.Errorf("%s: got %d terms, cmp %d, bad %d; want %d, %d, %d",
+				c.name, len(terms), cmp, bad, c.wantTerms, c.wantCmp, c.wantBad)
+		}
+	}
+}
+
+func TestPickAndRowCmpOps(t *testing.T) {
+	table := []string{`"a"`, `"b"`}
+	if runtime.Pick(table, 1) != `"b"` || runtime.Pick(table, 2) != "" || runtime.Pick(nil, 0) != "" {
+		t.Fatal("Pick must index in range and return the empty string past the end")
+	}
+	f := runtime.RowCmpOps(" > ", " < ")
+	if f(runtime.CmpGt) != " > " || f(runtime.CmpLt) != " < " {
+		t.Fatalf("RowCmpOps: gt %q, lt %q", f(runtime.CmpGt), f(runtime.CmpLt))
+	}
+}

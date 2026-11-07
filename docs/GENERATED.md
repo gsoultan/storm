@@ -1,6 +1,6 @@
 ---
 tags: [storm, codegen, generated-code]
-updated: 2026-10-31
+updated: 2026-11-07
 status: reference
 ---
 
@@ -91,6 +91,23 @@ gives it one.
 **`push` and `leaf`** take a pointer so the builder does not copy the whole
 `Query` twice per predicate; they are only called on locals, so
 `q2 := q1.Where(x)` never mutates `q1`.
+
+**Order terms** live in their own buffer and join the stream after the
+predicate tree. Sharing one buffer would let a `Where` after an `Order`
+interleave the two, and the stream's order is its meaning. The row-lock mode
+is part of the statement, so it selects the compiled-statement cache as well
+as the suffix.
+
+**Operator ids** are `runtime.OpEq` and the rest, the same in every package,
+so a token means the same thing wherever it was built. The operators that bind
+nothing are numbered last, which makes `runtime.ArglessOp` one compare, and a
+leaf or bind that skipped the test would spend an arena slot on a value that
+does not exist and shift every later value of that type by one.
+`runtime.Stash` and `runtime.Bind` are the arena write and the argument copy
+every package used to spell out per column: the first refuses a full arena so
+the query reports itself too complex instead of dropping a predicate, the
+second points the argument at the binder's copy rather than the caller's
+query.
 
 **`putBinder`** clears every reference to memory outside the binder before
 pooling it. A pooled binder would otherwise pin the slice behind an `In(...)`
