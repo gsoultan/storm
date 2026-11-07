@@ -14,6 +14,26 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### List reads size their result once
+
+A generated `All`/`List`/`AllInto` — and the projection, aggregation, join,
+`AllDistinctOn`, turns and `RETURNING` readers built the same way — now
+pre-sizes its result slice from the row count the statement's last read
+returned, as it already did for the string arena. Both are scaled down to the
+call's `Limit`, because a statement is shared by every limit: a 20-row page of
+a filter that was last read as a 1,000-row export no longer reserves the
+export's arena. Measured on PostgreSQL 16 over loopback, median of six:
+
+| | before | after |
+|---|---:|---:|
+| `List` of 1,000 rows (no slice passed) | 531 KB · 18 allocs | **181 KB · 7 allocs** |
+| 20-row page after a 1,000-row read of the same filter | 50.7 KB · 12 allocs | **4.2 KB · 7 allocs** |
+| `AllInto` of 1,000 rows into a reused slice | 41 KB · 6 allocs | 41 KB · 6 allocs |
+
+`runtime.Stmt` gains `ObserveRead`, `ReadHint` and `runtime.Grow`; `SlabHint`
+and `ObserveSlab` keep working, so a package generated before this release
+behaves as it did. Regenerate to get the change.
+
 ### Go 1.27.3 is the minimum
 
 `go.mod` now says `go 1.27.3`, and CI builds with it. On 1.27.0 and 1.27.1,
