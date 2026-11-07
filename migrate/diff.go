@@ -43,6 +43,16 @@ type Change struct {
 	index     *schema.Index
 	dropIndex string
 
+	// constraint names a CHECK or FOREIGN KEY this change ADDS, so that
+	// Concurrently can split it into ADD ... NOT VALID and a VALIDATE.
+	constraint string
+
+	// validates marks ALTER TABLE ... VALIDATE CONSTRAINT. It can run in a
+	// transaction, but should not share one with the ADD it follows: the
+	// point of the split is that the scan runs without the ADD's lock, and a
+	// transaction holds every lock it took until it ends.
+	validates bool
+
 	// addsEnumValue marks ALTER TYPE ... ADD VALUE. PostgreSQL will run it
 	// inside a transaction but refuses to let anything USE the new label until
 	// that transaction commits (SQLSTATE 55P04, "unsafe use of new value"), so
@@ -75,6 +85,12 @@ type Plan struct {
 	// hand-built Plan{Changes: ...} — tool does that to render a subset —
 	// meaning what it always did.
 	dialect Dialect
+
+	// from and to are what the plan was computed between, kept so Reverse
+	// can compute the plan back, and concurrent whether Concurrently has
+	// rewritten it, so the plan back is written in the same form.
+	from, to   *schema.Schema
+	concurrent bool
 }
 
 // Empty reports whether the two schemas already agree.
@@ -105,13 +121,15 @@ func (p Plan) SQL() string {
 	return b.String()
 }
 
-// Concurrently rewrites the index builds and drops on tables that already
-// exist in `live` into their CONCURRENTLY forms, which do not block the
-// table's writers while they run. An index on a table the same plan creates
+// Concurrently rewrites the plan's changes to tables that already exist in
+// `live` into their online forms, which do not block the table's writers while
+// they run: index builds and drops become CREATE/DROP INDEX CONCURRENTLY, and a
+// CHECK or FOREIGN KEY becomes ADD ... NOT VALID followed, at the end of the
+// plan, by a VALIDATE CONSTRAINT that scans the rows without blocking writes. An index on a table the same plan creates
 // is left alone: nothing writes to a table that does not exist yet, and the
 // concurrent build could not share its transaction anyway.
 //
-// The rewritten changes are marked NoTransaction, because that is the price:
+// The rewritten index changes are marked NoTransaction, because that is the price:
 // CREATE INDEX CONCURRENTLY cannot run inside a transaction block, so each
 // has to be applied as a single statement outside one.
 //
@@ -123,20 +141,79 @@ func (p Plan) Concurrently(live *schema.Schema) Plan {
 	if err != nil || d.CreateIndexConcurrently == nil {
 		return p
 	}
-	out := Plan{Changes: make([]Change, 0, len(p.Changes)), dialect: p.dialect}
+	out := p
+	out.Changes = make([]Change, 0, len(p.Changes))
+	out.concurrent = true
+	var validate []Change
+	exists := func(t *schema.Table) bool { return t != nil && live != nil && live.Table(t.Name) != nil }
 	for _, c := range p.Changes {
 		switch {
-		case c.index != nil && c.table != nil && live != nil && live.Table(c.table.Name) != nil:
+		case c.index != nil && exists(c.table):
 			c.SQL = d.CreateIndexConcurrently(c.table, c.index)
 			c.NoTransaction = true
 		case c.dropIndex != "":
 			c.SQL = d.DropIndexConcurrently(c.dropIndex)
 			c.NoTransaction = true
+		case c.constraint != "" && d.NotValid != nil && exists(c.table):
+			c.SQL = d.NotValid(c.SQL)
+			validate = append(validate, Change{
+				SQL:       d.ValidateConstraint(c.table, c.constraint),
+				Object:    c.Object,
+				validates: true,
+			})
 		}
 		out.Changes = append(out.Changes, c)
 	}
+	out.Changes = append(out.Changes, validate...)
 	return out
 }
+
+// Reverse is the plan that takes the database back from where this plan
+// leaves it to where it found it — the body of a down migration.
+//
+// It is the same differ run the other way, not an inversion of each step, so
+// it is exactly as careful as the forward plan: a table the forward plan
+// creates is a table the reverse plan DROPS, and that step is marked
+// destructive, because every row written since the up migration ran goes with
+// it. A down migration loses data by construction; the marks say where.
+//
+// Some forward steps have no reverse. PostgreSQL cannot remove an enum label,
+// so a reversed label addition is a comment saying so, marked destructive like
+// every step a human has to finish.
+//
+// A plan that was not computed by DiffFor — one built by hand from a slice of
+// changes — has nothing to reverse from, and Reverse refuses it.
+func (p Plan) Reverse() (Plan, error) {
+	if p.from == nil || p.to == nil {
+		return Plan{}, fmt.Errorf("migrate: Reverse needs a plan computed by Diff or DiffFor")
+	}
+	back, err := DiffFor(p.to, p.from, p.dialect)
+	if err != nil {
+		return Plan{}, err
+	}
+	if p.concurrent {
+		back = back.Concurrently(p.to)
+	}
+	return back, nil
+}
+
+// Index names the index this step builds or drops, and says which, or is ""
+// for a step that is neither. It is how a down migration pairs with the up
+// migration it undoes when each holds one CREATE/DROP INDEX CONCURRENTLY.
+func (c Change) Index() (name string, build bool) {
+	switch {
+	case c.index != nil:
+		return c.index.Name, true
+	case c.dropIndex != "":
+		return c.dropIndex, false
+	}
+	return "", false
+}
+
+// Validates reports whether this step is an ALTER TABLE ... VALIDATE
+// CONSTRAINT, which anything applying a Plan should run in a transaction of its
+// own, after the one that added the constraint: see Concurrently.
+func (c Change) Validates() bool { return c.validates }
 
 // AddsEnumValue reports whether this step is an ALTER TYPE ... ADD VALUE.
 //
@@ -185,6 +262,7 @@ func DiffFor(from, to *schema.Schema, dialect Dialect) (Plan, error) {
 	}
 	b := &planner{d: d}
 	b.p.dialect = dialect
+	b.p.from, b.p.to = from, to
 
 	// Enums before tables that use them.
 	if d.Enums != nil {
@@ -338,20 +416,38 @@ func diffTable(b *planner, old, cur *schema.Table) {
 
 	diffNamed(b, cur, old.Checks, cur.Checks,
 		func(c *schema.Check) string { return c.Name },
-		func(c *schema.Check) Change { return Change{SQL: d.AddCheck(cur, c)} },
+		func(c *schema.Check) Change { return Change{SQL: d.AddCheck(cur, c), table: cur, constraint: c.Name} },
 		func(c *schema.Check) Change { return Change{SQL: d.DropConstraint(cur, c.Name)} },
 		func(a, b *schema.Check) bool { return canonical(a.Expr) == canonical(b.Expr) },
 		"check constraint")
 
 	diffNamed(b, cur, old.ForeignKeys, cur.ForeignKeys,
 		func(f *schema.ForeignKey) string { return f.Name },
-		func(f *schema.ForeignKey) Change { return Change{SQL: d.AddForeignKey(cur, f)} },
-		func(f *schema.ForeignKey) Change { return Change{SQL: d.DropConstraint(cur, f.Name)} },
-		func(a, b *schema.ForeignKey) bool {
-			return eq(a.Columns, b.Columns) && a.RefTable == b.RefTable &&
-				eq(a.RefColumns, b.RefColumns) && a.OnDelete == b.OnDelete && a.OnUpdate == b.OnUpdate
+		func(f *schema.ForeignKey) Change {
+			return Change{SQL: d.AddForeignKey(cur, f), table: cur, constraint: f.Name}
 		},
+		func(f *schema.ForeignKey) Change { return Change{SQL: d.DropConstraint(cur, f.Name)} },
+		sameFK,
 		"foreign key")
+
+	// A constraint the database holds NOT VALID and the model declares as it
+	// stands is validated, not dropped and re-added: the drop would leave a
+	// window with no constraint at all, and the re-add would scan the table
+	// under the lock the NOT VALID was there to avoid. One that differs from
+	// the model has already been replaced above, by a constraint that is valid.
+	if d.ValidateConstraint != nil {
+		for _, c := range cur.Checks {
+			if o := findCheck(old.Checks, c.Name); o != nil && o.NotValid &&
+				canonical(o.Expr) == canonical(c.Expr) {
+				b.add(Change{SQL: d.ValidateConstraint(cur, c.Name), Object: ObjectCheck, validates: true})
+			}
+		}
+		for _, f := range cur.ForeignKeys {
+			if o := findFK(old.ForeignKeys, f.Name); o != nil && o.NotValid && sameFK(o, f) {
+				b.add(Change{SQL: d.ValidateConstraint(cur, f.Name), Object: ObjectForeignKey, validates: true})
+			}
+		}
+	}
 
 	diffNamed(b, cur, old.Indexes, cur.Indexes,
 		func(i *schema.Index) string { return i.Name },
@@ -362,7 +458,10 @@ func diffTable(b *planner, old, cur *schema.Table) {
 			return Change{SQL: d.DropIndex(cur, i), dropIndex: i.Name}
 		},
 		func(a, b *schema.Index) bool {
-			return a.Unique == b.Unique && a.Method == b.Method &&
+			// An index the server marked invalid is rebuilt whatever its
+			// definition says: the planner does not use it, and the drop and
+			// the build are the only way back.
+			return !a.Invalid && !b.Invalid && a.Unique == b.Unique && a.Method == b.Method &&
 				canonical(a.Where) == canonical(b.Where) && sameKeys(a.Columns, b.Columns) &&
 				eq(a.Include, b.Include) && a.NullsNotDistinct == b.NullsNotDistinct &&
 				sameParams(a.With, b.With)
@@ -493,6 +592,29 @@ func objectOf[T any](render func(T) Change, object string) func(T) Change {
 }
 
 func (p *Plan) add(c Change) { p.Changes = append(p.Changes, c) }
+
+func sameFK(a, b *schema.ForeignKey) bool {
+	return eq(a.Columns, b.Columns) && a.RefTable == b.RefTable &&
+		eq(a.RefColumns, b.RefColumns) && a.OnDelete == b.OnDelete && a.OnUpdate == b.OnUpdate
+}
+
+func findCheck(cs []*schema.Check, name string) *schema.Check {
+	for _, c := range cs {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func findFK(fs []*schema.ForeignKey, name string) *schema.ForeignKey {
+	for _, f := range fs {
+		if f.Name == name {
+			return f
+		}
+	}
+	return nil
+}
 
 // narrowing reports whether a type change can lose information.
 func narrowing(from, to schema.Type) bool {

@@ -76,6 +76,12 @@ type AutoOptions struct {
 	// CREATE/DROP INDEX CONCURRENTLY, which does not block the table's writers.
 	// Those steps cannot share the transaction, so they run after it, one at a
 	// time, and a failure there leaves the transactional steps applied.
+	//
+	// It also adds a foreign key or check to an existing table NOT VALID, and
+	// validates it after the main transaction commits, each validation in a
+	// transaction of its own: see Plan.Concurrently. A validation that fails
+	// leaves its constraint NOT VALID — enforced for new rows — and the next
+	// call's plan is that validation again.
 	Concurrently bool
 
 	// DeclaredOnly leaves alone every table the model does not declare, as
@@ -295,19 +301,32 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 	//   3. the steps that cannot be in a transaction at all — CREATE INDEX
 	//      CONCURRENTLY. They go last, and safely: Plan.Concurrently never
 	//      rewrites an index on a table the same plan creates.
-	var enums, inTx, alone []Change
+	//
+	// Between 2 and 3 come the constraint validations, each in a transaction
+	// of its own after the one that added the constraint NOT VALID: inside
+	// that one they would scan the table under the ADD's lock, which is the
+	// lock the split exists to avoid. Only under Concurrently, which already
+	// trades all-or-nothing away: without it, validating a constraint the
+	// database holds NOT VALID is one more step of the one transaction.
+	var enums, inTx, validate, alone []Change
 	for _, ch := range plan.Changes {
 		switch {
 		case ch.addsEnumValue:
 			enums = append(enums, ch)
 		case ch.NoTransaction:
 			alone = append(alone, ch)
+		case ch.validates && o.Concurrently:
+			validate = append(validate, ch)
 		default:
 			inTx = append(inTx, ch)
 		}
 	}
 
-	for _, group := range [][]Change{enums, inTx} {
+	groups := [][]Change{enums, inTx}
+	for _, ch := range validate {
+		groups = append(groups, []Change{ch})
+	}
+	for _, group := range groups {
 		if len(group) == 0 {
 			continue
 		}
