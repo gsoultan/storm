@@ -87,7 +87,7 @@ func predCtor(c colInfo, op string, i int) string {
 	default:
 		set = "num: int64(v)"
 	}
-	return fmt.Sprintf("Pred{col: %d, op: op%s, %s}", i, op, set)
+	return fmt.Sprintf("Pred{col: %d, op: runtime.Op%s, %s}", i, op, set)
 }
 
 // colHandles emits one typed handle per column. The handle's *type* decides
@@ -103,8 +103,7 @@ func (g *gen) sortMethods(typeName string, idx int) {
 		{"AscNullsFirst", "runtime.AscNullsFirst"},
 		{"DescNullsLast", "runtime.DescNullsLast"},
 	} {
-		g.p("func (h %s) %s() Sort { return Sort(runtime.MakeOrder(%s, uint32(h.c))) }",
-			typeName, m.name, m.dir)
+		g.p("func (h %s) %s() Sort { return ord(%s, h.c) }", typeName, m.name, m.dir)
 	}
 	g.p("")
 	_ = idx
@@ -121,6 +120,9 @@ func (g *gen) colHandles() {
 		g.p("}")
 		g.p("")
 	}
+	g.p("// ord is one column handle's ORDER BY term in direction dir.")
+	g.p("func ord(dir uint32, c uint8) Sort { return Sort(runtime.MakeOrder(dir, uint32(c))) }")
+	g.p("")
 	g.p("// Typed column handles. The type of the handle is what makes")
 	g.p("// Age.Like(...) fail to compile.")
 	g.p("var (")
@@ -168,18 +170,17 @@ func (g *gen) colHandles() {
 					g.p("// The patterns are the caller's: escape %% and _ in what they")
 					g.p("// quote.")
 				}
-				g.p("func (h %s) %s(v ...%s) Pred { return Pred{col: h.c, op: op%s, %s: runtime.List(v)} }",
+				g.p("func (h %s) %s(v ...%s) Pred { return Pred{col: h.c, op: runtime.Op%s, %s: runtime.List(v)} }",
 					ht, op.m(), listElem(c), op.name, slot)
 				continue
 			}
 			if op.args == 0 {
-				g.p("func (h %s) %s() Pred { return Pred{col: h.c, op: op%s} }", ht, op.m(), op.name)
+				g.p("func (h %s) %s() Pred { return Pred{col: h.c, op: runtime.Op%s} }", ht, op.m(), op.name)
 				continue
 			}
-			switch op.name {
-			case "TextHasPrefix", "TextHasSuffix", "TextContains":
-				g.p("// %s matches v literally: a %% or _ in v is that character, not a", op.m())
-				g.p("// wildcard.")
+			if op.name == "TextHasPrefix" {
+				g.p("// HasPrefix, HasSuffix and Contains match v literally: a %% or _ in v")
+				g.p("// is that character, not a wildcard.")
 			}
 			ctor := predCtor(c, op.name, i)
 			ctor = replaceColField(ctor)

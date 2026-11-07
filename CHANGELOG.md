@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-11-02
+updated: 2026-11-07
 ---
 
 # Changelog
@@ -13,6 +13,22 @@ Every entry names what changed and — where it matters — what it cost, becaus
 a release note that cannot be checked is marketing.
 
 ## Unreleased
+
+### Generated table packages are 7% smaller again
+
+The predicate builder's per-column code moved into small runtime helpers. The
+operator ids are `runtime.OpEq` and the rest instead of a 38-line constant
+block in every package; `leaf`, `cursor` and `bindPreds` store and bind each
+value through `runtime.Stash` and `runtime.Bind` (one line per column or arena
+instead of six or three) and test operator classes with `runtime.ListOp` and
+`runtime.ArglessOp`; `After` reads its ordering through `runtime.Keyset`; the
+two After errors are `runtime.ErrAfterUnordered` and `runtime.ErrMixedOrder`;
+the lowering's ident and row-comparison closures are `runtime.Pick` and
+`runtime.RowCmpOps`; the four ORDER BY methods on a handle call one `ord`
+helper and fit on a line. Internal comments that restated docs/GENERATED.md
+are one line now. Committed SQL table packages: 54,037 → 50,014 lines (−7.4%,
+about 180 lines per table). The SQL every package emits is unchanged, the
+generated API is unchanged, and the allocation budgets in bench/ALLOCS hold.
 
 ### List reads size their result once
 
@@ -1202,7 +1218,6 @@ Two things the engine does that nothing else storm targets does: `FETCH FIRST �
 FOR UPDATE SKIP LOCKED` — the work-queue shape — is ORA-02014, and unquoted
 identifiers fold UP. Both are in `docs/DIALECTS.md` now.
 
-
 ### A DDL seam inside `migrate/`, and `storm diff` / `storm verify` for SQL Server
 
 Three of the four shipped dialects could generate and run but could not diff,
@@ -1693,7 +1708,6 @@ resolved against whatever `STORM_DSN` pointed at. `users` is not a rare table
 name. The fixture lives in its own `storm_bench` schema, and the pool sets
 `search_path` rather than one connection running `SET` for eight.
 
-
 ### A refusal names the line that declared what it refuses
 
 v1's definition says an unsupported construct "fails generation, naming the
@@ -2143,7 +2157,6 @@ predicate is dropped from the conflict target.
 
 No production code changed.
 
-
 ### `compile/mysql` — the query lowering, proven against a real server
 
 The seam's second query implementation now exists, and every form it lowers has
@@ -2242,7 +2255,6 @@ identifiers, the `?` placeholder carrier ADR-0010 decided and did not build, no
 output clause on insert, and the `JSON_TABLE` `IN`-list lowering) **and** the
 driver, which is unchanged and still real. The 4-week estimate counted the
 driver only.
-
 
 ### codegen speaks MySQL
 
@@ -3675,7 +3687,6 @@ asserts. The query-side dialect seam it said "does not exist" is
 M6 were still marked incomplete while the same file records, further down, that
 all three passed.
 
-
 ### Fixed: a wide table mis-routed its own predicates in a composed statement
 
 `runtime.MaxCols` was 1024 — the full token column width — but a composed
@@ -3992,8 +4003,6 @@ documentation rather than gates:
   thirteen boundary cases and asserted symmetric, the tstzrange parameter codec
   against a live server, `Retryable`, and the join and aggregate emitters'
   refusals.
-
-
 
 ### The bootstrap main is gone
 
