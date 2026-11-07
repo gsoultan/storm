@@ -288,7 +288,11 @@ func (s *stmt) nextRow() ([][]byte, error) {
 			// Bounds-checked rather than trusted. A row packet that does not
 			// add up is a corrupt or hostile server, and a driver that panics
 			// on one hands it the process.
-			if !ok || off+adv+int(n) > len(p) {
+			//
+			// n is compared as a uint64 BEFORE it becomes an int: int(n) of an
+			// 8-byte length past MaxInt64 is negative, which passed the sum
+			// check below and panicked the slice expression after it.
+			if !ok || n > uint64(len(p)) || off+adv+int(n) > len(p) {
 				return nil, errShortRow
 			}
 			if isTemporal(s.types[i]) {

@@ -374,6 +374,14 @@ func decodeExprIn(c *schema.Column, i int, d decoders) string {
 // say — still decode each other's bytes into a plausible number; that drift
 // is `storm verify`'s to find, and this check does not claim otherwise.
 func shapeGuard(c *schema.Column, i int, d decoders, k kind) string {
+	if w, ok := d.minWidth[k]; ok {
+		if c.NotNull {
+			return fmt.Sprintf("if len(rv[%d]) < %d {\n\t\treturn runtime.ShapeErr(%q, %q, %d, rv[%d])\n\t}\n\t",
+				i, w, c.Name, c.Type.SQL(), w, i)
+		}
+		return fmt.Sprintf("if b := rv[%d]; b != nil && len(b) < %d {\n\t\treturn runtime.ShapeErr(%q, %q, %d, b)\n\t}\n\t",
+			i, w, c.Name, c.Type.SQL(), w)
+	}
 	w, ok := d.width[k]
 	if !ok {
 		return ""
