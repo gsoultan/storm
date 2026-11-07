@@ -163,3 +163,35 @@ opt-in — which `Auto` honours rather than bypasses.
 Yes, and cheaply. `Auto` is additive: two files, no change to the differ, the
 IR, or any existing command. Deleting `migrate/auto.go` and `migrate/autopool.go`
 restores the original position exactly.
+
+
+---
+
+## Amendment 2026-11-07 — down migrations and storm.sum
+
+The Decision section says storm emits a "numbered, **forward-only**,
+reviewable" file. Forward-only was a default, not a guarantee anything rests
+on, and runners that expect a `.down.sql` beside every `.up.sql` —
+golang-migrate first among them — were left to write it by hand, from the DDL
+storm had just generated, which is the one thing a schema-diff engine exists
+to stop people doing.
+
+**`storm diff -down`** writes it. The down is `DiffFor(to, from)` — the same
+differ, the other way — rather than a per-statement inversion, so every
+guarantee the up has, the down has: byte-deterministic, normalised, and marked
+`storm:destructive` wherever it can lose data. Without the flag nothing
+changes. What this does not do: apply a down. No storm command applies DDL,
+and the rollback is the adopter's runner's, as the up is.
+
+**`storm.sum`** is new state in the migrations directory. It holds hashes
+only, and it is written by the command that already writes the directory, so
+it does not move the line this ADR draws: storm emits files, something else
+applies them. It answers a question the directory had no answer to — is this
+the directory that was reviewed? — and it is what makes two branches that each
+added a migration conflict in git, which the sequence numbers were documented
+as doing and did not: different names merge cleanly.
+
+**Reversible?** Yes. Both are additive. A project that never passes `-down`
+gets no down files, and one that deletes `storm.sum` is back where it was —
+the commands treat a directory without one as one that was never summed.
+

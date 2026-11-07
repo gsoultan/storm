@@ -298,8 +298,80 @@ the table.
 
 A concurrent build that fails — a duplicate under a unique index, a cancelled
 statement — leaves an **invalid** index behind that PostgreSQL will not use.
-`storm verify` reports it as drift, because introspection reads the definition
-and not the validity flag; drop it and re-run the migration.
+Introspection reads `pg_index.indisvalid`, so `storm verify` reports it as
+drift, and the next `storm diff` (or `migrate.Auto`) drops and rebuilds it —
+concurrently, under `-concurrently`. Fix the cause first: a unique build that
+failed on a duplicate fails again on the same duplicate.
+
+## Constraints on a live table
+
+`-concurrently` covers constraints too. A foreign key or a check added to a
+table that already exists is written in two steps:
+
+```
+ALTER TABLE "notes" ADD CONSTRAINT "fk_notes_user_id" FOREIGN KEY ("user_id") REFERENCES "users" ("id") NOT VALID;
+-- ...and in a file of its own, NNNN_<name>_validate.up.sql:
+ALTER TABLE "notes" VALIDATE CONSTRAINT "fk_notes_user_id";
+```
+
+The `ADD ... NOT VALID` holds its lock for as long as it takes to write the
+catalog, and is enforced for every new row from then on. The `VALIDATE` scans
+the existing rows under `SHARE UPDATE EXCLUSIVE`, which blocks no reader and
+no writer. In one step, the scan runs under the ADD's own lock — for a foreign
+key, one that blocks every write to the table for as long as the scan takes.
+The validation is in a file of its own because a transaction holds every lock
+it took until it ends, so sharing the ADD's file would give the split up.
+
+A validation that fails — an old row breaks the constraint — leaves it `NOT
+VALID`: enforced for new rows, promising nothing about old ones. Introspection
+reads `pg_constraint.convalidated`, so `storm verify` reports it, and the next
+plan is the `VALIDATE` alone, once the rows are fixed.
+
+## Rolling back
+
+`storm diff -down` writes a `.down.sql` beside every `.up.sql`, under the same
+version — golang-migrate's convention, and what `migrate down 1` runs. Each
+down undoes exactly its own version, so rolling back one version at a time,
+newest first, walks the schema back through every state it passed. A
+concurrent index's down is concurrent too, alone in its file.
+
+The down is the differ run backwards, so its marks mean what an up's do: a
+down that drops a table the up created says `storm:destructive`, because the
+rows written since go with it. Some steps have no reverse — PostgreSQL cannot
+remove an enum label — and the down says so in a comment. A down migration is
+a tool for the minutes after a bad deploy, not a substitute for a backup.
+
+## Migration directory integrity
+
+`storm diff` writes `storm.sum` beside the migrations: a hash of each file and,
+on the first line, one over all of them. Commit it with the migrations.
+
+- `storm verify -sum` needs no database and no model. It fails when a summed
+  migration was edited, added or removed, and when two up migrations share a
+  version. Run it first in CI.
+- `storm diff` and `storm verify -pending` refuse a directory that disagrees
+  with its sum: writing the next migration would rewrite the sum and bless the
+  edit.
+- `storm sum` records the directory as it stands, for an edit made on purpose
+  to a migration nothing has applied yet.
+
+The first line is what catches two branches that each ran `storm diff`. Their
+files have different names — `0005_add_tags.up.sql`, `0005_add_status.up.sql`
+— and merge cleanly into two version 5s, which a runner applies in whichever
+order it likes or refuses outright. Both branches rewrote the sum's first line,
+so the merge conflicts there, before the deploy. Resolve it by regenerating the
+newer migration on top of the other branch's, then `storm sum`.
+
+## A reproducible base
+
+`storm diff` compares the model with the live schema at `-dsn`. On a shared
+project that schema is whatever your dev database happens to hold, which is
+the wrong base the moment a teammate's migration lands that you have not
+applied: the next diff repeats it. `storm diff -replay` builds on the
+directory instead — every `*.up.sql` replayed into a scratch namespace, the
+same replay `storm verify -pending` does — so the file it writes is exactly
+what the directory is missing, whatever your database looks like.
+PostgreSQL and SQL Server.
 
 ## Extensions
 

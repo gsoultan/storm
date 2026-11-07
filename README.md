@@ -295,7 +295,11 @@ storm generate [dir]    # one package per table + the context package
       diff <name>       # a reviewable migration; never applied by storm
       verify            # drift: model vs database
       verify -stale     # generated code vs model (no database, unless you declare storm.SQL)
+      diff <name> -down # ...with a .down.sql beside every .up.sql
+      diff <name> -replay # built on what the migrations directory makes, not the dev database
       verify -pending   # model vs migrations — "forgot to diff" fails CI
+      verify -sum       # no migration edited, added or removed behind storm.sum's back
+      sum               # record a deliberate edit in storm.sum
       lint              # every named plan costed in round trips, budgeted
       explain           # every statement planned by the server; large seq scans flagged
       import            # an existing database, written back as a model draft

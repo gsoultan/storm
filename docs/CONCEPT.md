@@ -134,7 +134,7 @@ it mechanically is worth more than one that is 5% faster.
 Schema is a plain Go struct (ADR-0001) — no DSL; `*T` means nullable,
 `OrgID`+`Org *Org` means a foreign key, `[]Post` means has-many. From one model
 storm generates the query API
-*and* a numbered, forward-only, **reviewable** migration file — which your
+*and* a numbered, forward-only by default, **reviewable** migration file — which your
 existing runner applies. No `storm` command applies DDL, and nothing applies it
 implicitly; `migrate.Auto` is the one code path that can alter a schema, and
 only when an adopter calls it.

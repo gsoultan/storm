@@ -51,6 +51,7 @@ import (
 	"github.com/gsoultan/storm/compile/oraddl"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/migrate/sum"
 	"github.com/gsoultan/storm/schema"
 	"github.com/gsoultan/storm/schema/pg"
 	"github.com/gsoultan/storm/tool/mstool"
@@ -114,6 +115,9 @@ usage:
   storm verify -stale [dir]       fail if generated code is stale
                                   (needs no database unless you declare storm.SQL)
   storm verify -pending           fail if the model has changes no migration carries
+  storm verify -sum               fail if a migration was edited, added or removed behind
+                                  storm.sum's back, or two share a version (no database)
+  storm sum                       record the migrations directory in storm.sum as it stands
   storm import                    print the model implied by an existing database
   storm generate [dir]            emit one Go package per table (default internal/store)
                                   -raw-schema live validates raw SQL against the
@@ -137,7 +141,13 @@ flags:
               permit steps that can lose data; without it, diff refuses
   -concurrently
               diff: build and drop indexes on existing tables CONCURRENTLY,
-              each in a migration file of its own, outside a transaction
+              each in a migration file of its own, outside a transaction; add
+              foreign keys and checks to existing tables NOT VALID, then VALIDATE
+              them in a file of their own, so no step blocks the table's writers
+  -replay     diff: build on what the migrations directory produces, replayed into a
+              scratch namespace, instead of on the live schema at -dsn
+  -down       diff: write a .down.sql beside every .up.sql, undoing it
+  -dry-run    diff: print the files instead of writing them
 `
 
 // Main is the whole tool: register your models and hand it the command line.
@@ -181,6 +191,11 @@ func run(args []string) error {
 	maxTrips := fs.Int("max-round-trips", 4, "lint: the most round trips a named plan may cost")
 	maxSeqRows := fs.Int("max-seq-rows", 10000, "explain: flag a seq scan the planner sizes at or above this")
 	pending := fs.Bool("pending", false, "verify the model against the migrations directory instead of the database")
+	sumOnly := fs.Bool("sum", false, "verify: check the migrations directory against its storm.sum; needs no database")
+	replay := fs.Bool("replay", false,
+		"diff: compute the migration from what the migrations directory builds, replayed into a scratch namespace, not from the live schema")
+	down := fs.Bool("down", false, "diff: write a .down.sql beside each .up.sql that undoes it")
+	dryRun := fs.Bool("dry-run", false, "diff: print the files it would write, and write nothing")
 	dialectName := fs.String("dialect", "postgres",
 		"the engine to generate for: postgres, mysql, mariadb, mssql, oracle or mongo")
 	// Flags may appear ANYWHERE, including after a positional argument.
@@ -218,6 +233,32 @@ func run(args []string) error {
 	tgt, err := parseDialect(*dialectName)
 	if err != nil {
 		return err
+	}
+	// The integrity file is about files, not about any engine or any model:
+	// these two run before either is looked at, so they work in a CI step
+	// that has neither a database nor a registered model.
+	switch {
+	case cmd == "sum":
+		// The deliberate edit's way through: rehash the directory as it now
+		// stands. Nothing else rewrites storm.sum except a diff that adds a
+		// migration, and that refuses a directory that disagrees with it.
+		s, err := migratesum.Write(*out)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("→ %s (%d file(s))\n", filepath.Join(*out, migratesum.File), len(s.Entries))
+		return nil
+
+	case cmd == "verify" && *sumOnly:
+		err := migratesum.Check(*out)
+		if errors.Is(err, migratesum.ErrNoSum) {
+			return fmt.Errorf("%w: run `storm sum` to record the directory as it stands", err)
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("✓ %s matches every migration in %s\n", migratesum.File, *out)
+		return nil
 	}
 	// Migrations, drift, EXPLAIN and import all read a live PostgreSQL
 	// catalogue through pgx. Refusing here is better than connecting: a MySQL
@@ -315,7 +356,10 @@ func run(args []string) error {
 		if nargs < 1 {
 			return errors.New("diff needs a name: storm diff add_user_status")
 		}
-		return diff(tgt.dialect, *dsn, *ns, *out, arg(0), model, *allowDestructive, *concurrently)
+		return diff(tgt.dialect, *dsn, *ns, *out, arg(0), model, diffOptions{
+			allowDestructive: *allowDestructive, concurrently: *concurrently,
+			replay: *replay, down: *down, dryRun: *dryRun,
+		})
 
 	case "explain":
 		return explain(*dsn, *ns, model, *maxSeqRows)
@@ -775,89 +819,64 @@ func generate(dir string, model *schema.Schema, dsn string, against RawSchema, d
 	return nil
 }
 
-func diff(dialect codegen.Dialect, dsn, ns, out, name string, model *schema.Schema,
-	allowDestructive, concurrently bool) error {
-
-	plan, err := livePlan(dialect, dsn, ns, model, migrate.Options{Concurrently: concurrently})
+func diff(dialect codegen.Dialect, dsn, ns, out, name string, model *schema.Schema, o diffOptions) error {
+	// A directory that no longer matches its storm.sum is refused before
+	// anything is computed: writing the next migration would rewrite the sum
+	// and bless whatever edit made it disagree.
+	if err := checkSum(out); err != nil {
+		return err
+	}
+	opts := migrate.Options{Concurrently: o.concurrently}
+	var plan migrate.Plan
+	var err error
+	if o.replay {
+		// The base is what the migrations directory BUILDS, replayed into a
+		// scratch namespace, rather than whatever the dev database happens to
+		// hold. A teammate's merged migration you have not applied, or a
+		// table you created by hand while experimenting, no longer leaks into
+		// the next file. Atlas's dev database and Prisma's shadow database
+		// answer the same problem the same way.
+		files, ferr := pendingFiles(out)
+		if ferr != nil {
+			return ferr
+		}
+		plan, err = replayAndDiff(dialect, dsn, files, model, opts)
+	} else {
+		plan, err = livePlan(dialect, dsn, ns, model, opts)
+	}
 	if err != nil {
 		return err
 	}
 	if plan.Empty() {
-		fmt.Println("no changes — the database already matches the model")
+		if o.replay {
+			fmt.Println("no changes — the migrations already carry the model")
+		} else {
+			fmt.Println("no changes — the database already matches the model")
+		}
 		return nil
 	}
-	if plan.Destructive() && !allowDestructive {
+	if plan.Destructive() && !o.allowDestructive {
 		fmt.Fprint(os.Stderr, plan.SQL())
 		return errors.New("plan contains steps that can lose data; re-run with -allow-destructive " +
 			"once you have read them")
 	}
-
-	if err := os.MkdirAll(out, 0o755); err != nil {
-		return err
+	var down *migrate.Plan
+	if o.down {
+		back, err := plan.Reverse()
+		if err != nil {
+			return err
+		}
+		down = &back
 	}
 	seq, err := nextSeq(out)
 	if err != nil {
 		return err
 	}
-	// A change that cannot run inside a transaction block gets a file of its
-	// own, holding that one statement. Every migration runner worth the name
-	// wraps a file in a transaction, or runs a multi-statement file as one
-	// implicit transaction — and CREATE INDEX CONCURRENTLY refuses both. One
-	// statement per file is the form every runner applies correctly.
-	var enums, inTx, alone []migrate.Change
-	for _, ch := range plan.Changes {
-		switch {
-		case ch.AddsEnumValue():
-			enums = append(enums, ch)
-		case ch.NoTransaction:
-			alone = append(alone, ch)
-		default:
-			inTx = append(inTx, ch)
-		}
+	files, err := migrationFiles(plan, down, name, seq)
+	if err != nil {
+		return err
 	}
-	// Enum label additions go FIRST and in a file of their own, for the same
-	// reason the concurrent builds get one: PostgreSQL runs ALTER TYPE ... ADD
-	// VALUE inside a transaction but refuses to let anything USE the new label
-	// until that transaction commits (SQLSTATE 55P04). A runner that wraps a
-	// file in a transaction — golang-migrate does — therefore cannot apply a
-	// file that both adds a label and defaults a column to it. That was one
-	// file until 2026-09-07, which means storm generated a migration no runner
-	// could run.
-	for i, ch := range enums {
-		file := filepath.Join(out, fmt.Sprintf("%04d_%s_enum_%d.up.sql", seq, name, i+1))
-		header := "-- generated by storm; review before applying\n" +
-			"-- adds an enum label. It is alone in this file because PostgreSQL will not\n" +
-			"-- let a later statement use the new label until this one has COMMITTED.\n\n"
-		if err := os.WriteFile(file, []byte(header+ch.SQL+"\n"), 0o644); err != nil {
-			return err
-		}
-		fmt.Printf("→ %s (1 step, enum label)\n", file)
-		seq++
-	}
-	if len(inTx) > 0 {
-		file := filepath.Join(out, fmt.Sprintf("%04d_%s.up.sql", seq, name))
-		header := fmt.Sprintf("-- generated by storm; review before applying\n-- %d step(s)\n\n", len(inTx))
-		body := migrate.Plan{Changes: inTx}.SQL()
-		if err := os.WriteFile(file, []byte(header+body), 0o644); err != nil {
-			return err
-		}
-		fmt.Printf("→ %s (%d steps%s)\n", file, len(inTx),
-			map[bool]string{true: ", DESTRUCTIVE"}[migrate.Plan{Changes: inTx}.Destructive()])
-		seq++
-	}
-	for i, ch := range alone {
-		file := filepath.Join(out, fmt.Sprintf("%04d_%s_concurrently_%d.up.sql", seq, name, i+1))
-		header := "-- generated by storm; review before applying\n" +
-			migrate.NoTransactionMarker + "\n" +
-			"-- this statement cannot run inside a transaction block: apply this file on its own, outside one\n\n"
-		if err := os.WriteFile(file, []byte(header+ch.SQL+"\n"), 0o644); err != nil {
-			return err
-		}
-		fmt.Printf("→ %s (1 step, outside a transaction)\n", file)
-		seq++
-	}
-	fmt.Println("review and commit — storm diff applies nothing")
-	return nil
+	return writeMigrations(out, files, o.dryRun)
 }
 
 // verifyStale reports whether the generated code on disk is what the model
@@ -941,11 +960,18 @@ func verifyStale(dsn, dir string, model *schema.Schema, against RawSchema, d cod
 // database (the same dev database ADR-0001 already assumes) but never touches
 // a real namespace — the scratch schema is dropped on every exit path.
 func verifyPending(dialect codegen.Dialect, dsn, out string, model *schema.Schema) error {
+	// Integrity first: a directory whose files were edited after they were
+	// summed replays into a schema no environment that already applied them
+	// has, so "every change is carried" would be an answer about the wrong
+	// directory.
+	if err := checkSum(out); err != nil {
+		return err
+	}
 	files, err := pendingFiles(out)
 	if err != nil {
 		return err
 	}
-	plan, err := replayAndDiff(dialect, dsn, files, model)
+	plan, err := replayAndDiff(dialect, dsn, files, model, migrate.Options{})
 	if err != nil {
 		return err
 	}
@@ -995,10 +1021,19 @@ func pendingFiles(out string) ([]string, error) {
 // reason normalisation splits the same way: there is no search_path there. See
 // tool/mstool.ReplayAndDiff.
 func replayAndDiff(dialect codegen.Dialect, dsn string, files []string,
-	model *schema.Schema) (migrate.Plan, error) {
+	model *schema.Schema, o migrate.Options) (migrate.Plan, error) {
 
 	if dialect == codegen.DialectMSSQL {
+		if o.Concurrently {
+			return migrate.Plan{}, errors.New("-concurrently has no SQL Server form: " +
+				"the non-blocking index build there is WITH (ONLINE = ON), an Enterprise " +
+				"edition feature, so storm does not emit it")
+		}
 		return mstool.ReplayAndDiff(context.Background(), dsn, files, model)
+	}
+	if dialect == codegen.DialectOracle {
+		return migrate.Plan{}, errors.New("replaying the migrations directory has no Oracle form yet; " +
+			"diff against a database the migrations have been applied to instead")
 	}
 	c, ctx, done, err := connect(dsn)
 	if err != nil {
@@ -1027,7 +1062,7 @@ func replayAndDiff(dialect codegen.Dialect, dsn string, files []string,
 			return migrate.Plan{}, fmt.Errorf("replaying %s: %w", filepath.Base(f), err)
 		}
 	}
-	return migrate.For(ctx, c, scratch, model)
+	return migrate.ForWith(ctx, c, scratch, model, o)
 }
 
 func verify(dialect codegen.Dialect, dsn, ns string, model *schema.Schema) error {
@@ -1066,8 +1101,12 @@ func importSchema(dsn, ns string) error {
 	return nil
 }
 
-// nextSeq finds the next migration number, so two people generating on
-// different branches collide in git rather than silently reordering.
+// nextSeq finds the next migration number.
+//
+// Two people generating on different branches get the same number under
+// different names, which git merges without a murmur. What makes them collide
+// is storm.sum, whose first line both branches rewrite, and verify -sum, which
+// refuses two up migrations sharing a version.
 func nextSeq(dir string) (int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
