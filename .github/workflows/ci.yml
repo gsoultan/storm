@@ -240,6 +240,29 @@ jobs:
           go test ./runtime/ -run XXX -fuzz FuzzSpliceSections -fuzztime 30s
           go test ./compile/pgsql/ -run XXX -fuzz FuzzIdent -fuzztime 30s
 
+      # The decoders and wire readers a SERVER's bytes reach. A corrupt or
+      # hostile server must cost an error, never the process, and every one
+      # of these has found a panic or an unbounded allocation at least once:
+      # an int4[] decoded as int8[], a MySQL row length past MaxInt64, a
+      # SQL Server value length sizing a 4 GiB buffer, a 14-byte Redis array
+      # header allocating 1 GiB, a MongoDB reply name running into its
+      # document's terminator.
+      - name: fuzz the decoders and wire readers
+        if: ${{ !cancelled() }}
+        run: |
+          go test ./runtime/ -run XXX -fuzz '^FuzzFallibleDecoders$' -fuzztime 20s
+          go test ./runtime/ -run XXX -fuzz '^FuzzTextArray$' -fuzztime 10s
+          go test ./runtime/ -run XXX -fuzz '^FuzzDecodeNumeric$' -fuzztime 10s
+          go test ./runtime/mydec/ -run XXX -fuzz '^FuzzDecoders$' -fuzztime 10s
+          go test ./runtime/msdec/ -run XXX -fuzz '^FuzzDecoders$' -fuzztime 10s
+          go test ./runtime/bsondec/ -run XXX -fuzz '^FuzzDecoders$' -fuzztime 15s
+          go test ./runtime/mydrv/ -run XXX -fuzz '^FuzzBinaryRow$' -fuzztime 20s
+          go test ./runtime/msdrv/ -run XXX -fuzz '^FuzzReadPLP$' -fuzztime 10s
+          go test ./runtime/mgdrv/ -run XXX -fuzz '^FuzzReply$' -fuzztime 15s
+          go test ./runtime/mgdrv/ -run XXX -fuzz '^FuzzTemplate$' -fuzztime 10s
+          go test ./runtime/redisdrv/ -run XXX -fuzz '^FuzzReadReply$' -fuzztime 15s
+          go test ./runtime/qcache/ -run XXX -fuzz '^FuzzDecode$' -fuzztime 10s
+
       # A REACHABLE vulnerability fails the build; "required but not called"
       # is reported and tolerated (Ent's toolchain drags modules nothing here
       # executes). The first run of this found x/text's norm reachable through
