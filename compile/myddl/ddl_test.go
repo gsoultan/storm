@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package myddl_test
 
 import (
@@ -527,5 +535,21 @@ func TestEnumColumnRendersRatherThanRefusing(t *testing.T) {
 	}
 	if !strings.Contains(got, "`status` ENUM('new', 'paid') NOT NULL") {
 		t.Errorf("the column is not a native ENUM:\n%s", got)
+	}
+}
+
+// An enum label with a backslash is refused: under MySQL's default sql_mode
+// `ENUM('a\”)` does not close where PostgreSQL's spelling of it would, and
+// under NO_BACKSLASH_ESCAPES it is another label than the one storm binds.
+func TestEnumLabelWithBackslashRefused(t *testing.T) {
+	s := &schema.Schema{
+		Enums: []*schema.Enum{{Name: "mood", Labels: []string{"ok", `a\'`}}},
+		Tables: []*schema.Table{{Name: "t", PrimaryKey: []string{"id"}, Columns: []*schema.Column{
+			col("id", schema.TypeInt8),
+		}}},
+	}
+	err := myddl.Check(s)
+	if err == nil || !strings.Contains(err.Error(), "backslash") {
+		t.Fatalf("want the label refused, got %v", err)
 	}
 }

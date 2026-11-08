@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package codegen
 
 import (
@@ -33,7 +41,7 @@ func (g *gen) arcPredicates(arc *schema.Arc) {
 		}
 		g.p("// %sIs%s matches rows whose %s is a %s.", field, v.GoName, arc.Field, v.Table)
 		g.p("func %sIs%s() Pred {", field, v.GoName)
-		g.p("\treturn Pred{col: %d, op: opIsNotNull}", i)
+		g.p("\treturn Pred{col: %d, op: runtime.OpIsNotNull}", i)
 		g.p("}")
 		g.p("")
 	}

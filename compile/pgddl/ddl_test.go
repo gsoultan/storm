@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package pgddl_test
 
 import (
@@ -121,5 +129,54 @@ func TestCheck_RefusesMySQLOnlyIndexFacts(t *testing.T) {
 	s.Tables[0].Indexes = []*schema.Index{{Name: "i", Columns: []schema.IndexColumn{{Name: "slug"}}}}
 	if err := pgddl.Check(s); err != nil {
 		t.Fatalf("a plain index was refused: %v", err)
+	}
+}
+
+// An index is a relation in PostgreSQL, named schema-wide: the same declared
+// name on two tables, or two generated names sanitising alike, built clean and
+// failed the second CREATE INDEX mid-migration with "relation already exists".
+func TestCheck_RefusesTwoRelationsWithOneName(t *testing.T) {
+	cols := func(names ...string) []*schema.Column {
+		out := make([]*schema.Column, len(names))
+		for i, n := range names {
+			out[i] = &schema.Column{Name: n, Type: schema.Type{Name: schema.TypeText}}
+		}
+		return out
+	}
+	ixOn := func(name string, col string) *schema.Index {
+		return &schema.Index{Name: name, Columns: []schema.IndexColumn{{Name: col}}}
+	}
+	for _, c := range []struct {
+		name   string
+		tables []*schema.Table
+		want   string
+	}{
+		{"declared twice", []*schema.Table{
+			{Name: "orders", Columns: cols("id", "created_at"), Indexes: []*schema.Index{ixOn("idx_created_at", "created_at")}},
+			{Name: "users", Columns: cols("id", "created_at"), Indexes: []*schema.Index{ixOn("idx_created_at", "created_at")}},
+		}, "idx_created_at has the name of index idx_created_at on orders"},
+		{"generated alike", []*schema.Table{
+			{Name: "a", Columns: cols("id", "b_c"), Indexes: []*schema.Index{ixOn("", "b_c")}},
+			{Name: "a_b", Columns: cols("id", "c"), Indexes: []*schema.Index{ixOn("", "c")}},
+		}, "ix_a_b_c has the name of index"},
+		{"index named like a table", []*schema.Table{
+			{Name: "audit", Columns: cols("id")},
+			{Name: "events", Columns: cols("id", "kind"), Indexes: []*schema.Index{ixOn("audit", "kind")}},
+		}, "has the name of table audit"},
+		{"declared past 63 bytes", []*schema.Table{
+			{Name: "t", Columns: cols("id", "k"), Indexes: []*schema.Index{ixOn(strings.Repeat("x", 64), "k")}},
+		}, "PostgreSQL truncates a name past 63"},
+	} {
+		err := pgddl.Check(&schema.Schema{Tables: c.tables})
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want %q, got %v", c.name, c.want, err)
+		}
+	}
+	ok := &schema.Schema{Tables: []*schema.Table{
+		{Name: "orders", PrimaryKey: []string{"id"}, Columns: cols("id", "k"), Indexes: []*schema.Index{ixOn("", "k")}},
+		{Name: "users", PrimaryKey: []string{"id"}, Columns: cols("id", "k"), Indexes: []*schema.Index{ixOn("", "k")}},
+	}}
+	if err := pgddl.Check(ok); err != nil {
+		t.Errorf("distinct generated names refused: %v", err)
 	}
 }

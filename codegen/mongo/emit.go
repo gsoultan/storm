@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package codegenmongo
 
 import (
@@ -159,6 +167,7 @@ func (g *gen) header() {
 	g.p("")
 	g.p("\t%q", g.imp+"/runtime")
 	g.p("\t%q", g.imp+"/runtime/bsondec")
+	g.p("\t%q", g.imp+"/runtime/hooks")
 	if g.plan != nil {
 		g.p("\t%q", g.imp+"/runtime/mgcascade")
 	}

@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 // Package myddl renders a schema as MySQL 8 DDL.
 //
 // The second back end, and therefore the first honest evidence about what a
@@ -357,6 +365,17 @@ func Check(s *schema.Schema) error {
 	enums := map[string]*schema.Enum{}
 	for _, e := range s.Enums {
 		enums[e.Name] = e
+		for _, l := range e.Labels {
+			// MySQL reads a backslash in a string literal as an escape unless
+			// the session runs NO_BACKSLASH_ESCAPES, so `a\'b` either ends the
+			// ENUM's literal early or spells a different label than the one the
+			// generated code binds, depending on a setting the DDL cannot see.
+			if strings.ContainsRune(l, '\\') {
+				problems = append(problems, fmt.Sprintf(
+					"  %s: enum label %q holds a backslash, which MySQL reads as an escape "+
+						"or not depending on sql_mode", e.Name, l))
+			}
+		}
 	}
 	for _, t := range s.Tables {
 		if len(t.Excludes) > 0 {

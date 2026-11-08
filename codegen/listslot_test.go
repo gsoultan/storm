@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package codegen_test
 
 import (
@@ -116,20 +124,15 @@ func TestListBindReachesEverySlot(t *testing.T) {
 		{"anyRaw", "nar"}, {"anyStr", "nas"},
 		{"anyI16", "nai16"}, {"anyI32", "nai32"}, {"anyI64", "nai64"},
 	} {
-		idx := "[" + sl.cursor + "]"
-		if !strings.Contains(src, "b."+sl.slot+idx+" = q."+sl.slot+idx) {
-			t.Errorf("the bind chain never assigns %s through its cursor", sl.slot)
+		// runtime.Bind copies at the cursor, appends the binder's copy and
+		// advances; runtime.Stash bounds the arena, so a fourth list predicate
+		// cannot write past the end. Both are tested in runtime; what matters
+		// here is that each slot is threaded through its OWN cursor.
+		if !strings.Contains(src, "v = runtime.Bind(v, b."+sl.slot+"[:], q."+sl.slot+"[:], &"+sl.cursor+")") {
+			t.Errorf("the bind chain never binds %s through its cursor %s", sl.slot, sl.cursor)
 		}
-		if !strings.Contains(src, "v = append(v, &b."+sl.slot+idx+")") {
-			t.Errorf("the bind chain never appends %s", sl.slot)
-		}
-		if !strings.Contains(src, sl.cursor+"++") {
-			t.Errorf("the bind chain never advances %s; every list would bind the first value", sl.cursor)
-		}
-		// The build side must bound the arena. Without this a third list
-		// predicate writes past the end.
-		if !strings.Contains(src, "if int(q."+sl.cursor+") >= 3 {") {
-			t.Errorf("%s is written without a bound check", sl.slot)
+		if !strings.Contains(src, "runtime.Stash(q."+sl.slot+"[:], &q."+sl.cursor+", p."+sl.slot+")") {
+			t.Errorf("%s is not stored through a bounded Stash at %s", sl.slot, sl.cursor)
 		}
 	}
 }

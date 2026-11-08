@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/hooks"
 )
 
 var (
@@ -24,48 +25,6 @@ type Row struct {
 	PostID    [16]byte
 	RelatedID [16]byte
 }
-
-// Operator ids. Argument-taking operators are numbered first, so the
-// bind loop tests `op-1 < opsWithArg` with one unsigned compare.
-const (
-	opEq               runtime.Op = 1
-	opNotEq            runtime.Op = 2
-	opGt               runtime.Op = 3
-	opGte              runtime.Op = 4
-	opLt               runtime.Op = 5
-	opLte              runtime.Op = 6
-	opEqLower          runtime.Op = 7
-	opLike             runtime.Op = 8
-	opILike            runtime.Op = 9
-	opMatches          runtime.Op = 10
-	opWebSearch        runtime.Op = 11
-	opOverlaps         runtime.Op = 12
-	opContainsRange    runtime.Op = 13
-	opContainedBy      runtime.Op = 14
-	opIn               runtime.Op = 15
-	opNotIn            runtime.Op = 16
-	opArrayContains    runtime.Op = 17
-	opArrayContainedBy runtime.Op = 18
-	opArrayOverlaps    runtime.Op = 19
-	opJSONContains     runtime.Op = 20
-	opJSONContainedBy  runtime.Op = 21
-	opHasAnyKey        runtime.Op = 22
-	opHasAllKeys       runtime.Op = 23
-	opJSONTextLikeAny  runtime.Op = 24
-	opTextHasPrefix    runtime.Op = 25
-	opTextHasSuffix    runtime.Op = 26
-	opTextContains     runtime.Op = 27
-	opIsNull           runtime.Op = 28
-	opIsNotNull        runtime.Op = 29
-	opJSONIsEmpty      runtime.Op = 30
-	opNullOrEmpty      runtime.Op = 31
-	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
-	// the real columns in the frag table. Argless, like IsNull: the
-	// fragment is constant, which is what lets a semi-join ride the
-	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 32
-	opNotExists runtime.Op = 33
-)
 
 const nCols = 2
 
@@ -83,30 +42,19 @@ type Query struct {
 	anyRaw [3][][16]byte
 	nar    uint8
 
-	// Order terms live in their own buffer and are appended to the stream
-	// after the predicate tree. Sharing one buffer would let a Where after
-	// an Order interleave the two, and the stream's order is its meaning.
+	// Order terms, appended to the stream after the predicate tree.
 	otoks [4]runtime.Tok
 	no    uint8
 
-	// lock is the row-lock mode: 0 none, then the dialect's mode order.
-	// It is part of the STATEMENT, so it selects the cache as well as
-	// the suffix.
-	lock uint8
+	lock uint8 // row-lock mode, 0 none; selects the cache and the suffix
 
 	limit  int64
 	offset int64
-	// over records that the query outgrew its fixed buffers. Terminals
-	// return it as an error rather than silently dropping a predicate.
-	over bool
 
-	// mixed records an After() over an ordering that is not all in one
-	// direction. No single row comparison expresses that.
-	mixed bool
-
-	// noOrder suppresses the default ordering. See Unordered.
-	noOrder  bool
-	badAfter bool
+	// Errors the terminals return: outgrown buffers, an After over a mixed
+	// ordering, an After with no ordering at all.
+	over, mixed, badAfter bool
+	noOrder               bool // see Unordered
 }
 
 // New starts a query.
@@ -122,57 +70,31 @@ func (q Query) Offset(n int64) Query { q.offset = n; return q }
 // active ordering. An ordering that mixes ascending and descending terms
 // is a query error.
 func (q Query) After(r Row) Query {
-	terms := q.otoks[:q.no]
-	if q.no == 0 {
-		if q.noOrder {
-			// A keyset cursor without an order is a position in nothing.
-			q.badAfter = true
-			return q
-		}
-		terms = defaultOrder[:]
-	}
+	terms, cmp, bad := runtime.Keyset(q.otoks[:q.no], defaultOrder[:], q.noOrder)
+	q.badAfter = q.badAfter || bad == runtime.KeysetUnordered
+	q.mixed = q.mixed || bad == runtime.KeysetMixed
 	if len(terms) == 0 {
 		return q
-	}
-	desc := terms[0].Op() == runtime.Desc || terms[0].Op() == runtime.DescNullsLast
-	for _, t := range terms {
-		d := t.Op() == runtime.Desc || t.Op() == runtime.DescNullsLast
-		if d != desc {
-			q.mixed = true
-			return q
-		}
 	}
 	for _, t := range terms {
 		q.push(runtime.MakeCol(t.Col()))
 		q.cursor(t.Col(), r)
 	}
-	op := runtime.CmpGt
-	if desc {
-		op = runtime.CmpLt
-	}
-	q.push(runtime.MakeRowCmp(op, uint32(len(terms))))
+	q.push(runtime.MakeRowCmp(cmp, uint32(len(terms))))
 	q.top++
 	return q
 }
 
 // cursor stores the bound value for one column of a keyset comparison.
 func (q *Query) cursor(col uint32, r Row) {
+	ok := true
 	switch col {
 	case 0:
-		if int(q.nr) >= len(q.raws) {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = r.PostID
-		q.nr++
+		ok = runtime.Stash(q.raws[:], &q.nr, r.PostID)
 	case 1:
-		if int(q.nr) >= len(q.raws) {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = r.RelatedID
-		q.nr++
+		ok = runtime.Stash(q.raws[:], &q.nr, r.RelatedID)
 	}
+	q.over = q.over || !ok
 }
 
 // Unordered drops the default ordering, for reads nobody pages. An explicit
@@ -246,19 +168,13 @@ func (q Query) readErr() error {
 		return errTooComplex
 	}
 	if q.mixed {
-		return errMixedOrder
+		return runtime.ErrMixedOrder
 	}
 	if q.badAfter {
-		return errAfterUnordered
+		return runtime.ErrAfterUnordered
 	}
 	return nil
 }
-
-var errAfterUnordered = errors.New(
-	"storm: After() on an Unordered() query with no explicit Order — a keyset cursor without an ordering is a position in nothing")
-
-var errMixedOrder = errors.New(
-	"storm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
 
 var errCountLocked = errors.New(
 	"storm: a locked read cannot be counted — the server refuses a row lock with an aggregate; count first, then lock the rows you take")
@@ -269,8 +185,7 @@ var errExistsLocked = errors.New(
 var errTooComplex = errors.New(
 	"storm: query has more predicates than the generated buffers hold (scale 1); split the query, or regenerate with a larger codegen.Budgets{Scale}")
 
-// push and leaf mutate through a pointer and are only called on a local, so
-// the public API keeps value semantics.
+// push and leaf mutate a local copy only, so the API keeps value semantics.
 func (q *Query) push(t runtime.Tok) {
 	if int(q.nt) >= len(q.toks) {
 		q.over = true
@@ -280,9 +195,7 @@ func (q *Query) push(t runtime.Tok) {
 	q.nt++
 }
 
-// preds returns the predicate stream with top-level conjuncts ANDed.
-// A count uses this: ordering a scalar is wasted work, and including the
-// terms would compile a second statement per ordering for no difference.
+// preds is the predicate stream with top-level conjuncts ANDed, no order.
 func (q Query) preds(buf *[21]runtime.Tok) []runtime.Tok {
 	n := copy(buf[:], q.toks[:q.nt])
 	if q.top > 1 {
@@ -292,8 +205,7 @@ func (q Query) preds(buf *[21]runtime.Tok) []runtime.Tok {
 	return buf[:n]
 }
 
-// stream is the predicates followed by the ordering — the whole statement
-// key. Order tokens go last so a splicer can find the boundary by kind.
+// stream is the predicates, then the ordering: the whole statement key.
 func (q Query) stream(buf *[21]runtime.Tok) []runtime.Tok {
 	n := len(q.preds(buf))
 	if q.no == 0 {
@@ -317,6 +229,9 @@ type Pred struct {
 	anyRaw [][16]byte
 }
 
+// ord is one column handle's ORDER BY term in direction dir.
+func ord(dir uint32, c uint8) Sort { return Sort(runtime.MakeOrder(dir, uint32(c))) }
+
 // Typed column handles. The type of the handle is what makes
 // Age.Like(...) fail to compile.
 var (
@@ -327,22 +242,20 @@ var (
 // UUIDCol addresses a uuid column.
 type UUIDCol struct{ c uint8 }
 
-func (h UUIDCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h UUIDCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h UUIDCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h UUIDCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h UUIDCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h UUIDCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h UUIDCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h UUIDCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
-func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
+func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: runtime.OpEq, raw: v} }
+func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: runtime.OpNotEq, raw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: runtime.OpIn, anyRaw: runtime.List(v)}
+}
 
 // NotIn is `<> ALL($1)`: a NULL in v matches no row, as NOT IN does.
 func (h UUIDCol) NotIn(v ...[16]byte) Pred {
-	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+	return Pred{col: h.c, op: runtime.OpNotIn, anyRaw: runtime.List(v)}
 }
 
 // Where applies predicates, ANDed together.
@@ -456,34 +369,25 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 	return q
 }
 
-// leaf records one predicate: its value goes to the arena for its type,
-// its structure to the token stream.
+// leaf stores one predicate's value in its type's arena and its token.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
+	ok := true
+	switch {
+	case runtime.ArglessOp(p.op):
+	case runtime.ListOp(p.op):
 		switch p.col {
 		case 0, 1:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
+			ok = runtime.Stash(q.anyRaw[:], &q.nar, p.anyRaw)
 		}
-		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
-		return
-	}
-	if p.op == opIsNull || p.op == opIsNotNull || p.op == opJSONIsEmpty || p.op == opNullOrEmpty {
-		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
-		return
-	}
-	switch p.col {
-	case 0, 1:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
+	default:
+		switch p.col {
+		case 0, 1:
+			ok = runtime.Stash(q.raws[:], &q.nr, p.raw)
 		}
-		q.raws[q.nr] = p.raw
-		q.nr++
+	}
+	if !ok {
+		q.over = true
+		return
 	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 }
@@ -545,21 +449,11 @@ var identTable = [nCols]string{
 }
 
 var lowering = runtime.Lowering{
-	Frag:  fragOf,
-	Order: orderOf,
-	OB:    runtime.Order{Lead: " ORDER BY ", Sep: ", "},
-	Ident: func(col uint32) string {
-		if col >= nCols {
-			return ""
-		}
-		return identTable[col]
-	},
-	RowCmp: func(op uint32) string {
-		if op == runtime.CmpLt {
-			return " < "
-		}
-		return " > "
-	},
+	Frag:       fragOf,
+	Order:      orderOf,
+	OB:         runtime.Order{Lead: " ORDER BY ", Sep: ", "},
+	Ident:      func(col uint32) string { return runtime.Pick(identTable[:], col) },
+	RowCmp:     runtime.RowCmpOps(" > ", " < "),
 	TupleOpen:  "(",
 	TupleSep:   ", ",
 	TupleClose: ")",
@@ -576,23 +470,22 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [2][34]runtime.Frag{
 	{ // post_id
-		opEq:    {A: "\"post_id\" = $"},
-		opNotEq: {A: "\"post_id\" <> $"},
-		opIn:    {A: "\"post_id\" = ANY($", B: ")"},
-		opNotIn: {A: "\"post_id\" <> ALL($", B: ")"},
+		runtime.OpEq:    {A: "\"post_id\" = $"},
+		runtime.OpNotEq: {A: "\"post_id\" <> $"},
+		runtime.OpIn:    {A: "\"post_id\" = ANY($", B: ")"},
+		runtime.OpNotIn: {A: "\"post_id\" <> ALL($", B: ")"},
 	},
 	{ // related_id
-		opEq:    {A: "\"related_id\" = $"},
-		opNotEq: {A: "\"related_id\" <> $"},
-		opIn:    {A: "\"related_id\" = ANY($", B: ")"},
-		opNotIn: {A: "\"related_id\" <> ALL($", B: ")"},
+		runtime.OpEq:    {A: "\"related_id\" = $"},
+		runtime.OpNotEq: {A: "\"related_id\" <> $"},
+		runtime.OpIn:    {A: "\"related_id\" = ANY($", B: ")"},
+		runtime.OpNotIn: {A: "\"related_id\" <> ALL($", B: ")"},
 	},
 }
 
 func fragOf(op, col uint32) runtime.Frag {
 	// Bounded by the table, not nCols: existence pseudo-columns live past
-	// the real ones. Order, ident and arena lookups stay nCols-bounded,
-	// so a pseudo-column can never be ordered by, cursored on, or bound.
+	// the real ones, and only here.
 	if int(col) >= len(fragTable) || int(op) >= len(fragTable[0]) {
 		return runtime.Frag{}
 	}
@@ -856,45 +749,36 @@ type Binder = binder
 func GetBinder() *Binder  { return binders.Get() }
 func PutBinder(b *Binder) { putBinder(b) }
 
-// putBinder drops every reference to the caller's memory before pooling, so
-// a pooled binder pins nothing.
+// putBinder drops every reference to caller memory, so a pooled binder pins nothing.
 func putBinder(b *binder) {
-	for i := range b.anyRaw {
-		b.anyRaw[i] = nil
-	}
+	clear(b.anyRaw[:])
 	binders.Put(b)
 }
 
-// bindPreds copies arena values into the pooled buffer and points the
-// []any at the buffer's own fields — boxing a pointer does not allocate.
-// Count and Exists stop here: their statements carry no LIMIT or OFFSET.
+// bindPreds binds the predicate values, in stream order, from the binder's
+// own copies. Count and Exists stop here: they have no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
 	var nr, nar uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
-		// KLeaf binds a predicate's value, KCol a keyset cursor's; both
-		// share the per-type arenas, and a KCol's opNone matches no op case.
+		// A predicate's value or a keyset cursor's: both use the arenas.
 		if k := t.Kind(); k != runtime.KLeaf && k != runtime.KCol {
 			continue
 		}
-		switch runtime.Op(t.Op()) {
-		case opIsNull, opIsNotNull, opJSONIsEmpty, opNullOrEmpty:
+		switch op := runtime.Op(t.Op()); {
+		case runtime.ArglessOp(op):
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
+		case runtime.ListOp(op):
 			switch t.Col() {
 			case 0, 1:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
+				v = runtime.Bind(v, b.anyRaw[:], q.anyRaw[:], &nar)
 			}
 			continue
 		}
 		switch t.Col() {
 		case 0, 1:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
+			v = runtime.Bind(v, b.raws[:], q.raws[:], &nr)
 		}
 	}
 	b.vals = v
@@ -906,8 +790,7 @@ func (q Query) bind(b *binder) []any {
 	v := q.bindPreds(b)
 	b.limit = q.limit
 	v = append(v, &b.limit)
-	// An offset of zero is absent from the statement, so binding it
-	// would leave an argument nothing consumes.
+	// An offset of zero is absent from the statement, so it binds nothing.
 	if q.offset > 0 {
 		b.offset = q.offset
 		v = append(v, &b.offset)
@@ -924,6 +807,18 @@ func (q Query) All(ctx context.Context, ex runtime.Executor, dst []Row) ([]Row, 
 
 // AllInto lets the caller own the string arena.
 func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *runtime.Slab) ([]Row, error) {
+	if Hooks.AfterFind == nil {
+		return q.allInto(ctx, ex, dst, sl)
+	}
+	from := len(dst)
+	dst, err := q.allInto(ctx, ex, dst, sl)
+	for i := from; i < len(dst) && err == nil; i++ {
+		err = hooks.Apply(ctx, ex, Hooks.AfterFind, &dst[i])
+	}
+	return dst, err
+}
+
+func (q Query) allInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *runtime.Slab) ([]Row, error) {
 	if err := q.readErr(); err != nil {
 		return dst, err
 	}
@@ -982,9 +877,13 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 	var sl runtime.Slab
 	// What All learned about this shape, which Reserve caps at one chunk.
 	sl.Reserve(st.SlabHint())
+	find := Hooks.AfterFind
 	for rows.Next() {
 		var r Row
 		if err := scan(rows.RawValues(), &r, &sl); err != nil {
+			return err
+		}
+		if err := hooks.Apply(ctx, ex, find, &r); err != nil {
 			return err
 		}
 		if err := fn(r); err != nil {
@@ -1157,6 +1056,11 @@ const updReturning = " RETURNING \"post_id\", \"related_id\""
 
 // Masks reports how many distinct UPDATE shapes have compiled.
 func Masks() int { return updCache.Masks() }
+
+// Hooks are this table's lifecycle callbacks. Unset, each costs one nil
+// check; set them at program start. hooks.Lifecycle says which calls run
+// which hook.
+var Hooks hooks.Lifecycle[Ins, Mut, Row]
 
 // Mut is a row staged for update: the values, plus which of them were
 // actually assigned. An UPDATE writes the assigned ones and no others,
@@ -1359,6 +1263,17 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 // database-computed values land in the returned Row rather than needing a
 // second SELECT that would race every other writer.
 func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, n); err != nil {
+		return Row{}, err
+	}
+	r, err := n.insert(ctx, ex)
+	if err == nil {
+		err = hooks.Apply(ctx, ex, Hooks.AfterCreate, &r)
+	}
+	return r, err
+}
+
+func (n *Ins) insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	if n.set == 0 {
 		return Row{}, runtime.ErrNothingAssigned
 	}
@@ -1399,6 +1314,20 @@ func Inserts() int { return insCache.Masks() }
 // Insert writes every insertable column, zero values included, and reads
 // the row back so database defaults land in r.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
+	if Hooks.BeforeCreate != nil {
+		n := Ins{row: *r, set: 0x3}
+		if err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, &n); err != nil {
+			return err
+		}
+		*r = n.row
+	}
+	if err := insertRow(ctx, ex, r); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterCreate, r)
+}
+
+func insertRow(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args := make([]any, 0, 2)
 	args = append(args, r.PostID)
 	args = append(args, r.RelatedID)
@@ -1579,6 +1508,16 @@ func stmtForKey(k runtime.MaskKey, ret bool) *runtime.Stmt {
 // Assigning nothing issues no statement and is not an error.
 // A value the database computes is read back, so m.Row() is current.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeUpdate, m); err != nil {
+		return err
+	}
+	if err := m.update(ctx, ex); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterUpdate, m)
+}
+
+func (m *Mut) update(ctx context.Context, ex runtime.Executor) error {
 	if m.dirty == 0 && m.expr == 0 {
 		return nil
 	}
@@ -1641,6 +1580,20 @@ var deleteSQL = runtime.SpliceSections(deletePrefix, []runtime.Section{
 // runtime.ErrNoRow, not success: a caller deleting something that is not
 // there usually has a bug, and swallowing it hides the bug.
 func Delete(ctx context.Context, ex runtime.Executor, postID [16]byte, relatedID [16]byte) error {
+	if Hooks.BeforeDelete == nil && Hooks.AfterDelete == nil {
+		return deleteKey(ctx, ex, postID, relatedID)
+	}
+	key := Row{PostID: postID, RelatedID: relatedID}
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &key); err != nil {
+		return err
+	}
+	if err := deleteKey(ctx, ex, postID, relatedID); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterDelete, &key)
+}
+
+func deleteKey(ctx context.Context, ex runtime.Executor, postID [16]byte, relatedID [16]byte) error {
 	n, err := ex.Exec(ctx, deleteSQL, []any{postID, relatedID})
 	if err != nil {
 		return err

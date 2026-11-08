@@ -1,8 +1,17 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package msdrv
 
 import (
 	"encoding/binary"
 	"math"
+	"slices"
 )
 
 // The type system, and the contract this adapter offers runtime/msdec.
@@ -408,6 +417,15 @@ func (x *conn) readRaw(c *column, scratch *[]byte) ([]byte, error) {
 	return nil, protoErr("column %q has no length encoding", c.name)
 }
 
+// plpHint caps how much of a PLP value's declared total is allocated before
+// any of it arrives, plpStep how much one read grows the buffer by, and plpMax
+// is SQL Server's own ceiling on a value: 2 GiB, the limit of a MAX type.
+const (
+	plpHint = 1 << 20
+	plpStep = 1 << 20
+	plpMax  = 1<<31 - 1
+)
+
 // readPLP reads a partially length-prefixed value: a total, then chunks.
 //
 // The total may be plpUnknown, which is how the server streams a value whose
@@ -421,8 +439,13 @@ func (x *conn) readPLP(scratch *[]byte) ([]byte, error) {
 	if total == plpNull {
 		return nil, nil
 	}
-	size := 0
-	if total != plpUnknown {
+	// The total sizes the buffer only up to plpHint. It is the server's
+	// claim, eight bytes it can set to anything: make([]byte, int(total))
+	// panicked on a total past MaxInt and tried to allocate the rest, from a
+	// value that was never going to arrive. Past the hint the buffer grows
+	// with bytes actually read.
+	size := plpHint
+	if total != plpUnknown && total < plpHint {
 		size = int(total)
 	}
 	if cap(*scratch) < size {
@@ -437,17 +460,21 @@ func (x *conn) readPLP(scratch *[]byte) ([]byte, error) {
 		if n == 0 {
 			break
 		}
-		start := len(out)
-		if start+int(n) > cap(out) {
-			nb := make([]byte, start+int(n))
-			copy(nb, out)
-			*scratch = nb
-			out = nb[:start]
+		if uint64(len(out))+uint64(n) > plpMax {
+			return nil, protoErr("a value of more than %d bytes", plpMax)
 		}
-		out = out[:start+int(n)]
-		if err := x.readFull(out[start:]); err != nil {
-			return nil, err
+		// Read in steps, so a chunk header claiming 4 GiB costs what the
+		// server actually sends rather than 4 GiB up front.
+		for rem := int(n); rem > 0; {
+			step := min(rem, plpStep)
+			start := len(out)
+			out = slices.Grow(out, step)[:start+step]
+			if err := x.readFull(out[start:]); err != nil {
+				return nil, err
+			}
+			rem -= step
 		}
+		*scratch = out[:0:cap(out)]
 	}
 	if len(out) == 0 {
 		// An empty value is not a NULL, and returning nil would make it one.

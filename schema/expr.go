@@ -1,7 +1,16 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package schema
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -415,11 +424,27 @@ func (l Literal) SQL() string {
 	case TypeInt2, TypeInt4, TypeInt8:
 		return strconv.FormatInt(l.I, 10)
 	case TypeFloat4, TypeFloat8:
+		// A bare NaN or +Inf is an identifier to PostgreSQL, not a number:
+		// the non-finite values are spelled as the strings float8 parses.
+		switch {
+		case math.IsNaN(l.F):
+			return "'NaN'::float8"
+		case math.IsInf(l.F, 1):
+			return "'Infinity'::float8"
+		case math.IsInf(l.F, -1):
+			return "'-Infinity'::float8"
+		}
 		return strconv.FormatFloat(l.F, 'g', -1, 64)
 	case TypeNumeric:
 		// Kept as text and cast, so a decimal literal never travels through a
-		// float on its way into the statement.
-		return "'" + l.S + "'::numeric"
+		// float on its way into the statement. Escaped like text: S is a
+		// Decimal's String today, but a literal is not the place to trust that.
+		return "'" + strings.ReplaceAll(l.S, "'", "''") + "'::numeric"
+	case TypeTimestamptz:
+		// Lit(time.Time) stores RFC 3339 in UTC. This case was missing, and
+		// the fallthrough below rendered it as NULL: `at >= NULL` is never
+		// true, so a filtered count silently counted nothing.
+		return "'" + strings.ReplaceAll(l.S, "'", "''") + "'::timestamptz"
 	case TypeBool:
 		if l.B {
 			return "true"

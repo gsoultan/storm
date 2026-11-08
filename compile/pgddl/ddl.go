@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 // Package pgddl lowers the schema IR to PostgreSQL DDL.
 //
 // Output is byte-deterministic: the same IR always produces the same bytes, so
@@ -365,25 +373,26 @@ func indexPos(t *schema.Table, ix *schema.Index) string {
 // cost, and an invisible index visible.
 func Check(s *schema.Schema) error {
 	var problems []string
+	relationNames(s, &problems)
 	for _, t := range s.Tables {
 		for _, ix := range t.Indexes {
 			switch ix.Method {
 			case "fulltext", "spatial":
 				problems = append(problems, fmt.Sprintf(
 					"  %s%s: index %s is a MySQL %s index — PostgreSQL's full-text search is a tsvector column with a gin index",
-					at(indexPos(t, ix)), t.Name, ix.Name, strings.ToUpper(ix.Method)))
+					at(indexPos(t, ix)), t.Name, t.IndexName(ix), strings.ToUpper(ix.Method)))
 			}
 			if ix.Invisible {
 				problems = append(problems, fmt.Sprintf(
 					"  %s%s: index %s is INVISIBLE, which PostgreSQL has no equivalent for — drop it, or leave it visible",
-					at(indexPos(t, ix)), t.Name, ix.Name))
+					at(indexPos(t, ix)), t.Name, t.IndexName(ix)))
 			}
 			for _, c := range ix.Columns {
 				if c.Prefix > 0 {
 					problems = append(problems, fmt.Sprintf(
 						"  %s%s: index %s indexes a %d-character prefix of %s, which PostgreSQL cannot — "+
 							"index the whole column, or an expression: storm.IndexExpr(&m.%s, \"left(%%s, %d)\")",
-						at(indexPos(t, ix)), t.Name, ix.Name, c.Prefix, c.Name, exportish(c.Name), c.Prefix))
+						at(indexPos(t, ix)), t.Name, t.IndexName(ix), c.Prefix, c.Name, exportish(c.Name), c.Prefix))
 				}
 			}
 		}
@@ -503,4 +512,56 @@ func serialType(t schema.Type) string {
 		return "bigserial"
 	}
 	return t.SQL()
+}
+
+// maxIdent is PostgreSQL's NAMEDATALEN-1: a longer name is truncated by the
+// server, silently, so the index it creates is not the one the model names and
+// every later diff proposes to rename it.
+const maxIdent = 63
+
+// relationNames refuses two relations with one name, and a declared name
+// PostgreSQL would truncate.
+//
+// In PostgreSQL an index is a RELATION, named in the schema rather than in its
+// table: a table, every index, and the index behind each UNIQUE, EXCLUDE and
+// PRIMARY KEY share one namespace. `Named("idx_created_at")` on two tables is
+// legal in MySQL and SQL Server and builds clean, and the second CREATE INDEX
+// fails with "relation already exists" in the middle of a migration. So does
+// a generated name that sanitising makes alike: table "a" indexing "b_c" and
+// table "a_b" indexing "c" are both ix_a_b_c.
+func relationNames(s *schema.Schema, problems *[]string) {
+	type owner struct{ table, what string }
+	seen := map[string]owner{}
+	add := func(pos, table, what, name string, declared bool) {
+		if declared && len(name) > maxIdent {
+			*problems = append(*problems, fmt.Sprintf(
+				"  %s%s: %s %s is %d bytes, and PostgreSQL truncates a name past %d — "+
+					"every later diff would see a renamed object", at(pos), table, what, name, len(name), maxIdent))
+		}
+		if prev, ok := seen[name]; ok {
+			*problems = append(*problems, fmt.Sprintf(
+				"  %s%s: %s %s has the name of %s %s on %s — in PostgreSQL both are relations "+
+					"in one schema-wide namespace, and the second CREATE fails; give one Named(...)",
+				at(pos), table, what, name, prev.what, name, prev.table))
+			return
+		}
+		seen[name] = owner{table, what}
+	}
+	for _, t := range s.Tables {
+		add(t.Pos, t.Name, "table", t.Name, false)
+		if len(t.PrimaryKey) > 0 {
+			add(t.Pos, t.Name, "primary key index", t.Name+"_pkey", false)
+		}
+	}
+	for _, t := range s.Tables {
+		for _, u := range t.Uniques {
+			add(t.Pos, t.Name, "unique constraint", u.Name, true)
+		}
+		for _, ex := range t.Excludes {
+			add(t.Pos, t.Name, "exclusion constraint", ex.Name, true)
+		}
+		for _, ix := range t.Indexes {
+			add(indexPos(t, ix), t.Name, "index", t.IndexName(ix), ix.Name != "")
+		}
+	}
 }

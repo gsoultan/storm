@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package mydrv
 
 import (
@@ -47,6 +55,14 @@ type Conn struct {
 	// a garbled packet somewhere later, which is unrelatable to the missing
 	// Close that caused it.
 	busy bool
+
+	// The cancellation watch: AfterFunc's stop for the statement in flight,
+	// the callback (made once per connection), and the signal it sends when
+	// it has finished. Touched only by the goroutine running the statement,
+	// apart from cancelDone.
+	stopWatch  func() bool
+	onCancel   func()
+	cancelDone chan struct{}
 }
 
 // ErrRowsOpen is returned by a statement issued while a result set from the
@@ -201,7 +217,7 @@ var (
 )
 
 // watch arranges for the statement about to run to be killed if ctx finishes
-// first, and returns the function that ends the watch.
+// first. unwatch ends it, and every path that calls watch must call it.
 //
 // A socket deadline alone would stop THIS process waiting and leave the server
 // running the statement — a cancelled query would keep its locks and keep
@@ -209,53 +225,65 @@ var (
 // second connection, which aborts the statement server-side and leaves this
 // connection healthy enough to reuse. Breaking the socket is the fallback for
 // when that second connection cannot be made.
-//
-// The returned function reports ctx.Err() when it was the watcher, not the
-// server, that ended the statement — otherwise the caller would see MySQL's
-// "Query execution was interrupted" and not know it was their own cancellation.
-func (x *Conn) watch(ctx context.Context) func() error {
+func (x *Conn) watch(ctx context.Context) {
 	if ctx.Done() == nil {
-		return func() error { return nil }
+		return
 	}
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-done:
-			return
-		case <-ctx.Done():
-		}
-		x.mu.Lock()
-		defer x.mu.Unlock()
-		select {
-		case <-done: // the statement finished while we were waking up
-			return
-		default:
-		}
-		if err := x.kill(); err != nil {
-			// No second connection to be had — none could be opened, or the
-			// pool's cap on side connections is spent. Break the socket
-			// instead: it stops this process waiting, and costs the
-			// connection, because what arrives on it next is the tail of a
-			// statement nobody read.
-			x.broken = true
-			_ = x.c.c.SetDeadline(time.Unix(1, 0))
-			return
-		}
-		x.killed = true
-	}()
-	return func() error {
-		x.mu.Lock()
-		defer x.mu.Unlock()
-		close(done)
-		if x.killed {
-			x.killed = false
-			return ctx.Err()
-		}
-		if x.broken {
-			return ctx.Err()
-		}
+	// context.AfterFunc rather than a goroutine parked on ctx.Done(): for the
+	// contexts a request carries it registers a callback and starts nothing,
+	// so a statement that finishes in time — nearly all of them — no longer
+	// pays a goroutine start per call. The callback is one method value per
+	// connection, made once, so arming allocates only what AfterFunc must.
+	if x.onCancel == nil {
+		x.onCancel = x.cancelled
+		x.cancelDone = make(chan struct{}, 1)
+	}
+	x.stopWatch = context.AfterFunc(ctx, x.onCancel)
+}
+
+// cancelled is the watch's callback: kill the statement in flight. It always
+// signals cancelDone when it returns, which is what lets unwatch wait out a
+// callback that had started, so that a late one cannot kill the connection's
+// NEXT statement — after a pool release, someone else's.
+func (x *Conn) cancelled() {
+	defer func() { x.cancelDone <- struct{}{} }()
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if err := x.kill(); err != nil {
+		// No second connection to be had — none could be opened, or the
+		// pool's cap on side connections is spent. Break the socket instead:
+		// it stops this process waiting, and costs the connection, because
+		// what arrives on it next is the tail of a statement nobody read.
+		x.broken = true
+		_ = x.c.c.SetDeadline(time.Unix(1, 0))
+		return
+	}
+	x.killed = true
+}
+
+// unwatch ends the watch watch(ctx) began.
+//
+// It reports ctx.Err() when it was the watcher, not the server, that ended the
+// statement — otherwise the caller would see MySQL's "Query execution was
+// interrupted" and not know it was their own cancellation.
+func (x *Conn) unwatch(ctx context.Context) error {
+	if x.stopWatch == nil {
 		return nil
 	}
+	if !x.stopWatch() {
+		<-x.cancelDone // the callback started: let it finish before going on
+	}
+	x.stopWatch = nil
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.killed {
+		x.killed = false
+		return ctx.Err()
+	}
+	if x.broken {
+		return ctx.Err()
+	}
+	return nil
 }
 
 // kill delivers KILL QUERY for the statement in flight, taking a slot on the
@@ -369,14 +397,14 @@ func (x *Conn) once(ctx context.Context, sql string, args []any) (int64, error) 
 	if x.busy {
 		return 0, ErrRowsOpen
 	}
-	stop := x.watch(ctx)
+	x.watch(ctx)
 	var n int64
 	s, err := x.c.prepare(sql)
 	if err == nil {
 		err = s.execAffected(args, &n)
 		_ = s.close()
 	}
-	if cerr := stop(); cerr != nil {
+	if cerr := x.unwatch(ctx); cerr != nil {
 		return 0, cerr
 	}
 	return n, classify(x.settle(err))
@@ -397,8 +425,8 @@ func (x *Conn) once(ctx context.Context, sql string, args []any) (int64, error) 
 type rows struct {
 	s    *stmt
 	c    *Conn
-	stop func() error // ends the cancellation watch
-	rel  func()       // returns the connection to its pool, at most once
+	ctx  context.Context // the statement's, for ending its cancellation watch
+	rel  func()          // returns the connection to its pool, at most once
 	cols [][]byte
 	err  error
 	done bool
@@ -451,15 +479,15 @@ func (r *rows) finish() {
 	}
 	r.done = true
 	r.c.busy = false
-	if r.stop != nil {
+	if r.ctx != nil {
 		// The cancellation OVERRIDES whatever the server said. A killed
 		// statement comes back as "Query execution was interrupted", and a
 		// caller told that instead of context.Canceled cannot tell their own
 		// timeout from the database having a bad day.
-		if cerr := r.stop(); cerr != nil {
+		if cerr := r.c.unwatch(r.ctx); cerr != nil {
 			r.err = cerr
 		}
-		r.stop = nil
+		r.ctx = nil
 	}
 	if r.rel != nil {
 		r.rel()
@@ -477,7 +505,7 @@ func (x *Conn) Query(ctx context.Context, sql string, args []any) (runtime.Rows,
 	// whatever this connection ran NEXT, which after a pool release is someone
 	// else's statement. For a streaming result set that is at Close, not at
 	// return: the statement is still running until the last row is read.
-	stop := x.watch(ctx)
+	x.watch(ctx)
 	s, err := x.prepared(sql)
 	if err == nil {
 		if err = s.send(args); err == nil {
@@ -485,24 +513,24 @@ func (x *Conn) Query(ctx context.Context, sql string, args []any) (runtime.Rows,
 		}
 	}
 	if err != nil {
-		if cerr := stop(); cerr != nil {
+		if cerr := x.unwatch(ctx); cerr != nil {
 			return nil, cerr
 		}
 		return nil, classify(x.settle(err))
 	}
 	x.busy = true
-	return &rows{s: s, c: x, stop: stop}, nil
+	return &rows{s: s, c: x, ctx: ctx}, nil
 }
 
 // Exec runs a statement and reports the rows it affected.
 func (x *Conn) Exec(ctx context.Context, sql string, args []any) (int64, error) {
-	stop := x.watch(ctx)
+	x.watch(ctx)
 	var n int64
 	s, err := x.prepared(sql)
 	if err == nil {
 		err = s.execAffected(args, &n)
 	}
-	if cerr := stop(); cerr != nil {
+	if cerr := x.unwatch(ctx); cerr != nil {
 		return 0, cerr
 	}
 	if code(err) == erUnsupportedPS && len(args) == 0 {
@@ -522,7 +550,7 @@ func (x *Conn) simple(ctx context.Context, sql string) (int64, error) {
 	if x.busy {
 		return 0, ErrRowsOpen
 	}
-	stop := x.watch(ctx)
+	x.watch(ctx)
 	var n int64
 	x.c.onOK = func(p []byte) {
 		v, _, _ := lenEncInt(p[1:])
@@ -530,7 +558,7 @@ func (x *Conn) simple(ctx context.Context, sql string) (int64, error) {
 	}
 	err := x.c.query(sql, nil)
 	x.c.onOK = nil
-	if cerr := stop(); cerr != nil {
+	if cerr := x.unwatch(ctx); cerr != nil {
 		return 0, cerr
 	}
 	return n, classify(x.settle(err))

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/hooks"
 )
 
 var (
@@ -33,48 +34,6 @@ type Row struct {
 	Tags      []int64
 }
 
-// Operator ids. Argument-taking operators are numbered first, so the
-// bind loop tests `op-1 < opsWithArg` with one unsigned compare.
-const (
-	opEq               runtime.Op = 1
-	opNotEq            runtime.Op = 2
-	opGt               runtime.Op = 3
-	opGte              runtime.Op = 4
-	opLt               runtime.Op = 5
-	opLte              runtime.Op = 6
-	opEqLower          runtime.Op = 7
-	opLike             runtime.Op = 8
-	opILike            runtime.Op = 9
-	opMatches          runtime.Op = 10
-	opWebSearch        runtime.Op = 11
-	opOverlaps         runtime.Op = 12
-	opContainsRange    runtime.Op = 13
-	opContainedBy      runtime.Op = 14
-	opIn               runtime.Op = 15
-	opNotIn            runtime.Op = 16
-	opArrayContains    runtime.Op = 17
-	opArrayContainedBy runtime.Op = 18
-	opArrayOverlaps    runtime.Op = 19
-	opJSONContains     runtime.Op = 20
-	opJSONContainedBy  runtime.Op = 21
-	opHasAnyKey        runtime.Op = 22
-	opHasAllKeys       runtime.Op = 23
-	opJSONTextLikeAny  runtime.Op = 24
-	opTextHasPrefix    runtime.Op = 25
-	opTextHasSuffix    runtime.Op = 26
-	opTextContains     runtime.Op = 27
-	opIsNull           runtime.Op = 28
-	opIsNotNull        runtime.Op = 29
-	opJSONIsEmpty      runtime.Op = 30
-	opNullOrEmpty      runtime.Op = 31
-	// Existence operators apply to PSEUDO-COLUMNS — relation slots past
-	// the real columns in the frag table. Argless, like IsNull: the
-	// fragment is constant, which is what lets a semi-join ride the
-	// ordinary predicate machinery and compose under And/Or/Not free.
-	opExists    runtime.Op = 32
-	opNotExists runtime.Op = 33
-)
-
 const nCols = 10
 
 // Query is a value type: composing one allocates nothing. Predicates
@@ -95,30 +54,19 @@ type Query struct {
 	anyI64     [3][]int64
 	nar, nai64 uint8
 
-	// Order terms live in their own buffer and are appended to the stream
-	// after the predicate tree. Sharing one buffer would let a Where after
-	// an Order interleave the two, and the stream's order is its meaning.
+	// Order terms, appended to the stream after the predicate tree.
 	otoks [4]runtime.Tok
 	no    uint8
 
-	// lock is the row-lock mode: 0 none, then the dialect's mode order.
-	// It is part of the STATEMENT, so it selects the cache as well as
-	// the suffix.
-	lock uint8
+	lock uint8 // row-lock mode, 0 none; selects the cache and the suffix
 
 	limit  int64
 	offset int64
-	// over records that the query outgrew its fixed buffers. Terminals
-	// return it as an error rather than silently dropping a predicate.
-	over bool
 
-	// mixed records an After() over an ordering that is not all in one
-	// direction. No single row comparison expresses that.
-	mixed bool
-
-	// noOrder suppresses the default ordering. See Unordered.
-	noOrder  bool
-	badAfter bool
+	// Errors the terminals return: outgrown buffers, an After over a mixed
+	// ordering, an After with no ordering at all.
+	over, mixed, badAfter bool
+	noOrder               bool // see Unordered
 }
 
 // New starts a query.
@@ -134,99 +82,43 @@ func (q Query) Offset(n int64) Query { q.offset = n; return q }
 // active ordering. An ordering that mixes ascending and descending terms
 // is a query error.
 func (q Query) After(r Row) Query {
-	terms := q.otoks[:q.no]
-	if q.no == 0 {
-		if q.noOrder {
-			// A keyset cursor without an order is a position in nothing.
-			q.badAfter = true
-			return q
-		}
-		terms = defaultOrder[:]
-	}
+	terms, cmp, bad := runtime.Keyset(q.otoks[:q.no], defaultOrder[:], q.noOrder)
+	q.badAfter = q.badAfter || bad == runtime.KeysetUnordered
+	q.mixed = q.mixed || bad == runtime.KeysetMixed
 	if len(terms) == 0 {
 		return q
-	}
-	desc := terms[0].Op() == runtime.Desc || terms[0].Op() == runtime.DescNullsLast
-	for _, t := range terms {
-		d := t.Op() == runtime.Desc || t.Op() == runtime.DescNullsLast
-		if d != desc {
-			q.mixed = true
-			return q
-		}
 	}
 	for _, t := range terms {
 		q.push(runtime.MakeCol(t.Col()))
 		q.cursor(t.Col(), r)
 	}
-	op := runtime.CmpGt
-	if desc {
-		op = runtime.CmpLt
-	}
-	q.push(runtime.MakeRowCmp(op, uint32(len(terms))))
+	q.push(runtime.MakeRowCmp(cmp, uint32(len(terms))))
 	q.top++
 	return q
 }
 
 // cursor stores the bound value for one column of a keyset comparison.
 func (q *Query) cursor(col uint32, r Row) {
+	ok := true
 	switch col {
 	case 0:
-		if int(q.nr) >= len(q.raws) {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = r.ID
-		q.nr++
+		ok = runtime.Stash(q.raws[:], &q.nr, r.ID)
 	case 1:
-		if int(q.ntm) >= len(q.tims) {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = r.CreatedAt
-		q.ntm++
+		ok = runtime.Stash(q.tims[:], &q.ntm, r.CreatedAt)
 	case 2:
-		if int(q.ntm) >= len(q.tims) {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = r.UpdatedAt
-		q.ntm++
+		ok = runtime.Stash(q.tims[:], &q.ntm, r.UpdatedAt)
 	case 3:
-		if int(q.ntm) >= len(q.tims) {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = r.On
-		q.ntm++
+		ok = runtime.Stash(q.tims[:], &q.ntm, r.On)
 	case 4:
-		if int(q.nto) >= len(q.tods) {
-			q.over = true
-			return
-		}
-		q.tods[q.nto] = r.Opens
-		q.nto++
+		ok = runtime.Stash(q.tods[:], &q.nto, r.Opens)
 	case 5:
-		if int(q.nto) >= len(q.tods) {
-			q.over = true
-			return
-		}
-		q.tods[q.nto] = r.Closes.V
-		q.nto++
+		ok = runtime.Stash(q.tods[:], &q.nto, r.Closes.V)
 	case 7:
-		if int(q.npf) >= len(q.pfxs) {
-			q.over = true
-			return
-		}
-		q.pfxs[q.npf] = r.Addr
-		q.npf++
+		ok = runtime.Stash(q.pfxs[:], &q.npf, r.Addr)
 	case 8:
-		if int(q.npf) >= len(q.pfxs) {
-			q.over = true
-			return
-		}
-		q.pfxs[q.npf] = r.Net
-		q.npf++
+		ok = runtime.Stash(q.pfxs[:], &q.npf, r.Net)
 	}
+	q.over = q.over || !ok
 }
 
 // Unordered drops the default ordering, for reads nobody pages. An explicit
@@ -300,19 +192,13 @@ func (q Query) readErr() error {
 		return errTooComplex
 	}
 	if q.mixed {
-		return errMixedOrder
+		return runtime.ErrMixedOrder
 	}
 	if q.badAfter {
-		return errAfterUnordered
+		return runtime.ErrAfterUnordered
 	}
 	return nil
 }
-
-var errAfterUnordered = errors.New(
-	"storm: After() on an Unordered() query with no explicit Order — a keyset cursor without an ordering is a position in nothing")
-
-var errMixedOrder = errors.New(
-	"storm: After() needs every ORDER BY term in the same direction; a mixed ordering has no single row comparison, and expanding it into ORs gives up the index walk that makes keyset pagination worth doing")
 
 var errCountLocked = errors.New(
 	"storm: a locked read cannot be counted — the server refuses a row lock with an aggregate; count first, then lock the rows you take")
@@ -323,8 +209,7 @@ var errExistsLocked = errors.New(
 var errTooComplex = errors.New(
 	"storm: query has more predicates than the generated buffers hold (scale 1); split the query, or regenerate with a larger codegen.Budgets{Scale}")
 
-// push and leaf mutate through a pointer and are only called on a local, so
-// the public API keeps value semantics.
+// push and leaf mutate a local copy only, so the API keeps value semantics.
 func (q *Query) push(t runtime.Tok) {
 	if int(q.nt) >= len(q.toks) {
 		q.over = true
@@ -334,9 +219,7 @@ func (q *Query) push(t runtime.Tok) {
 	q.nt++
 }
 
-// preds returns the predicate stream with top-level conjuncts ANDed.
-// A count uses this: ordering a scalar is wasted work, and including the
-// terms would compile a second statement per ordering for no difference.
+// preds is the predicate stream with top-level conjuncts ANDed, no order.
 func (q Query) preds(buf *[21]runtime.Tok) []runtime.Tok {
 	n := copy(buf[:], q.toks[:q.nt])
 	if q.top > 1 {
@@ -346,8 +229,7 @@ func (q Query) preds(buf *[21]runtime.Tok) []runtime.Tok {
 	return buf[:n]
 }
 
-// stream is the predicates followed by the ordering — the whole statement
-// key. Order tokens go last so a splicer can find the boundary by kind.
+// stream is the predicates, then the ordering: the whole statement key.
 func (q Query) stream(buf *[21]runtime.Tok) []runtime.Tok {
 	n := len(q.preds(buf))
 	if q.no == 0 {
@@ -376,6 +258,9 @@ type Pred struct {
 	anyI64 []int64
 }
 
+// ord is one column handle's ORDER BY term in direction dir.
+func ord(dir uint32, c uint8) Sort { return Sort(runtime.MakeOrder(dir, uint32(c))) }
+
 // Typed column handles. The type of the handle is what makes
 // Age.Like(...) fail to compile.
 var (
@@ -394,159 +279,143 @@ var (
 // UUIDCol addresses a uuid column.
 type UUIDCol struct{ c uint8 }
 
-func (h UUIDCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h UUIDCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h UUIDCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h UUIDCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h UUIDCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h UUIDCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h UUIDCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h UUIDCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: opEq, raw: v} }
-func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: opNotEq, raw: v} }
-func (h UUIDCol) In(v ...[16]byte) Pred { return Pred{col: h.c, op: opIn, anyRaw: runtime.List(v)} }
+func (h UUIDCol) Eq(v [16]byte) Pred    { return Pred{col: h.c, op: runtime.OpEq, raw: v} }
+func (h UUIDCol) NotEq(v [16]byte) Pred { return Pred{col: h.c, op: runtime.OpNotEq, raw: v} }
+func (h UUIDCol) In(v ...[16]byte) Pred {
+	return Pred{col: h.c, op: runtime.OpIn, anyRaw: runtime.List(v)}
+}
 
 // NotIn is `<> ALL($1)`: a NULL in v matches no row, as NOT IN does.
 func (h UUIDCol) NotIn(v ...[16]byte) Pred {
-	return Pred{col: h.c, op: opNotIn, anyRaw: runtime.List(v)}
+	return Pred{col: h.c, op: runtime.OpNotIn, anyRaw: runtime.List(v)}
 }
 
 // TimeCol addresses a timestamptz column.
 type TimeCol struct{ c uint8 }
 
-func (h TimeCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h TimeCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h TimeCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h TimeCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h TimeCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h TimeCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h TimeCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h TimeCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h TimeCol) Eq(v time.Time) Pred    { return Pred{col: h.c, op: opEq, tim: v} }
-func (h TimeCol) NotEq(v time.Time) Pred { return Pred{col: h.c, op: opNotEq, tim: v} }
-func (h TimeCol) Gt(v time.Time) Pred    { return Pred{col: h.c, op: opGt, tim: v} }
-func (h TimeCol) Gte(v time.Time) Pred   { return Pred{col: h.c, op: opGte, tim: v} }
-func (h TimeCol) Lt(v time.Time) Pred    { return Pred{col: h.c, op: opLt, tim: v} }
-func (h TimeCol) Lte(v time.Time) Pred   { return Pred{col: h.c, op: opLte, tim: v} }
+func (h TimeCol) Eq(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpEq, tim: v} }
+func (h TimeCol) NotEq(v time.Time) Pred { return Pred{col: h.c, op: runtime.OpNotEq, tim: v} }
+func (h TimeCol) Gt(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpGt, tim: v} }
+func (h TimeCol) Gte(v time.Time) Pred   { return Pred{col: h.c, op: runtime.OpGte, tim: v} }
+func (h TimeCol) Lt(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpLt, tim: v} }
+func (h TimeCol) Lte(v time.Time) Pred   { return Pred{col: h.c, op: runtime.OpLte, tim: v} }
 
 // DateCol addresses a date column.
 type DateCol struct{ c uint8 }
 
-func (h DateCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h DateCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h DateCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h DateCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h DateCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h DateCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h DateCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h DateCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h DateCol) Eq(v time.Time) Pred    { return Pred{col: h.c, op: opEq, tim: v} }
-func (h DateCol) NotEq(v time.Time) Pred { return Pred{col: h.c, op: opNotEq, tim: v} }
-func (h DateCol) Gt(v time.Time) Pred    { return Pred{col: h.c, op: opGt, tim: v} }
-func (h DateCol) Gte(v time.Time) Pred   { return Pred{col: h.c, op: opGte, tim: v} }
-func (h DateCol) Lt(v time.Time) Pred    { return Pred{col: h.c, op: opLt, tim: v} }
-func (h DateCol) Lte(v time.Time) Pred   { return Pred{col: h.c, op: opLte, tim: v} }
+func (h DateCol) Eq(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpEq, tim: v} }
+func (h DateCol) NotEq(v time.Time) Pred { return Pred{col: h.c, op: runtime.OpNotEq, tim: v} }
+func (h DateCol) Gt(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpGt, tim: v} }
+func (h DateCol) Gte(v time.Time) Pred   { return Pred{col: h.c, op: runtime.OpGte, tim: v} }
+func (h DateCol) Lt(v time.Time) Pred    { return Pred{col: h.c, op: runtime.OpLt, tim: v} }
+func (h DateCol) Lte(v time.Time) Pred   { return Pred{col: h.c, op: runtime.OpLte, tim: v} }
 
 // TimeOfDayCol addresses a time column.
 type TimeOfDayCol struct{ c uint8 }
 
-func (h TimeOfDayCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h TimeOfDayCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h TimeOfDayCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h TimeOfDayCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h TimeOfDayCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h TimeOfDayCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h TimeOfDayCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h TimeOfDayCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h TimeOfDayCol) Eq(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opEq, tod: v} }
-func (h TimeOfDayCol) NotEq(v runtime.TimeOfDay) Pred { return Pred{col: h.c, op: opNotEq, tod: v} }
-func (h TimeOfDayCol) Gt(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opGt, tod: v} }
-func (h TimeOfDayCol) Gte(v runtime.TimeOfDay) Pred   { return Pred{col: h.c, op: opGte, tod: v} }
-func (h TimeOfDayCol) Lt(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opLt, tod: v} }
-func (h TimeOfDayCol) Lte(v runtime.TimeOfDay) Pred   { return Pred{col: h.c, op: opLte, tod: v} }
+func (h TimeOfDayCol) Eq(v runtime.TimeOfDay) Pred { return Pred{col: h.c, op: runtime.OpEq, tod: v} }
+func (h TimeOfDayCol) NotEq(v runtime.TimeOfDay) Pred {
+	return Pred{col: h.c, op: runtime.OpNotEq, tod: v}
+}
+func (h TimeOfDayCol) Gt(v runtime.TimeOfDay) Pred  { return Pred{col: h.c, op: runtime.OpGt, tod: v} }
+func (h TimeOfDayCol) Gte(v runtime.TimeOfDay) Pred { return Pred{col: h.c, op: runtime.OpGte, tod: v} }
+func (h TimeOfDayCol) Lt(v runtime.TimeOfDay) Pred  { return Pred{col: h.c, op: runtime.OpLt, tod: v} }
+func (h TimeOfDayCol) Lte(v runtime.TimeOfDay) Pred { return Pred{col: h.c, op: runtime.OpLte, tod: v} }
 
 // NullTimeOfDayCol addresses a time column.
 type NullTimeOfDayCol struct{ c uint8 }
 
-func (h NullTimeOfDayCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h NullTimeOfDayCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h NullTimeOfDayCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h NullTimeOfDayCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h NullTimeOfDayCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h NullTimeOfDayCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h NullTimeOfDayCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h NullTimeOfDayCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h NullTimeOfDayCol) Eq(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opEq, tod: v} }
-func (h NullTimeOfDayCol) NotEq(v runtime.TimeOfDay) Pred { return Pred{col: h.c, op: opNotEq, tod: v} }
-func (h NullTimeOfDayCol) Gt(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opGt, tod: v} }
-func (h NullTimeOfDayCol) Gte(v runtime.TimeOfDay) Pred   { return Pred{col: h.c, op: opGte, tod: v} }
-func (h NullTimeOfDayCol) Lt(v runtime.TimeOfDay) Pred    { return Pred{col: h.c, op: opLt, tod: v} }
-func (h NullTimeOfDayCol) Lte(v runtime.TimeOfDay) Pred   { return Pred{col: h.c, op: opLte, tod: v} }
-func (h NullTimeOfDayCol) IsNull() Pred                   { return Pred{col: h.c, op: opIsNull} }
-func (h NullTimeOfDayCol) IsNotNull() Pred                { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullTimeOfDayCol) Eq(v runtime.TimeOfDay) Pred {
+	return Pred{col: h.c, op: runtime.OpEq, tod: v}
+}
+func (h NullTimeOfDayCol) NotEq(v runtime.TimeOfDay) Pred {
+	return Pred{col: h.c, op: runtime.OpNotEq, tod: v}
+}
+func (h NullTimeOfDayCol) Gt(v runtime.TimeOfDay) Pred {
+	return Pred{col: h.c, op: runtime.OpGt, tod: v}
+}
+func (h NullTimeOfDayCol) Gte(v runtime.TimeOfDay) Pred {
+	return Pred{col: h.c, op: runtime.OpGte, tod: v}
+}
+func (h NullTimeOfDayCol) Lt(v runtime.TimeOfDay) Pred {
+	return Pred{col: h.c, op: runtime.OpLt, tod: v}
+}
+func (h NullTimeOfDayCol) Lte(v runtime.TimeOfDay) Pred {
+	return Pred{col: h.c, op: runtime.OpLte, tod: v}
+}
+func (h NullTimeOfDayCol) IsNull() Pred    { return Pred{col: h.c, op: runtime.OpIsNull} }
+func (h NullTimeOfDayCol) IsNotNull() Pred { return Pred{col: h.c, op: runtime.OpIsNotNull} }
 
 // NullIntervalCol addresses a interval column.
 type NullIntervalCol struct{ c uint8 }
 
-func (h NullIntervalCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h NullIntervalCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h NullIntervalCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h NullIntervalCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h NullIntervalCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h NullIntervalCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h NullIntervalCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h NullIntervalCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h NullIntervalCol) IsNull() Pred    { return Pred{col: h.c, op: opIsNull} }
-func (h NullIntervalCol) IsNotNull() Pred { return Pred{col: h.c, op: opIsNotNull} }
+func (h NullIntervalCol) IsNull() Pred    { return Pred{col: h.c, op: runtime.OpIsNull} }
+func (h NullIntervalCol) IsNotNull() Pred { return Pred{col: h.c, op: runtime.OpIsNotNull} }
 
 // InetCol addresses a inet column.
 type InetCol struct{ c uint8 }
 
-func (h InetCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h InetCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h InetCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h InetCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h InetCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h InetCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h InetCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h InetCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
-func (h InetCol) Eq(v netip.Prefix) Pred    { return Pred{col: h.c, op: opEq, pfx: v} }
-func (h InetCol) NotEq(v netip.Prefix) Pred { return Pred{col: h.c, op: opNotEq, pfx: v} }
+func (h InetCol) Eq(v netip.Prefix) Pred    { return Pred{col: h.c, op: runtime.OpEq, pfx: v} }
+func (h InetCol) NotEq(v netip.Prefix) Pred { return Pred{col: h.c, op: runtime.OpNotEq, pfx: v} }
 
 // Int64ArrayCol addresses a int8[] column.
 type Int64ArrayCol struct{ c uint8 }
 
-func (h Int64ArrayCol) Asc() Sort  { return Sort(runtime.MakeOrder(runtime.Asc, uint32(h.c))) }
-func (h Int64ArrayCol) Desc() Sort { return Sort(runtime.MakeOrder(runtime.Desc, uint32(h.c))) }
-func (h Int64ArrayCol) AscNullsFirst() Sort {
-	return Sort(runtime.MakeOrder(runtime.AscNullsFirst, uint32(h.c)))
-}
-func (h Int64ArrayCol) DescNullsLast() Sort {
-	return Sort(runtime.MakeOrder(runtime.DescNullsLast, uint32(h.c)))
-}
+func (h Int64ArrayCol) Asc() Sort           { return ord(runtime.Asc, h.c) }
+func (h Int64ArrayCol) Desc() Sort          { return ord(runtime.Desc, h.c) }
+func (h Int64ArrayCol) AscNullsFirst() Sort { return ord(runtime.AscNullsFirst, h.c) }
+func (h Int64ArrayCol) DescNullsLast() Sort { return ord(runtime.DescNullsLast, h.c) }
 
 // Contains is `@>`: every element of v is in the column.
 // An empty v is true for every row — every array contains
 // the empty one.
 func (h Int64ArrayCol) Contains(v ...int64) Pred {
-	return Pred{col: h.c, op: opArrayContains, anyI64: runtime.List(v)}
+	return Pred{col: h.c, op: runtime.OpArrayContains, anyI64: runtime.List(v)}
 }
 
 // ContainedBy is `<@`: every element of the column is in v.
 func (h Int64ArrayCol) ContainedBy(v ...int64) Pred {
-	return Pred{col: h.c, op: opArrayContainedBy, anyI64: runtime.List(v)}
+	return Pred{col: h.c, op: runtime.OpArrayContainedBy, anyI64: runtime.List(v)}
 }
 
 // Overlaps is `&&`: the column and v share an element.
 func (h Int64ArrayCol) Overlaps(v ...int64) Pred {
-	return Pred{col: h.c, op: opArrayOverlaps, anyI64: runtime.List(v)}
+	return Pred{col: h.c, op: runtime.OpArrayOverlaps, anyI64: runtime.List(v)}
 }
 
 // Where applies predicates, ANDed together.
@@ -660,62 +529,33 @@ func (q Query) NotAnyOf(gs ...Grp) Query {
 	return q
 }
 
-// leaf records one predicate: its value goes to the arena for its type,
-// its structure to the token stream.
+// leaf stores one predicate's value in its type's arena and its token.
 func (q *Query) leaf(p Pred) {
-	if p.op == opIn || p.op == opNotIn || p.op == opArrayContains || p.op == opArrayContainedBy || p.op == opArrayOverlaps || p.op == opHasAnyKey || p.op == opHasAllKeys || p.op == opJSONTextLikeAny {
+	ok := true
+	switch {
+	case runtime.ArglessOp(p.op):
+	case runtime.ListOp(p.op):
 		switch p.col {
 		case 0:
-			if int(q.nar) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyRaw[q.nar] = p.anyRaw
-			q.nar++
+			ok = runtime.Stash(q.anyRaw[:], &q.nar, p.anyRaw)
 		case 9:
-			if int(q.nai64) >= 3 {
-				q.over = true
-				return
-			}
-			q.anyI64[q.nai64] = p.anyI64
-			q.nai64++
+			ok = runtime.Stash(q.anyI64[:], &q.nai64, p.anyI64)
 		}
-		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
-		return
+	default:
+		switch p.col {
+		case 0:
+			ok = runtime.Stash(q.raws[:], &q.nr, p.raw)
+		case 1, 2, 3:
+			ok = runtime.Stash(q.tims[:], &q.ntm, p.tim)
+		case 4, 5:
+			ok = runtime.Stash(q.tods[:], &q.nto, p.tod)
+		case 7, 8:
+			ok = runtime.Stash(q.pfxs[:], &q.npf, p.pfx)
+		}
 	}
-	if p.op == opIsNull || p.op == opIsNotNull || p.op == opJSONIsEmpty || p.op == opNullOrEmpty {
-		q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
+	if !ok {
+		q.over = true
 		return
-	}
-	switch p.col {
-	case 0:
-		if int(q.nr) >= 4 {
-			q.over = true
-			return
-		}
-		q.raws[q.nr] = p.raw
-		q.nr++
-	case 1, 2, 3:
-		if int(q.ntm) >= 4 {
-			q.over = true
-			return
-		}
-		q.tims[q.ntm] = p.tim
-		q.ntm++
-	case 4, 5:
-		if int(q.nto) >= 4 {
-			q.over = true
-			return
-		}
-		q.tods[q.nto] = p.tod
-		q.nto++
-	case 7, 8:
-		if int(q.npf) >= 4 {
-			q.over = true
-			return
-		}
-		q.pfxs[q.npf] = p.pfx
-		q.npf++
 	}
 	q.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))
 }
@@ -830,21 +670,11 @@ var identTable = [nCols]string{
 }
 
 var lowering = runtime.Lowering{
-	Frag:  fragOf,
-	Order: orderOf,
-	OB:    runtime.Order{Lead: " ORDER BY ", Sep: ", "},
-	Ident: func(col uint32) string {
-		if col >= nCols {
-			return ""
-		}
-		return identTable[col]
-	},
-	RowCmp: func(op uint32) string {
-		if op == runtime.CmpLt {
-			return " < "
-		}
-		return " > "
-	},
+	Frag:       fragOf,
+	Order:      orderOf,
+	OB:         runtime.Order{Lead: " ORDER BY ", Sep: ", "},
+	Ident:      func(col uint32) string { return runtime.Pick(identTable[:], col) },
+	RowCmp:     runtime.RowCmpOps(" > ", " < "),
 	TupleOpen:  "(",
 	TupleSep:   ", ",
 	TupleClose: ")",
@@ -861,76 +691,75 @@ func orderOf(dir, col uint32) string {
 // time. Runtime splices; it never formats.
 var fragTable = [10][34]runtime.Frag{
 	{ // id
-		opEq:    {A: "\"id\" = $"},
-		opNotEq: {A: "\"id\" <> $"},
-		opIn:    {A: "\"id\" = ANY($", B: ")"},
-		opNotIn: {A: "\"id\" <> ALL($", B: ")"},
+		runtime.OpEq:    {A: "\"id\" = $"},
+		runtime.OpNotEq: {A: "\"id\" <> $"},
+		runtime.OpIn:    {A: "\"id\" = ANY($", B: ")"},
+		runtime.OpNotIn: {A: "\"id\" <> ALL($", B: ")"},
 	},
 	{ // created_at
-		opEq:    {A: "\"created_at\" = $"},
-		opNotEq: {A: "\"created_at\" <> $"},
-		opGt:    {A: "\"created_at\" > $"},
-		opGte:   {A: "\"created_at\" >= $"},
-		opLt:    {A: "\"created_at\" < $"},
-		opLte:   {A: "\"created_at\" <= $"},
+		runtime.OpEq:    {A: "\"created_at\" = $"},
+		runtime.OpNotEq: {A: "\"created_at\" <> $"},
+		runtime.OpGt:    {A: "\"created_at\" > $"},
+		runtime.OpGte:   {A: "\"created_at\" >= $"},
+		runtime.OpLt:    {A: "\"created_at\" < $"},
+		runtime.OpLte:   {A: "\"created_at\" <= $"},
 	},
 	{ // updated_at
-		opEq:    {A: "\"updated_at\" = $"},
-		opNotEq: {A: "\"updated_at\" <> $"},
-		opGt:    {A: "\"updated_at\" > $"},
-		opGte:   {A: "\"updated_at\" >= $"},
-		opLt:    {A: "\"updated_at\" < $"},
-		opLte:   {A: "\"updated_at\" <= $"},
+		runtime.OpEq:    {A: "\"updated_at\" = $"},
+		runtime.OpNotEq: {A: "\"updated_at\" <> $"},
+		runtime.OpGt:    {A: "\"updated_at\" > $"},
+		runtime.OpGte:   {A: "\"updated_at\" >= $"},
+		runtime.OpLt:    {A: "\"updated_at\" < $"},
+		runtime.OpLte:   {A: "\"updated_at\" <= $"},
 	},
 	{ // on
-		opEq:    {A: "\"on\" = $"},
-		opNotEq: {A: "\"on\" <> $"},
-		opGt:    {A: "\"on\" > $"},
-		opGte:   {A: "\"on\" >= $"},
-		opLt:    {A: "\"on\" < $"},
-		opLte:   {A: "\"on\" <= $"},
+		runtime.OpEq:    {A: "\"on\" = $"},
+		runtime.OpNotEq: {A: "\"on\" <> $"},
+		runtime.OpGt:    {A: "\"on\" > $"},
+		runtime.OpGte:   {A: "\"on\" >= $"},
+		runtime.OpLt:    {A: "\"on\" < $"},
+		runtime.OpLte:   {A: "\"on\" <= $"},
 	},
 	{ // opens
-		opEq:    {A: "\"opens\" = $"},
-		opNotEq: {A: "\"opens\" <> $"},
-		opGt:    {A: "\"opens\" > $"},
-		opGte:   {A: "\"opens\" >= $"},
-		opLt:    {A: "\"opens\" < $"},
-		opLte:   {A: "\"opens\" <= $"},
+		runtime.OpEq:    {A: "\"opens\" = $"},
+		runtime.OpNotEq: {A: "\"opens\" <> $"},
+		runtime.OpGt:    {A: "\"opens\" > $"},
+		runtime.OpGte:   {A: "\"opens\" >= $"},
+		runtime.OpLt:    {A: "\"opens\" < $"},
+		runtime.OpLte:   {A: "\"opens\" <= $"},
 	},
 	{ // closes
-		opEq:        {A: "\"closes\" = $"},
-		opNotEq:     {A: "\"closes\" <> $"},
-		opGt:        {A: "\"closes\" > $"},
-		opGte:       {A: "\"closes\" >= $"},
-		opLt:        {A: "\"closes\" < $"},
-		opLte:       {A: "\"closes\" <= $"},
-		opIsNull:    {A: "\"closes\" IS NULL"},
-		opIsNotNull: {A: "\"closes\" IS NOT NULL"},
+		runtime.OpEq:        {A: "\"closes\" = $"},
+		runtime.OpNotEq:     {A: "\"closes\" <> $"},
+		runtime.OpGt:        {A: "\"closes\" > $"},
+		runtime.OpGte:       {A: "\"closes\" >= $"},
+		runtime.OpLt:        {A: "\"closes\" < $"},
+		runtime.OpLte:       {A: "\"closes\" <= $"},
+		runtime.OpIsNull:    {A: "\"closes\" IS NULL"},
+		runtime.OpIsNotNull: {A: "\"closes\" IS NOT NULL"},
 	},
 	{ // window
-		opIsNull:    {A: "\"window\" IS NULL"},
-		opIsNotNull: {A: "\"window\" IS NOT NULL"},
+		runtime.OpIsNull:    {A: "\"window\" IS NULL"},
+		runtime.OpIsNotNull: {A: "\"window\" IS NOT NULL"},
 	},
 	{ // addr
-		opEq:    {A: "\"addr\" = $"},
-		opNotEq: {A: "\"addr\" <> $"},
+		runtime.OpEq:    {A: "\"addr\" = $"},
+		runtime.OpNotEq: {A: "\"addr\" <> $"},
 	},
 	{ // net
-		opEq:    {A: "\"net\" = $"},
-		opNotEq: {A: "\"net\" <> $"},
+		runtime.OpEq:    {A: "\"net\" = $"},
+		runtime.OpNotEq: {A: "\"net\" <> $"},
 	},
 	{ // tags
-		opArrayContains:    {A: "\"tags\" @> $"},
-		opArrayContainedBy: {A: "\"tags\" <@ $"},
-		opArrayOverlaps:    {A: "\"tags\" && $"},
+		runtime.OpArrayContains:    {A: "\"tags\" @> $"},
+		runtime.OpArrayContainedBy: {A: "\"tags\" <@ $"},
+		runtime.OpArrayOverlaps:    {A: "\"tags\" && $"},
 	},
 }
 
 func fragOf(op, col uint32) runtime.Frag {
 	// Bounded by the table, not nCols: existence pseudo-columns live past
-	// the real ones. Order, ident and arena lookups stay nCols-bounded,
-	// so a pseudo-column can never be ordered by, cursored on, or bound.
+	// the real ones, and only here.
 	if int(col) >= len(fragTable) || int(op) >= len(fragTable[0]) {
 		return runtime.Frag{}
 	}
@@ -1230,64 +1059,45 @@ type Binder = binder
 func GetBinder() *Binder  { return binders.Get() }
 func PutBinder(b *Binder) { putBinder(b) }
 
-// putBinder drops every reference to the caller's memory before pooling, so
-// a pooled binder pins nothing.
+// putBinder drops every reference to caller memory, so a pooled binder pins nothing.
 func putBinder(b *binder) {
-	for i := range b.anyRaw {
-		b.anyRaw[i] = nil
-	}
-	for i := range b.anyI64 {
-		b.anyI64[i] = nil
-	}
+	clear(b.anyRaw[:])
+	clear(b.anyI64[:])
 	binders.Put(b)
 }
 
-// bindPreds copies arena values into the pooled buffer and points the
-// []any at the buffer's own fields — boxing a pointer does not allocate.
-// Count and Exists stop here: their statements carry no LIMIT or OFFSET.
+// bindPreds binds the predicate values, in stream order, from the binder's
+// own copies. Count and Exists stop here: they have no LIMIT or OFFSET.
 func (q Query) bindPreds(b *binder) []any {
 	v := b.vals[:0]
 	var nr, ntm, npf, nto, nar, nai64 uint8
 	for i := uint8(0); i < q.nt; i++ {
 		t := q.toks[i]
-		// KLeaf binds a predicate's value, KCol a keyset cursor's; both
-		// share the per-type arenas, and a KCol's opNone matches no op case.
+		// A predicate's value or a keyset cursor's: both use the arenas.
 		if k := t.Kind(); k != runtime.KLeaf && k != runtime.KCol {
 			continue
 		}
-		switch runtime.Op(t.Op()) {
-		case opIsNull, opIsNotNull, opJSONIsEmpty, opNullOrEmpty:
+		switch op := runtime.Op(t.Op()); {
+		case runtime.ArglessOp(op):
 			continue
-		case opIn, opNotIn, opArrayContains, opArrayContainedBy, opArrayOverlaps, opHasAnyKey, opHasAllKeys, opJSONTextLikeAny:
+		case runtime.ListOp(op):
 			switch t.Col() {
 			case 0:
-				b.anyRaw[nar] = q.anyRaw[nar]
-				v = append(v, &b.anyRaw[nar])
-				nar++
+				v = runtime.Bind(v, b.anyRaw[:], q.anyRaw[:], &nar)
 			case 9:
-				b.anyI64[nai64] = q.anyI64[nai64]
-				v = append(v, &b.anyI64[nai64])
-				nai64++
+				v = runtime.Bind(v, b.anyI64[:], q.anyI64[:], &nai64)
 			}
 			continue
 		}
 		switch t.Col() {
 		case 0:
-			b.raws[nr] = q.raws[nr]
-			v = append(v, &b.raws[nr])
-			nr++
+			v = runtime.Bind(v, b.raws[:], q.raws[:], &nr)
 		case 1, 2, 3:
-			b.tims[ntm] = q.tims[ntm]
-			v = append(v, &b.tims[ntm])
-			ntm++
+			v = runtime.Bind(v, b.tims[:], q.tims[:], &ntm)
 		case 4, 5:
-			b.tods[nto] = q.tods[nto]
-			v = append(v, &b.tods[nto])
-			nto++
+			v = runtime.Bind(v, b.tods[:], q.tods[:], &nto)
 		case 7, 8:
-			b.pfxs[npf] = q.pfxs[npf]
-			v = append(v, &b.pfxs[npf])
-			npf++
+			v = runtime.Bind(v, b.pfxs[:], q.pfxs[:], &npf)
 		}
 	}
 	b.vals = v
@@ -1299,8 +1109,7 @@ func (q Query) bind(b *binder) []any {
 	v := q.bindPreds(b)
 	b.limit = q.limit
 	v = append(v, &b.limit)
-	// An offset of zero is absent from the statement, so binding it
-	// would leave an argument nothing consumes.
+	// An offset of zero is absent from the statement, so it binds nothing.
 	if q.offset > 0 {
 		b.offset = q.offset
 		v = append(v, &b.offset)
@@ -1317,6 +1126,18 @@ func (q Query) All(ctx context.Context, ex runtime.Executor, dst []Row) ([]Row, 
 
 // AllInto lets the caller own the string arena.
 func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *runtime.Slab) ([]Row, error) {
+	if Hooks.AfterFind == nil {
+		return q.allInto(ctx, ex, dst, sl)
+	}
+	from := len(dst)
+	dst, err := q.allInto(ctx, ex, dst, sl)
+	for i := from; i < len(dst) && err == nil; i++ {
+		err = hooks.Apply(ctx, ex, Hooks.AfterFind, &dst[i])
+	}
+	return dst, err
+}
+
+func (q Query) allInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *runtime.Slab) ([]Row, error) {
 	if err := q.readErr(); err != nil {
 		return dst, err
 	}
@@ -1375,9 +1196,13 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 	var sl runtime.Slab
 	// What All learned about this shape, which Reserve caps at one chunk.
 	sl.Reserve(st.SlabHint())
+	find := Hooks.AfterFind
 	for rows.Next() {
 		var r Row
 		if err := scan(rows.RawValues(), &r, &sl); err != nil {
+			return err
+		}
+		if err := hooks.Apply(ctx, ex, find, &r); err != nil {
 			return err
 		}
 		if err := fn(r); err != nil {
@@ -1592,6 +1417,11 @@ const updReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"on\",
 
 // Masks reports how many distinct UPDATE shapes have compiled.
 func Masks() int { return updCache.Masks() }
+
+// Hooks are this table's lifecycle callbacks. Unset, each costs one nil
+// check; set them at program start. hooks.Lifecycle says which calls run
+// which hook.
+var Hooks hooks.Lifecycle[Ins, Mut, Row]
 
 // Mut is a row staged for update: the values, plus which of them were
 // actually assigned. An UPDATE writes the assigned ones and no others,
@@ -1942,6 +1772,17 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 // database-computed values land in the returned Row rather than needing a
 // second SELECT that would race every other writer.
 func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, n); err != nil {
+		return Row{}, err
+	}
+	r, err := n.insert(ctx, ex)
+	if err == nil {
+		err = hooks.Apply(ctx, ex, Hooks.AfterCreate, &r)
+	}
+	return r, err
+}
+
+func (n *Ins) insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	if n.set == 0 {
 		return Row{}, runtime.ErrNothingAssigned
 	}
@@ -1982,6 +1823,20 @@ func Inserts() int { return insCache.Masks() }
 // Insert writes every insertable column, zero values included, and reads
 // the row back so database defaults land in r.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
+	if Hooks.BeforeCreate != nil {
+		n := Ins{row: *r, set: 0x3ff}
+		if err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, &n); err != nil {
+			return err
+		}
+		*r = n.row
+	}
+	if err := insertRow(ctx, ex, r); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterCreate, r)
+}
+
+func insertRow(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args := make([]any, 0, 10)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
@@ -2193,6 +2048,16 @@ func stmtForKey(k runtime.MaskKey, ret bool) *runtime.Stmt {
 // Assigning nothing issues no statement and is not an error.
 // A value the database computes is read back, so m.Row() is current.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeUpdate, m); err != nil {
+		return err
+	}
+	if err := m.update(ctx, ex); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterUpdate, m)
+}
+
+func (m *Mut) update(ctx context.Context, ex runtime.Executor) error {
 	if m.dirty == 0 && m.expr == 0 {
 		return nil
 	}
@@ -2254,6 +2119,20 @@ var deleteSQL = runtime.SpliceSections(deletePrefix, []runtime.Section{
 // runtime.ErrNoRow, not success: a caller deleting something that is not
 // there usually has a bug, and swallowing it hides the bug.
 func Delete(ctx context.Context, ex runtime.Executor, iD [16]byte) error {
+	if Hooks.BeforeDelete == nil && Hooks.AfterDelete == nil {
+		return deleteKey(ctx, ex, iD)
+	}
+	key := Row{ID: iD}
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &key); err != nil {
+		return err
+	}
+	if err := deleteKey(ctx, ex, iD); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterDelete, &key)
+}
+
+func deleteKey(ctx context.Context, ex runtime.Executor, iD [16]byte) error {
 	n, err := ex.Exec(ctx, deleteSQL, []any{iD})
 	if err != nil {
 		return err

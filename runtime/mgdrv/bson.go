@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package mgdrv
 
 import (
@@ -372,7 +380,10 @@ func elements(doc []byte, fn func(t byte, name string, v []byte) bool) error {
 		for j < n && doc[j] != 0 {
 			j++
 		}
-		if j >= n {
+		// n-1, not n: the document's own terminator is not the end of a
+		// name. A name running into it left i at n, and doc[i:n-1] below
+		// panicked on a reply a corrupt or hostile server sent.
+		if j >= n-1 {
 			return errMalformed
 		}
 		name := doc[i:j]

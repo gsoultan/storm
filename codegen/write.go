@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package codegen
 
 import (
@@ -290,6 +298,7 @@ func (g *gen) writes() {
 	}
 
 	g.writeConsts(ins, upd, pk)
+	g.hooksVar()
 	g.guardDecls(upd)
 	g.mutType(upd, pk)
 	g.insType(ins)
@@ -1382,7 +1391,8 @@ func (g *gen) insType(ins []colInfo) {
 	g.p("// Insert writes the assigned columns and reads every column back, so")
 	g.p("// database-computed values land in the returned Row rather than needing a")
 	g.p("// second SELECT that would race every other writer.")
-	g.p("func (n *Ins) Insert(ctx context.Context, ex %s) (Row, error) {", g.execType())
+	g.insWrapper()
+	g.p("func (n *Ins) insert(ctx context.Context, ex %s) (Row, error) {", g.execType())
 	g.p("\tif n.set == 0 {")
 	g.p("\t\treturn Row{}, runtime.ErrNothingAssigned")
 	g.p("\t}")
@@ -1434,7 +1444,8 @@ func (g *gen) insertFn(ins []colInfo) {
 	}
 	g.p("// Insert writes every insertable column, zero values included, and reads")
 	g.p("// the row back so database defaults land in r.")
-	g.p("func Insert(ctx context.Context, ex %s, r *Row) error {", g.execType())
+	g.insertRowWrapper(ins)
+	g.p("func insertRow(ctx context.Context, ex %s, r *Row) error {", g.execType())
 	g.p("\targs := make([]any, 0, %d)", len(ins))
 	for _, c := range ins {
 		g.p("\targs = append(args, %s)", writeArg(c, "r."+exportName(c.Name())))
@@ -1488,7 +1499,8 @@ func (g *gen) insertFnNoReturn(ins []colInfo) {
 	g.p("//")
 	g.p("// Every insertable column is written, including zero values. storm does not")
 	g.p("// treat a zero as 'unset'.")
-	g.p("func Insert(ctx context.Context, ex %s, r *Row) error {", g.execType())
+	g.insertRowWrapper(ins)
+	g.p("func insertRow(ctx context.Context, ex %s, r *Row) error {", g.execType())
 	g.p("\targs := make([]any, 0, %d)", len(ins))
 	for _, c := range ins {
 		g.p("\targs = append(args, %s)", writeArg(c, "r."+exportName(c.Name())))
@@ -1606,7 +1618,8 @@ func (g *gen) updateFn(upd, pk []colInfo) {
 		g.p("// target cannot return the row it wrote. m.Row() keeps the value the")
 		g.p("// column had before the statement, and the database keeps the new one.")
 	}
-	g.p("func (m *Mut) Update(ctx context.Context, ex %s) error {", g.execType())
+	g.updateWrapper()
+	g.p("func (m *Mut) update(ctx context.Context, ex %s) error {", g.execType())
 	g.p("\tif m.dirty == 0 && m.expr == 0 {")
 	g.p("\t\treturn nil")
 	g.p("\t}")
@@ -1726,7 +1739,8 @@ func (g *gen) softDeleteFns(pk []colInfo) {
 	g.p("//")
 	g.p("// A row that was already deleted is runtime.ErrNoRow, not success — the")
 	g.p("// same answer a hard delete gives for a row that is not there.")
-	g.p("func Delete(ctx context.Context, ex "+g.execType()+", %s) error {", sigs)
+	g.deleteWrapper("Delete", "deleteKey", pk)
+	g.p("func deleteKey(ctx context.Context, ex "+g.execType()+", %s) error {", sigs)
 	g.p("\tn, err := ex.Exec(ctx, softDeleteSQL, []any{%s})", calls)
 	g.p("\tif err != nil {")
 	g.p("\t\treturn err")
@@ -1744,7 +1758,8 @@ func (g *gen) softDeleteFns(pk []colInfo) {
 	g.p("// HardDelete removes the row for real, deleted or not. It is the only")
 	g.p("// function in this package that destroys data, which is why it is not")
 	g.p("// spelled Delete.")
-	g.p("func HardDelete(ctx context.Context, ex "+g.execType()+", %s) error {", sigs)
+	g.deleteWrapper("HardDelete", "hardDeleteKey", pk)
+	g.p("func hardDeleteKey(ctx context.Context, ex "+g.execType()+", %s) error {", sigs)
 	g.p("\tn, err := ex.Exec(ctx, hardDeleteSQL, []any{%s})", calls)
 	g.p("\tif err != nil {")
 	g.p("\t\treturn err")
@@ -1793,7 +1808,8 @@ func (g *gen) deleteFn(pk []colInfo) {
 		sig = append(sig, fmt.Sprintf("%s %s", lowerFirst(exportName(c.Name())), c.goBase))
 		call = append(call, lowerFirst(exportName(c.Name())))
 	}
-	g.p("func Delete(ctx context.Context, ex "+g.execType()+", %s) error {", joinStr(sig, ", "))
+	g.deleteWrapper("Delete", "deleteKey", pk)
+	g.p("func deleteKey(ctx context.Context, ex "+g.execType()+", %s) error {", joinStr(sig, ", "))
 	g.p("\tn, err := ex.Exec(ctx, deleteSQL, []any{%s})", joinStr(call, ", "))
 	g.p("\tif err != nil {")
 	g.p("\t\treturn err")
@@ -3077,6 +3093,123 @@ func (g *gen) guardedUpsert(ins []colInfo) {
 	g.p("\t\targs = append(args, q.bindPreds(b)...)")
 	g.p("\t}")
 	g.p("\treturn ex.Exec(ctx, st.SQL, args)")
+	g.p("}")
+	g.p("")
+}
+
+// hasHooks reports whether this table's package declares lifecycle Hooks.
+// A table without a primary key has no write API for most of them to wrap,
+// so it gets none, and its reads stay exactly as they were.
+func (g *gen) hasHooks() bool { return g.t != nil && len(pkCols(g.t)) > 0 }
+
+// The lifecycle wrappers below share one shape: the exported terminal is a
+// few lines that check a hook, and the statement itself is the unexported
+// function the terminal used to be. Hooks are called through hooks.Apply,
+// which hands the hook a copy rather than the caller's pointer, so an unset
+// hook does not move the caller's Ins, Mut or Row to the heap.
+
+func (g *gen) hooksVar() {
+	g.p("// Hooks are this table's lifecycle callbacks. Unset, each costs one nil")
+	g.p("// check; set them at program start. hooks.Lifecycle says which calls run")
+	g.p("// which hook.")
+	g.p("var Hooks hooks.Lifecycle[Ins, Mut, Row]")
+	g.p("")
+}
+
+// afterFindAll is AllInto when the table has hooks: the read, then AfterFind
+// over the rows it appended, once the result is closed so the hook may send
+// statements of its own. Through hooks.Apply, so that dst does not leak and
+// One's one-row array stays on the stack.
+func (g *gen) afterFindAll() {
+	g.p("func (q Query) AllInto(ctx context.Context, ex %s, dst []Row, sl *runtime.Slab) ([]Row, error) {", g.execType())
+	g.p("\tif Hooks.AfterFind == nil {")
+	g.p("\t\treturn q.allInto(ctx, ex, dst, sl)")
+	g.p("\t}")
+	g.p("\tfrom := len(dst)")
+	g.p("\tdst, err := q.allInto(ctx, ex, dst, sl)")
+	g.p("\tfor i := from; i < len(dst) && err == nil; i++ {")
+	g.p("\t\terr = hooks.Apply(ctx, ex, Hooks.AfterFind, &dst[i])")
+	g.p("\t}")
+	g.p("\treturn dst, err")
+	g.p("}")
+	g.p("")
+}
+
+func (g *gen) insWrapper() {
+	g.p("func (n *Ins) Insert(ctx context.Context, ex %s) (Row, error) {", g.execType())
+	g.p("\tif err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, n); err != nil {")
+	g.p("\t\treturn Row{}, err")
+	g.p("\t}")
+	g.p("\tr, err := n.insert(ctx, ex)")
+	g.p("\tif err == nil {")
+	g.p("\t\terr = hooks.Apply(ctx, ex, Hooks.AfterCreate, &r)")
+	g.p("\t}")
+	g.p("\treturn r, err")
+	g.p("}")
+	g.p("")
+}
+
+// insertRowWrapper is Insert(r). BeforeCreate takes an Ins, so the row is
+// staged with every insertable column assigned — which is what Insert writes
+// — and what the hook set is copied back into r.
+func (g *gen) insertRowWrapper(ins []colInfo) {
+	all := uint64(1)<<uint(len(ins)) - 1
+	if len(ins) >= 64 {
+		all = ^uint64(0)
+	}
+	g.p("func Insert(ctx context.Context, ex %s, r *Row) error {", g.execType())
+	g.p("\tif Hooks.BeforeCreate != nil {")
+	g.p("\t\tn := Ins{row: *r, set: %#x}", all)
+	g.p("\t\tif err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, &n); err != nil {")
+	g.p("\t\t\treturn err")
+	g.p("\t\t}")
+	g.p("\t\t*r = n.row")
+	g.p("\t}")
+	g.p("\tif err := insertRow(ctx, ex, r); err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\treturn hooks.Apply(ctx, ex, Hooks.AfterCreate, r)")
+	g.p("}")
+	g.p("")
+}
+
+func (g *gen) updateWrapper() {
+	g.p("func (m *Mut) Update(ctx context.Context, ex %s) error {", g.execType())
+	g.p("\tif err := hooks.Apply(ctx, ex, Hooks.BeforeUpdate, m); err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tif err := m.update(ctx, ex); err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\treturn hooks.Apply(ctx, ex, Hooks.AfterUpdate, m)")
+	g.p("}")
+	g.p("")
+}
+
+// deleteWrapper is Delete (or HardDelete) by key. The hooks get a Row
+// holding only the key, since a delete by key never reads the row.
+func (g *gen) deleteWrapper(name, inner string, pk []colInfo) {
+	sig := make([]string, 0, len(pk))
+	call := make([]string, 0, len(pk))
+	key := make([]string, 0, len(pk))
+	for _, c := range pk {
+		v := lowerFirst(exportName(c.Name()))
+		sig = append(sig, fmt.Sprintf("%s %s", v, c.goBase))
+		call = append(call, v)
+		key = append(key, fmt.Sprintf("%s: %s", exportName(c.Name()), v))
+	}
+	g.p("func %s(ctx context.Context, ex %s, %s) error {", name, g.execType(), joinStr(sig, ", "))
+	g.p("\tif Hooks.BeforeDelete == nil && Hooks.AfterDelete == nil {")
+	g.p("\t\treturn %s(ctx, ex, %s)", inner, joinStr(call, ", "))
+	g.p("\t}")
+	g.p("\tkey := Row{%s}", joinStr(key, ", "))
+	g.p("\tif err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &key); err != nil {")
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\tif err := %s(ctx, ex, %s); err != nil {", inner, joinStr(call, ", "))
+	g.p("\t\treturn err")
+	g.p("\t}")
+	g.p("\treturn hooks.Apply(ctx, ex, Hooks.AfterDelete, &key)")
 	g.p("}")
 	g.p("")
 }

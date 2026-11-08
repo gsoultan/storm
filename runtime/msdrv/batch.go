@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package msdrv
 
 import (
@@ -27,7 +35,7 @@ const batchFlag = 0xFF
 
 // Batch sends ops together and calls each with the i-th result.
 func (c *Conn) Batch(ctx context.Context, ops []runtime.BatchOp,
-	each func(i int, rows runtime.Rows, affected int64, err error) error) error {
+	each func(i int, rows runtime.Rows, affected int64, err error) error) (retErr error) {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -62,8 +70,18 @@ func (c *Conn) Batch(ctx context.Context, ops []runtime.BatchOp,
 		return err
 	}
 
-	stop := c.watch(ctx)
-	defer stop()
+	c.watch(ctx)
+	defer func() {
+		// An attention that went out may have been answered inside the
+		// replies just read or may still be on its way; telling which would
+		// mean tracking every op's DONE. A cancelled batch is rare, so the
+		// connection is retired instead of guessed at — its next statement
+		// must not read a stray acknowledgement as its answer.
+		if sent, _ := c.unwatch(); sent {
+			c.bad = true
+			retErr = cancelErr(ctx)
+		}
+	}()
 
 	// One result per op, in order. A BatchReader walks the shared stream and
 	// hands out a view of each; nothing here materialises a result, because the

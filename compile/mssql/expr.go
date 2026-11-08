@@ -1,10 +1,20 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 package mssql
 
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gsoultan/storm/schema"
 )
@@ -92,7 +102,7 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 		w.b.WriteString("*")
 
 	case schema.ExprLit:
-		w.b.WriteString(e.Lit.SQL())
+		w.literal(e.Lit)
 
 	case schema.ExprParam:
 		// Numbered at generate time, not counted at splice time: a union has no
@@ -337,4 +347,65 @@ func (w *exprWriter) writeBound(bound schema.FrameBound) {
 	case schema.UnboundedFollowing:
 		w.b.WriteString("UNBOUNDED FOLLOWING")
 	}
+}
+
+// literal renders a declaration-time constant in T-SQL's spelling.
+//
+// Not schema.Literal.SQL, which is PostgreSQL's: `'1.50'::numeric` and `true`
+// are syntax errors in T-SQL, and a timestamp rendered there as NULL. Text is
+// N'…' so a constant outside the database's code page survives.
+func (w *exprWriter) literal(l schema.Literal) {
+	switch l.Kind {
+	case schema.TypeText, schema.TypeVarchar:
+		w.b.WriteString("N'" + strings.ReplaceAll(l.S, "'", "''") + "'")
+	case schema.TypeInt2, schema.TypeInt4, schema.TypeInt8:
+		w.b.WriteString(strconv.FormatInt(l.I, 10))
+	case schema.TypeFloat4, schema.TypeFloat8:
+		if math.IsNaN(l.F) || math.IsInf(l.F, 0) {
+			w.fail(errors.New("compile/mssql: SQL Server has no NaN or infinite float literal"))
+			return
+		}
+		w.b.WriteString(strconv.FormatFloat(l.F, 'e', -1, 64)) // an exponent makes it float
+	case schema.TypeNumeric:
+		if !isDecimalText(l.S) {
+			w.fail(fmt.Errorf("compile/mssql: decimal literal %q", l.S))
+			return
+		}
+		w.b.WriteString(l.S) // a fixed-point literal is numeric in T-SQL
+	case schema.TypeTimestamptz:
+		ts, err := time.Parse(time.RFC3339Nano, l.S)
+		if err != nil {
+			w.fail(fmt.Errorf("compile/mssql: timestamp literal %q: %w", l.S, err))
+			return
+		}
+		w.b.WriteString("CAST('" + ts.UTC().Format("2006-01-02T15:04:05.0000000") +
+			"+00:00' AS DATETIMEOFFSET(7))")
+	case schema.TypeBool:
+		if l.B {
+			w.b.WriteString("CAST(1 AS BIT)")
+		} else {
+			w.b.WriteString("CAST(0 AS BIT)")
+		}
+	default:
+		w.fail(fmt.Errorf("compile/mssql: a %s literal has no T-SQL spelling storm writes", l.Kind))
+	}
+}
+
+// isDecimalText reports whether s is an optionally signed decimal numeral.
+func isDecimalText(s string) bool {
+	if s != "" && s[0] == '-' {
+		s = s[1:]
+	}
+	digits, dot := 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9':
+			digits++
+		case c == '.' && !dot:
+			dot = true
+		default:
+			return false
+		}
+	}
+	return digits > 0
 }

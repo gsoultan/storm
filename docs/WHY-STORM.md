@@ -114,8 +114,10 @@ Read this section before the rest of the docs.
   `Select("a, b")` or `Joins(...)`. Projections, aggregations and joins are
   declared on the model, because the scanner is generated. The `storm.SQL`
   escape hatch covers the rest (it is refused on MySQL and MariaDB).
-- **No hooks or callbacks.** There is no `BeforeCreate` or `AfterFind`.
-  Put that logic in your service code.
+- **Hooks are narrower than GORM's.** Lifecycle hooks (`BeforeCreate`,
+  `AfterUpdate`, `AfterFind`, ...) run around the single-row generated calls,
+  not around batches, bulk loads or set-based writes; statement hooks see
+  every statement. See [API.md § 8d](API.md).
 - **Every query starts with `LIMIT 1000`.** This includes `Each` and `Rows`.
   A read that matches more rows returns the first thousand without an error,
   so set `Limit` yourself for a larger read ([API.md](API.md)).

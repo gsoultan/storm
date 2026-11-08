@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
 // Package runtime is what generated code calls at query time.
 //
 // It is the only part of storm on the hot path, and it obeys the rules in
@@ -10,9 +18,9 @@ import (
 	"sync/atomic"
 )
 
-// Op is a comparison operator's compiler-assigned id. Generated code numbers
-// the argument-taking operators first, so `op-1 < opsWithArg` is one unsigned
-// compare on the bind path.
+// Op is a comparison operator's id: OpEq and the rest, in tree.go. The
+// argless operators are numbered last, so ArglessOp is one compare on the
+// bind path.
 //
 // Ids only. An Op never carries a caller's value, which is why two queries
 // with the same structure and different values share one statement.
