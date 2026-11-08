@@ -34,16 +34,31 @@ func JSON(b []byte) (runtime.JSON, error) {
 	if len(b) < 1 {
 		return nil, shape("a JSON value", b)
 	}
-	out, err := appendJSON(nil, b[0], b[1:])
+	// Sized before it is read: the fixed-width cases below index the value
+	// directly, so a value shorter than its type said — the type byte alone,
+	// say — panicked rather than reporting the shape. Elements sizes every
+	// NESTED value the same way.
+	if Size(b[0], b[1:]) != len(b)-1 {
+		return nil, shape("a JSON value", b)
+	}
+	out, err := appendJSON(nil, b[0], b[1:], 0)
 	if err != nil {
 		return nil, err
 	}
 	return runtime.JSON(out), nil
 }
 
-func appendJSON(out []byte, t byte, v []byte) ([]byte, error) {
+// maxJSONDepth is MongoDB's own nesting limit. Past it the document did not come
+// from a server that follows its rules, and the recursion below is bounded so
+// such a document cannot exhaust the stack.
+const maxJSONDepth = 100
+
+func appendJSON(out []byte, t byte, v []byte, depth int) ([]byte, error) {
 	switch t {
 	case TDocument, TArray:
+		if depth >= maxJSONDepth {
+			return nil, shape("a JSON value nested within MongoDB's 100 levels", append([]byte{t}, v...))
+		}
 		open, close := byte('{'), byte('}')
 		if t == TArray {
 			open, close = '[', ']'
@@ -60,7 +75,7 @@ func appendJSON(out []byte, t byte, v []byte) ([]byte, error) {
 				out = append(out, ':')
 			}
 			var err error
-			out, err = appendJSON(out, et, ev)
+			out, err = appendJSON(out, et, ev, depth+1)
 			return err
 		})
 		if err != nil {

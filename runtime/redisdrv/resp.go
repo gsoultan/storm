@@ -39,16 +39,27 @@ func writeCommand(w *bufio.Writer, args []string) error {
 // []byte or nil (bulk string), or []any or nil (array). A *Error is returned
 // as the VALUE, not the error: err is reserved for the connection failing,
 // which is what tells the pool to discard it.
-func readReply(r *bufio.Reader, maxBytes int) (any, error) { return readDepth(r, maxBytes, 0) }
+//
+// maxBytes is a budget for the WHOLE reply, not each part of it: every line
+// and bulk string read is charged to it. Charging only each bulk string let an
+// array of 64 Mi elements cost 1 GiB of []any from a 14-byte header, and an
+// array of bulk strings cost maxBytes per element.
+func readReply(r *bufio.Reader, maxBytes int) (any, error) {
+	budget := maxBytes
+	return readDepth(r, &budget, 0)
+}
 
 // maxDepth bounds nested arrays. No command this client sends gets back more
 // than one level; the bound keeps a hostile server off the stack.
 const maxDepth = 8
 
-func readDepth(r *bufio.Reader, maxBytes, depth int) (any, error) {
+func readDepth(r *bufio.Reader, budget *int, depth int) (any, error) {
 	line, err := readLine(r)
 	if err != nil {
 		return nil, err
+	}
+	if *budget -= len(line) + 2; *budget < 0 {
+		return nil, errProtocol
 	}
 	if len(line) == 0 {
 		return nil, errProtocol
@@ -67,12 +78,13 @@ func readDepth(r *bufio.Reader, maxBytes, depth int) (any, error) {
 		return n, nil
 	case '$':
 		n, err := strconv.Atoi(string(body))
-		if err != nil || n < -1 || n > maxBytes {
+		if err != nil || n < -1 || n > *budget-2 {
 			return nil, errProtocol
 		}
 		if n == -1 {
 			return nil, nil
 		}
+		*budget -= n + 2
 		buf := make([]byte, n+2)
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
@@ -83,7 +95,9 @@ func readDepth(r *bufio.Reader, maxBytes, depth int) (any, error) {
 		return buf[:n:n], nil
 	case '*':
 		n, err := strconv.Atoi(string(body))
-		if err != nil || n < -1 || n > maxBytes {
+		// Every element is at least three bytes on the wire ("+\r\n"), so a
+		// count the remaining budget cannot hold is refused before allocating.
+		if err != nil || n < -1 || n > *budget/3 {
 			return nil, errProtocol
 		}
 		if n == -1 {
@@ -92,11 +106,15 @@ func readDepth(r *bufio.Reader, maxBytes, depth int) (any, error) {
 		if depth >= maxDepth {
 			return nil, errProtocol
 		}
-		out := make([]any, n)
-		for i := range out {
-			if out[i], err = readDepth(r, maxBytes, depth+1); err != nil {
+		// Grown as elements arrive rather than sized from the header, so
+		// memory follows bytes actually read and not a count the server claims.
+		out := make([]any, 0, min(n, 1024))
+		for range n {
+			v, err := readDepth(r, budget, depth+1)
+			if err != nil {
 				return nil, err
 			}
+			out = append(out, v)
 		}
 		return out, nil
 	}

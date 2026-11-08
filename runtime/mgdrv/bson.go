@@ -380,7 +380,10 @@ func elements(doc []byte, fn func(t byte, name string, v []byte) bool) error {
 		for j < n && doc[j] != 0 {
 			j++
 		}
-		if j >= n {
+		// n-1, not n: the document's own terminator is not the end of a
+		// name. A name running into it left i at n, and doc[i:n-1] below
+		// panicked on a reply a corrupt or hostile server sent.
+		if j >= n-1 {
 			return errMalformed
 		}
 		name := doc[i:j]

@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 )
 
 // Packet types.
@@ -359,14 +360,34 @@ func (x *conn) slice(n int, scratch *[]byte) ([]byte, error) {
 		x.rpos += n
 		return b, nil
 	}
-	if cap(*scratch) < n {
-		*scratch = make([]byte, n)
+	if n > plpMax {
+		return nil, protoErr("a value of more than %d bytes", plpMax)
 	}
-	b := (*scratch)[:n]
-	if err := x.readFull(b); err != nil {
-		return nil, err
+	if cap(*scratch) >= n || n <= plpStep {
+		if cap(*scratch) < n {
+			*scratch = make([]byte, n)
+		}
+		b := (*scratch)[:n]
+		if err := x.readFull(b); err != nil {
+			return nil, err
+		}
+		return b, nil
 	}
-	return b, nil
+	// A length the server claims past what one step allocates — a legacy
+	// TEXT or IMAGE carries four bytes of it — grows with bytes actually
+	// read, so a header that lies costs what arrives rather than 4 GiB.
+	out := (*scratch)[:0]
+	for rem := n; rem > 0; {
+		step := min(rem, plpStep)
+		start := len(out)
+		out = slices.Grow(out, step)[:start+step]
+		if err := x.readFull(out[start:]); err != nil {
+			return nil, err
+		}
+		rem -= step
+	}
+	*scratch = out[:0:cap(out)]
+	return out, nil
 }
 
 // skip discards n bytes of the message.

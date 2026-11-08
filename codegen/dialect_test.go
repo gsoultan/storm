@@ -247,7 +247,23 @@ func TestPostgresScannersRefuseADriftedColumnWidth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(my), "runtime.ShapeErr(") {
-		t.Error("a MySQL scanner guards a width its decoders already check")
+	// The little-endian families read a WIDER value correctly (MySQL widens a
+	// computed integer to BIGINT), so only a short one is drift — and their
+	// integer decoders returned 0 for one, a plausible wrong number with no
+	// error. A NULL in a NOT NULL int8 read as 0; it is now ErrShape.
+	for _, want := range []string{
+		`if len(rv[1]) < 8 {
+		return runtime.ShapeErr("n", "int8", 8, rv[1])`,
+		`if len(rv[0]) < 16 {
+		return runtime.ShapeErr("id", "uuid", 16, rv[0])`,
+		`if b := rv[4]; b != nil && len(b) < 4 {
+		return runtime.ShapeErr("age", "int4", 4, b)`,
+	} {
+		if !strings.Contains(string(my), want) {
+			t.Errorf("the MySQL scanner lacks the short-value guard:\n%s", want)
+		}
+	}
+	if strings.Contains(string(my), "len(rv[1]) != 8") {
+		t.Error("a MySQL scanner refuses a wider integer, which MySQL sends for a computed one")
 	}
 }

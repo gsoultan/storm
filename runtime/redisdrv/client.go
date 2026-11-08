@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 // Client is a pool of connections to one server. It is safe for concurrent
@@ -101,7 +102,10 @@ func (c *Client) MGet(ctx context.Context, keys []string) ([][]byte, error) {
 // Set writes value at key, expiring after ttl (rounded up to a millisecond).
 // A ttl of zero or less writes a key that does not expire.
 func (c *Client) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	args := []string{"SET", key, string(value)}
+	// Viewed, not copied: a cached result set can be large, and the command
+	// is written out before Do returns, so nothing keeps the string past the
+	// caller's slice.
+	args := []string{"SET", key, unsafe.String(unsafe.SliceData(value), len(value))}
 	if ttl > 0 {
 		ms := (ttl + time.Millisecond - 1) / time.Millisecond
 		args = append(args, "PX", strconv.FormatInt(int64(ms), 10))

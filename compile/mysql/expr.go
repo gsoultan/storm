@@ -11,8 +11,10 @@ package mysql
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gsoultan/storm/schema"
 )
@@ -102,7 +104,7 @@ func (w *exprWriter) writeExpr(e schema.Expr) {
 		w.b.WriteString("*")
 
 	case schema.ExprLit:
-		w.b.WriteString(e.Lit.SQL())
+		w.literal(e.Lit)
 
 	case schema.ExprParam:
 		// Bare. Position binds the value, so the same parameter used twice is
@@ -343,4 +345,84 @@ func (w *exprWriter) writeBound(bound schema.FrameBound) {
 	case schema.UnboundedFollowing:
 		w.b.WriteString("UNBOUNDED FOLLOWING")
 	}
+}
+
+// literal renders a declaration-time constant in MySQL's spelling.
+//
+// Not schema.Literal.SQL, which is PostgreSQL's: that spells a decimal
+// '1.50'::numeric (a syntax error here), has no MySQL timestamp, and escapes a
+// string by doubling quotes alone. MySQL also reads a backslash inside a
+// string as an escape unless the session runs NO_BACKSLASH_ESCAPES, so the
+// same text means two different strings depending on a server setting storm
+// cannot see. A text constant with a backslash is refused rather than
+// guessed at; a parameter carries it exactly.
+func (w *exprWriter) literal(l schema.Literal) {
+	switch l.Kind {
+	case schema.TypeText, schema.TypeVarchar:
+		if strings.ContainsRune(l.S, '\\') {
+			w.fail(ErrLiteralBackslash)
+			return
+		}
+		w.b.WriteString("'" + strings.ReplaceAll(l.S, "'", "''") + "'")
+	case schema.TypeInt2, schema.TypeInt4, schema.TypeInt8:
+		w.b.WriteString(strconv.FormatInt(l.I, 10))
+	case schema.TypeFloat4, schema.TypeFloat8:
+		if math.IsNaN(l.F) || math.IsInf(l.F, 0) {
+			w.fail(ErrLiteralNonFinite)
+			return
+		}
+		// An exponent makes it a DOUBLE; a bare 1.5 would be an exact DECIMAL.
+		w.b.WriteString(strconv.FormatFloat(l.F, 'e', -1, 64))
+	case schema.TypeNumeric:
+		if !isDecimalText(l.S) {
+			w.fail(fmt.Errorf("compile/mysql: decimal literal %q", l.S))
+			return
+		}
+		w.b.WriteString(l.S) // a fixed-point literal IS a DECIMAL in MySQL
+	case schema.TypeTimestamptz:
+		ts, err := time.Parse(time.RFC3339Nano, l.S)
+		if err != nil {
+			w.fail(fmt.Errorf("compile/mysql: timestamp literal %q: %w", l.S, err))
+			return
+		}
+		// DATETIME(6) holds UTC (myddl), so the literal is the UTC wall clock.
+		w.b.WriteString("TIMESTAMP'" + ts.UTC().Format("2006-01-02 15:04:05.000000") + "'")
+	case schema.TypeBool:
+		if l.B {
+			w.b.WriteString("TRUE")
+		} else {
+			w.b.WriteString("FALSE")
+		}
+	default:
+		w.fail(fmt.Errorf("compile/mysql: a %s literal has no MySQL spelling storm writes", l.Kind))
+	}
+}
+
+// ErrLiteralBackslash is why a text constant holding a backslash is refused.
+var ErrLiteralBackslash = errors.New(
+	"compile/mysql: a text literal with a backslash means one string under MySQL's default " +
+		"sql_mode and another under NO_BACKSLASH_ESCAPES; declare a parameter instead")
+
+// ErrLiteralNonFinite is why a NaN or infinite float constant is refused:
+// MySQL's DOUBLE has neither.
+var ErrLiteralNonFinite = errors.New("compile/mysql: MySQL has no NaN or infinite DOUBLE literal")
+
+// isDecimalText reports whether s is an optionally signed decimal numeral:
+// what Decimal.String produces, and nothing a statement could be bent with.
+func isDecimalText(s string) bool {
+	if s != "" && s[0] == '-' {
+		s = s[1:]
+	}
+	digits, dot := 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9':
+			digits++
+		case c == '.' && !dot:
+			dot = true
+		default:
+			return false
+		}
+	}
+	return digits > 0
 }

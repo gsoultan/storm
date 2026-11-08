@@ -436,7 +436,7 @@ func TestCancellationPastTheKillCapBreaksTheSocketInstead(t *testing.T) {
 	x := &Conn{c: newConn(client), cfg: Config{Addr: "127.0.0.1:1"}, killGate: gate}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stop := x.watch(ctx)
+	x.watch(ctx)
 	cancel()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -451,8 +451,8 @@ func TestCancellationPastTheKillCapBreaksTheSocketInstead(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if err := stop(); !errors.Is(err, context.Canceled) {
-		t.Fatalf("stop() = %v, want the caller's own cancellation", err)
+	if err := x.unwatch(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("unwatch = %v, want the caller's own cancellation", err)
 	}
 	if len(gate) != 1 {
 		t.Fatal("the watcher took or released a slot it was refused")

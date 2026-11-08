@@ -166,9 +166,21 @@ func TextArray(b []byte, s *Slab) ([]string, error) {
 func UUIDArray(b []byte) ([][16]byte, error) {
 	return ArrayErr(b, func(e []byte) ([16]byte, error) {
 		var v [16]byte
+		if len(e) != 16 {
+			return v, elemShape("uuid", 16, e)
+		}
 		copy(v[:], e)
 		return v, nil
 	})
+}
+
+// elemShape is an array element whose width is not its type's: an int4[]
+// where the model says int8[], or a corrupt value. The fixed-width element
+// decoders index blindly, so before this check such an element PANICKED the
+// request — the same drift the scanner's width guard turns into ErrShape for a
+// scalar column, one level down where that guard cannot see.
+func elemShape(typ string, want int, got []byte) error {
+	return fmt.Errorf("%w: a %s array element arrived as %d bytes, want %d", ErrShape, typ, len(got), want)
 }
 
 // DecimalArray decodes a numeric[]. Element decoding is fallible — a numeric
@@ -202,7 +214,12 @@ func EncodeArray[T any](vs []T, elemOID uint32, buf []byte, enc func(T, []byte) 
 
 // Int8Array decodes an int8[] column.
 func Int8Array(b []byte) ([]int64, error) {
-	return Array(b, Int8)
+	return ArrayErr(b, func(e []byte) (int64, error) {
+		if len(e) != 8 {
+			return 0, elemShape("int8", 8, e)
+		}
+		return Int8(e), nil
+	})
 }
 
 // Int4Array decodes an int4[] column.
@@ -213,7 +230,12 @@ func Int8Array(b []byte) ([]int64, error) {
 // for. The first adopter to need this had `ssh_ports integer[]`, and storm's
 // only answer was to propose dropping the column.
 func Int4Array(b []byte) ([]int32, error) {
-	return Array(b, Int4)
+	return ArrayErr(b, func(e []byte) (int32, error) {
+		if len(e) != 4 {
+			return 0, elemShape("int4", 4, e)
+		}
+		return Int4(e), nil
+	})
 }
 
 // List is v as an array parameter: an empty slice where v is nil. A variadic
