@@ -41,6 +41,12 @@ func (g *gen) writes() {
 	}
 	g.p("}")
 	g.p("")
+	g.p("// Hooks are this collection's lifecycle callbacks. Unset, each costs one")
+	g.p("// nil check; set them at program start. hooks.Lifecycle says which calls")
+	g.p("// run which hook. Every read here runs AfterFind per row as it arrives,")
+	g.p("// with the result still open.")
+	g.p("var Hooks hooks.Lifecycle[Ins, Mut, Row]")
+	g.p("")
 	g.insertTables()
 	g.pipeTables()
 	g.insertFns(fs)
@@ -336,6 +342,17 @@ func (n Ins) Assigned() uint64 { return n.set }
 // land in the returned Row. A duplicate key or unique field is
 // runtime.ErrUniqueViolation.
 func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, n); err != nil {
+		return Row{}, err
+	}
+	r, err := n.insert(ctx, ex)
+	if err == nil {
+		err = hooks.Apply(ctx, ex, Hooks.AfterCreate, &r)
+	}
+	return r, err
+}
+
+func (n *Ins) insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	if err := n.key(); err != nil {
 		return Row{}, err
 	}
@@ -538,6 +555,16 @@ func (m *Mut) args(args []any) []any {
 // %s
 // Assigning nothing sends nothing.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeUpdate, m); err != nil {
+		return err
+	}
+	if err := m.update(ctx, ex); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterUpdate, m)
+}
+
+func (m *Mut) update(ctx context.Context, ex runtime.Executor) error {
 	if m.dirty|m.expr == 0 {
 		return nil
 	}
@@ -609,7 +636,8 @@ func (g *gen) deleteFns() {
 			g.p("//")
 			g.p("// The references to it are acted on first, as declared: see cascade.")
 		}
-		g.p("func Delete(ctx context.Context, ex runtime.Executor, %s) error {", sig)
+		g.deleteWrapper("Delete", "deleteKey", sig, call)
+		g.p("func deleteKey(ctx context.Context, ex runtime.Executor, %s) error {", sig)
 		g.p("\treturn exactlyOne(%s)", g.removeCall("deleteOne", call))
 		g.p("}")
 	} else {
@@ -627,21 +655,26 @@ func (g *gen) deleteFns() {
 // and keeps its key; every read generated in this package stops returning
 // it. A row that was already deleted is runtime.ErrNoRow, not success — the
 // same answer a hard delete gives for a row that is not there.
-func Delete(ctx context.Context, ex runtime.Executor, %s) error {
+%s
+
+func deleteKey(ctx context.Context, ex runtime.Executor, %s) error {
 	return exactlyOne(ex.Exec(ctx, softDeleteOne, []any{%s}))
 }
 
 // HardDelete removes the document for real, deleted or not. It is the only
 // function in this package that destroys data, which is why it is not
 // spelled Delete. The references to it are acted on as declared.
-func HardDelete(ctx context.Context, ex runtime.Executor, %s) error {
+%s
+
+func hardDeleteKey(ctx context.Context, ex runtime.Executor, %s) error {
 	return exactlyOne(%s)
 }
 
 // Restore clears the mark. A row that was not deleted is runtime.ErrNoRow.
 func Restore(ctx context.Context, ex runtime.Executor, %s) error {
 	return exactlyOne(ex.Exec(ctx, restoreOne, []any{%s}))
-}`, sig, call, sig, g.removeCall("hardDeleteOne", call), sig, call)
+}`, g.deleteWrapperSrc("Delete", "deleteKey", sig, call), sig, call,
+			g.deleteWrapperSrc("HardDelete", "hardDeleteKey", sig, call), sig, g.removeCall("hardDeleteOne", call), sig, call)
 	}
 	g.p(`
 func exactlyOne(n int64, err error) error {
@@ -787,4 +820,32 @@ func (g *gen) decodeField(j int, f string, k kind, nullable bool, what string) {
 	}
 	g.p("\t\treturn errors.Join(errors.New(%q), err)", "storm: "+what)
 	g.p("\t}")
+}
+
+// deleteWrapper emits Delete (or HardDelete) as the lifecycle hooks around
+// the unexported function that sends the command. The hooks get a Row
+// holding only the key, since a delete by key never reads the document.
+func (g *gen) deleteWrapper(name, inner, sig, call string) {
+	g.p("%s", g.deleteWrapperSrc(name, inner, sig, call))
+	g.p("")
+}
+
+func (g *gen) deleteWrapperSrc(name, inner, sig, call string) string {
+	var key []string
+	for _, k := range g.keys {
+		key = append(key, g.field(k)+": "+g.wrap(k, lowerFirst(g.field(k))))
+	}
+	return "func " + name + "(ctx context.Context, ex runtime.Executor, " + sig + ") error {\n" +
+		"\tif Hooks.BeforeDelete == nil && Hooks.AfterDelete == nil {\n" +
+		"\t\treturn " + inner + "(ctx, ex, " + call + ")\n" +
+		"\t}\n" +
+		"\tkey := Row{" + strings.Join(key, ", ") + "}\n" +
+		"\tif err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &key); err != nil {\n" +
+		"\t\treturn err\n" +
+		"\t}\n" +
+		"\tif err := " + inner + "(ctx, ex, " + call + "); err != nil {\n" +
+		"\t\treturn err\n" +
+		"\t}\n" +
+		"\treturn hooks.Apply(ctx, ex, Hooks.AfterDelete, &key)\n" +
+		"}"
 }

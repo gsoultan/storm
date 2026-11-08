@@ -114,6 +114,18 @@ pooling it. A pooled binder would otherwise pin the slice behind an `In(...)`
 and the bytes behind every bound string for as long as the pool holds it,
 which is forever.
 
+## Hooks
+
+**`Hooks`** is a package variable rather than a method set on the model,
+because the model struct is not what the generated code holds: it holds `Ins`,
+`Mut` and `Row`, and a hook typed on those can call the setters. Each hooked
+terminal (`Ins.Insert`, `Insert`, `Mut.Update`, `Delete`, `AllInto`) is a few
+lines that check the hook and call the unexported function the terminal used
+to be. Hooks are called through `hooks.Apply`, which hands the hook a copy
+rather than the caller's pointer: a pointer passed to a function value
+escapes, and the caller's `Ins` or `One`'s one-row array would move to the
+heap on every call, hook set or not.
+
 ## Writes
 
 **`Ins` and masks.** A column left unset is absent from the statement and the

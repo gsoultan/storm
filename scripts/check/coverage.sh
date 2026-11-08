@@ -31,6 +31,10 @@ declare -a FLOORS=(
   # interface and the tests hold a map — and a mistake here is a cached answer
   # handed to the wrong caller, or to the right one after an invalidation.
   "github.com/gsoultan/storm/runtime/qcache 95"
+  # Statement and lifecycle hooks. No server needed: the port is faked. A
+  # mistake here is an After that never fires, fires twice, or a value-shaped
+  # result that stops being one behind the decorator.
+  "github.com/gsoultan/storm/runtime/hooks 95"
   # The Redis client: a wire protocol, like mydrv. The offline half drives a
   # fake server through every malformed reply; STORM_REDIS_URL adds the live
   # half, which CI's test job has.

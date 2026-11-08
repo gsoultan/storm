@@ -14,6 +14,24 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Hooks: statement callbacks and lifecycle hooks
+
+`runtime/hooks` (experimental) adds two kinds of callback. `hooks.Wrap`,
+`WrapDB` and `WrapTx` decorate an Executor and call `Before` and `After`
+around every statement it sends, for logging, tracing and metrics; `After`
+gets the duration, the rows read or affected and the error, and `Before` can
+refuse a statement. Every generated table package with a primary key, SQL and
+MongoDB alike, now declares `var Hooks hooks.Lifecycle[Ins, Mut, Row]`, whose
+`BeforeCreate`, `AfterCreate`, `BeforeUpdate`, `AfterUpdate`, `BeforeDelete`,
+`AfterDelete` and `AfterFind` run around `Insert`, `Update`, `Delete` and the
+full-row reads, with the caller's Executor so a hook writes in the caller's
+transaction. See docs/API.md § 8d.
+
+What it cost: about 70 generated lines per SQL table (3% of a typical
+package) and 46 per MongoDB collection. An unset hook is a nil
+check: `bench/ALLOCS` is unchanged, and against a fake driver `Delete` is
+about 2 ns slower (33 → 35 ns, benchstat n=12) and `Update` is unchanged.
+
 ### Generated table packages are 7% smaller again
 
 The predicate builder's per-column code moved into small runtime helpers. The

@@ -1416,6 +1416,100 @@ The child read runs on the parent's own `Bound`, so it reads the copy that is
 there, and making sure it IS there is yours (`storm verify` against each
 shard).
 
+## 8d. Hooks — statement callbacks and lifecycle hooks
+
+*New in this release, experimental* ([STABILITY.md](STABILITY.md)). Two kinds,
+both in `runtime/hooks`, both free when unused.
+
+### Statement hooks: every statement, one place
+
+`hooks.Wrap` decorates an `Executor` the way `CountingExecutor` and `qcache`
+do. `Before` runs before each statement is sent and `After` once it has
+finished, with the kind, the SQL (or the table of a bulk load, or the ops of a
+batch), the duration, the rows read or affected, and the error. It is the
+seam for logging, tracing and metrics:
+
+```go
+db := hooks.WrapDB(pgxdrv.Pool{P: pool}, hooks.Hooks{
+    Before: func(ctx context.Context, s *hooks.Statement) (context.Context, error) {
+        ctx, _ = tracer.Start(ctx, "storm."+s.Kind.String())
+        return ctx, nil
+    },
+    After: func(ctx context.Context, s *hooks.Statement) {
+        span := trace.SpanFromContext(ctx)
+        if s.Err != nil {
+            span.RecordError(s.Err)
+        }
+        span.End()
+        slog.DebugContext(ctx, "sql", "kind", s.Kind, "sql", s.SQL, "rows", s.Rows, "took", s.Duration)
+    },
+})
+err := storm.InTx(ctx, db, func(ex storm.Executor) error { ... }) // seen too
+```
+
+- The context `Before` returns is the one the driver runs with, so a span
+  started there covers the round trip.
+- For a query, `After` runs when the result is **closed**, so `Duration`
+  includes reading the rows and `Rows` counts them.
+- An error from `Before` sends nothing and is returned as it is: a guard,
+  such as refusing writes on a replica.
+- The wrapper keeps its argument's shape. A `DB` stays a `DB` (its
+  transactions are wrapped too), a `Tx` stays a `Tx`, and a database/sql
+  result stays value-shaped.
+- `Args` are the bound values, which can be a password or a token. Keep them
+  at debug level, or leave them out.
+
+An unwrapped `Executor` pays nothing. A wrapped one allocates one `Statement`
+per statement.
+
+### Lifecycle hooks: per table, around the generated terminals
+
+Every generated table package with a primary key declares
+`var Hooks hooks.Lifecycle[Ins, Mut, Row]`. Set its fields at program start:
+
+```go
+func init() {
+    article.Hooks.BeforeCreate = func(ctx context.Context, ex storm.Executor, n *article.Ins) error {
+        n.SetAuthorID(authorFrom(ctx))
+        return nil
+    }
+    article.Hooks.AfterUpdate = func(ctx context.Context, ex storm.Executor, m *article.Mut) error {
+        return audit.Record(ctx, ex, "articles", m.Row().ID) // same transaction as the update
+    }
+    article.Hooks.AfterFind = func(ctx context.Context, ex storm.Executor, r *article.Row) error {
+        r.Body = sanitize(r.Body)
+        return nil
+    }
+}
+```
+
+| Hook | Runs in | Gets |
+|---|---|---|
+| `BeforeCreate`, `AfterCreate` | `Ins.Insert`, `Insert` | `*Ins` before (Insert's has every column assigned, and what the hook sets is copied back into your `Row`), `*Row` after |
+| `BeforeUpdate`, `AfterUpdate` | `Mut.Update` | `*Mut` |
+| `BeforeDelete`, `AfterDelete` | `Delete`, and `HardDelete` on a soft-delete table | a `*Row` holding only the key |
+| `AfterFind` | `All`, `AllInto`, `List`, `One`, `Each`, `Rows` | `*Row`, which it may change |
+
+Every hook gets the `Executor` the call was given, so a hook that writes does
+so in the caller's transaction. An error from a `Before` hook stops the write
+before anything is sent. An error from an `After` hook is returned after the
+statement ran: inside `storm.InTx` that rolls the write back, outside one the
+write has already happened.
+
+`All` and its relatives run `AfterFind` once the result is closed, so the hook
+may send statements. `Each` and `Rows` run it per row with the result still
+open, so on a transaction it must not use `ex` — the same rule as `Each`'s own
+callback. MongoDB packages run it per row on every read.
+
+Batches, bulk loads, set-based writes (`UpdateAll`, `DeleteAll`,
+`DeleteBatch`), upserts queued as batch ops, projections, plans and aggregates
+do not run lifecycle hooks: they move many rows in one statement and never
+hold one `Row` per row to hand over. Statement hooks see all of them.
+
+Unset, a lifecycle hook costs a nil check and no allocation: the allocation
+budgets in `bench/ALLOCS` did not move, and against a fake driver `Delete`
+is about 2 ns slower and `Update` unchanged.
+
 ## 9. Unit of work — explicit, batched, FK-ordered
 
 Only for graph writes. Everything above works without it.

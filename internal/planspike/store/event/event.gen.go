@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/runtime/hooks"
 )
 
 var (
@@ -1125,6 +1126,18 @@ func (q Query) All(ctx context.Context, ex runtime.Executor, dst []Row) ([]Row, 
 
 // AllInto lets the caller own the string arena.
 func (q Query) AllInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *runtime.Slab) ([]Row, error) {
+	if Hooks.AfterFind == nil {
+		return q.allInto(ctx, ex, dst, sl)
+	}
+	from := len(dst)
+	dst, err := q.allInto(ctx, ex, dst, sl)
+	for i := from; i < len(dst) && err == nil; i++ {
+		err = hooks.Apply(ctx, ex, Hooks.AfterFind, &dst[i])
+	}
+	return dst, err
+}
+
+func (q Query) allInto(ctx context.Context, ex runtime.Executor, dst []Row, sl *runtime.Slab) ([]Row, error) {
 	if err := q.readErr(); err != nil {
 		return dst, err
 	}
@@ -1183,9 +1196,13 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 	var sl runtime.Slab
 	// What All learned about this shape, which Reserve caps at one chunk.
 	sl.Reserve(st.SlabHint())
+	find := Hooks.AfterFind
 	for rows.Next() {
 		var r Row
 		if err := scan(rows.RawValues(), &r, &sl); err != nil {
+			return err
+		}
+		if err := hooks.Apply(ctx, ex, find, &r); err != nil {
 			return err
 		}
 		if err := fn(r); err != nil {
@@ -1400,6 +1417,11 @@ const updReturning = " RETURNING \"id\", \"created_at\", \"updated_at\", \"on\",
 
 // Masks reports how many distinct UPDATE shapes have compiled.
 func Masks() int { return updCache.Masks() }
+
+// Hooks are this table's lifecycle callbacks. Unset, each costs one nil
+// check; set them at program start. hooks.Lifecycle says which calls run
+// which hook.
+var Hooks hooks.Lifecycle[Ins, Mut, Row]
 
 // Mut is a row staged for update: the values, plus which of them were
 // actually assigned. An UPDATE writes the assigned ones and no others,
@@ -1750,6 +1772,17 @@ func stmtForInsert(mask uint64, conflict uint8) *runtime.Stmt {
 // database-computed values land in the returned Row rather than needing a
 // second SELECT that would race every other writer.
 func (n *Ins) Insert(ctx context.Context, ex runtime.Executor) (Row, error) {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, n); err != nil {
+		return Row{}, err
+	}
+	r, err := n.insert(ctx, ex)
+	if err == nil {
+		err = hooks.Apply(ctx, ex, Hooks.AfterCreate, &r)
+	}
+	return r, err
+}
+
+func (n *Ins) insert(ctx context.Context, ex runtime.Executor) (Row, error) {
 	if n.set == 0 {
 		return Row{}, runtime.ErrNothingAssigned
 	}
@@ -1790,6 +1823,20 @@ func Inserts() int { return insCache.Masks() }
 // Insert writes every insertable column, zero values included, and reads
 // the row back so database defaults land in r.
 func Insert(ctx context.Context, ex runtime.Executor, r *Row) error {
+	if Hooks.BeforeCreate != nil {
+		n := Ins{row: *r, set: 0x3ff}
+		if err := hooks.Apply(ctx, ex, Hooks.BeforeCreate, &n); err != nil {
+			return err
+		}
+		*r = n.row
+	}
+	if err := insertRow(ctx, ex, r); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterCreate, r)
+}
+
+func insertRow(ctx context.Context, ex runtime.Executor, r *Row) error {
 	args := make([]any, 0, 10)
 	args = append(args, r.ID)
 	args = append(args, r.CreatedAt)
@@ -2001,6 +2048,16 @@ func stmtForKey(k runtime.MaskKey, ret bool) *runtime.Stmt {
 // Assigning nothing issues no statement and is not an error.
 // A value the database computes is read back, so m.Row() is current.
 func (m *Mut) Update(ctx context.Context, ex runtime.Executor) error {
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeUpdate, m); err != nil {
+		return err
+	}
+	if err := m.update(ctx, ex); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterUpdate, m)
+}
+
+func (m *Mut) update(ctx context.Context, ex runtime.Executor) error {
 	if m.dirty == 0 && m.expr == 0 {
 		return nil
 	}
@@ -2062,6 +2119,20 @@ var deleteSQL = runtime.SpliceSections(deletePrefix, []runtime.Section{
 // runtime.ErrNoRow, not success: a caller deleting something that is not
 // there usually has a bug, and swallowing it hides the bug.
 func Delete(ctx context.Context, ex runtime.Executor, iD [16]byte) error {
+	if Hooks.BeforeDelete == nil && Hooks.AfterDelete == nil {
+		return deleteKey(ctx, ex, iD)
+	}
+	key := Row{ID: iD}
+	if err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &key); err != nil {
+		return err
+	}
+	if err := deleteKey(ctx, ex, iD); err != nil {
+		return err
+	}
+	return hooks.Apply(ctx, ex, Hooks.AfterDelete, &key)
+}
+
+func deleteKey(ctx context.Context, ex runtime.Executor, iD [16]byte) error {
 	n, err := ex.Exec(ctx, deleteSQL, []any{iD})
 	if err != nil {
 		return err

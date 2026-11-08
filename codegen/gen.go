@@ -346,6 +346,9 @@ func (g *gen) header() {
 	if g.t != nil && g.t.Sharded() {
 		g.p("\t%q", g.o.Import+"/runtime/shard")
 	}
+	if g.hasHooks() {
+		g.p("\t%q", g.o.Import+"/runtime/hooks")
+	}
 	// The decoder family, when it is not `runtime` itself. Emitting the calls
 	// without the import produced a package that could not compile at all —
 	// and nothing caught it, because the dialect tests assert the emitted TEXT
@@ -957,7 +960,12 @@ func (g *gen) terminals() {
 	g.p("}")
 	g.p("")
 	g.p("// AllInto lets the caller own the string arena.")
-	g.p("func (q Query) AllInto(ctx context.Context, ex %s, dst []Row, sl *runtime.Slab) ([]Row, error) {", g.execType())
+	allInto := "AllInto"
+	if g.hasHooks() {
+		g.afterFindAll()
+		allInto = "allInto"
+	}
+	g.p("func (q Query) %s(ctx context.Context, ex %s, dst []Row, sl *runtime.Slab) ([]Row, error) {", allInto, g.execType())
 	g.p("\tif err := q.readErr(); err != nil {")
 	g.p("\t\treturn dst, err")
 	g.p("\t}")
@@ -1118,11 +1126,19 @@ func (g *gen) eachTerminal() {
 	g.p("\tvar sl runtime.Slab")
 	g.p("\t// What All learned about this shape, which Reserve caps at one chunk.")
 	g.p("\tsl.Reserve(st.SlabHint())")
+	if g.hasHooks() {
+		g.p("\tfind := Hooks.AfterFind")
+	}
 	g.p("\tfor rows.Next() {")
 	g.p("\t\tvar r Row")
 	g.p("\t\tif err := scan(rows.%s(), &r, &sl); err != nil {", g.dec.rowsAccessor())
 	g.p("\t\t\treturn err")
 	g.p("\t\t}")
+	if g.hasHooks() {
+		g.p("\t\tif err := hooks.Apply(ctx, ex, find, &r); err != nil {")
+		g.p("\t\t\treturn err")
+		g.p("\t\t}")
+	}
 	g.p("\t\tif err := fn(r); err != nil {")
 	g.p("\t\t\treturn err")
 	g.p("\t\t}")

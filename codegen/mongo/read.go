@@ -109,9 +109,13 @@ func (q Query) Each(ctx context.Context, ex runtime.Executor, fn func(Row) error
 		return err
 	}
 	defer rows.Close()
+	find := Hooks.AfterFind
 	for rows.Next() {
 		var r Row
 		if err := scan(rows.RawValues(), &r); err != nil {
+			return err
+		}
+		if err := hooks.Apply(ctx, ex, find, &r); err != nil {
 			return err
 		}
 		if err := fn(r); err != nil {
