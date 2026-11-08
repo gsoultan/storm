@@ -118,3 +118,59 @@ func TestVerifyPendingReplaysAndThenHasNothingToSay(t *testing.T) {
 		t.Errorf("a column with no migration was not reported:\n%s", third.SQL())
 	}
 }
+
+// A down migration on SQL Server: the reverse of the plan, written to a file
+// and replayed after the up, leaves the database where it began — here, with
+// the column the up added gone again.
+func TestReverseUndoesTheUpOnSQLServer(t *testing.T) {
+	dsn := mssqlDSN(t)
+	ctx := context.Background()
+	model, err := storm.Build(&rawUser{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ReplayAndDiff(ctx, dsn, nil, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	initFile := filepath.Join(dir, "0001_init.up.sql")
+	if err := os.WriteFile(initFile, []byte(first.SQL()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	model.Table("raw_users").Columns = append(model.Table("raw_users").Columns,
+		&schema.Column{Name: "nickname", Type: schema.Type{Name: schema.TypeVarchar, Size: 20}})
+	up, err := ReplayAndDiff(ctx, dsn, []string{initFile}, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	down, err := up.Reverse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(down.SQL(), "DROP COLUMN [nickname]") {
+		t.Fatalf("the down does not drop what the up added:\n%s", down.SQL())
+	}
+	upFile := filepath.Join(dir, "0002_nick.up.sql")
+	downFile := filepath.Join(dir, "0002_nick.down.sql")
+	if err := os.WriteFile(upFile, []byte(up.SQL()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(downFile, []byte(down.SQL()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Up then down, replayed on a real server, is the first model again.
+	before, err := storm.Build(&rawUser{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := ReplayAndDiff(ctx, dsn, []string{initFile, upFile, downFile}, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Empty() {
+		t.Fatalf("up then down did not return to the starting schema:\n%s", after.SQL())
+	}
+}

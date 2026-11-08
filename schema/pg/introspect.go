@@ -250,7 +250,7 @@ func loadConstraints(ctx context.Context, c Conn, ns string, s *schema.Schema) e
 		       pg_get_constraintdef(co.oid),
 		       COALESCE(array_agg(a.attname ORDER BY k.ord) FILTER (WHERE a.attname IS NOT NULL), '{}'),
 		       COALESCE(rf.relname, ''),
-		       co.confdeltype, co.confupdtype, co.condeferrable
+		       co.confdeltype, co.confupdtype, co.condeferrable, co.convalidated
 		FROM pg_constraint co
 		JOIN pg_class cl ON cl.oid = co.conrelid
 		JOIN pg_namespace n ON n.oid = cl.relnamespace
@@ -260,7 +260,7 @@ func loadConstraints(ctx context.Context, c Conn, ns string, s *schema.Schema) e
 		WHERE n.nspname = $1 AND cl.relkind IN ('r', 'p')
 		  AND cl.relname NOT LIKE 'storm\_%'
 		GROUP BY cl.relname, co.conname, co.contype, co.oid, rf.relname,
-		         co.confdeltype, co.confupdtype, co.condeferrable
+		         co.confdeltype, co.confupdtype, co.condeferrable, co.convalidated
 		ORDER BY cl.relname, co.conname`, ns)
 	if err != nil {
 		return err
@@ -276,9 +276,9 @@ func loadConstraints(ctx context.Context, c Conn, ns string, s *schema.Schema) e
 		var tbl, name, def, refTbl string
 		var ctype, delAct, updAct string
 		var cols []string
-		var deferrable bool
+		var deferrable, validated bool
 		if err := rows.Scan(&tbl, &name, &ctype, &def, &cols, &refTbl,
-			&delAct, &updAct, &deferrable); err != nil {
+			&delAct, &updAct, &deferrable, &validated); err != nil {
 			return err
 		}
 		t := s.Table(tbl)
@@ -291,12 +291,17 @@ func loadConstraints(ctx context.Context, c Conn, ns string, s *schema.Schema) e
 		case "u":
 			t.Uniques = append(t.Uniques, &schema.Unique{Name: name, Columns: cols})
 		case "c":
-			t.Checks = append(t.Checks, &schema.Check{Name: name, Expr: stripCheck(def)})
+			// pg_get_constraintdef ends an unvalidated one with NOT VALID, which
+			// is a state of the constraint and not part of its expression: left
+			// in, the check compares unequal to the model's and the plan drops
+			// and re-adds it under a full lock instead of validating it.
+			t.Checks = append(t.Checks, &schema.Check{Name: name,
+				Expr: stripCheck(strings.TrimSuffix(def, " NOT VALID")), NotValid: !validated})
 		case "f":
 			fk := &schema.ForeignKey{
 				Name: name, Columns: cols, RefTable: refTbl,
 				OnDelete: fkAction(delAct), OnUpdate: fkAction(updAct),
-				Deferrable: deferrable,
+				Deferrable: deferrable, NotValid: !validated,
 			}
 			t.ForeignKeys = append(t.ForeignKeys, fk)
 			fks = append(fks, pendingFK{t, fk, def})
@@ -332,7 +337,8 @@ func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 	// Indexes backing a primary key or a unique/exclusion constraint are not
 	// separate objects; skip them so the IR does not double-count.
 	rows, err := c.Query(ctx, `
-		SELECT cl.relname, ic.relname, pg_get_indexdef(i.indexrelid), i.indisunique, am.amname
+		SELECT cl.relname, ic.relname, pg_get_indexdef(i.indexrelid), i.indisunique, am.amname,
+		       NOT i.indisvalid
 		FROM pg_index i
 		JOIN pg_class cl ON cl.oid = i.indrelid
 		JOIN pg_class ic ON ic.oid = i.indexrelid
@@ -348,8 +354,8 @@ func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 	defer rows.Close()
 	for rows.Next() {
 		var tbl, name, def, method string
-		var unique bool
-		if err := rows.Scan(&tbl, &name, &def, &unique, &method); err != nil {
+		var unique, invalid bool
+		if err := rows.Scan(&tbl, &name, &def, &unique, &method, &invalid); err != nil {
 			return err
 		}
 		t := s.Table(tbl)
@@ -360,6 +366,7 @@ func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 		t.Indexes = append(t.Indexes, &schema.Index{
 			Name: name, Columns: d.Columns, Unique: unique, Method: method, Where: d.Where,
 			Include: d.Include, NullsNotDistinct: d.NullsNotDistinct, With: d.With,
+			Invalid: invalid,
 		})
 	}
 	return rows.Err()

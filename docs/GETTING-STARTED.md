@@ -197,9 +197,18 @@ ALTER TABLE "notes" ADD CONSTRAINT "fk_notes_user_id" FOREIGN KEY ("user_id") RE
 ```
 
 Apply the file with the migration tool you already use (golang-migrate, goose,
-Atlas, or `psql -f`). storm writes only `.up.sql` files, with no down
-migrations. Files are numbered, and a change that cannot run inside a
-transaction, such as `CREATE INDEX CONCURRENTLY`, gets a file of its own.
+Atlas, or `psql -f`). storm writes `.up.sql` files, and with `-down` a
+`.down.sql` beside each that undoes it. Files are numbered, and a change that
+cannot run inside a transaction, such as `CREATE INDEX CONCURRENTLY`, gets a
+file of its own.
+
+`storm diff` also writes `storm.sum`, a hash of every migration. Commit it.
+`storm verify -sum` then fails in CI when a migration that has already run
+somewhere is edited, and when two branches each add a migration with the same
+number; `storm sum` records an edit you made on purpose. When teammates'
+migrations reach your branch before your database has them, `storm diff
+-replay` builds the next migration on the directory itself rather than on your
+database, so it does not repeat theirs.
 
 `storm diff` refuses to write a step that can lose data until you have read it.
 Here is what happens when a `bool` field is added to a table that already has

@@ -442,6 +442,12 @@ type Index struct {
 	// (MySQL 8.0+), which is how an index is dropped safely: hide it, watch
 	// the plans, then drop it. PostgreSQL has no equivalent and refuses it.
 	Invisible bool
+
+	// Invalid is read from a database, never declared: the index exists but
+	// the server will not use it, which is what a failed CREATE INDEX
+	// CONCURRENTLY leaves behind. Its definition can match the model exactly,
+	// so a plan rebuilds it rather than reporting it as matching.
+	Invalid bool
 }
 
 // StorageParam is one index storage parameter, e.g. fillfactor = 70.
@@ -493,6 +499,11 @@ type ForeignKey struct {
 	OnUpdate   Action
 	Deferrable bool
 
+	// NotValid is read from a database, never declared: the constraint was
+	// added NOT VALID and has not been validated since, so rows older than it
+	// may break it. A plan validates it rather than reporting it as matching.
+	NotValid bool
+
 	// Document is how a document back end stores this reference — "reference"
 	// — or "" where the model said nothing (ADR-0004). It is set for a key
 	// declared with t.ForeignKey(...).OnDocument; a relation field's form is
@@ -516,6 +527,10 @@ type Check struct {
 	Arc []string
 	// ArcOptional makes the constraint at-most-one rather than exactly-one.
 	ArcOptional bool
+
+	// NotValid is read from a database, never declared: the check was added
+	// NOT VALID and rows older than it may break it. See ForeignKey.NotValid.
+	NotValid bool
 }
 
 // Exclude is an exclusion constraint — the correct answer to booking and

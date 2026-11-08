@@ -14,6 +14,52 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Migrations: integrity, rollbacks, a reproducible base, online constraints
+
+Four additions to `storm diff` and one fix to what drift can see. Nothing
+changes for a project that passes none of the new flags, except that `storm
+diff` now writes `storm.sum` beside the files.
+
+- **`storm.sum`.** `storm diff` records a hash of every migration file and one
+  over all of them, the way Atlas's `atlas.sum` does. `storm verify -sum`
+  (no database, no model) fails when a summed migration was edited, added or
+  removed, and when two up migrations share a version — what two branches that
+  each ran `storm diff` leave behind, and which file names alone do not
+  conflict on. Both branches rewrite the sum's first line, so their merge
+  conflicts in git. `storm diff` and `storm verify -pending` refuse a directory
+  that disagrees with its sum; `storm sum` records a deliberate edit. A
+  directory without one is not an error. The checker is
+  `github.com/gsoultan/storm/migrate/sum`, stdlib-only, for a runner that wants
+  to check at startup.
+- **`storm diff -down`** writes a `.down.sql` beside every `.up.sql`, under the
+  same version, for golang-migrate and every runner with its convention. The
+  down is the differ run backwards (`migrate.Plan.Reverse`), not an inversion
+  of each statement, so it is marked as carefully as an up: dropping a table
+  the up created is `storm:destructive`. A concurrent index's down is
+  concurrent and alone in its file too. PostgreSQL and SQL Server, tested by
+  applying up then down on a live server and diffing empty.
+- **`storm diff -replay`** builds the next migration on what the migrations
+  directory produces, replayed into a scratch namespace, instead of on the
+  live schema at `-dsn` — Atlas's dev database, Prisma's shadow database. A
+  teammate's migration you have not applied, or a table made by hand while
+  experimenting, no longer leaks into your file. PostgreSQL and SQL Server.
+- **`storm diff -dry-run`** prints the files, up and down, and writes nothing.
+- **Online constraints.** Under `-concurrently` (and `AutoOptions.Concurrently`)
+  a foreign key or check added to a table that already exists is written
+  `ADD ... NOT VALID`, and validated by `VALIDATE CONSTRAINT` in a file of its
+  own (`_validate`) — the scan blocks no reader or writer there, where inside
+  the ADD's transaction it would run under the ADD's lock. `migrate.Auto` runs
+  each validation in a transaction of its own after the main one.
+- **Fix: drift could not see a broken index or an unvalidated constraint.**
+  A failed `CREATE INDEX CONCURRENTLY` leaves an index PostgreSQL marks
+  invalid and never uses, and its definition matched the model, so `storm
+  verify` passed over it. A foreign key added `NOT VALID` looked like the
+  model's, and a check added that way was dropped and re-added under a full
+  lock. Introspection now reads `indisvalid` and `convalidated`
+  (`schema.Index.Invalid`, `ForeignKey.NotValid`, `Check.NotValid`): an
+  invalid index is rebuilt, concurrently under `-concurrently`, and an
+  unvalidated constraint the model declares is validated.
+
 ### Hooks: statement callbacks and lifecycle hooks
 
 `runtime/hooks` (experimental) adds two kinds of callback. `hooks.Wrap`,

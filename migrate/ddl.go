@@ -123,6 +123,19 @@ type ddl struct {
 	// deployment rather than during review.
 	CreateIndexConcurrently func(*schema.Table, *schema.Index) string
 	DropIndexConcurrently   func(string) string
+
+	// ValidateConstraint checks the existing rows against a constraint that
+	// was added NOT VALID, and NotValid renders a constraint's ADD in that
+	// form. Both are nil where the back end has no such split, and then an
+	// unvalidated constraint is neither read back nor written.
+	//
+	// The split is how a constraint reaches a table with traffic: ADD ... NOT
+	// VALID holds its lock only as long as it takes to write the catalog, and
+	// VALIDATE scans the rows under SHARE UPDATE EXCLUSIVE, which blocks no
+	// reader and no writer. Added in one step, the scan runs under the ADD's
+	// own lock — for a foreign key, one that blocks every write to the table.
+	ValidateConstraint func(t *schema.Table, name string) string
+	NotValid           func(add string) string
 }
 
 // ddlFor returns the renderers for a dialect. enums is the TARGET schema's
@@ -217,6 +230,13 @@ func postgresDDL() ddl {
 
 		CreateIndexConcurrently: pgddl.CreateIndexConcurrently,
 		DropIndexConcurrently:   pgddl.DropIndexConcurrently,
+
+		ValidateConstraint: func(t *schema.Table, name string) string {
+			return "ALTER TABLE " + q(t.Name) + " VALIDATE CONSTRAINT " + q(name) + ";"
+		},
+		NotValid: func(add string) string {
+			return strings.TrimSuffix(strings.TrimRight(add, "\n"), ";") + " NOT VALID;"
+		},
 	}
 
 	d.Enums = func(p *Plan, from, to *schema.Schema) error {

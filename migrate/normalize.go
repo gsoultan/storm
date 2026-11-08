@@ -128,7 +128,9 @@ type Options struct {
 	// Concurrently builds and drops indexes on tables that already exist
 	// with CREATE/DROP INDEX CONCURRENTLY, which does not block the table's
 	// writers. Each such change is marked NoTransaction, because that form
-	// cannot run inside a transaction block.
+	// cannot run inside a transaction block. A foreign key or check added to
+	// such a table is added NOT VALID and validated by a later step marked
+	// Validates; see Plan.Concurrently.
 	Concurrently bool
 
 	// DeclaredOnly leaves alone every table the model does not declare: it is
