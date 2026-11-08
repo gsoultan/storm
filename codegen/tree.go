@@ -156,58 +156,6 @@ func slotsFor(cols []colInfo) tableSlots {
 	return ts
 }
 
-// listOpTest and listOpCases name every operator whose argument is a list, in
-// ops order. Spelling them out at each site is how In and NotIn diverged from
-// the array forms the first time.
-func listOpTest(v string) string {
-	var b strings.Builder
-	for _, op := range ops {
-		if !op.list() {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString(" || ")
-		}
-		b.WriteString(v + " == op" + op.name)
-	}
-	return b.String()
-}
-
-// arglessOpTest and arglessOpCases name every operator that binds nothing.
-func arglessOpTest(v string) string {
-	var b strings.Builder
-	for _, op := range ops {
-		if op.args != 0 {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString(" || ")
-		}
-		b.WriteString(v + " == op" + op.name)
-	}
-	return b.String()
-}
-
-func arglessOpCases() string {
-	var names []string
-	for _, op := range ops {
-		if op.args == 0 {
-			names = append(names, "op"+op.name)
-		}
-	}
-	return strings.Join(names, ", ")
-}
-
-func listOpCases() string {
-	var names []string
-	for _, op := range ops {
-		if op.list() {
-			names = append(names, "op"+op.name)
-		}
-	}
-	return strings.Join(names, ", ")
-}
-
 // anyPredDecl is a list slot's field in a PRED, which holds exactly one
 // predicate and therefore exactly one list. Only Query and the binder are
 // arenas — a Pred that grew to [3] would pay for the arena on every predicate
@@ -397,30 +345,19 @@ func (g *gen) treeQuery() {
 		g.p("\t%s uint8", strings.Join(cs, ", "))
 	}
 	g.p("")
-	g.p("\t// Order terms live in their own buffer and are appended to the stream")
-	g.p("\t// after the predicate tree. Sharing one buffer would let a Where after")
-	g.p("\t// an Order interleave the two, and the stream's order is its meaning.")
+	g.p("\t// Order terms, appended to the stream after the predicate tree.")
 	g.p("\totoks [%d]runtime.Tok", g.budget(maxOrder))
 	g.p("\tno    uint8")
 	g.p("")
-	g.p("\t// lock is the row-lock mode: 0 none, then the dialect's mode order.")
-	g.p("\t// It is part of the STATEMENT, so it selects the cache as well as")
-	g.p("\t// the suffix.")
-	g.p("\tlock uint8")
+	g.p("\tlock uint8 // row-lock mode, 0 none; selects the cache and the suffix")
 	g.p("")
 	g.p("\tlimit  int64")
 	g.p("\toffset int64")
-	g.p("\t// over records that the query outgrew its fixed buffers. Terminals")
-	g.p("\t// return it as an error rather than silently dropping a predicate.")
-	g.p("\tover bool")
 	g.p("")
-	g.p("\t// mixed records an After() over an ordering that is not all in one")
-	g.p("\t// direction. No single row comparison expresses that.")
-	g.p("\tmixed bool")
-	g.p("")
-	g.p("\t// noOrder suppresses the default ordering. See Unordered.")
-	g.p("\tnoOrder bool")
-	g.p("\tbadAfter bool")
+	g.p("\t// Errors the terminals return: outgrown buffers, an After over a mixed")
+	g.p("\t// ordering, an After with no ordering at all.")
+	g.p("\tover, mixed, badAfter bool")
+	g.p("\tnoOrder              bool // see Unordered")
 	if g.widens() {
 		g.p("")
 		g.p("\t// deleted reads the marked rows as well. See WithDeleted.")
@@ -441,41 +378,24 @@ func (g *gen) treeQuery() {
 	g.p("// active ordering. An ordering that mixes ascending and descending terms")
 	g.p("// is a query error.")
 	g.p("func (q Query) After(r Row) Query {")
-	g.p("\tterms := q.otoks[:q.no]")
-	g.p("\tif q.no == 0 {")
-	g.p("\t\tif q.noOrder {")
-	g.p("\t\t\t// A keyset cursor without an order is a position in nothing.")
-	g.p("\t\t\tq.badAfter = true")
-	g.p("\t\t\treturn q")
-	g.p("\t\t}")
-	g.p("\t\tterms = defaultOrder[:]")
-	g.p("\t}")
+	g.p("\tterms, cmp, bad := runtime.Keyset(q.otoks[:q.no], defaultOrder[:], q.noOrder)")
+	g.p("\tq.badAfter = q.badAfter || bad == runtime.KeysetUnordered")
+	g.p("\tq.mixed = q.mixed || bad == runtime.KeysetMixed")
 	g.p("\tif len(terms) == 0 {")
 	g.p("\t\treturn q")
-	g.p("\t}")
-	g.p("\tdesc := terms[0].Op() == runtime.Desc || terms[0].Op() == runtime.DescNullsLast")
-	g.p("\tfor _, t := range terms {")
-	g.p("\t\td := t.Op() == runtime.Desc || t.Op() == runtime.DescNullsLast")
-	g.p("\t\tif d != desc {")
-	g.p("\t\t\tq.mixed = true")
-	g.p("\t\t\treturn q")
-	g.p("\t\t}")
 	g.p("\t}")
 	g.p("\tfor _, t := range terms {")
 	g.p("\t\tq.push(runtime.MakeCol(t.Col()))")
 	g.p("\t\tq.cursor(t.Col(), r)")
 	g.p("\t}")
-	g.p("\top := runtime.CmpGt")
-	g.p("\tif desc {")
-	g.p("\t\top = runtime.CmpLt")
-	g.p("\t}")
-	g.p("\tq.push(runtime.MakeRowCmp(op, uint32(len(terms))))")
+	g.p("\tq.push(runtime.MakeRowCmp(cmp, uint32(len(terms))))")
 	g.p("\tq.top++")
 	g.p("\treturn q")
 	g.p("}")
 	g.p("")
 	g.p("// cursor stores the bound value for one column of a keyset comparison.")
 	g.p("func (q *Query) cursor(col uint32, r Row) {")
+	g.p("\tok := true")
 	g.p("\tswitch col {")
 	for i, c := range g.cols {
 		arena, cur := arenaFor(c)
@@ -504,14 +424,10 @@ func (g *gen) treeQuery() {
 			val = "r." + field + ".V"
 		}
 		g.p("\tcase %d:", i)
-		g.p("\t\tif int(q.%s) >= len(q.%s) {", cur, arena)
-		g.p("\t\t\tq.over = true")
-		g.p("\t\t\treturn")
-		g.p("\t\t}")
-		g.p("\t\tq.%s[q.%s] = %s", arena, cur, arenaStore(c, val))
-		g.p("\t\tq.%s++", cur)
+		g.p("\t\tok = runtime.Stash(q.%s[:], &q.%s, %s)", arena, cur, arenaStore(c, val))
 	}
 	g.p("\t}")
+	g.p("\tq.over = q.over || !ok")
 	g.p("}")
 	g.p("")
 	g.p("// Unordered drops the default ordering, for reads nobody pages. An explicit")
@@ -553,10 +469,10 @@ func (g *gen) treeQuery() {
 	g.p("\t\treturn errTooComplex")
 	g.p("\t}")
 	g.p("\tif q.mixed {")
-	g.p("\t\treturn errMixedOrder")
+	g.p("\t\treturn runtime.ErrMixedOrder")
 	g.p("\t}")
 	g.p("\tif q.badAfter {")
-	g.p("\t\treturn errAfterUnordered")
+	g.p("\t\treturn runtime.ErrAfterUnordered")
 	g.p("\t}")
 	g.p("\treturn nil")
 	g.p("}")
@@ -568,15 +484,6 @@ func (g *gen) treeQuery() {
 			"would answer a different question than the one asked")
 		g.p("")
 	}
-	g.p("var errAfterUnordered = errors.New(")
-	g.p("\t%q)", "storm: After() on an Unordered() query with no explicit Order — "+
-		"a keyset cursor without an ordering is a position in nothing")
-	g.p("")
-	g.p("var errMixedOrder = errors.New(")
-	g.p("\t%q)", "storm: After() needs every ORDER BY term in the same direction; "+
-		"a mixed ordering has no single row comparison, and expanding it into ORs "+
-		"gives up the index walk that makes keyset pagination worth doing")
-	g.p("")
 	g.p("var errCountLocked = errors.New(")
 	g.p("\t%q)", g.lw.LockRefusedCounted())
 	g.p("")
@@ -588,8 +495,7 @@ func (g *gen) treeQuery() {
 		"(scale "+itoaBudget(g.o.Budgets.Scale)+
 		"); split the query, or regenerate with a larger codegen.Budgets{Scale}")
 	g.p("")
-	g.p("// push and leaf mutate through a pointer and are only called on a local, so")
-	g.p("// the public API keeps value semantics.")
+	g.p("// push and leaf mutate a local copy only, so the API keeps value semantics.")
 	g.p("func (q *Query) push(t runtime.Tok) {")
 	g.p("\tif int(q.nt) >= len(q.toks) {")
 	g.p("\t\tq.over = true")
@@ -599,9 +505,7 @@ func (g *gen) treeQuery() {
 	g.p("\tq.nt++")
 	g.p("}")
 	g.p("")
-	g.p("// preds returns the predicate stream with top-level conjuncts ANDed.")
-	g.p("// A count uses this: ordering a scalar is wasted work, and including the")
-	g.p("// terms would compile a second statement per ordering for no difference.")
+	g.p("// preds is the predicate stream with top-level conjuncts ANDed, no order.")
 	g.p("func (q Query) preds(buf *[%d]runtime.Tok) []runtime.Tok {", g.streamBuf())
 	g.p("\tn := copy(buf[:], q.toks[:q.nt])")
 	g.p("\tif q.top > 1 {")
@@ -611,8 +515,7 @@ func (g *gen) treeQuery() {
 	g.p("\treturn buf[:n]")
 	g.p("}")
 	g.p("")
-	g.p("// stream is the predicates followed by the ordering — the whole statement")
-	g.p("// key. Order tokens go last so a splicer can find the boundary by kind.")
+	g.p("// stream is the predicates, then the ordering: the whole statement key.")
 	g.p("func (q Query) stream(buf *[%d]runtime.Tok) []runtime.Tok {", g.streamBuf())
 	g.p("\tn := len(q.preds(buf))")
 	g.p("\tif q.no == 0 {")
@@ -745,19 +648,27 @@ func (g *gen) treePreds() {
 	g.p("")
 
 	// leaf: store the value in its arena, append the token.
-	g.p("// leaf records one predicate: its value goes to the arena for its type,")
-	g.p("// its structure to the token stream.")
+	g.p("// leaf stores one predicate's value in its type's arena and its token.")
 	g.p("func (q *Query) leaf(p Pred) {")
-	// Only the list branches this table's columns can produce. The generic
-	// two-branch switch referenced slots the trimmed Pred no longer carries.
-	// In and NotIn share every branch: both bind ONE list to ONE placeholder,
-	// and only the operator text between them differs.
+	g.p("\tok := true")
+	// IS NULL and IS NOT NULL bind nothing, so they must not consume an arena
+	// slot. The bind loop skips them without advancing its cursor, so a leaf
+	// that DID advance one here desynchronised the two: every later predicate
+	// in the same arena read one slot early. `tenant = ? AND uri IS NOT NULL
+	// AND status = ?` bound the empty string to status and returned nothing —
+	// no error, no warning, just the wrong rows. runtime.ArglessOp names every
+	// argless operator, so a new one cannot bind a value it does not have.
+	g.p("\tswitch {")
+	g.p("\tcase runtime.ArglessOp(p.op):")
+	// Only the list branches this table's columns can produce. In and NotIn
+	// share every branch: both bind ONE list to ONE placeholder, and only the
+	// operator text between them differs.
 	if len(ts.anyList) > 0 {
 		// Dispatch on the COLUMN, not on which Pred field is non-nil. The
 		// value goes to the arena for its type at that arena's cursor, which
 		// is what lets a query carry more than one list predicate — the single
 		// field this replaced made the second one overwrite the first.
-		g.p("\tif %s {", listOpTest("p.op"))
+		g.p("\tcase runtime.ListOp(p.op):")
 		g.p("\t\tswitch p.col {")
 		var ids []int
 		var bodies []string
@@ -766,32 +677,14 @@ func (g *gen) treePreds() {
 			if slot == "" {
 				continue
 			}
-			cur := anyCursor(slot)
-			ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\tif int(q.%s) >= %d {\n\t\t\t\tq.over = true\n\t\t\t\treturn\n\t\t\t}\n\t\t\tq.%s[q.%s] = p.%s\n\t\t\tq.%s++",
-				cur, g.budget(maxAny), slot, cur, slot, cur))
+			ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\tok = runtime.Stash(q.%s[:], &q.%s, p.%s)",
+				slot, anyCursor(slot), slot))
 		}
 		g.emitCases("\t\t", ids, bodies)
 		g.p("\t\t}")
-		g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
-		g.p("\t\treturn")
-		g.p("\t}")
 	}
-	// IS NULL and IS NOT NULL bind nothing, so they must not consume an arena
-	// slot. The bind loop skips them (`case opIsNull, opIsNotNull: continue`)
-	// without advancing its cursor, so a leaf that DID advance one here
-	// desynchronised the two: every later predicate in the same arena read one
-	// slot early. `tenant = ? AND uri IS NOT NULL AND status = ?` bound the
-	// empty string to status and returned nothing — no error, no warning, just
-	// the wrong rows, and only when a null check preceded another predicate of
-	// the same type.
-	//
-	// Every argless operator, from the ops table: naming the two here is how
-	// a third would have bound a value it does not have.
-	g.p("\tif %s {", arglessOpTest("p.op"))
-	g.p("\t\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
-	g.p("\t\treturn")
-	g.p("\t}")
-	g.p("\tswitch p.col {")
+	g.p("\tdefault:")
+	g.p("\t\tswitch p.col {")
 	var ids []int
 	var bodies []string
 	for i, c := range g.cols {
@@ -799,10 +692,10 @@ func (g *gen) treePreds() {
 		if arena == "" {
 			continue // no value arena: this column has no value-taking operator
 		}
-		// Every arena MUST appear here. A missing entry reads as capacity
-		// zero, so the first predicate on that column overflows and the query
-		// fails as "too complex" — which is what an inet column did once, and
-		// a time column did again while this type was being added.
+		// Every arena MUST appear in arenaTable. A missing entry reads as
+		// capacity zero, so the first predicate on that column overflows and
+		// the query fails as "too complex" — which is what an inet column did
+		// once, and a time column did again while this type was being added.
 		max := 0
 		for _, a := range arenaTable {
 			if a.name == arena {
@@ -813,10 +706,15 @@ func (g *gen) treePreds() {
 			g.err = fmt.Errorf("codegen: arena %q has no capacity entry — add it to the map in treePreds", arena)
 			return
 		}
-		ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\tif int(q.%s) >= %d {\n\t\t\tq.over = true\n\t\t\treturn\n\t\t}\n\t\tq.%s[q.%s] = %s\n\t\tq.%s++",
-			cur, g.budget(max), arena, cur, predSlotFor(c), cur))
+		ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\tok = runtime.Stash(q.%s[:], &q.%s, %s)",
+			arena, cur, predSlotFor(c)))
 	}
-	g.emitCases("\t", ids, bodies)
+	g.emitCases("\t\t", ids, bodies)
+	g.p("\t\t}")
+	g.p("\t}")
+	g.p("\tif !ok {")
+	g.p("\t\tq.over = true")
+	g.p("\t\treturn")
 	g.p("\t}")
 	g.p("\tq.push(runtime.MakeLeaf(uint32(p.op), uint32(p.col)))")
 	g.p("}")
@@ -880,25 +778,19 @@ func (g *gen) treeBind() {
 	g.p("func GetBinder() *Binder  { return binders.Get() }")
 	g.p("func PutBinder(b *Binder) { putBinder(b) }")
 	g.p("")
-	g.p("// putBinder drops every reference to the caller's memory before pooling, so")
-	g.p("// a pooled binder pins nothing.")
+	g.p("// putBinder drops every reference to caller memory, so a pooled binder pins nothing.")
 	g.p("func putBinder(b *binder) {")
 	if ts.arenas["strs"] {
-		g.p("\tfor i := range b.strs {")
-		g.p("\t\tb.strs[i] = \"\"")
-		g.p("\t}")
+		g.p("\tclear(b.strs[:])")
 	}
 	for _, slot := range ts.anyList {
-		g.p("\tfor i := range b.%s {", slot)
-		g.p("\t\tb.%s[i] = nil", slot)
-		g.p("\t}")
+		g.p("\tclear(b.%s[:])", slot)
 	}
 	g.p("\tbinders.Put(b)")
 	g.p("}")
 	g.p("")
-	g.p("// bindPreds copies arena values into the pooled buffer and points the")
-	g.p("// []any at the buffer's own fields — boxing a pointer does not allocate.")
-	g.p("// Count and Exists stop here: their statements carry no LIMIT or OFFSET.")
+	g.p("// bindPreds binds the predicate values, in stream order, from the binder's")
+	g.p("// own copies. Count and Exists stop here: they have no LIMIT or OFFSET.")
 	g.p("func (q Query) bindPreds(b *binder) []any {")
 	g.p("\tv := b.vals[:0]")
 	used := map[string]bool{}
@@ -921,16 +813,15 @@ func (g *gen) treeBind() {
 	}
 	g.p("\tfor i := uint8(0); i < q.nt; i++ {")
 	g.p("\t\tt := q.toks[i]")
-	g.p("\t\t// KLeaf binds a predicate's value, KCol a keyset cursor's; both")
-	g.p("\t\t// share the per-type arenas, and a KCol's opNone matches no op case.")
+	g.p("\t\t// A predicate's value or a keyset cursor's: both use the arenas.")
 	g.p("\t\tif k := t.Kind(); k != runtime.KLeaf && k != runtime.KCol {")
 	g.p("\t\t\tcontinue")
 	g.p("\t\t}")
-	g.p("\t\tswitch runtime.Op(t.Op()) {")
-	g.p("\t\tcase %s:", arglessOpCases())
+	g.p("\t\tswitch op := runtime.Op(t.Op()); {")
+	g.p("\t\tcase runtime.ArglessOp(op):")
 	g.p("\t\t\tcontinue")
 	if len(ts.anyList) > 0 {
-		g.p("\t\tcase %s:", listOpCases())
+		g.p("\t\tcase runtime.ListOp(op):")
 		g.p("\t\t\tswitch t.Col() {")
 		var ids []int
 		var bodies []string
@@ -940,8 +831,8 @@ func (g *gen) treeBind() {
 				continue
 			}
 			cur := anyCursor(slot)
-			ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\t\tb.%s[%s] = q.%s[%s]\n\t\t\t\tv = append(v, &b.%s[%s])\n\t\t\t\t%s++",
-				slot, cur, slot, cur, slot, cur, cur))
+			ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\t\tv = runtime.Bind(v, b.%s[:], q.%s[:], &%s)",
+				slot, slot, cur))
 		}
 		g.emitCases("\t\t\t", ids, bodies)
 		g.p("\t\t\t}")
@@ -957,8 +848,8 @@ func (g *gen) treeBind() {
 			continue // no value arena: nothing to copy into the binder
 		}
 		short := cursorFor(arena)
-		ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\tb.%s[%s] = q.%s[%s]\n\t\t\tv = append(v, &b.%s[%s])\n\t\t\t%s++",
-			arena, short, arena, short, arena, short, short))
+		ids, bodies = append(ids, i), append(bodies, fmt.Sprintf("\t\t\tv = runtime.Bind(v, b.%s[:], q.%s[:], &%s)",
+			arena, arena, short))
 	}
 	g.emitCases("\t\t", ids, bodies)
 	g.p("\t\t}")
@@ -972,8 +863,7 @@ func (g *gen) treeBind() {
 	g.p("\tv := q.bindPreds(b)")
 	g.p("\tb.limit = q.limit")
 	g.p("\tv = append(v, &b.limit)")
-	g.p("\t// An offset of zero is absent from the statement, so binding it")
-	g.p("\t// would leave an argument nothing consumes.")
+	g.p("\t// An offset of zero is absent from the statement, so it binds nothing.")
 	g.p("\tif q.offset > 0 {")
 	g.p("\t\tb.offset = q.offset")
 	g.p("\t\tv = append(v, &b.offset)")

@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-11-02
+updated: 2026-11-07
 ---
 
 # Changelog
@@ -31,6 +31,42 @@ What it cost: about 70 generated lines per SQL table (3% of a typical
 package) and 46 per MongoDB collection. An unset hook is a nil
 check: `bench/ALLOCS` is unchanged, and against a fake driver `Delete` is
 about 2 ns slower (33 → 35 ns, benchstat n=12) and `Update` is unchanged.
+
+### Generated table packages are 7% smaller again
+
+The predicate builder's per-column code moved into small runtime helpers. The
+operator ids are `runtime.OpEq` and the rest instead of a 38-line constant
+block in every package; `leaf`, `cursor` and `bindPreds` store and bind each
+value through `runtime.Stash` and `runtime.Bind` (one line per column or arena
+instead of six or three) and test operator classes with `runtime.ListOp` and
+`runtime.ArglessOp`; `After` reads its ordering through `runtime.Keyset`; the
+two After errors are `runtime.ErrAfterUnordered` and `runtime.ErrMixedOrder`;
+the lowering's ident and row-comparison closures are `runtime.Pick` and
+`runtime.RowCmpOps`; the four ORDER BY methods on a handle call one `ord`
+helper and fit on a line. Internal comments that restated docs/GENERATED.md
+are one line now. Committed SQL table packages: 54,037 → 50,014 lines (−7.4%,
+about 180 lines per table). The SQL every package emits is unchanged, the
+generated API is unchanged, and the allocation budgets in bench/ALLOCS hold.
+
+### List reads size their result once
+
+A generated `All`/`List`/`AllInto` — and the projection, aggregation, join,
+`AllDistinctOn`, turns and `RETURNING` readers built the same way — now
+pre-sizes its result slice from the row count the statement's last read
+returned, as it already did for the string arena. Both are scaled down to the
+call's `Limit`, because a statement is shared by every limit: a 20-row page of
+a filter that was last read as a 1,000-row export no longer reserves the
+export's arena. Measured on PostgreSQL 16 over loopback, median of six:
+
+| | before | after |
+|---|---:|---:|
+| `List` of 1,000 rows (no slice passed) | 531 KB · 18 allocs | **181 KB · 7 allocs** |
+| 20-row page after a 1,000-row read of the same filter | 50.7 KB · 12 allocs | **4.2 KB · 7 allocs** |
+| `AllInto` of 1,000 rows into a reused slice | 41 KB · 6 allocs | 41 KB · 6 allocs |
+
+`runtime.Stmt` gains `ObserveRead`, `ReadHint` and `runtime.Grow`; `SlabHint`
+and `ObserveSlab` keep working, so a package generated before this release
+behaves as it did. Regenerate to get the change.
 
 ### Go 1.27.3 is the minimum
 
@@ -1200,7 +1236,6 @@ Two things the engine does that nothing else storm targets does: `FETCH FIRST �
 FOR UPDATE SKIP LOCKED` — the work-queue shape — is ORA-02014, and unquoted
 identifiers fold UP. Both are in `docs/DIALECTS.md` now.
 
-
 ### A DDL seam inside `migrate/`, and `storm diff` / `storm verify` for SQL Server
 
 Three of the four shipped dialects could generate and run but could not diff,
@@ -1691,7 +1726,6 @@ resolved against whatever `STORM_DSN` pointed at. `users` is not a rare table
 name. The fixture lives in its own `storm_bench` schema, and the pool sets
 `search_path` rather than one connection running `SET` for eight.
 
-
 ### A refusal names the line that declared what it refuses
 
 v1's definition says an unsupported construct "fails generation, naming the
@@ -2141,7 +2175,6 @@ predicate is dropped from the conflict target.
 
 No production code changed.
 
-
 ### `compile/mysql` — the query lowering, proven against a real server
 
 The seam's second query implementation now exists, and every form it lowers has
@@ -2240,7 +2273,6 @@ identifiers, the `?` placeholder carrier ADR-0010 decided and did not build, no
 output clause on insert, and the `JSON_TABLE` `IN`-list lowering) **and** the
 driver, which is unchanged and still real. The 4-week estimate counted the
 driver only.
-
 
 ### codegen speaks MySQL
 
@@ -3673,7 +3705,6 @@ asserts. The query-side dialect seam it said "does not exist" is
 M6 were still marked incomplete while the same file records, further down, that
 all three passed.
 
-
 ### Fixed: a wide table mis-routed its own predicates in a composed statement
 
 `runtime.MaxCols` was 1024 — the full token column width — but a composed
@@ -3990,8 +4021,6 @@ documentation rather than gates:
   thirteen boundary cases and asserted symmetric, the tstzrange parameter codec
   against a live server, `Retryable`, and the join and aggregate emitters'
   refusals.
-
-
 
 ### The bootstrap main is gone
 

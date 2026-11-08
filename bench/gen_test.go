@@ -632,3 +632,46 @@ func BenchmarkGenGetOne(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkGenList1000 is the read most callers write: List, with no slice to
+// reuse. Unlike Scan1000 it measures growing the result from nil, which is
+// what a handler that returns the rows actually pays.
+func BenchmarkGenList1000(b *testing.B) {
+	ctx, ex := context.Background(), genExec()
+	q := genuser.New().StatusEq("active").Limit(1000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out, err := q.List(ctx, ex)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(out) != 1000 {
+			b.Fatal(len(out))
+		}
+	}
+}
+
+// BenchmarkGenPage20AfterList1000 reads a 20-row page of a shape whose last
+// read returned 1,000 rows: a list page and an export of the same filter. The
+// statement is shared, so what the export learned must not size the page.
+func BenchmarkGenPage20AfterList1000(b *testing.B) {
+	ctx, ex := context.Background(), genExec()
+	q := genuser.New().StatusEq("active")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		if _, err := q.Limit(1000).List(ctx, ex); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		out, err := q.Limit(20).List(ctx, ex)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(out) != 20 {
+			b.Fatal(len(out))
+		}
+	}
+}

@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 )
 
-// Op is a comparison operator's compiler-assigned id. Generated code numbers
-// the argument-taking operators first, so `op-1 < opsWithArg` is one unsigned
-// compare on the bind path.
+// Op is a comparison operator's id: OpEq and the rest, in tree.go. The
+// argless operators are numbered last, so ArglessOp is one compare on the
+// bind path.
 //
 // Ids only. An Op never carries a caller's value, which is why two queries
 // with the same structure and different values share one statement.
@@ -37,17 +37,69 @@ type Stmt struct {
 	// Every terminal returns it before executing anything.
 	Err error
 
-	// slabHint is the byte size the last result of this shape needed from a
-	// Slab. Shapes are stable, so one observation sizes the next arena exactly
-	// and the doubling ramp never runs. Measured worth 1.8x throughput.
-	slabHint atomic.Int64
+	// hint is what the last result of this shape needed, packed so one load
+	// reads a consistent pair: the row count in the high 32 bits (0 when the
+	// reader did not count, as Each does not) and the arena bytes in the low
+	// 32. Shapes are stable, so one observation sizes the next arena and
+	// result slice exactly and neither doubling ramp runs. The arena half was
+	// measured worth 1.8x throughput.
+	hint atomic.Uint64
 }
 
 // SlabHint reports the size to pre-size an arena to.
-func (s *Stmt) SlabHint() int { return int(s.slabHint.Load()) }
+func (s *Stmt) SlabHint() int { return int(uint32(s.hint.Load())) }
 
-// ObserveSlab records how much arena the last result actually used.
-func (s *Stmt) ObserveSlab(n int) { s.slabHint.Store(int64(n)) }
+// ObserveSlab records how much arena the last result actually used, without a
+// row count: ReadHint then sizes the arena unscaled and the slice not at all.
+func (s *Stmt) ObserveSlab(n int) { s.hint.Store(uint64(clampHint(n))) }
+
+// ObserveRead records the rows and arena bytes the last result of this shape
+// actually used, for ReadHint to size the next one from.
+func (s *Stmt) ObserveRead(rows, bytes int) {
+	s.hint.Store(uint64(clampHint(rows))<<32 | uint64(clampHint(bytes)))
+}
+
+// ReadHint reports how many rows and how many arena bytes to pre-size for a
+// read of this shape capped at limit rows.
+//
+// The statement is shared by every limit, because LIMIT is a bound argument,
+// so the last observation can be a 1,000-row export when this call is a
+// 20-row page. Both halves are scaled down to the limit — the bytes by the
+// observed bytes per row — so a small read never inherits a large one's
+// buffers. A limit at or below zero, or no row count, leaves them unscaled.
+func (s *Stmt) ReadHint(limit int64) (rows, bytes int) {
+	h := s.hint.Load()
+	r, b := int64(h>>32), int64(uint32(h))
+	if r > 0 && limit > 0 && limit < r {
+		b = (b*limit + r - 1) / r
+		r = limit
+	}
+	return int(r), int(b)
+}
+
+// clampHint keeps an observation inside its 32-bit half. A hint is a size to
+// reserve, so saturating loses nothing a caller could use.
+func clampHint(n int) uint32 {
+	if n <= 0 {
+		return 0
+	}
+	if uint64(n) > 1<<32-1 {
+		return 1<<32 - 1
+	}
+	return uint32(n)
+}
+
+// Grow returns dst with room for at least n more elements, so a result whose
+// size the statement has already seen is decoded into one allocation instead
+// of a doubling ramp that copies every row it has read so far.
+func Grow[T any](dst []T, n int) []T {
+	if n <= cap(dst)-len(dst) {
+		return dst
+	}
+	out := make([]T, len(dst), len(dst)+n)
+	copy(out, dst)
+	return out
+}
 
 // Frag is one lowered predicate, split where its placeholder goes: A, then the
 // placeholder, then B. The text is chosen by the back end in compile/ at
