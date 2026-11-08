@@ -48,8 +48,8 @@ func (g *gen) existsPreds() {
 	g.p("// fragments: no bound value, one compiled statement per structure.")
 	for i, rel := range rels {
 		name := exportName(rel.Field)
-		g.p("func Has%s() Pred    { return Pred{col: %d, op: opExists} }", name, len(g.cols)+i)
-		g.p("func HasNo%s() Pred  { return Pred{col: %d, op: opNotExists} }", name, len(g.cols)+i)
+		g.p("func Has%s() Pred    { return Pred{col: %d, op: runtime.OpExists} }", name, len(g.cols)+i)
+		g.p("func HasNo%s() Pred  { return Pred{col: %d, op: runtime.OpNotExists} }", name, len(g.cols)+i)
 	}
 	g.p("")
 }
@@ -65,8 +65,8 @@ func (g *gen) existsFragRows() {
 	pk := g.t.PrimaryKey[0]
 	for _, rel := range rels {
 		g.p("\t{ // relation %s (pseudo-column)", rel.Field)
-		g.p("\t\topExists: {A: %q},", g.lw.ExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
-		g.p("\t\topNotExists: {A: %q},", g.lw.NotExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
+		g.p("\t\truntime.OpExists: {A: %q},", g.lw.ExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
+		g.p("\t\truntime.OpNotExists: {A: %q},", g.lw.NotExistsFrag(rel.Target, rel.Column, g.t.Name, pk, string(liveIn(g.lw, g.s, rel.Target, ""))))
 		g.p("\t},")
 	}
 }

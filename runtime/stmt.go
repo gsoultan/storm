@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 )
 
-// Op is a comparison operator's compiler-assigned id. Generated code numbers
-// the argument-taking operators first, so `op-1 < opsWithArg` is one unsigned
-// compare on the bind path.
+// Op is a comparison operator's id: OpEq and the rest, in tree.go. The
+// argless operators are numbered last, so ArglessOp is one compare on the
+// bind path.
 //
 // Ids only. An Op never carries a caller's value, which is why two queries
 // with the same structure and different values share one statement.
