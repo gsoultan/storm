@@ -1,7 +1,7 @@
 ---
 tags: [storm, plan, milestones]
-updated: 2026-08-24
-status: proposed
+updated: 2026-11-19
+status: adopted
 ---
 
 # PLAN — milestones, gates, kill criteria
@@ -34,6 +34,25 @@ they are called out here so the override is deliberate.
 4. **MongoDB is a back end, not a dialect.** The IR is a logical plan; shape
    differences (embed vs join) are declared, never inferred.
    → [[adr/0004-mongodb-as-backend]]
+
+## Where things stand (2026-11-19)
+
+The milestone table below is history as well as plan. As of **v1.12.2**
+(tagged 2026-11-08), M0–M12 are all through their gates:
+
+- **Shipped back ends:** PostgreSQL (v1.0), MySQL 8.4 and MariaDB 11.4,
+  SQL Server 2022, MongoDB 7 (v1.12.0). Oracle runs live in CI against
+  Oracle 23 Free (`.github/workflows/oracle-spike.yml`) and stays
+  experimental until it meets the bar in [STABILITY.md](STABILITY.md).
+- **Also shipped since v1.10:** a Redis query result cache (experimental,
+  v1.12.0); `storm watch` and `Rows`/`List` (v1.11.0); statement and lifecycle
+  hooks, `storm.sum`, down migrations, `-replay` and online constraints
+  (v1.12.2); a hardening audit with fuzzers over every decoder (v1.12.2).
+- **Release discipline:** v1.12.2 added API in a patch release. The next
+  release that adds anything is **v1.13.0**, per STABILITY.md.
+- **What decides what comes next:** a second production adopter, especially
+  on MySQL, and what they hit first. Feature work after the launch follows
+  that feedback rather than this table.
 
 ## Milestone table
 
@@ -428,7 +447,7 @@ placeholder or output clause reaches MySQL SQL, verified both ways.
 
 | M10 | SQL Server | 3 → **5** | `OUTPUT`, `MERGE`, TVP bulk, paging gate | **DONE** — lowering, DDL, TDS client, codegen, upsert, bulk load, the CLI, the escape hatch and `storm import`. `migrate.Auto` needs a DDL seam inside `migrate/` and is a decision of its own |
 | M11 | Oracle | 4 → **6** | empty-string-is-NULL surfaced at declare time | ~~capability model cannot carry Oracle~~ — **measured, it can**. See below |
-| M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | **first increment, unreleased** — `runtime/mgdrv` (stdlib-only), `runtime/bsondec`, `compile/mongo`, `compile/mgddl`, `codegen/mongo`, `OnDocument(storm.Reference())`, gated live in CI; `examples/library` is one model serving both. Relation loading, `Embed`, upserts, arrays and json are next |
+| M12 | MongoDB | 6 | one model serves both stores, divergence build-checked | **SHIPPED in v1.12.0 (2026-11-02)** — `runtime/mgdrv` (stdlib-only), `runtime/bsondec`, `compile/mongo`, `compile/mgddl`, `codegen/mongo`, `OnDocument(storm.Reference())`, gated live in CI against MongoDB 7. Relation loading, `storm.Embed`, projections, aggregations, joins and unions, composite keys, arrays and json, versions, soft delete, ON DELETE actions and CHECK/partial indexes all shipped with it; `examples/library` is one model serving both stores. See CHANGELOG v1.12.0 |
 
 **M11 was estimated before it started, measured 2026-09-22**
 (`internal/oraclespike`). Three questions this time rather than two, because
