@@ -153,7 +153,7 @@ func (g *gen) colHandles() {
 		g.p("")
 		g.sortMethods(ht, i)
 		for _, op := range ops {
-			if !opApplies(op.name, c.kind, c.col) {
+			if !colOpApplies(op.name, c) {
 				continue
 			}
 			if op.list() {
@@ -185,6 +185,11 @@ func (g *gen) colHandles() {
 			if op.args == 0 {
 				g.p("func (h %s) %s() Pred { return Pred{col: h.c, op: runtime.Op%s} }", ht, op.m(), op.name)
 				continue
+			}
+			if op.name == "Matches" && c.fullText {
+				g.p("// Matches is MATCH (col) AGAINST (v IN NATURAL LANGUAGE MODE), answered")
+				g.p("// by the column's FULLTEXT index. v is bound, and its words are matched")
+				g.p("// by relevance: + - \" and * are not operators in this mode.")
 			}
 			if op.name == "TextHasPrefix" {
 				g.p("// HasPrefix, HasSuffix and Contains match v literally: a %% or _ in v")
@@ -289,6 +294,11 @@ func handleType(c colInfo) string {
 		kindUUIDArray:    "UUIDArrayCol",
 		kindDecimalArray: "DecimalArrayCol",
 	}[c.kind]
+	if c.fullText {
+		// Its own type, so Matches exists on this column and not on every
+		// text column that shares TextCol.
+		base = "FullTextCol"
+	}
 	// Every supported kind MUST appear above. A missing entry emitted
 	// `Splits = {14}` — a column handle with no type — which the Go parser
 	// caught, but only after the generator had already written the file. This

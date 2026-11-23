@@ -420,6 +420,16 @@ func nullName(k kind) string {
 	return "Nullable"
 }
 
+// colOpApplies is opApplies for a resolved column, which also knows what the
+// column's indexes allow: Matches on a text column is legal only where a
+// FULLTEXT index can answer it.
+func colOpApplies(op string, c colInfo) bool {
+	if op == "Matches" && c.fullText {
+		return true
+	}
+	return opApplies(op, c.kind, c.col)
+}
+
 // opApplies decides whether an operator is legal on a column, so the generated
 // API only ever offers predicates that make sense. Ordering on a uuid or a
 // LIKE on an integer are compile errors rather than runtime surprises.

@@ -109,6 +109,29 @@ var wrapped = map[string]struct{ open, close string }{
 		" AS CHAR), '') LIKE `_storm_l`.`p`)",
 	},
 	"JSONIsEmpty": {"COALESCE(CAST(", " AS CHAR), '') IN ('', 'null', '[]', '{}')"},
+
+	// Full-text search, offered by codegen only on a column that a FULLTEXT
+	// index covers on its own: InnoDB answers MATCH through an index over
+	// exactly its column list and refuses any other (error 1191).
+	//
+	// NATURAL LANGUAGE MODE is plainto_tsquery's counterpart: the bound text
+	// is words, not syntax, so a search box's stray `+`, `-` or `"` does not
+	// change what it asks. The mode is spelled out rather than left as the
+	// default so the statement says what it does.
+	//
+	// Almost words. InnoDB's query parser runs in this mode too, and a term
+	// that is a `*` with no word beside it — `*`, ` * `, `"*` — fails the
+	// statement with error 1064 on MySQL 8.4 and MariaDB 11.4 alike, found by
+	// fuzzing every one- and two-character mix of the operator characters
+	// against both. A `*` is a delimiter here anyway (`storm*` finds `storm`),
+	// so REPLACE turns it into a space on the server: same matches, no error,
+	// and the plan still reads `fulltext`. Nothing is rewritten in Go, so the
+	// value stays bound.
+	//
+	// BOOLEAN MODE is deliberately absent. Its terms are OR'd unless marked
+	// `+`, where websearch_to_tsquery ANDs them, so offering it as WebSearch
+	// would give one method two meanings across targets.
+	"Matches": {"MATCH (", ") AGAINST (REPLACE(" + Placeholder + ", '*', ' ') IN NATURAL LANGUAGE MODE)"},
 }
 
 // prefixes wrap the IDENTIFIER for operators whose left side is an expression

@@ -380,6 +380,23 @@ Filterable, never readable: a tsvector is index support, so it is absent from
 is a search for those words. Optional filters compose without a nil check:
 `q = product.WhenSet(q, f.MinPrice, product.Price.Gte)`.
 
+On MySQL and MariaDB the answer is a `FULLTEXT` index rather than a column,
+and a text column that one covers on its own gets `Matches`:
+
+```go
+t.Index(&a.Body).Using(storm.FullText)                  // in the model
+
+article.New().Where(article.Body.Matches(q)).All(ctx, ex, nil)
+// MATCH (`body`) AGAINST (REPLACE(?, '*', ' ') IN NATURAL LANGUAGE MODE)
+```
+
+Natural-language mode, so the term is words and never operators, and any one
+of them is enough. A multi-column `FULLTEXT` index gives no
+column `Matches` (InnoDB answers `MATCH` only through an index over exactly its
+column list), and there is no `WebSearch` here, because boolean mode ORs its
+terms where `websearch_to_tsquery` ANDs them. SQL Server, Oracle and MongoDB
+have no full-text predicate yet; each needs an index storm does not model.
+
 ## Errors you can switch on
 
 Constraint violations are typed at the driver boundary, so a handler never
