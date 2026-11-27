@@ -13,10 +13,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/schema"
 	"github.com/gsoultan/storm/schema/pg"
-	"github.com/jackc/pgx/v5"
 )
 
 // PostgreSQL rewrites every expression it stores. The model says
@@ -42,7 +42,7 @@ import (
 // Executor is the slice of pgx that normalisation needs.
 type Executor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconnTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Query(ctx context.Context, sql string, args ...any) (*caduceus.Rows, error)
 }
 
 type pgconnTag = interface{ String() string }
@@ -52,7 +52,7 @@ type pgconnTag = interface{ String() string }
 // as PostgreSQL would store it.
 //
 // The scratch namespace is dropped on every exit path, including failure.
-func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
+func Normalize(ctx context.Context, c *caduceus.Conn, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
 	if scratch == "" {
 		// Per-process, not a shared literal: two processes normalising against
 		// one database — two test binaries under `go test ./...`, or two CI
@@ -119,7 +119,7 @@ func carryConversions(norm, model *schema.Schema) {
 // For computes the plan that takes the live `target` namespace to `want`,
 // normalising the model through a scratch namespace first so expressions are
 // compared in the form PostgreSQL actually stores.
-func For(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema) (Plan, error) {
+func For(ctx context.Context, c *caduceus.Conn, target string, want *schema.Schema) (Plan, error) {
 	return ForWith(ctx, c, target, want, Options{})
 }
 
@@ -141,7 +141,7 @@ type Options struct {
 }
 
 // ForWith is For with Options.
-func ForWith(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema, o Options) (Plan, error) {
+func ForWith(ctx context.Context, c *caduceus.Conn, target string, want *schema.Schema, o Options) (Plan, error) {
 	norm, err := Normalize(ctx, c, "", want)
 	if err != nil {
 		return Plan{}, err

@@ -22,7 +22,6 @@ import (
 
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"example.com/orders/model"
 	"example.com/orders/store"
@@ -31,7 +30,7 @@ import (
 	"example.com/orders/store/product"
 	"example.com/orders/store/stockitem"
 
-	"github.com/gsoultan/storm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 )
 
 // Business failures, distinct from infrastructure ones. The transport maps
@@ -126,13 +125,13 @@ type RevenueDay struct {
 }
 
 type service struct {
-	pool *pgxpool.Pool
+	pool *pgdrv.Pool
 	ex   runtime.Executor
 }
 
 // New builds the service over a storm-configured pool.
-func New(pool *pgxpool.Pool) Service {
-	return &service{pool: pool, ex: pgxdrv.Pool{P: pool}}
+func New(pool *pgdrv.Pool) Service {
+	return &service{pool: pool, ex: pool}
 }
 
 // Catalogue reads three columns instead of the row. Same builder, same
@@ -167,14 +166,14 @@ func (s *service) PlaceOrder(ctx context.Context, customerID string, items []Lin
 		return nil, err
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.pool.StartTx(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
 	// A transaction is just another Executor: the same generated code runs
 	// inside one, and a rollback erases everything it did.
-	ex := pgxdrv.Tx{T: tx}
+	ex := pgdrv.Tx{T: tx}
 
 	skus := make([]string, 0, len(items))
 	for _, it := range items {

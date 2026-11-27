@@ -10,11 +10,11 @@ package storm_test
 
 import (
 	"context"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 	"os"
 	"testing"
 
 	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5"
 )
 
 // schema.AggregateResult encodes what PostgreSQL returns for each aggregate.
@@ -28,7 +28,7 @@ func TestAggregateResultMatchesPostgres(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, dsn)
+	c, err := pgdrv.Connect(ctx, dsn, pgdrv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

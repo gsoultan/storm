@@ -10,6 +10,7 @@ package tool
 
 import (
 	"context"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,6 @@ import (
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/internal/testmodel"
 	"github.com/gsoultan/storm/migrate"
-	"github.com/jackc/pgx/v5"
 )
 
 // The database-backed commands, against a real one. Without these the CLI's
@@ -40,7 +40,7 @@ func dsn(t *testing.T) string {
 func namespace(t *testing.T, name string) string {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, dsn(t))
+	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func namespace(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		c2, err := pgx.Connect(context.Background(), dsn(t))
+		c2, err := pgdrv.Connect(context.Background(), dsn(t), pgdrv.Options{})
 		if err != nil {
 			return
 		}
@@ -207,7 +207,7 @@ func TestCLI_DiffRefusesDestructiveByDefault(t *testing.T) {
 func applySQL(t *testing.T, ns, sql string) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, dsn(t))
+	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestCLI_DiffConcurrentlyWritesEachIndexAlone(t *testing.T) {
 	// one implicit transaction — and PostgreSQL refuses the concurrent build
 	// inside it. A replay written that way reports a correct migration as
 	// broken.
-	c, err := pgx.Connect(ctx, dsn(t))
+	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +777,7 @@ func TestCLI_DiffWritesAnEnumLabelAlone(t *testing.T) {
 func applyInTx(t *testing.T, ns, body string) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, dsn(t))
+	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

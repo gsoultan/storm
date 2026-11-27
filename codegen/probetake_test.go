@@ -134,8 +134,7 @@ import (
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 
 	store "IMPORTPATH"
 	"IMPORTPATH/ptdelivery"
@@ -169,7 +168,7 @@ func (d *ptDelivery) Aggregates(a *storm.Aggregates) {
 }
 
 var (
-	pool *pgxpool.Pool
+	pool *pgdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -182,22 +181,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&ptHook{}, &ptDelivery{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := pgdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_probe_take_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -216,7 +213,7 @@ func must(err error) {
 func seed(t *testing.T) (live [16]byte, ids [][16]byte) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM pt_deliveries; DELETE FROM pt_hooks"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM pt_deliveries; DELETE FROM pt_hooks", nil); err != nil {
 		t.Fatal(err)
 	}
 	var hooks [3][16]byte
@@ -235,8 +232,7 @@ func seed(t *testing.T) (live [16]byte, ids [][16]byte) {
 	start := time.Now().Add(-time.Hour).UTC()
 	for i, h := range []int{1, 0, 2, 0, 1} {
 		id := [16]byte{0xd, byte(i + 1), 15: 0xd}
-		if _, err := pool.Exec(ctx, "INSERT INTO pt_deliveries (id, hook_id, status, created_at, updated_at) VALUES ($1, $2, 'pending', $3, $3)",
-			id, hooks[h], start.Add(time.Duration(i)*time.Second)); err != nil {
+		if _, err := pool.Exec(ctx, "INSERT INTO pt_deliveries (id, hook_id, status, created_at, updated_at) VALUES ($1, $2, 'pending', $3, $3)", []any{id, hooks[h], start.Add(time.Duration(i)*time.Second)}); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, id)
@@ -277,22 +273,22 @@ func TestTheProbeNarrowsTheClaim(t *testing.T) {
 func TestTwoWorkersClaimTwoRows(t *testing.T) {
 	_, ids := seed(t)
 	ctx := context.Background()
-	a, err := pool.Begin(ctx)
+	a, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Rollback(ctx)
-	b, err := pool.Begin(ctx)
+	b, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Rollback(ctx)
 	h := store.PtDeliveryHavingHook(next(), pthook.Active.Eq(true))
-	first, err := h.Take(ctx, pgxdrv.Conn{C: a}, claim(), nil)
+	first, err := h.Take(ctx, a, claim(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := h.Take(ctx, pgxdrv.Conn{C: b}, claim(), nil)
+	second, err := h.Take(ctx, b, claim(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

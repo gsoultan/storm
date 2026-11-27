@@ -116,8 +116,7 @@ import (
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 
 	store "IMPORTPATH"
 	"IMPORTPATH/dpincident"
@@ -149,7 +148,7 @@ func (i *dpIncident) Schema(t *storm.Table) {
 }
 
 var (
-	pool *pgxpool.Pool
+	pool *pgdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -162,22 +161,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&dpJob{}, &dpIncident{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := pgdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_delete_batch_probe_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -218,25 +215,21 @@ func job(t *testing.T, marked bool, incidents ...string) [16]byte {
 
 func clear(t *testing.T) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), "DELETE FROM dp_incidents; DELETE FROM dp_jobs"); err != nil {
+	if _, err := pool.Exec(context.Background(), "DELETE FROM dp_incidents; DELETE FROM dp_jobs", nil); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func left(t *testing.T) map[[16]byte]bool {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), "SELECT id FROM dp_jobs")
+	rows, err := pool.Query(context.Background(), "SELECT id FROM dp_jobs", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
 	out := map[[16]byte]bool{}
 	for rows.Next() {
-		var id [16]byte
-		if err := rows.Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		out[id] = true
+		out[runtime.UUID(rows.RawValues()[0])] = true
 	}
 	return out
 }

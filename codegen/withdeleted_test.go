@@ -140,8 +140,7 @@ import (
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 
 	"IMPORTPATH/wdentry"
 )
@@ -162,7 +161,7 @@ func (e *wdEntry) Schema(t *storm.Table) {
 func (e *wdEntry) Projections(p *storm.Projections) { p.Named("Ref", &e.ID) }
 
 var (
-	pool *pgxpool.Pool
+	pool *pgdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -175,22 +174,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&wdEntry{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := pgdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_with_deleted_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -207,7 +204,7 @@ func must(err error) {
 func seed(t *testing.T) (live, first, last [16]byte) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM wd_entries"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM wd_entries", nil); err != nil {
 		t.Fatal(err)
 	}
 	var ids [3][16]byte
@@ -222,7 +219,7 @@ func seed(t *testing.T) (live, first, last [16]byte) {
 	}
 	at := time.Now().Add(-time.Hour).UTC()
 	for i, id := range ids[1:] {
-		if _, err := pool.Exec(ctx, "UPDATE wd_entries SET deleted_at = $1 WHERE id = $2", at.Add(time.Duration(i)*time.Minute), id); err != nil {
+		if _, err := pool.Exec(ctx, "UPDATE wd_entries SET deleted_at = $1 WHERE id = $2", []any{at.Add(time.Duration(i)*time.Minute), id}); err != nil {
 			t.Fatal(err)
 		}
 	}

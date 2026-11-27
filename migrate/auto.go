@@ -17,10 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Auto is the one path where storm applies DDL, and it is the exception ADR-0001
@@ -204,7 +203,7 @@ func (e *DestructiveError) Destructive() []Change {
 // created, read back and dropped — because the server rewrites every expression
 // it stores and only catalog form compares against catalog form. See the
 // commentary in normalize.go.
-func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) (Result, error) {
+func Auto(ctx context.Context, c *caduceus.Conn, want *schema.Schema, o AutoOptions) (Result, error) {
 	ns := o.namespace()
 	if err := validIdent(ns); err != nil {
 		return Result{}, err
@@ -358,7 +357,7 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 // transactional, so this is all-or-nothing: the schema either moves to the model
 // or does not move at all. The returned changes are the ones that COMMITTED —
 // on failure that is none of them, which is the point.
-func applyTx(ctx context.Context, c *pgx.Conn, ns string, steps []Change, o AutoOptions) ([]Change, error) {
+func applyTx(ctx context.Context, c *caduceus.Conn, ns string, steps []Change, o AutoOptions) ([]Change, error) {
 	tx, err := c.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin migration: %w", err)
@@ -383,7 +382,7 @@ func applyTx(ctx context.Context, c *pgx.Conn, ns string, steps []Change, o Auto
 // applyAlone runs one CREATE/DROP INDEX CONCURRENTLY, which refuses to run
 // inside a transaction block. There is no rollback here — that is the trade the
 // Concurrently option makes, and why a failure leaves the earlier steps applied.
-func applyAlone(ctx context.Context, c *pgx.Conn, ns string, ch Change, o AutoOptions) error {
+func applyAlone(ctx context.Context, c *caduceus.Conn, ns string, ch Change, o AutoOptions) error {
 	if err := bound(ctx, c, ns, o, false); err != nil {
 		return err
 	}
@@ -397,7 +396,7 @@ func applyAlone(ctx context.Context, c *pgx.Conn, ns string, ch Change, o AutoOp
 // execer is the slice of pgx that bound needs, so it can set the bounds on a
 // transaction (SET LOCAL) and on the session (SET) alike.
 type execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Exec(ctx context.Context, sql string, args ...any) (caduceus.CommandTag, error)
 }
 
 // bound sets search_path and lock_timeout for the steps that follow.
@@ -431,7 +430,7 @@ func bound(ctx context.Context, e execer, ns string, o AutoOptions, local bool) 
 // blocking form has no timeout of its own: lock_timeout does not apply to it,
 // so the only bound available would be cancelling the context, and a caller who
 // passed context.Background() would wait for ever.
-func lock(ctx context.Context, c *pgx.Conn, ns string, o AutoOptions) (time.Duration, error) {
+func lock(ctx context.Context, c *caduceus.Conn, ns string, o AutoOptions) (time.Duration, error) {
 	key := advisoryKey(ns)
 	start := time.Now()
 	deadline := start.Add(o.lockWait())

@@ -10,6 +10,7 @@ package tool
 
 import (
 	"context"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/gsoultan/storm/migrate/sum"
-	"github.com/jackc/pgx/v5"
 )
 
 // applyFiles runs migration files the way a runner does: one file per call,
@@ -26,7 +26,7 @@ import (
 func applyFiles(t *testing.T, ns string, files ...string) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, dsn(t))
+	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestCLI_DownMigrationsRollBackEveryVersion(t *testing.T) {
 	// And v1's down empties the namespace.
 	applyFiles(t, ns, downs[0])
 	var n int
-	c, err := pgx.Connect(context.Background(), dsn(t))
+	c, err := pgdrv.Connect(context.Background(), dsn(t), pgdrv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

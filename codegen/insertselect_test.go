@@ -130,8 +130,7 @@ import (
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 
 	store "IMPORTPATH"
 	"IMPORTPATH/isitem"
@@ -178,7 +177,7 @@ func (i *isItem) Schema(t *storm.Table) {
 }
 
 var (
-	pool  *pgxpool.Pool
+	pool  *pgdrv.Pool
 	ex    runtime.Executor
 	batch = [16]byte{0xb, 15: 0xb}
 	// five sources a second apart: 1 and 3 of kind "a" carry an open mark,
@@ -195,28 +194,25 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&isBatch{}, &isSource{}, &isMark{}, &isItem{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := pgdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_insert_select_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
-	_, err = pool.Exec(ctx, "INSERT INTO is_batches (id, name) VALUES ($1, 'b')", batch)
+	_, err = pool.Exec(ctx, "INSERT INTO is_batches (id, name) VALUES ($1, 'b')", []any{batch})
 	must(err)
 	start := time.Now().Add(-time.Hour).UTC()
 	kinds := []string{"b", "a", "b", "a", "a"}
 	for i := range src {
 		src[i] = [16]byte{byte(i + 1), 15: byte(i + 1)}
-		_, err = pool.Exec(ctx, "INSERT INTO is_sources (id, kind, created_at, updated_at) VALUES ($1, $2, $3, $3)",
-			src[i], kinds[i], start.Add(time.Duration(i)*time.Second))
+		_, err = pool.Exec(ctx, "INSERT INTO is_sources (id, kind, created_at, updated_at) VALUES ($1, $2, $3, $3)", []any{src[i], kinds[i], start.Add(time.Duration(i)*time.Second)})
 		must(err)
 	}
 	for _, i := range []int{1, 3, 4} {
@@ -225,7 +221,7 @@ func TestMain(m *testing.M) {
 	must(issource.Delete(ctx, ex, src[4]))
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -253,7 +249,7 @@ func items(t *testing.T) [][16]byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "DELETE FROM is_items"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM is_items", nil); err != nil {
 		t.Fatal(err)
 	}
 	out := make([][16]byte, len(rows))

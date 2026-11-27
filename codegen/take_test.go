@@ -107,8 +107,7 @@ import (
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 
 	"IMPORTPATH/tkjob"
 )
@@ -127,7 +126,7 @@ func (j *tkJob) Schema(t *storm.Table) {
 }
 
 var (
-	pool *pgxpool.Pool
+	pool *pgdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -140,22 +139,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&tkJob{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := pgdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_take_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -171,15 +168,14 @@ func must(err error) {
 func seed(t *testing.T, n int) [][16]byte {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM tk_jobs"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM tk_jobs", nil); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now().Add(-time.Hour).UTC()
 	ids := make([][16]byte, n)
 	for i := range ids {
 		ids[i] = [16]byte{byte(i + 1), 15: byte(i + 1)}
-		if _, err := pool.Exec(ctx, "INSERT INTO tk_jobs (id, status, created_at, updated_at) VALUES ($1, 'queued', $2, $2)",
-			ids[i], start.Add(time.Duration(i)*time.Second)); err != nil {
+		if _, err := pool.Exec(ctx, "INSERT INTO tk_jobs (id, status, created_at, updated_at) VALUES ($1, 'queued', $2, $2)", []any{ids[i], start.Add(time.Duration(i)*time.Second)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -200,25 +196,25 @@ func queued() tkjob.Query {
 func TestTwoWorkersTakeTwoRows(t *testing.T) {
 	ids := seed(t, 3)
 	ctx := context.Background()
-	a, err := pool.Begin(ctx)
+	a, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Rollback(ctx)
-	b, err := pool.Begin(ctx)
+	b, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Rollback(ctx)
 	until := time.Now().Add(time.Minute).UTC().Truncate(time.Microsecond)
 
-	first, err := queued().Take(ctx, pgxdrv.Conn{C: a}, claim(until), nil)
+	first, err := queued().Take(ctx, a, claim(until), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The second worker asks while the first still holds its row: it must
 	// step over it rather than wait or take it again.
-	second, err := queued().Take(ctx, pgxdrv.Conn{C: b}, claim(until), nil)
+	second, err := queued().Take(ctx, b, claim(until), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -79,11 +79,11 @@ func TestEqLower_ReachesTheExpressionIndex(t *testing.T) {
 func plan(t *testing.T, sql string, args ...any) string {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pool.Acquire(ctx)
+	c, releaseC, err := pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Release()
+	defer releaseC()
 	if _, err := c.Exec(ctx, "SET LOCAL enable_seqscan = off"); err != nil {
 		t.Fatal(err)
 	}

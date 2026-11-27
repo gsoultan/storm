@@ -76,6 +76,17 @@ func NewPoolConfig(ctx context.Context, cfg Config) (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Database != "" {
+		parsed.Database = cfg.Database
+	}
+	if len(cfg.RuntimeParams) > 0 {
+		if parsed.RuntimeParams == nil {
+			parsed.RuntimeParams = map[string]string{}
+		}
+		for k, v := range cfg.RuntimeParams {
+			parsed.RuntimeParams[k] = v
+		}
+	}
 	n := cfg.MaxConns
 	if n <= 0 {
 		n = DefaultMaxConns
@@ -272,6 +283,17 @@ func (p *Pool) Acquire(ctx context.Context) (*caduceus.Conn, func(), error) {
 	}
 	var once sync.Once
 	return c.c, func() { once.Do(func() { p.release(c) }) }, nil
+}
+
+// QueryRow runs a statement expected to return at most one row, for the ad hoc
+// question no model has words for. The connection goes back to the pool once
+// the row is scanned.
+func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) *Row {
+	c, err := p.acquire(ctx)
+	if err != nil {
+		return &Row{err: err}
+	}
+	return &Row{r: c.c.QueryRow(ctx, sql, params(args)...), release: func() { p.release(c) }}
 }
 
 // DatabaseSize reports the bytes the pool's database takes on disk, as

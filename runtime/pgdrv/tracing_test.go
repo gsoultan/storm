@@ -47,7 +47,8 @@ func (r *recordingTracer) TraceQueryStart(ctx context.Context, _ *caduceus.Conn,
 	return ctx
 }
 
-func (r *recordingTracer) TraceQueryEnd(context.Context, *caduceus.Conn, caduceus.TraceQueryEndData) {}
+func (r *recordingTracer) TraceQueryEnd(context.Context, *caduceus.Conn, caduceus.TraceQueryEndData) {
+}
 
 // Batch: caduceus reports the batch with every statement in it.
 func (r *recordingTracer) TraceBatchStart(ctx context.Context, _ *caduceus.Conn, data caduceus.TraceBatchStartData) context.Context {
@@ -59,7 +60,8 @@ func (r *recordingTracer) TraceBatchStart(ctx context.Context, _ *caduceus.Conn,
 	return ctx
 }
 
-func (r *recordingTracer) TraceBatchEnd(context.Context, *caduceus.Conn, caduceus.TraceBatchEndData) {}
+func (r *recordingTracer) TraceBatchEnd(context.Context, *caduceus.Conn, caduceus.TraceBatchEndData) {
+}
 
 // CopyFrom carries no SQL, so record it as the operation it is.
 func (r *recordingTracer) TraceCopyFromStart(ctx context.Context, _ *caduceus.Conn, data caduceus.TraceCopyFromStartData) context.Context {
@@ -69,7 +71,8 @@ func (r *recordingTracer) TraceCopyFromStart(ctx context.Context, _ *caduceus.Co
 	return ctx
 }
 
-func (r *recordingTracer) TraceCopyFromEnd(context.Context, *caduceus.Conn, caduceus.TraceCopyFromEndData) {}
+func (r *recordingTracer) TraceCopyFromEnd(context.Context, *caduceus.Conn, caduceus.TraceCopyFromEndData) {
+}
 
 func (r *recordingTracer) seen() []string {
 	r.mu.Lock()

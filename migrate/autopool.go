@@ -12,8 +12,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gsoultan/storm/runtime/pgdrv"
 	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // AutoPool is Auto against a pool, which is what an application actually holds.
@@ -31,11 +31,11 @@ import (
 //	}
 //
 // where s came from storm.Build(model.All()...).
-func AutoPool(ctx context.Context, p *pgxpool.Pool, want *schema.Schema, o AutoOptions) (Result, error) {
-	c, err := p.Acquire(ctx)
+func AutoPool(ctx context.Context, p *pgdrv.Pool, want *schema.Schema, o AutoOptions) (Result, error) {
+	c, release, err := p.Acquire(ctx)
 	if err != nil {
 		return Result{}, fmt.Errorf("acquire a connection to migrate on: %w", err)
 	}
-	defer c.Release()
-	return Auto(ctx, c.Conn(), want, o)
+	defer release()
+	return Auto(ctx, c, want, o)
 }

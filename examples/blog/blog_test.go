@@ -25,12 +25,11 @@ import (
 	"github.com/gsoultan/storm/examples/blog/store/article"
 	"github.com/gsoultan/storm/examples/blog/store/author"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 )
 
 var (
-	pool *pgxpool.Pool
+	pool *pgdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -45,27 +44,25 @@ func TestMain(m *testing.M) {
 	// The pool comes from storm's constructor so the fast parameter encoders
 	// are installed; everything else about it is ordinary pgx.
 	var err error
-	pool, err = pgxdrv.NewPool(ctx, dsn)
+	pool, err = pgdrv.NewPool(ctx, dsn)
 	must(err)
 	defer pool.Close()
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	// The schema: model → DDL, applied to this example's own namespace. In a
 	// real project `storm diff` emits this as a reviewable migration instead —
 	// storm itself never applies DDL.
 	s, err := storm.Build(model.All()...)
 	must(err)
-	_, err = pool.Exec(ctx, "DROP SCHEMA IF EXISTS blog_example CASCADE; CREATE SCHEMA blog_example")
+	_, err = pool.Exec(ctx, "DROP SCHEMA IF EXISTS blog_example CASCADE; CREATE SCHEMA blog_example", nil)
 	must(err)
-	_, err = pool.Exec(ctx, "SET search_path TO blog_example; "+pgddl.Create(s))
+	_, err = pool.Exec(ctx, "SET search_path TO blog_example; "+pgddl.Create(s), nil)
 	must(err)
 	// Scope every pooled connection to the namespace.
-	cfg := pool.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = "blog_example"
 	pool.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": "blog_example"}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	os.Exit(m.Run())
 }
@@ -287,11 +284,11 @@ func TestTheTour(t *testing.T) {
 
 	// ---- Transactions are Executors you were given: the same generated code
 	// runs inside one, and a rollback erases everything it did.
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	txe := pgxdrv.Tx{T: tx}
+	txe := tx
 	nb := author.Create()
 	nb.SetName("Ephemeral")
 	nb.SetEmail("gone@example.com")

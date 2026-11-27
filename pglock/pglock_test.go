@@ -15,8 +15,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/pglock"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 )
 
 // Two sessions and one key: whoever holds it keeps the other out, a session
@@ -28,18 +27,18 @@ func TestTheLockIsTheSessionsThatTookIt(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	session := func() pgxdrv.Conn {
-		c, err := pool.Acquire(ctx)
+	session := func() pgdrv.Conn {
+		c, releaseC, err := pool.Acquire(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(c.Release)
-		return pgxdrv.Conn{C: c}
+		t.Cleanup(releaseC)
+		return pgdrv.Conn{C: c}
 	}
 	owner, rival := session(), session()
 	const key = int64(0x5701_0c4) // storm's own: no other test takes it
@@ -75,11 +74,11 @@ func TestTheLockIsTheSessionsThatTookIt(t *testing.T) {
 		t.Fatalf("let go of every lock: %v", err)
 	}
 
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := pglock.TryLockXact(ctx, pgxdrv.Tx{T: tx}, key); err != nil || !got {
+	if got, err := pglock.TryLockXact(ctx, tx, key); err != nil || !got {
 		t.Fatalf("a free transaction lock: %v, %v; want it taken", got, err)
 	}
 	if got, err := pglock.TryLock(ctx, owner, key); err != nil || got {
@@ -103,12 +102,12 @@ func TestAFailedStatementSaysWhichLock(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pool.Close()
-	ex := pgxdrv.Pool{P: pool}
+	ex := pool
 	if _, err := pglock.TryLock(ctx, ex, 1); err == nil {
 		t.Fatal("a closed pool took a lock")
 	}

@@ -24,6 +24,14 @@ type Config struct {
 	// DefaultAcquireTimeout; negative waits as long as the context allows.
 	AcquireTimeout time.Duration
 
+	// Database, when set, is the database to connect to in place of the
+	// DSN's: one DSN for a cluster, one pool per shard or tenant database.
+	Database string
+
+	// RuntimeParams are set on every connection at startup, over what the
+	// DSN says: search_path, application_name, statement_timeout and so on.
+	RuntimeParams map[string]string
+
 	// Options tunes every connection the pool opens.
 	Options Options
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/gsoultan/storm/internal/planspike/store/org"
 	"github.com/gsoultan/storm/internal/planspike/store/user"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
 )
 
 // lockFixture gives a test its own org and a known number of users in it —
@@ -63,18 +62,18 @@ func TestLock_SkipLockedGivesTwoWorkersDisjointRows(t *testing.T) {
 	ctx := context.Background()
 	orgID, rows := lockFixture(t, ctx, "queue", 4)
 
-	txA, err := pool.Begin(ctx)
+	txA, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer txA.Rollback(ctx)
-	txB, err := pool.Begin(ctx)
+	txB, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer txB.Rollback(ctx)
 
-	claim := func(tx pgxdrv.Tx, n int64) []user.Row {
+	claim := func(tx runtime.Executor, n int64) []user.Row {
 		t.Helper()
 		got, err := user.New().
 			Where(user.OrgID.Eq(orgID)).
@@ -88,12 +87,12 @@ func TestLock_SkipLockedGivesTwoWorkersDisjointRows(t *testing.T) {
 		return got
 	}
 
-	first := claim(pgxdrv.Tx{T: txA}, 2)
+	first := claim(txA, 2)
 	if len(first) != 2 {
 		t.Fatalf("worker A claimed %d rows, want 2", len(first))
 	}
 	// B must not block, and must not see A's rows.
-	second := claim(pgxdrv.Tx{T: txB}, 2)
+	second := claim(txB, 2)
 	if len(second) != 2 {
 		t.Fatalf("worker B claimed %d rows, want 2", len(second))
 	}
@@ -110,12 +109,12 @@ func TestLock_SkipLockedGivesTwoWorkersDisjointRows(t *testing.T) {
 
 	// And the third worker gets nothing rather than waiting: every row is
 	// held. Fewer rows than Limit asked for is the point of the form.
-	txC, err := pool.Begin(ctx)
+	txC, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer txC.Rollback(ctx)
-	if got := claim(pgxdrv.Tx{T: txC}, 2); len(got) != 0 {
+	if got := claim(txC, 2); len(got) != 0 {
 		t.Fatalf("worker C claimed %d rows from a fully locked table", len(got))
 	}
 }
@@ -127,21 +126,21 @@ func TestLock_NoWaitFailsAtOnceWithAClassifiedError(t *testing.T) {
 	ctx := context.Background()
 	orgID, _ := lockFixture(t, ctx, "nowait", 1)
 
-	txA, err := pool.Begin(ctx)
+	txA, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer txA.Rollback(ctx)
-	if _, err := user.New().Where(user.OrgID.Eq(orgID)).ForUpdate().All(ctx, pgxdrv.Tx{T: txA}, nil); err != nil {
+	if _, err := user.New().Where(user.OrgID.Eq(orgID)).ForUpdate().All(ctx, txA, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	txB, err := pool.Begin(ctx)
+	txB, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer txB.Rollback(ctx)
-	_, err = user.New().Where(user.OrgID.Eq(orgID)).ForUpdateNoWait().All(ctx, pgxdrv.Tx{T: txB}, nil)
+	_, err = user.New().Where(user.OrgID.Eq(orgID)).ForUpdateNoWait().All(ctx, txB, nil)
 	if !errors.Is(err, runtime.ErrLockNotAvailable) {
 		t.Fatalf("err = %v, want runtime.ErrLockNotAvailable", err)
 	}
@@ -247,16 +246,16 @@ func TestLock_NoKeyUpdateLetsAChildInWhileWritersStillWait(t *testing.T) {
 	ctx := context.Background()
 	orgID, _ := lockFixture(t, ctx, "nokey", 0)
 
-	held, err := pool.Begin(ctx)
+	held, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer held.Rollback(ctx)
-	if _, err := org.New().IDEq(orgID).ForNoKeyUpdate().All(ctx, pgxdrv.Tx{T: held}, nil); err != nil {
+	if _, err := org.New().IDEq(orgID).ForNoKeyUpdate().All(ctx, held, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	child, err := pool.Begin(ctx)
+	child, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,16 +267,16 @@ func TestLock_NoKeyUpdateLetsAChildInWhileWritersStillWait(t *testing.T) {
 	nu.SetOrgID(orgID)
 	quick, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if _, err := nu.Insert(quick, pgxdrv.Tx{T: child}); err != nil {
+	if _, err := nu.Insert(quick, child); err != nil {
 		t.Fatalf("a child of the locked org was made to wait or refused: %v", err)
 	}
 
-	writer, err := pool.Begin(ctx)
+	writer, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer writer.Rollback(ctx)
-	_, err = org.New().IDEq(orgID).ForUpdateNoWait().All(ctx, pgxdrv.Tx{T: writer}, nil)
+	_, err = org.New().IDEq(orgID).ForUpdateNoWait().All(ctx, writer, nil)
 	if !errors.Is(err, runtime.ErrLockNotAvailable) {
 		t.Fatalf("a second writer got %v; want it held off by the lock", err)
 	}

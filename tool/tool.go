@@ -50,6 +50,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/codegen"
 	"github.com/gsoultan/storm/codegen/mongo"
@@ -60,11 +61,11 @@ import (
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/migrate/sum"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 	"github.com/gsoultan/storm/schema"
 	"github.com/gsoultan/storm/schema/pg"
 	"github.com/gsoultan/storm/tool/mstool"
 	"github.com/gsoultan/storm/tool/oratool"
-	"github.com/jackc/pgx/v5"
 )
 
 // modulePath is storm's own import path, which generated code imports for the
@@ -269,7 +270,7 @@ func run(args []string) error {
 		return nil
 	}
 	// Migrations, drift, EXPLAIN and import all read a live PostgreSQL
-	// catalogue through pgx. Refusing here is better than connecting: a MySQL
+	// catalogue through caduceus. Refusing here is better than connecting: a MySQL
 	// DSN handed to `storm diff` would fail somewhere deep with a message about
 	// pg_namespace, and the fix — that the command has no MySQL form — would
 	// not be in it.
@@ -450,12 +451,12 @@ func buildModel() (*schema.Schema, error) {
 	return storm.Build(Models...)
 }
 
-func connect(dsn string) (*pgx.Conn, context.Context, func(), error) {
+func connect(dsn string) (*caduceus.Conn, context.Context, func(), error) {
 	if dsn == "" {
 		return nil, nil, nil, errors.New("no -dsn and no $STORM_DSN")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	c, err := pgx.Connect(ctx, dsn)
+	c, err := pgdrv.Connect(ctx, dsn, pgdrv.Options{})
 	if err != nil {
 		cancel()
 		return nil, nil, nil, err

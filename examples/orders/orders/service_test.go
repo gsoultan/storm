@@ -22,8 +22,7 @@ import (
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 
 	"example.com/orders/model"
 	"example.com/orders/orders"
@@ -35,7 +34,7 @@ import (
 )
 
 var (
-	pool *pgxpool.Pool
+	pool *pgdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -49,7 +48,7 @@ func TestMain(m *testing.M) {
 	}
 	ctx := context.Background()
 
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := pgdrv.NewPool(ctx, dsn)
 	must(err)
 
 	// model → DDL, applied to this example's own namespace. A real project
@@ -58,21 +57,19 @@ func TestMain(m *testing.M) {
 	s, err := storm.Build(&model.Product{}, &model.StockItem{}, &model.Customer{},
 		&model.Order{}, &model.OrderLine{}, &model.Booking{})
 	must(err)
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
 
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
 	defer pool.Close()
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	os.Exit(code)
 }
 

@@ -18,14 +18,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// Conn is the slice of pgx this package needs.
+// Conn is the slice of a caduceus connection this package needs: a
+// *caduceus.Conn, or a *caduceus.Tx.
 type Conn interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Query(ctx context.Context, sql string, args ...any) (*caduceus.Rows, error)
 }
 
 // Introspect reads one namespace (usually "public") into the IR.
@@ -376,8 +376,8 @@ func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error
 // interface so Introspect keeps working for a Conn that cannot set it — an
 // offline snapshot reader, say — rather than requiring one.
 type searchPather interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (caduceus.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) *caduceus.Row
 }
 
 // setSearchPath scopes the connection to ns and returns a restore function.

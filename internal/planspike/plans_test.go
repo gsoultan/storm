@@ -22,8 +22,7 @@ import (
 	"github.com/gsoultan/storm/internal/planspike/store/user"
 	"github.com/gsoultan/storm/internal/testmodel"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 )
 
 const (
@@ -32,7 +31,7 @@ const (
 	planspikeSchm = "planspike"
 )
 
-var pool *pgxpool.Pool
+var pool *pgdrv.Pool
 
 func TestMain(m *testing.M) {
 	dsn := os.Getenv("STORM_DSN")
@@ -42,18 +41,13 @@ func TestMain(m *testing.M) {
 	}
 	ctx := context.Background()
 	var err error
-	cfg, err := pgxpool.ParseConfig(dsn)
-	must(err)
 	// search_path must be set on the *pool*, not on one checked-out connection.
 	// Setting it with a SET statement configures whichever connection happened
 	// to serve it, so a concurrent test lands on a different one and sees the
 	// public schema — which cost a debugging round.
-	cfg.ConnConfig.RuntimeParams["search_path"] = planspikeSchm
-	// Through storm's constructor so the fast parameter encoders — uuid[],
-	// Decimal, Interval — are installed. Without this, interval and decimal
-	// binds either bypass our codecs or fail, and the tests exercise a pool
-	// no adopter would run.
-	pool, err = pgxdrv.NewPoolConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{
+		DSN: dsn, RuntimeParams: map[string]string{"search_path": planspikeSchm},
+	})
 	must(err)
 	defer pool.Close()
 
@@ -71,7 +65,7 @@ func TestMain(m *testing.M) {
 }
 
 func run(ctx context.Context, sql string) error {
-	_, err := pool.Exec(ctx, sql)
+	_, err := pool.Exec(ctx, sql, nil)
 	return err
 }
 
@@ -99,7 +93,7 @@ func seed(ctx context.Context) error {
 
 func db(t *testing.T) (runtime.Executor, *runtime.CountingExecutor) {
 	t.Helper()
-	c := &runtime.CountingExecutor{Inner: pgxdrv.Pool{P: pool}}
+	c := &runtime.CountingExecutor{Inner: pool}
 	return c, c
 }
 
@@ -458,7 +452,12 @@ func TestJoinMatchesHandWrittenSQL(t *testing.T) {
 	}
 
 	// And the values must match row for row, not just the count.
-	rows, err := pool.Query(ctx,
+	raw, release, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	rows, err := raw.Query(ctx,
 		`SELECT users.id, users.email, orgs.name FROM users JOIN orgs ON users.org_id = orgs.id
 		  ORDER BY users.id LIMIT 1000`)
 	if err != nil {

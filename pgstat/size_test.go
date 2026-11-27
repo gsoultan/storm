@@ -14,8 +14,7 @@ import (
 	"testing"
 
 	"github.com/gsoultan/storm/pgstat"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 )
 
 // A table with rows in it takes space, and the database holding it takes at
@@ -26,7 +25,7 @@ func TestSizesCountWhatATableHolds(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,12 +38,12 @@ func TestSizesCountWhatATableHolds(t *testing.T) {
 		"INSERT INTO " + ns + ".filled SELECT n, repeat('x', 200) FROM generate_series(1, 1000) AS n",
 		"CREATE TABLE " + ns + ".empty (id int)",
 	} {
-		if _, err := pool.Exec(ctx, stmt); err != nil {
+		if _, err := pool.Exec(ctx, stmt, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE") })
-	ex := pgxdrv.Pool{P: pool}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil) })
+	ex := pool
 
 	sizes, err := pgstat.TableSizes(ctx, ex, ns)
 	if err != nil {

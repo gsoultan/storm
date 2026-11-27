@@ -156,8 +156,7 @@ import (
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 
 	"IMPORTPATH/tnjob"
 	"IMPORTPATH/tnorg"
@@ -166,7 +165,7 @@ import (
 MODELS
 
 var (
-	pool *pgxpool.Pool
+	pool *pgdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -179,22 +178,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&tnOrg{}, &tnJob{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := pgdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_takes_turns_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -220,7 +217,7 @@ var (
 func seed(t *testing.T) (names map[[16]byte]string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM tn_jobs; DELETE FROM tn_orgs"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM tn_jobs; DELETE FROM tn_orgs", nil); err != nil {
 		t.Fatal(err)
 	}
 	orgD := [16]byte{4}
@@ -337,7 +334,7 @@ func TestTheGroupsStartFromAndWrap(t *testing.T) {
 func TestTheGroupsAndTheRowsHaveTheirOwnPredicates(t *testing.T) {
 	names := seed(t)
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "UPDATE tn_jobs SET status = 'done' WHERE org_id = $1 AND due_at < $2", orgB, now); err != nil {
+	if _, err := pool.Exec(ctx, "UPDATE tn_jobs SET status = 'done' WHERE org_id = $1 AND due_at < $2", []any{orgB, now}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := due().Limit(10).AllTurns(ctx, ex, pending(), orgB, 1, nil)

@@ -17,7 +17,6 @@ import (
 	"github.com/gsoultan/storm/internal/planspike/store/org"
 	"github.com/gsoultan/storm/internal/planspike/store/user"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
 )
 
 // THE QUESTION THIS FILE EXISTS TO ANSWER: is a failed Unit flush atomic?
@@ -65,11 +64,11 @@ func TestTx_RollbackErasesGeneratedWrites(t *testing.T) {
 	ctx := context.Background()
 	outer, _ := db(t)
 
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ex := pgxdrv.Tx{T: tx}
+	ex := tx
 
 	r := mustCreate(t, ctx, ex, "txroll@example.com", "Ephemeral")
 
@@ -92,11 +91,11 @@ func TestTx_CommitPersistsGeneratedWrites(t *testing.T) {
 	ctx := context.Background()
 	outer, _ := db(t)
 
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := mustCreate(t, ctx, pgxdrv.Tx{T: tx}, "txcommit@example.com", "Durable")
+	r := mustCreate(t, ctx, tx, "txcommit@example.com", "Durable")
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -113,12 +112,12 @@ func TestTx_EverySurfaceComposesInsideOneTransaction(t *testing.T) {
 	ctx := context.Background()
 	outer, _ := db(t)
 
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	ex := runtime.Executor(pgxdrv.Tx{T: tx})
+	ex := runtime.Executor(tx)
 
 	orgID := newID()
 	un := store.NewUnit()

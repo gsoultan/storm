@@ -10,6 +10,8 @@ package storm_test
 
 import (
 	"context"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 	"os"
 	"strings"
 	"testing"
@@ -20,7 +22,6 @@ import (
 	"github.com/gsoultan/storm/migrate"
 	"github.com/gsoultan/storm/schema"
 	"github.com/gsoultan/storm/schema/pg"
-	"github.com/jackc/pgx/v5"
 )
 
 func dsn(t testing.TB) string {
@@ -31,9 +32,9 @@ func dsn(t testing.TB) string {
 	return d
 }
 
-func connect(t testing.TB) *pgx.Conn {
+func connect(t testing.TB) *caduceus.Conn {
 	t.Helper()
-	c, err := pgx.Connect(context.Background(), dsn(t))
+	c, err := pgdrv.Connect(context.Background(), dsn(t), pgdrv.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func connect(t testing.TB) *pgx.Conn {
 
 // applyInto creates a scratch namespace, applies ddl inside it, and reads it
 // back into the IR.
-func applyInto(t *testing.T, c *pgx.Conn, ns, ddl string) *schema.Schema {
+func applyInto(t *testing.T, c *caduceus.Conn, ns, ddl string) *schema.Schema {
 	t.Helper()
 	ctx := context.Background()
 	// btree_gist is what lets an exclusion constraint mix `=` on a scalar with
