@@ -11,13 +11,10 @@ package schemapg
 import (
 	"context"
 	"fmt"
-
-	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/schema"
 )
 
 // Session is a connection of any driver that introspection reads through,
-// named without naming the driver. storm's caduceus adapter gives one.
+// named without naming the driver. migrate/caduceusmigrate gives one for caduceus.
 type Session interface {
 	Query(ctx context.Context, sql string, args ...any) (Rows, error)
 	Exec(ctx context.Context, sql string, args ...any) error
@@ -63,25 +60,4 @@ func showSearchPath(ctx context.Context, c Session) (string, error) {
 		return "", fmt.Errorf("read search_path: %w", err)
 	}
 	return prev, nil
-}
-
-// IntrospectCaduceus is Introspect on a caduceus connection.
-func IntrospectCaduceus(ctx context.Context, c *caduceus.Conn, namespace string) (*schema.Schema, error) {
-	return IntrospectSession(ctx, caduceusSession{c}, namespace)
-}
-
-// caduceusSession is a caduceus connection as a Session.
-type caduceusSession struct{ c *caduceus.Conn }
-
-func (s caduceusSession) Query(ctx context.Context, sql string, args ...any) (Rows, error) {
-	r, err := s.c.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	return r, nil
-}
-
-func (s caduceusSession) Exec(ctx context.Context, sql string, args ...any) error {
-	_, err := s.c.Exec(ctx, sql, args...)
-	return err
 }

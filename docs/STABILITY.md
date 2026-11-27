@@ -73,7 +73,7 @@ impossible; mixed-version generated trees are not a supported state.
 6. The **packages an adopter's own code calls**: `storm`, `runtime` — the
    port, its errors, and every type a generated signature names — the
    adapters `runtime/pgxdrv`, `runtime/caduceusdrv`, `runtime/mydrv` and
-   `runtime/msdrv`, and `migrate`.
+   `runtime/msdrv`, and `migrate` with `migrate/caduceusmigrate`.
 
    This one is checked, not just stated. `scripts/check/apicompat.sh` runs on
    every push: it compares these packages' exported API against the last v1

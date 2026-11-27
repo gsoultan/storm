@@ -33,12 +33,16 @@ on pgx.
   reads a row of twenty types through both and compares them byte for byte.
   storm's `Decimal`, `Interval`, `TimeOfDay`, `TstzRange`, `JSON` and
   `[]Decimal` arguments are sent as the text PostgreSQL reads for each.
-- **Automigrate and introspection over caduceus.** `migrate.AutoCaduceus`,
-  `migrate.AutoCaduceusPool` and `migrate.ForCaduceus` are `Auto`, `AutoPool`
-  and `ForWith` on caduceus, and
-  `schemapg.IntrospectCaduceus` (or `IntrospectSession`, for any driver) reads
-  a namespace through it. Automigrating `internal/testmodel` through caduceus
-  leaves nothing for pgx to do, and both drivers read back the same schema.
+- **Automigrate and introspection over caduceus.** The new package
+  `migrate/caduceusmigrate` has `Auto`, `AutoPool`, `For` and `Introspect`,
+  which are `migrate.Auto`, `migrate.AutoPool`, `migrate.ForWith` and
+  `schemapg.Introspect` on caduceus. It is a package of its own so that
+  `migrate`, `schema/pg` and the `storm` command never link caduceus, and a
+  project on pgx needs nothing new in its go.mod. `migrate.Session`,
+  `migrate.AutoSession`, `migrate.ForSession` and `schemapg.IntrospectSession`
+  take a connection of any other driver the same way. Automigrating
+  `internal/testmodel` through caduceus leaves nothing for pgx to do, and both
+  drivers read back the same schema.
 
 ### Full-text search on MySQL and MariaDB
 

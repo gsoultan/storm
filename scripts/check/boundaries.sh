@@ -37,14 +37,18 @@ for f in $(git ls-files '*.go' 2>/dev/null | grep -v '_test.go' | grep -v '^benc
   if grep -q 'jackc/pgx' "$f"; then note "pgx imported outside its adapter: $f"; fi
 done
 
-# The same for caduceus: its adapter, the introspection that reads pg_catalog
-# through it, and the migration runner that applies DDL over it.
+# The same for caduceus: its adapter, and the package that runs automigrate
+# and introspection over it. Nothing else may import it, so that a project on
+# pgx, and the storm command's bootstrap, never need caduceus in their go.mod.
 for f in $(git ls-files '*.go'); do
   case "$f" in
-    runtime/caduceusdrv/*|schema/pg/*|migrate/*|examples/*) continue ;;
+    runtime/caduceusdrv/*|migrate/caduceusmigrate/*|examples/*) continue ;;
   esac
   if grep -q '"github.com/gsoultan/caduceus' "$f"; then note "caduceus imported outside its adapter: $f"; fi
 done
+if go list -deps ./tool 2>/dev/null | grep -q '^github.com/gsoultan/caduceus'; then
+  note "storm/tool links caduceus, so every adopter's bootstrap would need it in go.mod"
+fi
 
 echo "== importing storm does not import a driver =="
 # The property that survived migrate/ becoming runtime-linked: `import

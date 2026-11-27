@@ -56,7 +56,7 @@ func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schem
 }
 
 // normalize is Normalize through any driver's session.
-func normalize(ctx context.Context, c session, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
+func normalize(ctx context.Context, c Session, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
 	if scratch == "" {
 		// Per-process, not a shared literal: two processes normalising against
 		// one database — two test binaries under `go test ./...`, or two CI
@@ -71,26 +71,26 @@ func normalize(ctx context.Context, c session, scratch string, s *schema.Schema)
 
 	// Preserve the caller's search_path: normalisation must not be observable.
 	var prev string
-	if err := c.scan(ctx, &prev, "SHOW search_path"); err != nil {
+	if err := c.Scan(ctx, &prev, "SHOW search_path"); err != nil {
 		return nil, fmt.Errorf("read search_path: %w", err)
 	}
 	defer func() {
-		_ = c.exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE")
-		if e := c.exec(ctx, "SET search_path TO "+prev); e != nil && err == nil {
+		_ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE")
+		if e := c.Exec(ctx, "SET search_path TO "+prev); e != nil && err == nil {
 			err = fmt.Errorf("restore search_path: %w", e)
 		}
 	}()
 
-	if err := c.exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
+	if err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
 		return nil, fmt.Errorf("create scratch schema: %w", err)
 	}
-	if err := c.exec(ctx, "SET search_path TO "+scratch); err != nil {
+	if err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
 		return nil, err
 	}
-	if err := c.exec(ctx, pgddl.Create(s)); err != nil {
+	if err := c.Exec(ctx, pgddl.Create(s)); err != nil {
 		return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
 	}
-	norm, err := c.introspect(ctx, scratch)
+	norm, err := c.Introspect(ctx, scratch)
 	if err != nil {
 		return nil, err
 	}
@@ -150,12 +150,12 @@ func ForWith(ctx context.Context, c *pgx.Conn, target string, want *schema.Schem
 }
 
 // forWith is ForWith through any driver's session.
-func forWith(ctx context.Context, c session, target string, want *schema.Schema, o Options) (Plan, error) {
+func forWith(ctx context.Context, c Session, target string, want *schema.Schema, o Options) (Plan, error) {
 	norm, err := normalize(ctx, c, "", want)
 	if err != nil {
 		return Plan{}, err
 	}
-	cur, err := c.introspect(ctx, target)
+	cur, err := c.Introspect(ctx, target)
 	if err != nil {
 		return Plan{}, fmt.Errorf("introspect %s: %w", target, err)
 	}
