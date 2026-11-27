@@ -23,15 +23,15 @@ import (
 // scheduled job — one per month, the usual shape — presents storm with tables
 // that exist in the database and in no model. Told apart, they are left alone;
 // not told apart, the next diff drops the audit history.
-func loadPartitions(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	if err := loadPartitionStrategies(ctx, c, ns, s); err != nil {
+func loadPartitions(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	if err := loadPartitionStrategies(ctx, q, ns, s); err != nil {
 		return err
 	}
-	return loadPartitionBounds(ctx, c, ns, s)
+	return loadPartitionBounds(ctx, q, ns, s)
 }
 
-func loadPartitionStrategies(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadPartitionStrategies(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT cl.relname,
 		       CASE p.partstrat WHEN 'r' THEN 'RANGE'
 		                        WHEN 'l' THEN 'LIST'
@@ -64,8 +64,8 @@ func loadPartitionStrategies(ctx context.Context, c Conn, ns string, s *schema.S
 	return rows.Err()
 }
 
-func loadPartitionBounds(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadPartitionBounds(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT child.relname, parent.relname,
 		       COALESCE(pg_get_expr(child.relpartbound, child.oid), '')
 		FROM pg_inherits i

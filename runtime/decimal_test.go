@@ -131,3 +131,20 @@ func FuzzDecodeNumeric(f *testing.F) {
 		}
 	})
 }
+
+// A negative scale is trailing zeros: {1464, -1} is 14640, and String must say
+// so. The fuzzer found it rendering 1464, a factor of ten off.
+func TestDecimal_NegativeScaleString(t *testing.T) {
+	for _, c := range []struct {
+		d    runtime.Decimal
+		want string
+	}{
+		{runtime.Decimal{Unscaled: 1464, Scale: -1}, "14640"},
+		{runtime.Decimal{Unscaled: -12, Scale: -3}, "-12000"},
+		{runtime.Decimal{Unscaled: 0, Scale: -2}, "0"},
+	} {
+		if got := c.d.String(); got != c.want {
+			t.Errorf("%+v renders %q, want %q", c.d, got, c.want)
+		}
+	}
+}

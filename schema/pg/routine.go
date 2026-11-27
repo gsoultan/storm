@@ -24,8 +24,8 @@ import (
 // declaration in the model, and emits a migration that DROPs the extension's
 // functions out from under it.
 
-func loadFunctions(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadFunctions(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT p.proname,
 		       pg_get_function_arguments(p.oid),
 		       pg_get_function_result(p.oid),
@@ -82,8 +82,8 @@ func volatility(c string) string {
 	}
 }
 
-func loadViews(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadViews(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT cl.relname, pg_get_viewdef(cl.oid, true)
 		FROM pg_class cl
 		JOIN pg_namespace n ON n.oid = cl.relnamespace
@@ -110,8 +110,8 @@ func loadViews(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
 	return rows.Err()
 }
 
-func loadTriggers(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadTriggers(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT t.tgname, cl.relname, pg_get_triggerdef(t.oid)
 		FROM pg_trigger t
 		JOIN pg_class cl ON cl.oid = t.tgrelid
