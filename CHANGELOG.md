@@ -44,6 +44,13 @@ on pgx.
   `internal/testmodel` through caduceus leaves nothing for pgx to do, and both
   drivers read back the same schema.
 
+### Fixed: a primary key column named `key`
+
+`Delete` took the key as a parameter called `key` and built the Row it hands
+the delete hooks in a variable of the same name, so a table whose primary key
+column is `key` generated a package that did not compile. The Row's variable
+now takes a name no parameter has. MongoDB's generator had the same fault.
+
 ### Full-text search on MySQL and MariaDB
 
 A `FULLTEXT` index could be declared and migrated, but nothing in the
