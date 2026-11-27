@@ -98,17 +98,21 @@ func normalize(ctx context.Context, c Session, scratch string, s *schema.Schema)
 	return norm, nil
 }
 
-// carryConversions copies each column's ConvertFrom and FillNulls from the
-// model onto its normalised form. The catalogue has no place for either, so
-// the round trip through the scratch namespace would otherwise lose them.
+// carryConversions copies the migration facts — each column's ConvertFrom,
+// FillNulls and RenamedFrom, and each table's RenamedFrom — from the model onto
+// its normalised form. The catalogue has no place for any of them, so the
+// round trip through the scratch namespace would otherwise lose them. Every
+// dialect's normaliser calls it.
 func carryConversions(norm, model *schema.Schema) {
 	for _, t := range model.Tables {
 		nt := norm.Table(t.Name)
 		if nt == nil {
 			continue
 		}
+		nt.RenamedFrom = t.RenamedFrom
 		for _, c := range t.Columns {
 			if nc := nt.Column(c.Name); nc != nil {
+				nc.RenamedFrom = c.RenamedFrom
 				if c.ConvertFrom != "" {
 					nc.ConvertFrom = c.ConvertFrom
 				}
@@ -201,8 +205,15 @@ func validIdent(s string) error {
 func declaredOnly(cur, want *schema.Schema) *schema.Schema {
 	out := *cur
 	out.Tables = nil
+	renamed := map[string]bool{}
+	for _, t := range want.Tables {
+		if t.RenamedFrom != "" {
+			renamed[t.RenamedFrom] = true
+		}
+	}
 	for _, t := range cur.Tables {
-		if want.Table(t.Name) != nil {
+		// A table the model renames is declared, under its old name.
+		if want.Table(t.Name) != nil || renamed[t.Name] {
 			out.Tables = append(out.Tables, t)
 		}
 	}

@@ -101,7 +101,9 @@ func NormalizeOracle(ctx context.Context, c Conn, s *schema.Schema) (_ *schema.S
 	if err != nil {
 		return nil, err
 	}
-	return unprefixed(got, prefix), nil
+	norm := unprefixed(got, prefix)
+	carryConversions(norm, s)
+	return norm, nil
 }
 
 // prefixed copies a schema with every NAME prefixed, and reports the tables it

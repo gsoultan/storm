@@ -14,6 +14,55 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Migrations: every schema change, in an order the server accepts
+
+The differ now compares, and the plan now carries, changes it used to miss
+entirely — each one a migration that looked complete and left the database
+different from the model:
+
+- **Primary keys** added, dropped or changed. The drop reads the key's name
+  from the catalogue on PostgreSQL and SQL Server, which name an inline key
+  themselves; Oracle has `DROP PRIMARY KEY`.
+- **Renames**: `t.RenamedFrom("old")` and `t.Col(&f).RenamedFrom("old")`
+  rename a table or column in place, keeping its rows, instead of a drop and
+  an empty add. The keys and indexes naming it follow it, `Reverse` renames
+  back, and a rename the database already has renders nothing.
+- **Exclusion constraints** added, dropped or changed (PostgreSQL).
+- **Comments** on tables and columns, including a new column's
+  (PostgreSQL, the one back end whose introspection reads them back).
+- **Generated columns**: a new expression is a drop and an add, with the
+  column's indexes and constraints rebuilt around it; a column that stops
+  being generated keeps its values with `DROP EXPRESSION` on PostgreSQL.
+- **Identity and serial** added or dropped on an existing column, with the
+  sequence moved past the rows the column already holds. SQL Server cannot
+  alter IDENTITY, nor Oracle add one, and the plan says so as a destructive
+  step.
+- **Foreign keys** now compare `DEFERRABLE`.
+- **Enum labels** are added where the model puts them (`BEFORE`/`AFTER`), not
+  always at the end, and a reorder is reported rather than ignored.
+
+And orders the steps so each one can run:
+
+- An index or constraint on a column being dropped is dropped **before** the
+  column. Every server drops them with the column, so the old order failed
+  on the `DROP INDEX` that followed — and under `Concurrently` the index drop
+  now stays in the transaction rather than running after the column is gone.
+- Foreign keys go first and come back last, including one that did not
+  change but references a key being replaced, and a new key on an existing
+  table waits for the table it references to be created.
+- Two dropped tables where one references the other drop the reference
+  first.
+- A view over a column being dropped or retyped is dropped before and
+  recreated after (PostgreSQL refuses the ALTER under it), and views over
+  views are created in dependency order, here and in `storm ddl`.
+- SQL Server: `DROP COLUMN` drops the column's DEFAULT constraint first
+  (error 5074), and an `ALTER COLUMN` takes the indexes, keys, CHECKs and
+  DEFAULT bound to the column off and puts them back around it.
+
+`migrate/converge_test.go` applies each kind of change to a live PostgreSQL,
+plainly and online, and then its reverse, and requires that the next plan be
+empty.
+
 ### A second PostgreSQL adapter: caduceus
 
 `runtime/caduceusdrv` runs every generated package over
