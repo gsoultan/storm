@@ -15,13 +15,17 @@ import (
 	"github.com/gsoultan/caduceus/wire"
 )
 
-// rows adapts caduceus's rows to runtime.Rows.
-//
-// done, when set, runs once when the rows are closed: a pool's rows hold
-// their connection until then, because they stream off it.
+// ender is what a result hands back when it is closed: a pool's connection,
+// which the rows hold until then because they stream off it. An interface
+// rather than a func, because *pooled satisfies it without a closure to
+// allocate on every query.
+type ender interface{ end() }
+
+// rows adapts caduceus's rows to runtime.Rows. done, when set, ends once, when
+// the rows are closed.
 type rows struct {
 	r    *caduceus.Rows
-	done func()
+	done ender
 }
 
 func (r *rows) Next() bool          { return r.r.Next() }
@@ -32,7 +36,7 @@ func (r *rows) Close() {
 	if r.done != nil {
 		done := r.done
 		r.done = nil
-		done()
+		done.end()
 	}
 }
 
@@ -86,14 +90,14 @@ func formatOK(oid uint32, format int16) bool {
 // newRows wraps a result after checking it can be decoded. On refusal the
 // result is closed here, done included: the caller gets an error and no Rows,
 // so there is nothing left for them to close.
-func newRows(r *caduceus.Rows, done func()) (*rows, error) {
+func newRows(r *caduceus.Rows, done ender) (*rows, error) {
 	for i, f := range r.Fields() {
 		if formatOK(f.DataTypeOID, f.Format) {
 			continue
 		}
 		r.Close()
 		if done != nil {
-			done()
+			done.end()
 		}
 		return nil, fmt.Errorf(
 			"storm: column %d %q (oid %d) arrived in text format and storm decodes binary — "+

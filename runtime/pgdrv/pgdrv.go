@@ -28,16 +28,19 @@ import (
 	"github.com/gsoultan/caduceus/wire"
 )
 
-// binaryResults are the types storm's generated scanners decode from their
-// binary form and that caduceus would otherwise ask for as text. A connection
-// storm reads from must ask for them in binary, which is why every connection
-// this package opens passes them, and why Options cannot take them away.
-var binaryResults = []uint32{
-	codec.Numeric,
-	codec.Inet,
-	codec.CIDR,
-	3910, // tstzrange
-	1231, // numeric[]
+// resultFormat asks for every column storm's generated scanners decode in
+// binary. caduceus asks for numeric, inet, cidr, tstzrange and numeric[] in
+// text by default, which storm's scanners refuse, so every connection this
+// package opens passes this, and Options cannot take it away. Everything else
+// is in the format caduceus would choose.
+func resultFormat(oid uint32) int16 {
+	switch oid {
+	case codec.Numeric, codec.Inet, codec.CIDR,
+		3910, // tstzrange
+		1231: // numeric[]
+		return 1
+	}
+	return codec.ResultFormat(oid)
 }
 
 // Options tunes the connections this package opens.
@@ -56,7 +59,7 @@ func (o Options) caduceus() caduceus.Options {
 	return caduceus.Options{
 		StatementCacheCapacity: o.StatementCacheCapacity,
 		Tracer:                 o.Tracer,
-		BinaryResults:          binaryResults,
+		ResultFormat:           resultFormat,
 	}
 }
 

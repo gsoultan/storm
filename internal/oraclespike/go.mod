@@ -2,7 +2,7 @@
 // for a measurement, exactly as internal/mssqlspike gains it no SQL Server one.
 module github.com/gsoultan/storm/v2/internal/oraclespike
 
-go 1.27.3
+go 1.27.4
 
 replace github.com/gsoultan/storm/v2 => ../..
 
@@ -11,4 +11,4 @@ require (
 	github.com/sijms/go-ora/v2 v2.9.0
 )
 
-require github.com/gsoultan/caduceus v0.1.1-0.20261127082938-346a3bade389 // indirect
+require github.com/gsoultan/caduceus v0.1.1-0.20261127084643-d08298f9aa90 // indirect

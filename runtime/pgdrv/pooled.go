@@ -14,8 +14,14 @@ import (
 	"github.com/gsoultan/caduceus"
 )
 
-// pooled is a pool's connection and when it was last given back.
+// pooled is a pool's connection, the pool it goes back to, and when it was
+// last given back.
 type pooled struct {
 	c         *caduceus.Conn
+	p         *Pool
 	idleSince time.Time
 }
+
+// end gives the connection back to its pool, which is what closing a pool's
+// rows does.
+func (c *pooled) end() { c.p.release(c) }

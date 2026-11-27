@@ -85,8 +85,8 @@ func TestAnUnrecognisedErrorPassesThrough(t *testing.T) {
 
 // A failed Query still gives a pool's connection back, exactly once.
 func TestAFailedQueryRunsDone(t *testing.T) {
-	released := 0
-	_, _ = query(context.Background(), &failing{err: unique()}, "SELECT 1", nil, func() { released++ })
+	var released counter
+	_, _ = query(context.Background(), &failing{err: unique()}, "SELECT 1", nil, &released)
 	if released != 1 {
 		t.Errorf("done ran %d times, want once", released)
 	}
@@ -156,3 +156,8 @@ type emptySource struct{}
 func (emptySource) Next() bool    { return false }
 func (emptySource) Values() []any { return nil }
 func (emptySource) Err() error    { return nil }
+
+// counter counts the times it is ended.
+type counter int
+
+func (c *counter) end() { *c++ }

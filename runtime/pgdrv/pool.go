@@ -150,7 +150,7 @@ func (p *Pool) acquire(ctx context.Context) (*pooled, error) {
 				<-p.sem
 				return nil, err
 			}
-			return &pooled{c: c}, nil
+			return &pooled{c: c, p: p}, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timeout:
@@ -224,7 +224,7 @@ func (p *Pool) Query(ctx context.Context, sql string, args []any) (runtime.Rows,
 	if err != nil {
 		return nil, err
 	}
-	return query(ctx, c.c, sql, args, func() { p.release(c) })
+	return query(ctx, c.c, sql, args, c)
 }
 
 func (p *Pool) Exec(ctx context.Context, sql string, args []any) (int64, error) {
@@ -278,7 +278,7 @@ func (p *Pool) BeginTx(ctx context.Context, o caduceus.TxOptions) (runtime.Tx, e
 		p.release(c)
 		return nil, classify(err)
 	}
-	return &Tx{T: t, release: func() { p.release(c) }}, nil
+	return &Tx{T: t, release: c}, nil
 }
 
 // Acquire takes a connection out of the pool for state that lives on a
@@ -301,7 +301,7 @@ func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) *Row {
 	if err != nil {
 		return &Row{err: err}
 	}
-	return &Row{r: c.c.QueryRow(ctx, sql, params(args)...), release: func() { p.release(c) }}
+	return &Row{r: c.c.QueryRow(ctx, sql, params(args)...), release: c}
 }
 
 // DatabaseSize reports the bytes the pool's database takes on disk, as

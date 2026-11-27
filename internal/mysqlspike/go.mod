@@ -6,6 +6,6 @@
 // builds only when run from inside this directory.
 module github.com/gsoultan/storm/v2/internal/mysqlspike
 
-go 1.27.3
+go 1.27.4
 
 require github.com/go-sql-driver/mysql v1.9.4

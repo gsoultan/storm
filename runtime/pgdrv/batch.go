@@ -19,11 +19,11 @@ import (
 
 // query runs a statement and wraps its rows; done runs when they close, or
 // here if there are none to close.
-func query(ctx context.Context, s session, sql string, args []any, done func()) (runtime.Rows, error) {
+func query(ctx context.Context, s session, sql string, args []any, done ender) (runtime.Rows, error) {
 	r, err := s.Query(ctx, sql, params(args)...)
 	if err != nil {
 		if done != nil {
-			done()
+			done.end()
 		}
 		return nil, classify(err)
 	}

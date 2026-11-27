@@ -35,7 +35,7 @@ type Tx struct {
 	T *caduceus.Tx
 
 	// release gives a pool's connection back once the transaction ends.
-	release func()
+	release ender
 }
 
 func (e *Tx) Query(ctx context.Context, sql string, args []any) (runtime.Rows, error) {
@@ -86,7 +86,7 @@ func (e *Tx) done() {
 	if e.release != nil {
 		release := e.release
 		e.release = nil
-		release()
+		release.end()
 	}
 }
 

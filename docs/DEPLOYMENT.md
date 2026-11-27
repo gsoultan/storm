@@ -21,8 +21,8 @@ caduceus chooses the format per column, from the row description: binary for
 every type its codec reads in binary, text for the rest. storm decodes a few
 types in binary that caduceus reads as text — `numeric`, `inet`, `cidr`,
 `tstzrange` and `numeric[]` — so `pgdrv.Connect` and every `pgdrv.Pool`
-connection name those in caduceus's `Options.BinaryResults`, which asks for
-them in binary whatever the codec would choose.
+connection pass caduceus an `Options.ResultFormat` that asks for those in
+binary and leaves every other column in the format caduceus would choose.
 
 Text for the `text` column is not a problem and never was — the bytes are the
 string either way. The same is true of `jsonb`, whose binary form is the same

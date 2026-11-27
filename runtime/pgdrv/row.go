@@ -13,7 +13,7 @@ import "github.com/gsoultan/caduceus"
 // Row is the result of Pool.QueryRow.
 type Row struct {
 	r       *caduceus.Row
-	release func()
+	release ender
 	err     error
 }
 
@@ -24,6 +24,6 @@ func (r *Row) Scan(dest ...any) error {
 		return r.err
 	}
 	err := r.r.Scan(dest...)
-	r.release()
+	r.release.end()
 	return classify(err)
 }

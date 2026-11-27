@@ -3,7 +3,7 @@
 // MySQL one.
 module github.com/gsoultan/storm/v2/internal/mssqlspike
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/google/uuid v1.6.0
