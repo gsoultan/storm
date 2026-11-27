@@ -15,7 +15,6 @@ import (
 
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/pg"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -52,7 +51,12 @@ type pgconnTag = interface{ String() string }
 // as PostgreSQL would store it.
 //
 // The scratch namespace is dropped on every exit path, including failure.
-func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
+func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schema) (*schema.Schema, error) {
+	return normalize(ctx, pgxSession(c), scratch, s)
+}
+
+// normalize is Normalize through any driver's session.
+func normalize(ctx context.Context, c session, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
 	if scratch == "" {
 		// Per-process, not a shared literal: two processes normalising against
 		// one database — two test binaries under `go test ./...`, or two CI
@@ -67,26 +71,26 @@ func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schem
 
 	// Preserve the caller's search_path: normalisation must not be observable.
 	var prev string
-	if err := c.QueryRow(ctx, "SHOW search_path").Scan(&prev); err != nil {
+	if err := c.scan(ctx, &prev, "SHOW search_path"); err != nil {
 		return nil, fmt.Errorf("read search_path: %w", err)
 	}
 	defer func() {
-		_, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE")
-		if _, e := c.Exec(ctx, "SET search_path TO "+prev); e != nil && err == nil {
+		_ = c.exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE")
+		if e := c.exec(ctx, "SET search_path TO "+prev); e != nil && err == nil {
 			err = fmt.Errorf("restore search_path: %w", e)
 		}
 	}()
 
-	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
+	if err := c.exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
 		return nil, fmt.Errorf("create scratch schema: %w", err)
 	}
-	if _, err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
+	if err := c.exec(ctx, "SET search_path TO "+scratch); err != nil {
 		return nil, err
 	}
-	if _, err := c.Exec(ctx, pgddl.Create(s)); err != nil {
+	if err := c.exec(ctx, pgddl.Create(s)); err != nil {
 		return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
 	}
-	norm, err := schemapg.Introspect(ctx, c, scratch)
+	norm, err := c.introspect(ctx, scratch)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +146,16 @@ type Options struct {
 
 // ForWith is For with Options.
 func ForWith(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema, o Options) (Plan, error) {
-	norm, err := Normalize(ctx, c, "", want)
+	return forWith(ctx, pgxSession(c), target, want, o)
+}
+
+// forWith is ForWith through any driver's session.
+func forWith(ctx context.Context, c session, target string, want *schema.Schema, o Options) (Plan, error) {
+	norm, err := normalize(ctx, c, "", want)
 	if err != nil {
 		return Plan{}, err
 	}
-	cur, err := schemapg.Introspect(ctx, c, target)
+	cur, err := c.introspect(ctx, target)
 	if err != nil {
 		return Plan{}, fmt.Errorf("introspect %s: %w", target, err)
 	}

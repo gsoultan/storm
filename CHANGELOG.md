@@ -14,6 +14,31 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### A second PostgreSQL adapter: caduceus
+
+`runtime/caduceusdrv` runs every generated package over
+[caduceus](https://github.com/gsoultan/caduceus), a PostgreSQL driver with no
+dependencies, as `runtime/pgxdrv` does over pgx. Nothing changes for a project
+on pgx.
+
+- **`caduceusdrv.Pool`** is a pool of caduceus connections and a `runtime.DB`.
+  `NewPool` reads pgxpool's `pool_max_conns`, `pool_max_conn_lifetime` and
+  `pool_max_conn_idle_time` from the URL, so a URL written for pgxpool works.
+  A connection given back with a transaction open is rolled back, and one left
+  mid-result or found dead is closed. `Conn` and `Tx` adapt a connection and a
+  transaction the caller holds.
+- **The same bytes as pgx.** Each connection asks for every column in the
+  format pgx would (`caduceusdrv.ResultFormat`), so the generated scanners
+  read identical bytes over either adapter. `TestSameBytesAsPgx` writes and
+  reads a row of twenty types through both and compares them byte for byte.
+  storm's `Decimal`, `Interval`, `TimeOfDay`, `TstzRange`, `JSON` and
+  `[]Decimal` arguments are sent as the text PostgreSQL reads for each.
+- **Automigrate and introspection over caduceus.** `migrate.AutoCaduceus` and
+  `migrate.AutoCaduceusPool` are `Auto` and `AutoPool` on caduceus, and
+  `schemapg.IntrospectCaduceus` (or `IntrospectSession`, for any driver) reads
+  a namespace through it. Automigrating `internal/testmodel` through caduceus
+  leaves nothing for pgx to do, and both drivers read back the same schema.
+
 ### Migrations: integrity, rollbacks, a reproducible base, online constraints
 
 Four additions to `storm diff` and one fix to what drift can see. Nothing

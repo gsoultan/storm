@@ -37,6 +37,15 @@ for f in $(git ls-files '*.go' 2>/dev/null | grep -v '_test.go' | grep -v '^benc
   if grep -q 'jackc/pgx' "$f"; then note "pgx imported outside its adapter: $f"; fi
 done
 
+# The same for caduceus: its adapter, the introspection that reads pg_catalog
+# through it, and the migration runner that applies DDL over it.
+for f in $(git ls-files '*.go'); do
+  case "$f" in
+    runtime/caduceusdrv/*|schema/pg/*|migrate/*|examples/*) continue ;;
+  esac
+  if grep -q '"github.com/gsoultan/caduceus' "$f"; then note "caduceus imported outside its adapter: $f"; fi
+done
+
 echo "== importing storm does not import a driver =="
 # The property that survived migrate/ becoming runtime-linked: `import
 # "github.com/gsoultan/storm"` must not drag pgx into an application's binary.
@@ -63,7 +72,7 @@ outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/sto
 # the same two the driver check above allows.
 for p in $(go list ./schema/... ./compile/... ./codegen/... ./runtime/... 2>/dev/null); do
   case "$p" in
-    */runtime/pgxdrv|*/schema/pg) continue ;;
+    */runtime/pgxdrv|*/runtime/caduceusdrv|*/schema/pg) continue ;;
   esac
   if outsiders "$p" | grep -q .; then
     note "$p has a third-party dependency:"
