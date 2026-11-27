@@ -224,8 +224,21 @@ func Build(models ...any) (*schema.Schema, error) {
 	// caught.
 	b.validateShardKeys()
 
-	// FillNulls on a column that ends up nullable would never do anything.
+	// FillNulls on a column that ends up nullable would never do anything,
+	// and a rename has to name some OTHER table or column, one the model
+	// does not also declare: a rename onto a name still in use is two
+	// columns the plan cannot tell apart.
 	for _, mi := range b.ordered {
+		t := mi.tbl.out
+		if t.RenamedFrom != "" && (t.RenamedFrom == t.Name || b.outSch.Table(t.RenamedFrom) != nil) {
+			b.errs.add(fmt.Errorf("%s: RenamedFrom(%q) names a table the model still declares", t.Name, t.RenamedFrom))
+		}
+		for _, c := range t.Columns {
+			if c.RenamedFrom != "" && (c.RenamedFrom == c.Name || t.Column(c.RenamedFrom) != nil) {
+				b.errs.add(fmt.Errorf("%s.%s: RenamedFrom(%q) names a column the table still declares",
+					t.Name, c.Name, c.RenamedFrom))
+			}
+		}
 		for _, c := range mi.tbl.out.Columns {
 			if c.FillNulls != "" && !c.NotNull {
 				b.errs.add(fmt.Errorf("%s.%s: FillNulls on a nullable column, which no migration would ever fill",

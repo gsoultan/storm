@@ -126,7 +126,12 @@ func NormalizeMSSQL(ctx context.Context, dial MSSQLDialer, s *schema.Schema) (_ 
 			return nil, fmt.Errorf("apply model DDL to the scratch database: %w\n  statement: %s", err, stmt)
 		}
 	}
-	return schemamssql.Introspect(ctx, c, "dbo")
+	norm, err := schemamssql.Introspect(ctx, c, "dbo")
+	if err != nil {
+		return nil, err
+	}
+	carryConversions(norm, s)
+	return norm, nil
 }
 
 // ForMSSQL computes the plan that takes the live `namespace` of the database

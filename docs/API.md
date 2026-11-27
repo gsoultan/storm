@@ -154,6 +154,28 @@ becoming an array or jsonb, says how to read the old value with
 `t.Col(&m.Tags).ConvertFrom(storm.JSONText)`; automigrate and `storm diff`
 then write the `USING` conversion themselves.
 
+A renamed table or column says what it was called, with
+`t.RenamedFrom("users")` in the `Schema` method or
+`t.Col(&m.Handle).RenamedFrom("nick")`. The plan then renames it in place,
+keeping its rows and the keys and indexes that name it, where it would
+otherwise drop it and add an empty one. Once a database has the new name it
+renders nothing, so it can stay in the model.
+
+What a plan compares, on PostgreSQL, SQL Server and Oracle: tables (added,
+dropped, renamed, comments), columns (added, dropped, renamed, type,
+nullability, default, generated expression, identity, serial, comments),
+primary keys, unique constraints, CHECKs, exclusion constraints, foreign keys
+(columns, target, ON DELETE/UPDATE, DEFERRABLE), indexes (every fact the model
+can declare), enum labels, functions, views and triggers. It orders the steps
+so each runs once what it needs exists and before what depends on it goes:
+a foreign key is dropped before the key it references and added after the
+table it points at exists, an index or constraint before the column it is on,
+and a view over a column being dropped or retyped is dropped and recreated
+around it. A change the server cannot make in place — an IDENTITY on SQL
+Server, reordering an enum's labels — is a destructive comment for a human to
+finish, never a silent omission. `migrate/converge_test.go` applies each kind
+of change to a live PostgreSQL and checks that nothing is left to migrate.
+
 `storm diff` remains the right path for a production database with data in it.
 See [ADR-0001's amendment](adr/0001-schema-source-of-truth.md#amendment-2026-09-07--automigrate).
 

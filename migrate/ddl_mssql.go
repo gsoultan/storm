@@ -88,7 +88,10 @@ func mssqlDDL(enums map[string]*schema.Enum) ddl {
 			return "ALTER TABLE " + q(t.Name) + " ADD " + def + ";", nil // (1)
 		},
 		DropColumn: func(t *schema.Table, c *schema.Column) string {
-			return "ALTER TABLE " + q(t.Name) + " DROP COLUMN " + q(c.Name) + ";"
+			// A DEFAULT is a constraint here, and DROP COLUMN refuses a
+			// column one is bound to (error 5074): it goes first.
+			return dropDefaultSQL(t, c) + "\n" +
+				"ALTER TABLE " + q(t.Name) + " DROP COLUMN " + q(c.Name) + ";"
 		},
 
 		AlterColumnType: alterColumn,
@@ -137,6 +140,40 @@ func mssqlDDL(enums map[string]*schema.Enum) ddl {
 
 		// CreateIndexConcurrently and DropIndexConcurrently stay nil. See the
 		// field comment: ONLINE = ON is Enterprise-only.
+
+		// sp_rename takes the object as a (quotable) name and the new name
+		// as it is to be stored, so only the first argument is bracketed.
+		RenameTable: func(old, new string) string {
+			return "EXEC sp_rename N" + quote(q(old)) + ", N" + quote(new) + ";"
+		},
+		RenameColumn: func(t *schema.Table, old, new string) string {
+			return "EXEC sp_rename N" + quote(q(t.Name)+"."+q(old)) + ", N" + quote(new) + ", N'COLUMN';"
+		},
+
+		AddPrimaryKey: func(t *schema.Table) string {
+			return "ALTER TABLE " + q(t.Name) + " ADD PRIMARY KEY (" + identList(q, t.PrimaryKey) + ");"
+		},
+		// The key msddl.CreateTable declares inline is named by the server,
+		// PK__users__3213E83F, so the drop reads the name from the
+		// catalogue, as dropDefaultSQL does and for the same reasons.
+		DropPrimaryKey: func(t *schema.Table) string {
+			v := fmt.Sprintf("@storm_pk_%d_%s", len(t.Name), sanitizeVar(t.Name))
+			tbl := q(t.Name)
+			return "DECLARE " + v + " nvarchar(max);\n" +
+				"SELECT " + v + " = N'ALTER TABLE " + tbl + " DROP CONSTRAINT ' + QUOTENAME(kc.name)\n" +
+				"  FROM sys.key_constraints kc\n" +
+				" WHERE kc.parent_object_id = OBJECT_ID(N" + quote(tbl) + ") AND kc.type = 'PK';\n" +
+				"IF " + v + " IS NOT NULL EXEC(" + v + ");"
+		},
+
+		// ALTER COLUMN refuses a column anything depends on.
+		AlterFreesColumn: true,
+
+		// AddIdentity and DropIdentity stay nil: IDENTITY is fixed when a
+		// column is created, and the only way to change it is a new column
+		// and a copy, which is a decision about the data.
+		// CommentTable and CommentColumn stay nil: schema/mssql does not read
+		// extended properties back.
 	}
 
 	d.Enums = func(_ *Plan, from, to *schema.Schema) error {

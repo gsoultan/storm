@@ -100,3 +100,64 @@ func dollarTag(body string) string {
 		}
 	}
 }
+
+// ViewOrder is views in an order PostgreSQL can create them in: each after
+// every other view its definition reads, and otherwise as given. A view over a
+// view that sorts after it by name is the ordinary case — a summary over a
+// detail view — and creating them in name order fails on the first.
+//
+// "Reads" is judged by the other view's name appearing in the definition as a
+// whole identifier, which can only err towards waiting for a view that was not
+// needed. A cycle, which PostgreSQL could not create either, keeps the order
+// it was given.
+func ViewOrder(views []*schema.View) []*schema.View {
+	out := make([]*schema.View, 0, len(views))
+	placed := map[string]bool{}
+	for len(out) < len(views) {
+		progress := false
+		for _, v := range views {
+			if placed[v.Name] {
+				continue
+			}
+			ready := true
+			for _, w := range views {
+				if w.Name != v.Name && !placed[w.Name] && mentionsIdent(v.SQL(), w.Name) {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				out, placed[v.Name], progress = append(out, v), true, true
+			}
+		}
+		if !progress {
+			for _, v := range views {
+				if !placed[v.Name] {
+					out, placed[v.Name] = append(out, v), true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// mentionsIdent reports whether name appears in sql as a whole identifier,
+// quoted or not.
+func mentionsIdent(sql, name string) bool {
+	low, n := strings.ToLower(sql), strings.ToLower(name)
+	ident := func(c byte) bool {
+		return c == '_' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c >= 0x80
+	}
+	for i := 0; ; {
+		j := strings.Index(low[i:], n)
+		if j < 0 {
+			return false
+		}
+		j += i
+		end := j + len(n)
+		if (j == 0 || !ident(low[j-1])) && (end == len(low) || !ident(low[end])) {
+			return true
+		}
+		i = j + 1
+	}
+}

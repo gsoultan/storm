@@ -136,6 +136,28 @@ func oracleDDL(enums map[string]*schema.Enum) ddl {
 			return "DROP INDEX " + q(ix.Name)
 		},
 
+		RenameTable: func(old, new string) string {
+			return "ALTER TABLE " + q(old) + " RENAME TO " + q(new)
+		},
+		RenameColumn: func(t *schema.Table, old, new string) string {
+			return "ALTER TABLE " + q(t.Name) + " RENAME COLUMN " + q(old) + " TO " + q(new)
+		},
+
+		// Oracle has DROP PRIMARY KEY, so the server's SYS_C name never has
+		// to be looked up.
+		AddPrimaryKey: func(t *schema.Table) string {
+			return "ALTER TABLE " + q(t.Name) + " ADD PRIMARY KEY (" + identList(q, t.PrimaryKey) + ")"
+		},
+		DropPrimaryKey: func(t *schema.Table) string {
+			return "ALTER TABLE " + q(t.Name) + " DROP PRIMARY KEY"
+		},
+
+		// Oracle drops an identity in place, and cannot add one to a column
+		// that already exists (ORA-30673), so AddIdentity stays nil.
+		DropIdentity: func(t *schema.Table, c *schema.Column) string {
+			return modify(t, q(c.Name)+" DROP IDENTITY")
+		},
+
 		// CreateIndexConcurrently and DropIndexConcurrently stay nil. Oracle's
 		// ONLINE index build is an Enterprise Edition feature, exactly as SQL
 		// Server's WITH (ONLINE = ON) is — a migration that works on the

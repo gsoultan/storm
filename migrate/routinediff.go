@@ -21,8 +21,11 @@ import (
 // as PostgreSQL stores it, not as somebody typed it (schema/routine.go).
 
 // addRoutines appends the creates, in dependency order: a view may call a
-// function and a trigger executes one, so functions land first.
-func addRoutines(p *Plan, from, to *schema.Schema) {
+// function and a trigger executes one, so functions land first. Views are
+// created each after the views it reads. A view named in rebuilt was dropped
+// at the start of the plan, around a change to a table it reads, and is
+// created again whether or not its definition changed.
+func addRoutines(p *Plan, from, to *schema.Schema, rebuilt map[string]bool) {
 	// Functions are keyed by SIGNATURE, not name. PostgreSQL overloads on the
 	// argument list, so `authorize(uuid, text)` and `authorize(uuid, jsonb)`
 	// are two functions that happen to share a name — keying by name would
@@ -57,9 +60,9 @@ func addRoutines(p *Plan, from, to *schema.Schema) {
 		}
 	}
 
-	for _, v := range to.Views {
+	for _, v := range pgddl.ViewOrder(to.Views) {
 		prev := from.View(v.Name)
-		if prev == nil {
+		if prev == nil || rebuilt[v.Name] {
 			p.add(Change{SQL: pgddl.CreateView(v)})
 			continue
 		}
@@ -101,7 +104,8 @@ func addRoutines(p *Plan, from, to *schema.Schema) {
 // views, then functions — so nothing is dropped while something still refers to
 // it. It runs BEFORE tables are dropped: a view over a dropped table has to go
 // first, whereas a trigger ON a dropped table would have gone with it anyway.
-func dropRoutines(p *Plan, from, to *schema.Schema) {
+// A view named in rebuilt has already been dropped.
+func dropRoutines(p *Plan, from, to *schema.Schema, rebuilt map[string]bool) {
 	for _, t := range from.Triggers {
 		if cur := to.Trigger(t.Name); cur == nil || cur.Table != t.Table {
 			p.add(Change{
@@ -112,7 +116,7 @@ func dropRoutines(p *Plan, from, to *schema.Schema) {
 		}
 	}
 	for _, v := range from.Views {
-		if to.View(v.Name) == nil {
+		if to.View(v.Name) == nil && !rebuilt[v.Name] {
 			p.add(Change{
 				SQL:         pgddl.DropView(v.Name),
 				Destructive: true,

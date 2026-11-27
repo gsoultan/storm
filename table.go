@@ -336,6 +336,12 @@ func (t *Table) Name(n string) *Table { t.out.Name = n; return t }
 // Comment sets a table comment.
 func (t *Table) Comment(s string) *Table { t.out.Comment = s; return t }
 
+// RenamedFrom says the table was called old before: a migration renames that
+// table in place, keeping its rows, where it would otherwise drop it and
+// create an empty one under the new name. It renders nothing once the
+// database has the new name, so it can stay in the model.
+func (t *Table) RenamedFrom(old string) *Table { t.out.RenamedFrom = old; return t }
+
 // ---- builders ----
 
 // ColBuilder configures one column.
@@ -528,6 +534,15 @@ func (b *ColBuilder) ConvertFrom(c Conversion) *ColBuilder {
 // column is refused: there is nothing it would ever do.
 func (b *ColBuilder) FillNulls(e Expr) *ColBuilder {
 	b.c.sc.FillNulls = string(e)
+	return b
+}
+
+// RenamedFrom says the column was called old before: a migration renames
+// that column in place, keeping its values, where it would otherwise drop it
+// and add an empty one under the new name. It renders nothing once the
+// database has the new name, so it can stay in the model.
+func (b *ColBuilder) RenamedFrom(old string) *ColBuilder {
+	b.c.sc.RenamedFrom = old
 	return b
 }
 

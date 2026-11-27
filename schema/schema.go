@@ -56,6 +56,13 @@ type Table struct {
 	Name    string
 	Comment string
 
+	// RenamedFrom is the name this table had before the model renamed it, or
+	// "". It is a migration fact like Column.ConvertFrom: a plan renames a
+	// table of that name in place, keeping its rows, instead of dropping it
+	// and creating an empty one; once the database has the new name it
+	// renders nothing, so it can stay in the model.
+	RenamedFrom string
+
 	// GoName is the model type this table was declared from — "User" for
 	// table "users". It is a storm-level fact with no DDL of its own, like
 	// Column.Immutable, and it exists because pluralisation is not
@@ -387,6 +394,13 @@ type Column struct {
 	// ConvertFrom a migration fact: nothing renders it while the column is
 	// already NOT NULL.
 	FillNulls string
+
+	// RenamedFrom is the name this column had before the model renamed it,
+	// or "". A plan renames a column of that name in place, keeping its
+	// values, instead of dropping it and adding an empty one. Like
+	// ConvertFrom a migration fact: once the database has the new name it
+	// renders nothing.
+	RenamedFrom string
 }
 
 // ConvertJSONText is Column.ConvertFrom for a text column of JSON — a list
