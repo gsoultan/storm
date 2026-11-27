@@ -6,11 +6,11 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgxdrv_test
+package pgdrv_test
 
 // The transaction contract, against a real server.
 //
-// Every claim runtime.Tx makes about endings is a claim about what pgx does:
+// Every claim runtime.Tx makes about endings is a claim about what caduceus does:
 // that a second commit reports ErrTxClosed, that a rollback after a commit
 // reports it too, that both are distinguishable from a connection that broke.
 // Those are not properties this package can assert against a stub, because the
@@ -23,17 +23,16 @@ import (
 	"testing"
 
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 )
 
-func livePool(t *testing.T) *pgxpool.Pool {
+func livePool(t *testing.T) *pgdrv.Pool {
 	t.Helper()
 	dsn := os.Getenv("STORM_DSN")
 	if dsn == "" {
 		t.Skip("STORM_DSN unset")
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	pool, err := pgdrv.NewPool(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +77,7 @@ func count(t *testing.T, ctx context.Context, ex runtime.Executor, name string) 
 
 func TestPoolStartTxReturnsAWorkingTx(t *testing.T) {
 	ctx := t.Context()
-	db := pgxdrv.Pool{P: livePool(t)}
+	db := livePool(t)
 	scratch(t, ctx, db, "storm_tx_begin")
 
 	tx, err := db.StartTx(ctx)
@@ -98,7 +97,7 @@ func TestPoolStartTxReturnsAWorkingTx(t *testing.T) {
 
 func TestRollbackUndoesTheWrite(t *testing.T) {
 	ctx := t.Context()
-	db := pgxdrv.Pool{P: livePool(t)}
+	db := livePool(t)
 	scratch(t, ctx, db, "storm_tx_rollback")
 
 	tx, err := db.StartTx(ctx)
@@ -117,12 +116,12 @@ func TestRollbackUndoesTheWrite(t *testing.T) {
 }
 
 // `defer tx.Rollback(ctx)` beside a commit is the idiom the runtime.Tx
-// contract promises. pgx answers that second ending with ErrTxClosed, and the
+// contract promises. caduceus answers that second ending with ErrTxClosed, and the
 // adapter turns it into nil — if it ever stopped, every deferred rollback in
 // every adopter would start returning an error nobody can act on.
 func TestRollbackAfterCommitIsNil(t *testing.T) {
 	ctx := t.Context()
-	db := pgxdrv.Pool{P: livePool(t)}
+	db := livePool(t)
 
 	tx, err := db.StartTx(ctx)
 	if err != nil {
@@ -137,10 +136,10 @@ func TestRollbackAfterCommitIsNil(t *testing.T) {
 }
 
 // Committing twice is a bug in every shape, so it keeps an error — the shared
-// one, so a caller holding a runtime.Tx can test for it without naming pgx.
+// one, so a caller holding a runtime.Tx can test for it without naming the driver.
 func TestSecondCommitIsErrTxDone(t *testing.T) {
 	ctx := t.Context()
-	db := pgxdrv.Pool{P: livePool(t)}
+	db := livePool(t)
 
 	tx, err := db.StartTx(ctx)
 	if err != nil {
@@ -158,7 +157,7 @@ func TestSecondCommitIsErrTxDone(t *testing.T) {
 // endings hold against a server, not against a stub that agrees with it.
 func TestInTxCommitsAndRollsBackForReal(t *testing.T) {
 	ctx := t.Context()
-	db := pgxdrv.Pool{P: livePool(t)}
+	db := livePool(t)
 	scratch(t, ctx, db, "storm_intx")
 
 	if err := runtime.InTx(ctx, db, func(ex runtime.Executor) error {
@@ -196,17 +195,12 @@ func TestInTxPanicReleasesTheConnection(t *testing.T) {
 	}
 	ctx := t.Context()
 
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, MaxConns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	db := pgxdrv.Pool{P: pool}
+	db := pool
 
 	func() {
 		defer func() { _ = recover() }()
@@ -233,4 +227,4 @@ func TestInTxPanicReleasesTheConnection(t *testing.T) {
 	}
 }
 
-var _ runtime.DB = pgxdrv.Pool{}
+var _ runtime.DB = (*pgdrv.Pool)(nil)

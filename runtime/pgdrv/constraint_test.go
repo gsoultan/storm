@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgxdrv_test
+package pgdrv_test
 
 import (
 	"context"
@@ -18,8 +18,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 )
 
 // Every one of these is a 4xx a service has to tell from a 500. Left
@@ -32,16 +31,16 @@ func TestConstraintViolationsAreClassified(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxdrv.NewPool(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	ex := pgxdrv.Pool{P: pool}
+	ex := pool
 
 	const ns = "storm_constraint_test"
 	mustExec(t, pool, `DROP SCHEMA IF EXISTS `+ns+` CASCADE; CREATE SCHEMA `+ns)
-	defer pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+ns+` CASCADE`)
+	defer pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+ns+` CASCADE`, nil)
 	mustExec(t, pool, `SET search_path TO `+ns+`;
 		CREATE TABLE parent(id int PRIMARY KEY);
 		CREATE TABLE child(
@@ -128,12 +127,12 @@ func TestUnknownErrorsPassThrough(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxdrv.NewPool(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	ex := pgxdrv.Pool{P: pool}
+	ex := pool
 
 	_, err = ex.Exec(ctx, `SELECT * FROM a_table_that_does_not_exist`, nil)
 	if err == nil {
@@ -168,9 +167,9 @@ func TestRetryable(t *testing.T) {
 	}
 }
 
-func mustExec(t *testing.T, pool *pgxpool.Pool, sql string) {
+func mustExec(t *testing.T, pool *pgdrv.Pool, sql string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql); err != nil {
+	if _, err := pool.Exec(context.Background(), sql, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -185,12 +184,12 @@ func TestTstzRangeParameterBinds(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxdrv.NewPool(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	ex := pgxdrv.Pool{P: pool}
+	ex := pool
 
 	lo := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
 	hi := time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC)
@@ -238,12 +237,12 @@ func TestNilRangePointerIsNull(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxdrv.NewPool(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	ex := pgxdrv.Pool{P: pool}
+	ex := pool
 
 	var r *runtime.TstzRange
 	rows, err := ex.Query(ctx, `SELECT $1::tstzrange IS NULL`, []any{r})
@@ -270,16 +269,16 @@ func TestBatch_NilCallbackDrainsAndReportsTheFirstError(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxdrv.NewPool(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	ex := pgxdrv.Pool{P: pool}
+	ex := pool
 
 	ns := fmt.Sprintf("storm_nilbatch_%d", os.Getpid())
 	mustExec(t, pool, `DROP SCHEMA IF EXISTS `+ns+` CASCADE; CREATE SCHEMA `+ns)
-	defer pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+ns+` CASCADE`)
+	defer pool.Exec(ctx, `DROP SCHEMA IF EXISTS `+ns+` CASCADE`, nil)
 	mustExec(t, pool, `SET search_path TO `+ns+`;
 		CREATE TABLE nb (id int PRIMARY KEY, n int NOT NULL);`)
 
@@ -299,10 +298,15 @@ func TestBatch_NilCallbackDrainsAndReportsTheFirstError(t *testing.T) {
 	if err := ex.Batch(ctx, ops, nil); err != nil {
 		t.Fatalf("a batch with no callback: %v", err)
 	}
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT n FROM `+ns+`.nb WHERE id = 1`).Scan(&n); err != nil {
+	rows, err := pool.Query(ctx, `SELECT n FROM `+ns+`.nb WHERE id = 1`, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if !rows.Next() {
+		t.Fatalf("no row: %v", rows.Err())
+	}
+	n := int(runtime.Int4(rows.RawValues()[0]))
+	rows.Close()
 	if n != 11 {
 		t.Errorf("n = %d, want 11 — the batch did not apply", n)
 	}

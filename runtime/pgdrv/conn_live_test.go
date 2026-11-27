@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgxdrv_test
+package pgdrv_test
 
 import (
 	"context"
@@ -14,8 +14,7 @@ import (
 	"testing"
 
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 )
 
 // A session-scoped advisory lock is the thing Pool cannot do.
@@ -31,26 +30,26 @@ func TestConnHoldsSessionState(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
 
-	held, err := pool.Acquire(ctx)
+	held, releaseHeld, err := pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer held.Release()
-	probe, err := pool.Acquire(ctx)
+	defer releaseHeld()
+	probe, releaseProbe, err := pool.Acquire(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer probe.Release()
+	defer releaseProbe()
 
 	const key = int64(7_449_001)
-	ex := pgxdrv.Conn{C: held}
-	other := pgxdrv.Conn{C: probe}
+	ex := pgdrv.Conn{C: held}
+	other := pgdrv.Conn{C: probe}
 
 	rows, err := ex.Query(ctx, "SELECT pg_try_advisory_lock($1)", []any{key})
 	if err != nil {
@@ -110,12 +109,12 @@ func TestPoolDatabaseSize(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	n, err := pgxdrv.Pool{P: pool}.DatabaseSize(ctx)
+	n, err := pool.DatabaseSize(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

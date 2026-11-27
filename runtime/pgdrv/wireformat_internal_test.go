@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgxdrv
+package pgdrv
 
 import "testing"
 
@@ -48,7 +48,7 @@ func TestFormatOK(t *testing.T) {
 		{"text uuid[]", 2951, text, false},
 		{"text int8[]", 1016, text, false},
 
-		// Same bytes either way — pgx sends these as text on a binary
+		// Same bytes either way — caduceus asks for these as text on any
 		// connection, so refusing them would refuse nearly every real query.
 		{"text text", 25, text, true},
 		{"text varchar", 1043, text, true},
