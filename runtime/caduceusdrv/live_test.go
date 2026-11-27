@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,7 +38,11 @@ func livePool(t *testing.T, opts ...string) *caduceusdrv.Pool {
 	t.Helper()
 	d := dsn(t)
 	for _, o := range opts {
-		d += o
+		if strings.Contains(d, "?") {
+			d += "&" + o
+		} else {
+			d += "?" + o
+		}
 	}
 	p, err := caduceusdrv.NewPool(t.Context(), d)
 	if err != nil {
@@ -182,7 +187,7 @@ func TestConstraintIsClassified(t *testing.T) {
 
 func TestTransactions(t *testing.T) {
 	ctx := t.Context()
-	p := livePool(t, "&pool_max_conns=1")
+	p := livePool(t, "pool_max_conns=1")
 	tbl := scratch(t, p, "id int")
 	count := func() int {
 		r := rawRows(t, p, "SELECT count(*)::int8 FROM "+tbl, nil)
@@ -236,7 +241,7 @@ func TestTransactions(t *testing.T) {
 // caller, and one holding an unsettled transaction is rolled back.
 func TestReleaseLeavesNothingBehind(t *testing.T) {
 	ctx := t.Context()
-	p := livePool(t, "&pool_max_conns=1")
+	p := livePool(t, "pool_max_conns=1")
 	tbl := scratch(t, p, "id int")
 	if err := p.Acquire(ctx, func(c *caduceus.Conn) error {
 		_, err := c.Exec(ctx, "BEGIN; INSERT INTO "+tbl+" VALUES (1)")
