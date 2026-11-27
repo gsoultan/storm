@@ -122,3 +122,39 @@ func TestPoolDatabaseSize(t *testing.T) {
 		t.Fatalf("DatabaseSize = %d, want the bytes of a real database", n)
 	}
 }
+
+// The PgBouncer transaction-pooling setting DEPLOYMENT.md recommends: with no
+// statement kept on the server, results must still come back in binary,
+// numeric among them, and a statement run twice must still work.
+func TestNoStatementCacheStillReadsBinary(t *testing.T) {
+	dsn := os.Getenv("STORM_DSN")
+	if dsn == "" {
+		t.Skip("STORM_DSN unset")
+	}
+	ctx := context.Background()
+	pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, Options: pgdrv.Options{StatementCacheCapacity: -1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	for range 2 {
+		rows, err := pool.Query(ctx, "select 1.50::numeric, false", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !rows.Next() {
+			t.Fatal(rows.Err())
+		}
+		d, err := runtime.DecodeNumeric(rows.RawValues()[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := d.String(); got != "1.50" {
+			t.Errorf("numeric read as %q, want 1.50", got)
+		}
+		if b := rows.RawValues()[1]; len(b) != 1 || b[0] != 0 {
+			t.Errorf("bool arrived as %q, want the binary zero byte", b)
+		}
+		rows.Close()
+	}
+}

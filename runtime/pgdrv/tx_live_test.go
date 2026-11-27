@@ -22,6 +22,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/runtime"
 	"github.com/gsoultan/storm/runtime/pgdrv"
 )
@@ -228,3 +229,27 @@ func TestInTxPanicReleasesTheConnection(t *testing.T) {
 }
 
 var _ runtime.DB = (*pgdrv.Pool)(nil)
+
+// The isolation level pgx's pool.BeginTx used to carry: the transaction must
+// actually run at it, which only the server can say.
+func TestBeginTxRunsAtTheIsolationLevelAsked(t *testing.T) {
+	ctx := t.Context()
+	db := livePool(t)
+
+	tx, err := db.BeginTx(ctx, caduceus.TxOptions{IsoLevel: caduceus.Serializable, ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, "select current_setting('transaction_isolation') || ' ' || current_setting('transaction_read_only')", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal(rows.Err())
+	}
+	if got := string(rows.RawValues()[0]); got != "serializable on" {
+		t.Errorf("transaction ran as %q, want serializable on", got)
+	}
+}

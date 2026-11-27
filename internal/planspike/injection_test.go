@@ -11,10 +11,10 @@ package planspike_test
 import (
 	"context"
 	"errors"
-	"github.com/gsoultan/caduceus/wire"
 	"strings"
 	"testing"
 
+	"github.com/gsoultan/caduceus/wire"
 	"github.com/gsoultan/storm/internal/planspike/store/user"
 	"github.com/gsoultan/storm/runtime"
 )

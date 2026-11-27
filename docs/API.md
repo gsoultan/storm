@@ -371,7 +371,7 @@ column, so the common single-predicate read is one call.
 generated code runs inside one and there are no `XxxTx` duplicates:
 
 ```go
-tx, _ := pgxdrv.Pool{P: pool}.StartTx(ctx)
+tx, _ := pool.StartTx(ctx)
 _, err := na.Insert(ctx, tx)       // same call, inside the transaction
 tx.Rollback(ctx)
 ```
@@ -834,8 +834,8 @@ jobs, err := job.New().
 
 **Pass a transaction.** A row lock is held to the end of the *transaction*, so
 one taken on a pool is released before the next statement runs and protects
-nothing. `pgxdrv.Tx{T: tx}` is an `Executor` and every generated surface takes
-it unchanged.
+nothing. The `runtime.Tx` from `pool.StartTx(ctx)` is an `Executor` and every
+generated surface takes it unchanged.
 
 **`SkipLocked` returns fewer rows than `Limit` asked for.** That is the point
 of it: two workers claiming ten rows each from one table get twenty different
@@ -1189,8 +1189,8 @@ the `UPDATE` matches, and both see one snapshot. PostgreSQL only.
 
 *New after v1.2.0* — `storm.Tx`, `storm.DB`, `storm.InTx`, the `storm.Executor`
 alias and every adapter's `StartTx` are on main and ship in the next minor. On
-v1.2.0 the port is `runtime.Executor` and a pgx transaction is
-`pgxdrv.Tx{T: tx}` over `pool.Begin(ctx)`.
+v1.2.0 the port is `runtime.Executor` and a transaction is the adapter's own
+type.
 
 `Executor` is the four-method port and stays that way. Beside it are the two
 names a *caller* holds:
@@ -1227,7 +1227,7 @@ transaction returns nil, on every adapter. A second *commit* returns
 `storm.ErrTxDone`, because committing twice is a bug in every shape.
 
 ```go
-db := pgxdrv.Pool{P: pool}          // mydrv.Pool, msdrv.Pool, sqldrv.NewPool(sqlDB)
+db := pool                         // *pgdrv.Pool, mydrv.Pool, msdrv.Pool, sqldrv.NewPool(sqlDB)
 tx, err := db.StartTx(ctx)
 defer tx.Rollback(ctx)
 // ... generated calls against tx ...
@@ -1267,8 +1267,8 @@ err := store.LockTimeout(ctx, tx, 2*time.Second) // a later wait past 2s fails w
 cannot leak onto a pooled connection.
 
 Isolation levels are the driver's. `sqldrv` gives you `BeginTx` with
-`*sql.TxOptions` and `sqldrv.NewTx` to wrap the result; pgx gives you
-`BeginTx` and `pgxdrv.Tx{T: tx}`.
+`*sql.TxOptions` and `sqldrv.NewTx` to wrap the result; `pgdrv.Pool.BeginTx`
+takes a `caduceus.TxOptions` and returns a `runtime.Tx`.
 
 ## 8c. Sharding — the shard key is a type, not a convention
 
@@ -1373,7 +1373,7 @@ API is the better answer wherever it reaches.
 
 ### Migrating a shard set
 
-There is no `Set.Migrate`. `migrate.AutoPool` takes a `*pgxpool.Pool` and a
+There is no `Set.Migrate`. `migrate.AutoPool` takes a `*pgdrv.Pool` and a
 `Set` holds `runtime.DB`, so migration happens *before* a `Set` exists — while
 you still hold the pools you are about to hand over:
 
@@ -1430,7 +1430,7 @@ batch), the duration, the rows read or affected, and the error. It is the
 seam for logging, tracing and metrics:
 
 ```go
-db := hooks.WrapDB(pgxdrv.Pool{P: pool}, hooks.Hooks{
+db := hooks.WrapDB(pool, hooks.Hooks{
     Before: func(ctx context.Context, s *hooks.Statement) (context.Context, error) {
         ctx, _ = tracer.Start(ctx, "storm."+s.Kind.String())
         return ctx, nil
@@ -1618,7 +1618,7 @@ code a transaction, roll it back, and the generated code is the code that ran in
 production.
 
 ```go
-tx, _ := pgxdrv.Pool{P: pool}.StartTx(ctx)
+tx, _ := pool.StartTx(ctx)
 defer tx.Rollback(ctx)
 svc := NewService(tx)
 ```
@@ -1633,8 +1633,8 @@ second request is waiting behind the first, not merely slow. `pgstat` reads it
 from PostgreSQL's own catalogs, through any `Executor`:
 
 ```go
-pid, schema, _ := pgstat.Backend(ctx, pgxdrv.Tx{T: holder}) // the session holding the row
-sessions, _ := pgstat.Sessions(ctx, pgxdrv.Pool{P: pool})
+pid, schema, _ := pgstat.Backend(ctx, holder) // the runtime.Tx holding the row
+sessions, _ := pgstat.Sessions(ctx, pool)
 for _, s := range sessions {
         if s.WaitsBehind(pid) && s.LocksOn("tuple", schema, "tasks") {
                 // queued for a row of this test's tasks table
@@ -1656,9 +1656,9 @@ statement. A session lock belongs to the session that took it, so hold one
 connection for the life of the lock:
 
 ```go
-c, _ := pool.Acquire(ctx)
-defer c.Release()
-session := pgxdrv.Conn{C: c}
+c, release, _ := pool.Acquire(ctx)
+defer release()
+session := pgdrv.Conn{C: c}
 if got, _ := pglock.TryLock(ctx, session, key); got {
         defer pglock.Unlock(ctx, session, key)
         // the one owner

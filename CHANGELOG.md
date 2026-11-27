@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-11-19
+updated: 2026-11-27
 ---
 
 # Changelog
@@ -12,9 +12,47 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## Unreleased — v2.0.0
 
-Nothing yet.
+### Breaking: caduceus replaces pgx as the PostgreSQL driver
+
+storm's PostgreSQL adapter now runs on
+[caduceus](https://github.com/gsoultan/caduceus), and pgx is no longer a
+dependency of storm. This is a major release, so the module path is now
+`github.com/gsoultan/storm/v2`.
+
+To move a v1 application:
+
+- Change the imports from `github.com/gsoultan/storm/...` to
+  `github.com/gsoultan/storm/v2/...` and regenerate. Model declarations, the
+  generated call surface and emitted SQL are unchanged.
+- `runtime/pgxdrv` is gone. Use `runtime/pgdrv`:
+  - `pgxdrv.NewPool(ctx, dsn)` plus `pgxdrv.Pool{P: pool}` becomes
+    `pgdrv.NewPool(ctx, dsn)`, and the `*pgdrv.Pool` is the Executor and the
+    `storm.DB`.
+  - `pgxdrv.NewPoolConfig` takes a `pgdrv.Config` (DSN, MaxConns,
+    AcquireTimeout, Database, RuntimeParams, Options) in place of a
+    `*pgxpool.Config`.
+  - `pgxdrv.Tx{T: tx}` over `pool.Begin` becomes `pool.StartTx(ctx)`, or
+    `pool.BeginTx(ctx, caduceus.TxOptions{…})` for an isolation level.
+  - `pgxdrv.Conn{C: c}` over `pool.Acquire` becomes `c, release, err :=
+    pool.Acquire(ctx)` and `pgdrv.Conn{C: c}`.
+  - `pgdrv.Connect(ctx, dsn, pgdrv.Options{})` opens one `*caduceus.Conn`
+    that storm can read from.
+  - A tracer is a caduceus `QueryTracer` (plus `BatchTracer` and
+    `CopyFromTracer`), passed in `pgdrv.Options{Tracer: …}`.
+  - `RegisterFastArrays` and the pgx exec-mode guard are gone: caduceus has
+    one protocol, and pgdrv asks it for every column storm decodes in binary.
+  - PgBouncer in transaction pooling mode: set
+    `pgdrv.Options{StatementCacheCapacity: -1}`.
+- `migrate.Auto` takes a `*caduceus.Conn` and `migrate.AutoPool` a
+  `*pgdrv.Pool`. Schema introspection (`schema/pg`) reads through caduceus.
+- MySQL/MariaDB, SQL Server, MongoDB and Redis are unchanged: their adapters
+  were already storm's own wire code.
+
+The benchmarks that compare storm with GORM, Bun, Ent, sqlc and raw pgx moved
+into `bench/`, now a module of its own, so those rivals and pgx are never in
+an adopter's dependency graph.
 
 ## v1.12.2 — 2026-11-08
 

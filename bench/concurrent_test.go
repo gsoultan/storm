@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/internal/spike"
+	"github.com/gsoultan/storm/bench/internal/spike"
 )
 
 // TestConcurrentShapes hammers the compiled-statement cache and the binder pool

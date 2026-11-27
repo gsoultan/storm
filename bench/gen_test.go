@@ -16,16 +16,15 @@ import (
 	"unsafe"
 
 	"github.com/gsoultan/storm/bench/genuser"
-	"github.com/gsoultan/storm/internal/spike"
+	"github.com/gsoultan/storm/bench/internal/spike"
 	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
 )
 
 // M2's kill criterion: generated code must reproduce the M0 spike within 5%.
 // If a generator cannot emit what a human wrote by hand, every later milestone
 // inherits slow code.
 
-func genExec() runtime.Executor { return pgxdrv.Pool{P: pool} }
+func genExec() runtime.Executor { return stormPool }
 
 func genDynamic6() genuser.Query {
 	return genuser.New().
@@ -604,7 +603,7 @@ func TestQuerySize_HasATripwire(t *testing.T) {
 // The projection's whole reason: the same 1,000 rows, two columns instead of
 // eight. Same predicates, same run, same session as the full read above it.
 func BenchmarkGenScan1000_Contact(b *testing.B) {
-	ex := pgxdrv.Pool{P: pool}
+	ex := stormPool
 	ctx := context.Background()
 	b.ReportAllocs()
 	b.ResetTimer()

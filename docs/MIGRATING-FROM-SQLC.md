@@ -29,7 +29,7 @@ sqlc.
 | `:exec` statements | `storm.SQLExec(...)` — same PREPARE check, must return zero columns |
 | `SELECT fn(...)` calls | `storm.SQL[T]` on the function's row; wrap void as `(fn($1) IS NULL) AS done` |
 | migration files (hand-written) | `storm diff <name>` emits them; you still review and apply |
-| `db.WithTx(tx)` | `storm.InTx(ctx, ex, func(tx storm.Executor) error {…})`, or wrap a pgx transaction you already hold as `pgxdrv.Tx{T: tx}` |
+| `db.WithTx(tx)` | `storm.InTx(ctx, ex, func(tx storm.Executor) error {…})`, or `pool.StartTx(ctx)` for a `runtime.Tx` you commit yourself |
 
 ## The steps
 
@@ -136,6 +136,6 @@ mapping, and run every write inside a deliberately rolled-back transaction —
 which also proves your executor adapter keeps ambient transactions ambient.
 
 Domain layers that speak string ids (sqlc's uuid→string override) keep that
-contract by selecting uuid columns `::text` and binding strings — pgx's uuid
-codec accepts them for parameters — with one `[16]byte`↔string crossing next
+contract by selecting uuid columns `::text` and binding strings — a string is sent
+as text, which the server parses as a uuid — with one `[16]byte`↔string crossing next
 to the executor adapter for builder queries.

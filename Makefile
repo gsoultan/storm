@@ -83,8 +83,8 @@ example:       ## the Go kit example: its own module, generated and tested
 	  STORM_DSN='$(DSN)' go test ./orders/
 
 bench:
-	STORM_DSN='$(DSN)' go test -run XXX -bench . -benchmem -count=10 ./bench/ \
-	  | tee bench/last.txt
+	cd bench && STORM_DSN='$(DSN)' go test -run XXX -bench . -benchmem -count=10 ./ \
+	  | tee last.txt
 
 results: bench
 	@echo "update bench/RESULTS.md from bench/last.txt — never hand-edit numbers"

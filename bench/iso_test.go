@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/bench/genuser"
-	"github.com/gsoultan/storm/internal/spike"
+	"github.com/gsoultan/storm/bench/internal/spike"
 )
 
 func BenchmarkIso_GenShapeOnly(b *testing.B) {

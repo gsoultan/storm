@@ -261,11 +261,19 @@ func (p *Pool) Batch(ctx context.Context, ops []runtime.BatchOp, each func(int, 
 // StartTx starts a transaction on a connection taken from the pool, which it
 // holds until Commit or Rollback.
 func (p *Pool) StartTx(ctx context.Context) (runtime.Tx, error) {
+	return p.BeginTx(ctx, caduceus.TxOptions{})
+}
+
+// BeginTx is StartTx with the transaction's characteristics: an isolation
+// level, read-only, deferrable. pgx had this as pool.BeginTx and storm's
+// transaction contract never named it, so it lives here rather than on
+// runtime.DB, where every other adapter would have to grow one.
+func (p *Pool) BeginTx(ctx context.Context, o caduceus.TxOptions) (runtime.Tx, error) {
 	c, err := p.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	t, err := c.c.Begin(ctx)
+	t, err := c.c.BeginTx(ctx, o)
 	if err != nil {
 		p.release(c)
 		return nil, classify(err)

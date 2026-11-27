@@ -220,7 +220,11 @@ jobs:
       - name: benchmarks compile and run
         if: ${{ !cancelled() }}
         run: |
-          go test -run XXX -bench . -benchtime=1x ./bench/
+          # bench/ is its own module: the rival ORMs it measures, pgx among
+          # them, are its dependencies and never storm's. `go test ./...` at
+          # the root no longer reaches its tests, so they run here, with the
+          # benchmarks once each.
+          (cd bench && go vet ./... && go test -bench . -benchtime=1x ./...)
           # The MySQL adapter's allocation budget is a gate, not a doc: it
           # already shipped once at ten allocations per row while claiming one.
           go test -run XXX -bench . -benchtime=1x ./runtime/mydrv/

@@ -24,6 +24,11 @@ import (
 // a type that is a codec.BinaryParam, and sent in binary exactly as pgx's
 // registered codecs sent it.
 //
+// runtime.JSON is a []byte of its own name, which caduceus would hand to
+// encoding/json as a value to marshal — a base64 string — so it is passed as
+// the bytes it is. Generated code binds every argument through a pointer to
+// its statement's arena, so each of these is wrapped as a pointer too.
+//
 // The argument slice is copied only when it holds one of these, so a statement
 // of integers, strings and uuids is handed to the driver untouched.
 
@@ -57,6 +62,11 @@ func wrap(a any) (any, bool) {
 		return nullable(v, func(d runtime.Decimal) any { return decimalParam(d) }), true
 	case []runtime.Decimal:
 		return decimalArrayParam(v), true
+	case *[]runtime.Decimal:
+		if v == nil {
+			return nil, true
+		}
+		return decimalArrayParam(*v), true
 	case runtime.Interval:
 		return intervalParam(v), true
 	case *runtime.Interval:
@@ -74,6 +84,11 @@ func wrap(a any) (any, bool) {
 			return nil, true
 		}
 		return []byte(v), true
+	case *runtime.JSON:
+		if v == nil || *v == nil {
+			return nil, true
+		}
+		return []byte(*v), true
 	}
 	return nil, false
 }

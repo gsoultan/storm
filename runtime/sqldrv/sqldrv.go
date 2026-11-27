@@ -9,7 +9,7 @@
 // Package sqldrv adapts any database/sql driver to storm's Executor port.
 //
 // IT IS THE SLOW PATH, ON PURPOSE, and saying so is the point of this comment.
-// storm's own clients — runtime/pgxdrv, runtime/mydrv, runtime/msdrv — hand the
+// storm's own clients — runtime/pgdrv, runtime/mydrv, runtime/msdrv — hand the
 // generated scanners raw wire bytes and cost at most 0.09 allocations per
 // row. A database/sql driver decodes before storm can see the wire, so this
 // adapter hands over the DECODED values instead (runtime.Rows.Values), and the
@@ -45,7 +45,7 @@ import (
 
 // DB is the slice of database/sql this package needs. *sql.DB, *sql.Tx and
 // *sql.Conn all satisfy it, so a caller passes whichever the transaction
-// boundary calls for — the same choice pgxdrv offers between Conn and Tx.
+// boundary calls for — the same choice pgdrv offers between Conn and Tx.
 type DB interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)

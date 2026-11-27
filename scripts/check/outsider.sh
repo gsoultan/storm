@@ -205,12 +205,12 @@ import (
 	"context"
 	"os"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/gsoultan/caduceus"
 )
 
 func main() {
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, os.Args[1])
+	c, err := caduceus.Connect(ctx, os.Args[1], caduceus.Options{})
 	if err != nil {
 		panic(err)
 	}
@@ -219,7 +219,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if _, err := c.Exec(ctx, string(sql)); err != nil {
+	// A migration is several statements, which only the simple protocol runs.
+	if _, err := c.Wire().Exec(ctx, string(sql)); err != nil {
 		panic(err)
 	}
 }

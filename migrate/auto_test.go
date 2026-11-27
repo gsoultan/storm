@@ -11,8 +11,6 @@ package migrate_test
 import (
 	"context"
 	"errors"
-	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/runtime/pgdrv"
 	"hash/fnv"
 	"os"
 	"slices"
@@ -21,7 +19,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 	"github.com/gsoultan/storm/schema"
 )
 

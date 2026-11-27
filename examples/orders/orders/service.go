@@ -173,7 +173,7 @@ func (s *service) PlaceOrder(ctx context.Context, customerID string, items []Lin
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
 	// A transaction is just another Executor: the same generated code runs
 	// inside one, and a rollback erases everything it did.
-	ex := pgdrv.Tx{T: tx}
+	ex := tx
 
 	skus := make([]string, 0, len(items))
 	for _, it := range items {

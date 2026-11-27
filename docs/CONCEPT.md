@@ -40,7 +40,7 @@ in practice a handful are ever used. So:
   under 64 bits the cache is an indexed array of `atomic.Pointer[stmt]` — not a
   map, so no hashing on the hot path.
 - A warm shape does zero SQL construction, ever. It also maps 1:1 onto a
-  server-side prepared statement in the pgx statement cache.
+  server-side prepared statement in the driver's statement cache.
 
 GORM, Ent, and Bun rebuild the same string on every call for the life of the
 process. This is the largest single win available, and it is free after the
@@ -113,7 +113,7 @@ No ambient persistence context. `storm.Unit` is a scoped object you put things
 into deliberately. Generated setters flip a bit in a fixed-width dirty mask, so
 computing the changed-column set is a bitmask read — no allocation, no
 comparison against a loaded snapshot. Flush emits ordered, batched statements
-through `pgx.Batch`, with FK-correct ordering.
+through one pipelined batch, with FK-correct ordering.
 
 Hibernate's value (batching, insert ordering, identity map for graph writes)
 without Hibernate's cost (dirty-checking every loaded entity at every flush).
@@ -215,7 +215,8 @@ the other.
 
 storm is a **library**, imported, not deployed. No daemon, no UI, no applied
 DDL, no lazy loading, no runtime dialect branch. Driver dependencies are
-isolated behind a five-method port, one adapter package each (`pgx/v5` today).
+isolated behind a five-method port, one adapter package each (caduceus for PostgreSQL;
+storm's own wire code for MySQL, SQL Server, MongoDB and Redis).
 Everything else is stdlib.
 
 There is one binary — `storm`, the developer tool — and it is on the same side

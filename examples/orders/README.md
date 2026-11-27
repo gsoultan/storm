@@ -34,7 +34,7 @@ $ go run ./cmd/ordersd                       # :8080
 |---|---|---|
 | **Overselling** | `StockItem.Version` + `t.Col(&s.Version).Version()` | Two checkouts racing for the last unit cannot both win. The loser gets `runtime.ErrStaleWrite`, mapped to **409 with `retryable: true`** — it lost a race, it did not send something wrong. |
 | **Money** | `storm.Decimal` → `numeric(12,2)` | 2 × 19.99 + 5.25 is `45.23`, not `45.229999999999997`. A float64 cannot represent 0.10; an accounting system that rounds is a defect, not a tolerance. |
-| **Atomicity** | one `pgx` transaction; `store.NewUnit()` for the graph write | A line that fails leaves *no* reservation behind from the lines before it. `TestPartialFailureReservesNothing` asserts exactly that. |
+| **Atomicity** | one transaction; `store.NewUnit()` for the graph write | A line that fails leaves *no* reservation behind from the lines before it. `TestPartialFailureReservesNothing` asserts exactly that. |
 | **N+1** | `store.OrderWithLines()` | An order and its lines in **two round trips**, whatever the line count — asserted with `runtime.CountingExecutor`. Reading `.Lines` off a plain `order.Row` does not compile. |
 | **List endpoints** | `Projections` → `AllCard` | Three columns instead of the row, a covering index away from an index-only scan. |
 | **Reporting** | `storm.SQL[DailyRevenueRow]` | Ordinary SQL, verbatim — validated against the model at *generate* time and given a generated scanner. |

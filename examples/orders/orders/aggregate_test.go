@@ -50,7 +50,7 @@ func TestAggregateMatchesHandWrittenSQL(t *testing.T) {
 		revenue string
 	}
 	wants := map[string]want{}
-	rows, err := pool.Query(ctx, `SELECT status::text, count(*), coalesce(sum(total),0)::text
+	rows, err := rawQuery(t, ctx, `SELECT status::text, count(*), coalesce(sum(total),0)::text
 	                                FROM orders GROUP BY status`)
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +436,7 @@ func TestCheckConstraintIsTyped(t *testing.T) {
 	ctx := context.Background()
 	_, prodID := seed(t, "SKU-CHECK", "1.00", 3)
 	// reserved <= on_hand is a CHECK on stock_items.
-	_, err := pool.Exec(ctx, `UPDATE stock_items SET reserved = on_hand + 1 WHERE product_id = $1`, prodID)
+	_, err := pool.Exec(ctx, `UPDATE stock_items SET reserved = on_hand + 1 WHERE product_id = $1`, []any{prodID})
 	if err == nil {
 		t.Skip("the check did not fire; nothing to classify")
 	}
@@ -475,7 +475,7 @@ func TestAggregateRatioIsNotIntegerDivision(t *testing.T) {
 		}
 		ids = append(ids, id.OrderID)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE orders SET status = 'paid' WHERE id = $1`, ids[0]); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE orders SET status = 'paid' WHERE id = $1`, []any{ids[0]}); err != nil {
 		t.Fatal(err)
 	}
 

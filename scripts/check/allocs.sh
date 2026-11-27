@@ -31,12 +31,12 @@ CONTRAST='(generic|slice_of_array|flat_array|PerRowString)'
 # opened) is amortised to zero in the integer allocs/op go test prints.
 N=100x
 
-run() { # <pattern> <package>
-  go test -run XXX -bench "$1" -benchmem -benchtime="$N" "$2" |
+run() { # <pattern> <module dir> <package>
+  (cd "$2" && go test -run XXX -bench "$1" -benchmem -benchtime="$N" "$3") |
     awk '/^Benchmark/ && / allocs\/op/ { name = $1; sub(/-[0-9]+$/, "", name); print name, $(NF-1) }'
 }
 
-got=$( { run "$PG_BENCH" ./bench/; run "$MY_BENCH" ./runtime/mydrv/; } | grep -Ev "$CONTRAST" | sort)
+got=$( { run "$PG_BENCH" bench ./; run "$MY_BENCH" . ./runtime/mydrv/; } | grep -Ev "$CONTRAST" | sort)
 
 if [ "${1:-}" = "-update" ]; then
   {

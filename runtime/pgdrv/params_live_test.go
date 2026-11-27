@@ -68,3 +68,35 @@ func TestStormValueTypesBind(t *testing.T) {
 		}
 	}
 }
+
+// Generated code binds every argument through a pointer into its statement's
+// arena, so the pointer forms must mean what the values do.
+func TestStormValueTypesBindThroughPointers(t *testing.T) {
+	ctx := context.Background()
+	pool, err := pgdrv.NewPool(ctx, dsn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	js := runtime.JSON(`{"colour":"red"}`)
+	ds := []runtime.Decimal{{}}
+	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, c := range []struct {
+		sql  string
+		arg  any
+		want string
+	}{
+		{`SELECT ($1::jsonb @> '{"colour":"red"}')::text`, &js, "true"},
+		{"SELECT array_length($1::numeric[], 1)::text", &ds, "1"},
+		{"SELECT $1::timestamptz = '2026-01-02 03:04:05+00'", &ts, "t"},
+	} {
+		var got string
+		if err := pool.QueryRow(ctx, c.sql, c.arg).Scan(&got); err != nil {
+			t.Errorf("%s with %T: %v", c.sql, c.arg, err)
+			continue
+		}
+		if got != c.want && !(c.want == "t" && got == "true") {
+			t.Errorf("%s with %T = %q, want %q", c.sql, c.arg, got, c.want)
+		}
+	}
+}

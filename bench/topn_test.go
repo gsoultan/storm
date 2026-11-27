@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/gsoultan/storm/bench/genuser"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
 )
 
 // Greatest-n-per-group: which lowering is the default is decided here, not in
@@ -27,7 +26,7 @@ import (
 // parent count and n are varied — a single data point would pick a default that
 // is wrong for half the callers.
 func BenchmarkTopNPerParent(b *testing.B) {
-	ex := pgxdrv.Pool{P: pool}
+	ex := stormPool
 	ctx := context.Background()
 	order := []genuser.Sort{genuser.CreatedAt.Desc(), genuser.ID.Asc()}
 

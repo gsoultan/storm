@@ -10,16 +10,16 @@ package storm_test
 
 import (
 	"context"
-	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/runtime/pgdrv"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm"
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/internal/testmodel"
 	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/runtime/pgdrv"
 	"github.com/gsoultan/storm/schema"
 	"github.com/gsoultan/storm/schema/pg"
 )

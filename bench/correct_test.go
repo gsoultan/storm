@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/internal/spike"
+	"github.com/gsoultan/storm/bench/internal/spike"
 )
 
 // TestSpikeMatchesPgx runs every one of the 64 shapes through both the spike

@@ -251,7 +251,7 @@ four-method port, a transaction satisfies it, and the same generated code runs
 inside one:
 
 ```go
-tx, _ := pgxdrv.Pool{P: pool}.StartTx(ctx)
+tx, _ := pool.StartTx(ctx)
 
 nb := author.Create()
 nb.SetName("Ephemeral")
