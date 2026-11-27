@@ -177,7 +177,7 @@ func (d *Document) Schema(t *storm.Table) {
 
 | | |
 |---|---|
-| `.Using(m)` | `storm.BTree` (default), `storm.Hash`, `storm.GIN`, `storm.GiST`, `storm.SPGiST`, `storm.BRIN`; for MySQL, `storm.FullText` |
+| `.Using(m)` | `storm.BTree` (default), `storm.Hash`, `storm.GIN`, `storm.GiST`, `storm.SPGiST`, `storm.BRIN`; for MySQL, `storm.FullText` (a single-column one gives that column `Matches`) |
 | `.Unique()` | a unique index — btree only |
 | `.NullsNotDistinct()` | a unique index treats NULLs as equal (PostgreSQL 15+) |
 | `.Include(&a, &b)` | covering columns in the leaf entries — btree, gist, spgist |

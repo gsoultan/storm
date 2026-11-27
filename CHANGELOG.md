@@ -63,6 +63,22 @@ And orders the steps so each one can run:
 plainly and online, and then its reverse, and requires that the next plan be
 empty.
 
+### Full-text search on MySQL and MariaDB
+
+A `FULLTEXT` index could be declared and migrated, but nothing in the
+generated API could query it. A text column covered by a single-column
+`FULLTEXT` index now gets its own handle type, `FullTextCol`, with every text
+predicate plus `Matches`, lowered to `MATCH (col) AGAINST (… IN NATURAL
+LANGUAGE MODE)` and answered by the index (`type: fulltext` in the plan). No
+other column gets it, so a `Matches` the server would refuse with error 1191
+is a compile error. The term is bound. A `*` with no word beside it was error
+1064 on MySQL 8.4 and MariaDB 11.4 even in natural-language mode, found by
+fuzzing every one- and two-character mix of the operator characters; the
+lowering turns `*` into a space on the server, which changes no match. Tested
+by executing the generated package against both servers.
+`WebSearch` is not offered, and boolean mode is not exposed: it ORs terms where
+PostgreSQL's ANDs them, and one method should not mean two things.
+
 ## v1.12.2 — 2026-11-08
 
 **This release should have been v1.13.0.** It adds API (hooks, `storm.sum`,

@@ -328,6 +328,7 @@ article.Titel.Eq("x")                // compile error: undefined
 | `BytesCol` | `Eq` `NotEq` |
 | nullable (`NullTimeCol`, …) | + `IsNull` `IsNotNull` (and `IsNullOrEmpty` on `NullTextCol`) |
 | `TSVectorCol` | `Matches` `WebSearch` |
+| `FullTextCol` (MySQL, MariaDB) | every `TextCol` predicate + `Matches` |
 | array (`TextArrayCol`, …) | `Contains` `ContainedBy` `Overlaps` |
 | jsonb (`JSONCol`) | `Contains` `ContainedBy` `HasAnyKey` `HasAllKeys` `TextLikeAny` `IsEmpty` |
 | `TstzRangeCol` | `Eq` `NotEq` `Overlaps` `ContainsRange` `ContainedBy` |
