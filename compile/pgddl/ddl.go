@@ -111,7 +111,7 @@ func Create(s *schema.Schema) string {
 		b.WriteString(CreateFunction(f))
 		b.WriteString("\n")
 	}
-	for _, v := range s.Views {
+	for _, v := range ViewOrder(s.Views) {
 		b.WriteString("\n")
 		b.WriteString(CreateView(v))
 		b.WriteString("\n")
@@ -441,6 +441,12 @@ func AddForeignKey(t *schema.Table, fk *schema.ForeignKey) string {
 	}
 	b.WriteString(";")
 	return b.String()
+}
+
+// AddExclude renders an ALTER TABLE ... ADD CONSTRAINT ... EXCLUDE, the form
+// a migration adds an exclusion constraint to a table that already exists in.
+func AddExclude(t *schema.Table, ex *schema.Exclude) string {
+	return "ALTER TABLE " + Ident(t.Name) + " ADD " + excludeDef(ex) + ";"
 }
 
 func excludeDef(ex *schema.Exclude) string {

@@ -215,7 +215,7 @@ func TestPostgresRenderersCannotFail(t *testing.T) {
 
 	for i := 0; i < rt.NumField(); i++ {
 		f, ft := v.Field(i), rt.Field(i)
-		if f.IsNil() {
+		if f.Kind() != reflect.Func || f.IsNil() {
 			continue
 		}
 		fn := f.Type()

@@ -20,8 +20,11 @@ package migrate
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
+	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/schema"
 )
 
@@ -78,6 +81,8 @@ const (
 	ObjectUnique     = "unique constraint"
 	ObjectCheck      = "check constraint"
 	ObjectForeignKey = "foreign key"
+	ObjectPrimaryKey = "primary key"
+	ObjectExclude    = "exclusion constraint"
 )
 
 // NoTransactionMarker is the comment SQL puts above a change that must run
@@ -98,6 +103,7 @@ type Plan struct {
 	// can compute the plan back, and concurrent whether Concurrently has
 	// rewritten it, so the plan back is written in the same form.
 	from, to   *schema.Schema
+	ren        renames
 	concurrent bool
 }
 
@@ -195,7 +201,7 @@ func (p Plan) Reverse() (Plan, error) {
 	if p.from == nil || p.to == nil {
 		return Plan{}, fmt.Errorf("migrate: Reverse needs a plan computed by Diff or DiffFor")
 	}
-	back, err := DiffFor(p.to, p.from, p.dialect)
+	back, err := diffFor(p.to, p.from, p.dialect, p.ren.invert())
 	if err != nil {
 		return Plan{}, err
 	}
@@ -263,57 +269,185 @@ func DiffFor(from, to *schema.Schema, dialect Dialect) (Plan, error) {
 	}
 	from.Normalize()
 	to.Normalize()
+	return diffFor(from, to, dialect, renamesOf(from, to))
+}
 
+// diffFor is DiffFor with the renames already decided, which is what lets
+// Reverse run the same differ the other way: the plan back renames the new
+// names to the old ones, and nothing in either schema says so.
+//
+// The plan runs in phases, because a step can only run once what it depends on
+// is in place and before what depends on it goes:
+//
+//  1. enum types and labels, which columns are about to use;
+//  2. views over a table whose columns are about to be dropped or retyped,
+//     which PostgreSQL refuses to do under a view;
+//  3. foreign keys that are going or being replaced, before the keys they
+//     reference and the columns they are made of;
+//  4. table renames, then each table: new tables, and for an existing one its
+//     column renames, the constraints and indexes that are going, its columns,
+//     and the constraints and indexes that are new;
+//  5. every new or replaced foreign key, once every table and key it needs
+//     exists;
+//  6. routines, then the views of phase 2 again, then dropped tables and enums.
+func diffFor(from, to *schema.Schema, dialect Dialect, ren renames) (Plan, error) {
 	d, err := ddlFor(dialect, enumsOf(to))
 	if err != nil {
 		return Plan{}, err
 	}
-	b := &planner{d: d}
+	b := &planner{d: d, ren: ren}
 	b.p.dialect = dialect
-	b.p.from, b.p.to = from, to
+	b.p.from, b.p.to, b.p.ren = from, to, ren
 
-	// Enums before tables that use them.
 	if d.Enums != nil {
 		if err := d.Enums(&b.p, from, to); err != nil {
 			return Plan{}, err
 		}
 	}
 
-	// New and changed tables. Foreign keys for new tables are held back until
-	// every table exists — a plan that adds comments.post_id before posts is
-	// created is a plan that fails halfway through a deployment.
-	var deferredFKs []Change
+	// From here on `from` is read as it stands once every rename has run, so
+	// a renamed table or column compares by its new name, and so does every
+	// key and index that names it.
+	old := ren.apply(from)
+
+	// What each surviving table rebuilds — columns dropped and added again,
+	// or freed for an ALTER — and which of its keys go. Both are needed before
+	// the first statement: a foreign key into either has to go first.
+	type pair struct{ old, cur *schema.Table }
+	var pairs []pair
+	rebuilt := map[string]map[string]bool{}
+	keys := map[string][][]string{}
+	for _, t := range to.Tables {
+		if t.PartitionOf != "" {
+			continue
+		}
+		if o := old.Table(t.Name); o != nil && partitionDesc(o) == partitionDesc(t) {
+			pairs = append(pairs, pair{o, t})
+			rebuilt[t.Name] = rebuiltColumns(d, o, t)
+			keys[t.Name] = droppedKeys(o, t, rebuilt[t.Name])
+		}
+	}
+	dropped := map[string]bool{}
+	for _, t := range old.Tables {
+		if t.PartitionOf == "" && to.Table(t.Name) == nil {
+			dropped[t.Name] = true
+		}
+	}
+
+	// Phase 2.
+	var views []string
+	if d.DropEnums != nil {
+		affected := map[string]bool{}
+		for _, p := range pairs {
+			if columnsShrink(p.old, p.cur, rebuilt[p.cur.Name]) {
+				affected[p.cur.Name] = true
+			}
+		}
+		views = viewsToRebuild(old, affected)
+		for _, v := range views {
+			c := Change{SQL: pgddl.DropView(v)}
+			if to.View(v) == nil {
+				c.Destructive, c.Why = true, "view "+v+" is no longer in the model"
+			}
+			b.add(c)
+		}
+	}
+
+	// Phase 3, collecting phase 5 as it goes.
+	var fkAdds []Change
+	for _, p := range pairs {
+		forced := func(fk *schema.ForeignKey) bool {
+			return touches(rebuilt[p.cur.Name], fk.Columns) ||
+				touches(rebuilt[fk.RefTable], fk.RefColumns) ||
+				keyIn(keys[fk.RefTable], fk.RefColumns)
+		}
+		for _, of := range p.old.ForeignKeys {
+			cf := findFK(p.cur.ForeignKeys, of.Name)
+			switch {
+			case cf == nil:
+				b.add(Change{
+					SQL:         d.DropConstraint(p.cur, of.Name),
+					Object:      ObjectForeignKey,
+					Destructive: true,
+					Why:         "foreign key " + of.Name + " on " + p.cur.Name + " is no longer in the model",
+				})
+			case !sameFK(of, cf) || forced(cf):
+				b.add(Change{SQL: d.DropConstraint(p.cur, of.Name), Object: ObjectForeignKey})
+				fkAdds = append(fkAdds, addFK(d, p.cur, cf))
+			case of.NotValid && d.ValidateConstraint != nil:
+				// Held NOT VALID and declared as it stands: validated, not
+				// dropped and re-added. The drop would leave a window with
+				// no constraint at all, and the re-add would scan the table
+				// under the lock the NOT VALID was there to avoid.
+				fkAdds = append(fkAdds, Change{SQL: d.ValidateConstraint(p.cur, cf.Name), Object: ObjectForeignKey, validates: true})
+			}
+		}
+		for _, cf := range p.cur.ForeignKeys {
+			if findFK(p.old.ForeignKeys, cf.Name) == nil {
+				fkAdds = append(fkAdds, addFK(d, p.cur, cf))
+			}
+		}
+	}
+	// A dropped table can be referenced by another dropped table, and the
+	// second drop would then fail on the first: those keys go first.
+	for _, t := range old.Tables {
+		if !dropped[t.Name] {
+			continue
+		}
+		for _, fk := range t.ForeignKeys {
+			if fk.RefTable != t.Name && dropped[fk.RefTable] {
+				b.add(Change{SQL: d.DropConstraint(t, fk.Name), Object: ObjectForeignKey})
+			}
+		}
+	}
+
+	// Phase 4.
+	for _, o := range ren.tableOrder() {
+		b.add(Change{SQL: d.RenameTable(o, ren.table(o)), Object: ObjectTable})
+	}
+	var newFKs []Change
 	for _, t := range to.Tables {
 		if t.PartitionOf != "" {
 			continue // see dropped tables below
 		}
-		old := from.Table(t.Name)
-		if old == nil {
+		o := old.Table(t.Name)
+		if o == nil {
 			b.add(Change{SQL: b.sql(d.CreateTable(t)), Object: ObjectTable})
 			for _, fk := range t.ForeignKeys {
-				deferredFKs = append(deferredFKs, Change{SQL: d.AddForeignKey(t, fk), Object: ObjectForeignKey})
+				newFKs = append(newFKs, Change{SQL: d.AddForeignKey(t, fk), Object: ObjectForeignKey})
 			}
 			continue
 		}
-		diffTable(b, old, t)
+		diffTable(b, o, t, rebuilt[t.Name])
 	}
-	b.p.Changes = append(b.p.Changes, deferredFKs...)
 
-	// The SQL-bodied objects come after every table exists and before anything
-	// is dropped: a function's body reads tables, and a view over a table that
-	// is about to go has to be dropped before the table, not after.
+	// Phase 5. Foreign keys for new tables come first, as they always have:
+	// a plan that adds comments.post_id before posts is created is a plan
+	// that fails halfway through a deployment, and so is one that adds a key
+	// on an existing table to a table created after it.
+	b.p.Changes = append(b.p.Changes, newFKs...)
+	b.p.Changes = append(b.p.Changes, fkAdds...)
+
+	// Phase 6. The SQL-bodied objects come after every table exists and
+	// before anything is dropped: a function's body reads tables, and a view
+	// over a table that is about to go has to be dropped before the table,
+	// not after.
 	//
 	// PostgreSQL-only, and gated on the dialect rather than on the schemas
 	// being empty: schema has no routine model for any other target yet, so a
 	// SQL Server plan that reached here would render PostgreSQL function
 	// bodies from whatever a future introspector started filling in.
 	if d.DropEnums != nil {
-		addRoutines(&b.p, from, to)
-		dropRoutines(&b.p, from, to)
+		gone := map[string]bool{}
+		for _, v := range views {
+			gone[v] = true
+		}
+		addRoutines(&b.p, from, to, gone)
+		dropRoutines(&b.p, from, to, gone)
 	}
 
 	// Dropped tables, after the rest so foreign keys pointing at them are gone.
-	for _, t := range from.Tables {
+	for _, t := range old.Tables {
 		// A PARTITION is never dropped for being absent from the model, and
 		// never created from one.
 		//
@@ -323,10 +457,7 @@ func DiffFor(from, to *schema.Schema, dialect Dialect) (Plan, error) {
 		// declaration for. Treating them alike means a diff whose first
 		// suggestion is to drop last month's audit log. The parent is the
 		// declared thing; its partitions are data.
-		if t.PartitionOf != "" {
-			continue
-		}
-		if to.Table(t.Name) == nil {
+		if dropped[t.Name] {
 			b.add(Change{
 				SQL:         d.DropTable(t),
 				Object:      ObjectTable,
@@ -342,6 +473,12 @@ func DiffFor(from, to *schema.Schema, dialect Dialect) (Plan, error) {
 	return b.p, b.err
 }
 
+// addFK is the ADD of a foreign key on a table that exists, carrying what
+// Concurrently needs to add it NOT VALID.
+func addFK(d ddl, t *schema.Table, fk *schema.ForeignKey) Change {
+	return Change{SQL: d.AddForeignKey(t, fk), Object: ObjectForeignKey, table: t, constraint: fk.Name}
+}
+
 // planner carries the plan being built, the renderers building it, and the
 // first rendering failure.
 //
@@ -352,6 +489,7 @@ func DiffFor(from, to *schema.Schema, dialect Dialect) (Plan, error) {
 type planner struct {
 	p   Plan
 	d   ddl
+	ren renames
 	err error
 }
 
@@ -371,7 +509,10 @@ func (b *planner) sql(s string, err error) string {
 	return s
 }
 
-func diffTable(b *planner, old, cur *schema.Table) {
+// diffTable takes old to cur. old is the table as it stands after every
+// rename, and rebuilt names the columns whose indexes and constraints have
+// to be recreated around the change to the column.
+func diffTable(b *planner, old, cur *schema.Table, rebuilt map[string]bool) {
 	d := b.d
 
 	// Partitioning cannot be altered. A table is created partitioned or it is
@@ -389,16 +530,96 @@ func diffTable(b *planner, old, cur *schema.Table) {
 		return
 	}
 
+	// Columns renamed, first: everything after this names them as they will
+	// be called.
+	for _, c := range cur.Columns {
+		if from, ok := b.ren.oldColumn(cur.Name, c.Name); ok {
+			b.add(Change{SQL: d.RenameColumn(cur, from, c.Name), Object: ObjectColumn})
+		}
+	}
+
+	// Every constraint and index is compared, and the ones going are dropped
+	// BEFORE any column changes: a dropped column takes its indexes and
+	// constraints with it, and a later DROP INDEX for one of them fails on an
+	// index that is no longer there. The ones arriving are added after, when
+	// every column they name exists.
+	var drops, adds []Change
+	collect := func(dr, ad []Change) { drops, adds = append(drops, dr...), append(adds, ad...) }
+
+	collect(diffNamed(cur, old.Excludes, cur.Excludes,
+		func(x *schema.Exclude) string { return x.Name },
+		func(x *schema.Exclude) Change { return Change{SQL: d.AddExclude(cur, x)} },
+		func(x *schema.Exclude) Change { return Change{SQL: d.DropConstraint(cur, x.Name)} },
+		func(a, b *schema.Exclude) bool { return sameExclude(a, b) && !excludeTouches(rebuilt, b) },
+		ObjectExclude))
+
+	collect(diffNamed(cur, old.Checks, cur.Checks,
+		func(c *schema.Check) string { return c.Name },
+		func(c *schema.Check) Change { return Change{SQL: d.AddCheck(cur, c), table: cur, constraint: c.Name} },
+		func(c *schema.Check) Change { return Change{SQL: d.DropConstraint(cur, c.Name)} },
+		func(a, b *schema.Check) bool {
+			return canonical(a.Expr) == canonical(b.Expr) && !exprTouches(rebuilt, b.Expr)
+		},
+		ObjectCheck))
+
+	collect(diffNamed(cur, old.Uniques, cur.Uniques,
+		func(u *schema.Unique) string { return u.Name },
+		func(u *schema.Unique) Change { return Change{SQL: d.AddUnique(cur, u)} },
+		func(u *schema.Unique) Change { return Change{SQL: d.DropConstraint(cur, u.Name)} },
+		func(a, b *schema.Unique) bool { return sameUnique(a, b) && !touches(rebuilt, b.Columns) },
+		ObjectUnique))
+
+	collect(diffNamed(cur, old.Indexes, cur.Indexes,
+		func(i *schema.Index) string { return i.Name },
+		func(i *schema.Index) Change {
+			return Change{SQL: d.CreateIndex(cur, i), table: cur, index: i}
+		},
+		func(i *schema.Index) Change {
+			return Change{SQL: d.DropIndex(cur, i), dropIndex: i.Name}
+		},
+		func(a, b *schema.Index) bool { return sameIndex(a, b) && !indexTouches(rebuilt, b) },
+		ObjectIndex))
+
+	// The primary key, which has no name the model knows and so is compared
+	// by its columns.
+	pkChanged := !samePK(old, cur, rebuilt)
+	if pkChanged && len(old.PrimaryKey) > 0 {
+		c := Change{SQL: d.DropPrimaryKey(cur), Object: ObjectPrimaryKey}
+		if len(cur.PrimaryKey) == 0 {
+			c.Destructive = true
+			c.Why = "primary key of " + cur.Name + " is no longer in the model"
+		}
+		drops = append([]Change{c}, drops...)
+	}
+	if pkChanged && len(cur.PrimaryKey) > 0 {
+		adds = append([]Change{{SQL: d.AddPrimaryKey(cur), Object: ObjectPrimaryKey}}, adds...)
+	}
+
+	// An index on a column this plan drops, or drops and adds again, is
+	// dropped in the plan's transaction, never CONCURRENTLY after it: by the
+	// time a concurrent drop ran, the column's drop would have taken the
+	// index with it, and the DROP INDEX would fail on nothing.
+	gone := map[string]bool{}
+	maps.Copy(gone, rebuilt)
+	for _, oc := range old.Columns {
+		if cur.Column(oc.Name) == nil {
+			gone[oc.Name] = true
+		}
+	}
+	for i := range drops {
+		if ix := findIndex(old.Indexes, drops[i].dropIndex); ix != nil && indexTouches(gone, ix) {
+			drops[i].dropIndex = ""
+		}
+	}
+	for _, c := range drops {
+		b.add(c)
+	}
+
 	// Columns added.
 	for _, c := range cur.Columns {
 		oc := old.Column(c.Name)
 		if oc == nil {
-			ch := Change{SQL: b.sql(d.AddColumn(cur, c)), Object: ObjectColumn}
-			if c.NotNull && c.Default == "" && c.Generated == "" && !c.Identity {
-				ch.Destructive = true
-				ch.Why = "adding NOT NULL column " + c.Name + " with no default fails if the table has rows"
-			}
-			b.add(ch)
+			addColumn(b, cur, c)
 			continue
 		}
 		diffColumn(b, cur, oc, c)
@@ -415,74 +636,96 @@ func diffTable(b *planner, old, cur *schema.Table) {
 		}
 	}
 
-	diffNamed(b, cur, old.Uniques, cur.Uniques,
-		func(u *schema.Unique) string { return u.Name },
-		func(u *schema.Unique) Change { return Change{SQL: d.AddUnique(cur, u)} },
-		func(u *schema.Unique) Change { return Change{SQL: d.DropConstraint(cur, u.Name)} },
-		func(a, b *schema.Unique) bool { return eq(a.Columns, b.Columns) },
-		"unique constraint")
+	for _, c := range adds {
+		b.add(c)
+	}
 
-	diffNamed(b, cur, old.Checks, cur.Checks,
-		func(c *schema.Check) string { return c.Name },
-		func(c *schema.Check) Change { return Change{SQL: d.AddCheck(cur, c), table: cur, constraint: c.Name} },
-		func(c *schema.Check) Change { return Change{SQL: d.DropConstraint(cur, c.Name)} },
-		func(a, b *schema.Check) bool { return canonical(a.Expr) == canonical(b.Expr) },
-		"check constraint")
-
-	diffNamed(b, cur, old.ForeignKeys, cur.ForeignKeys,
-		func(f *schema.ForeignKey) string { return f.Name },
-		func(f *schema.ForeignKey) Change {
-			return Change{SQL: d.AddForeignKey(cur, f), table: cur, constraint: f.Name}
-		},
-		func(f *schema.ForeignKey) Change { return Change{SQL: d.DropConstraint(cur, f.Name)} },
-		sameFK,
-		"foreign key")
-
-	// A constraint the database holds NOT VALID and the model declares as it
-	// stands is validated, not dropped and re-added: the drop would leave a
-	// window with no constraint at all, and the re-add would scan the table
-	// under the lock the NOT VALID was there to avoid. One that differs from
-	// the model has already been replaced above, by a constraint that is valid.
+	// A check the database holds NOT VALID and the model declares as it
+	// stands is validated, not dropped and re-added; see phase 3 for the
+	// foreign keys. One that differs from the model has already been replaced
+	// above, by a constraint that is valid.
 	if d.ValidateConstraint != nil {
 		for _, c := range cur.Checks {
 			if o := findCheck(old.Checks, c.Name); o != nil && o.NotValid &&
-				canonical(o.Expr) == canonical(c.Expr) {
+				canonical(o.Expr) == canonical(c.Expr) && !exprTouches(rebuilt, c.Expr) {
 				b.add(Change{SQL: d.ValidateConstraint(cur, c.Name), Object: ObjectCheck, validates: true})
-			}
-		}
-		for _, f := range cur.ForeignKeys {
-			if o := findFK(old.ForeignKeys, f.Name); o != nil && o.NotValid && sameFK(o, f) {
-				b.add(Change{SQL: d.ValidateConstraint(cur, f.Name), Object: ObjectForeignKey, validates: true})
 			}
 		}
 	}
 
-	diffNamed(b, cur, old.Indexes, cur.Indexes,
-		func(i *schema.Index) string { return i.Name },
-		func(i *schema.Index) Change {
-			return Change{SQL: d.CreateIndex(cur, i), table: cur, index: i}
-		},
-		func(i *schema.Index) Change {
-			return Change{SQL: d.DropIndex(cur, i), dropIndex: i.Name}
-		},
-		func(a, b *schema.Index) bool {
-			// An index the server marked invalid is rebuilt whatever its
-			// definition says: the planner does not use it, and the drop and
-			// the build are the only way back.
-			return !a.Invalid && !b.Invalid && a.Unique == b.Unique && a.Method == b.Method &&
-				canonical(a.Where) == canonical(b.Where) && sameKeys(a.Columns, b.Columns) &&
-				eq(a.Include, b.Include) && a.NullsNotDistinct == b.NullsNotDistinct &&
-				sameParams(a.With, b.With)
-		},
-		"index")
+	if d.CommentTable != nil && old.Comment != cur.Comment {
+		b.add(Change{SQL: d.CommentTable(cur), Object: ObjectTable})
+	}
+}
+
+// addColumn adds c, with its comment, marking the step destructive when it
+// cannot succeed on a table with rows.
+func addColumn(b *planner, t *schema.Table, c *schema.Column) {
+	ch := Change{SQL: b.sql(b.d.AddColumn(t, c)), Object: ObjectColumn}
+	if c.NotNull && c.Default == "" && c.Generated == "" && !c.Identity && !c.Serial {
+		ch.Destructive = true
+		ch.Why = "adding NOT NULL column " + c.Name + " with no default fails if the table has rows"
+	}
+	b.add(ch)
+	if b.d.CommentColumn != nil && c.Comment != "" {
+		b.add(Change{SQL: b.d.CommentColumn(t, c), Object: ObjectColumn})
+	}
 }
 
 func diffColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
 	d := b.d
+
+	// A generated column whose expression changes, or that a plain column
+	// becomes, is dropped and added again: there is no portable ALTER for
+	// either, and the values are the expression's anyway.
+	if regenerates(d, old, cur) {
+		drop := Change{SQL: d.DropColumn(t, old), Object: ObjectColumn}
+		switch {
+		case old.Generated == "":
+			drop.Destructive, drop.Why = true, "column "+t.Name+"."+cur.Name+
+				" becomes generated, so the values it holds are replaced by the expression's"
+		case cur.Generated == "":
+			drop.Destructive, drop.Why = true, "column "+t.Name+"."+cur.Name+
+				" stops being generated, and this server cannot keep the values it computed"
+		}
+		b.add(drop)
+		addColumn(b, t, cur)
+		return
+	}
+	if old.Generated != "" && cur.Generated == "" {
+		b.add(Change{SQL: d.DropExpression(t, cur), Object: ObjectColumn})
+	}
+
+	// What owns a sequence goes before anything is retyped, and the new
+	// owner arrives after the default it replaces has gone.
+	if old.Identity && !cur.Identity {
+		if d.DropIdentity == nil {
+			b.add(cannotInPlace(t, cur, "stop being an identity column"))
+		} else {
+			b.add(Change{SQL: d.DropIdentity(t, cur), Object: ObjectColumn})
+		}
+	}
+	if old.Serial && !cur.Serial {
+		if d.DropSerial == nil {
+			b.add(cannotInPlace(t, cur, "stop being a serial"))
+		} else {
+			for _, s := range d.DropSerial(t, cur) {
+				b.add(Change{SQL: s, Object: ObjectColumn})
+			}
+		}
+	}
+
 	retyped := !old.Type.Equal(cur.Type)
-	if retyped && cur.ConvertFrom != "" {
+	converted := retyped && cur.ConvertFrom != ""
+	// Where ALTER COLUMN refuses a column a DEFAULT is bound to, the default
+	// goes first and comes back after, as it does for a conversion.
+	freed := retyped && !converted && d.AlterFreesColumn && old.Default != ""
+	if converted {
 		convertColumn(b, t, old, cur)
 	} else if retyped {
+		if freed {
+			b.add(Change{SQL: d.DropDefault(t, old), Object: ObjectColumn})
+		}
 		ch := Change{SQL: b.sql(d.AlterColumnType(t, cur)), Object: ObjectColumn}
 		if narrowing(old.Type, cur.Type) {
 			ch.Destructive = true
@@ -513,7 +756,14 @@ func diffColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
 			b.add(Change{SQL: b.sql(d.DropNotNull(t, cur)), Object: ObjectColumn})
 		}
 	}
-	if old.Default != cur.Default && !(retyped && cur.ConvertFrom != "") {
+	switch {
+	case converted:
+		// convertColumn has put the default back.
+	case freed:
+		if cur.Default != "" {
+			b.add(Change{SQL: d.SetDefault(t, cur), Object: ObjectColumn})
+		}
+	case old.Default != cur.Default:
 		if cur.Default == "" {
 			b.add(Change{SQL: d.DropDefault(t, cur), Object: ObjectColumn})
 		} else {
@@ -525,6 +775,267 @@ func diffColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
 			b.add(Change{SQL: d.SetDefault(t, cur), Object: ObjectColumn})
 		}
 	}
+
+	if cur.Serial && !old.Serial {
+		if d.AddSerial == nil {
+			b.add(cannotInPlace(t, cur, "become a serial"))
+		} else {
+			for _, s := range d.AddSerial(t, cur) {
+				b.add(Change{SQL: s, Object: ObjectColumn})
+			}
+		}
+	}
+	if cur.Identity && !old.Identity {
+		if d.AddIdentity == nil {
+			b.add(cannotInPlace(t, cur, "become an identity column"))
+		} else {
+			for _, s := range d.AddIdentity(t, cur) {
+				b.add(Change{SQL: s, Object: ObjectColumn})
+			}
+		}
+	}
+
+	if d.CommentColumn != nil && old.Comment != cur.Comment {
+		b.add(Change{SQL: d.CommentColumn(t, cur), Object: ObjectColumn})
+	}
+}
+
+// cannotInPlace is the step a human has to finish: a change the server has no
+// ALTER for. It is a comment, marked destructive like every such step, so a
+// plan holding one is never applied unreviewed.
+func cannotInPlace(t *schema.Table, c *schema.Column, what string) Change {
+	return Change{
+		SQL:         "-- cannot make " + t.Name + "." + c.Name + " " + what + " in place on this server",
+		Object:      ObjectColumn,
+		Destructive: true,
+		Why: "column " + t.Name + "." + c.Name + " has to " + what +
+			"; this needs a new column and a copy of the data",
+	}
+}
+
+// regenerates reports whether the change from old to cur drops the column and
+// adds it again.
+func regenerates(d ddl, old, cur *schema.Column) bool {
+	if canonical(old.Generated) == canonical(cur.Generated) {
+		return false
+	}
+	return !(old.Generated != "" && cur.Generated == "" && d.DropExpression != nil)
+}
+
+// rebuiltColumns names the columns of cur whose indexes and constraints the
+// plan has to recreate: those it drops and adds again, and — where ALTER
+// COLUMN refuses a column anything depends on — those it alters.
+func rebuiltColumns(d ddl, old, cur *schema.Table) map[string]bool {
+	out := map[string]bool{}
+	for _, c := range cur.Columns {
+		oc := old.Column(c.Name)
+		if oc == nil {
+			continue
+		}
+		if regenerates(d, oc, c) ||
+			d.AlterFreesColumn && (!oc.Type.Equal(c.Type) || oc.NotNull != c.NotNull) {
+			out[c.Name] = true
+		}
+	}
+	return out
+}
+
+// droppedKeys lists the column sets of old's keys — its primary key, its
+// unique constraints and its unique indexes — that the plan drops, so that a
+// foreign key referencing one is dropped before it and added back after.
+func droppedKeys(old, cur *schema.Table, rebuilt map[string]bool) [][]string {
+	var out [][]string
+	if len(old.PrimaryKey) > 0 && !samePK(old, cur, rebuilt) {
+		out = append(out, old.PrimaryKey)
+	}
+	for _, u := range old.Uniques {
+		cu := findUnique(cur.Uniques, u.Name)
+		if cu == nil || !sameUnique(u, cu) || touches(rebuilt, cu.Columns) {
+			out = append(out, u.Columns)
+		}
+	}
+	for _, ix := range old.Indexes {
+		if !ix.Unique {
+			continue
+		}
+		ci := findIndex(cur.Indexes, ix.Name)
+		if ci == nil || !sameIndex(ix, ci) || indexTouches(rebuilt, ci) {
+			cols := make([]string, len(ix.Columns))
+			for i, k := range ix.Columns {
+				cols[i] = k.Name
+			}
+			out = append(out, cols)
+		}
+	}
+	return out
+}
+
+// columnsShrink reports whether the plan drops or retypes a column of the
+// table, which is what PostgreSQL refuses to do under a view that reads it.
+func columnsShrink(old, cur *schema.Table, rebuilt map[string]bool) bool {
+	if len(rebuilt) > 0 {
+		return true
+	}
+	for _, oc := range old.Columns {
+		c := cur.Column(oc.Name)
+		if c == nil || !oc.Type.Equal(c.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// viewsToRebuild names the views of s that read an affected table, or a view
+// that does, ordered so each comes before any view it reads: the order to
+// drop them in. Reading is judged by the name appearing in the definition,
+// which can only err towards rebuilding a view that did not need it.
+func viewsToRebuild(s *schema.Schema, affected map[string]bool) []string {
+	if len(affected) == 0 {
+		return nil
+	}
+	in := map[string]bool{}
+	for grew := true; grew; {
+		grew = false
+		for _, v := range s.Views {
+			if in[v.Name] {
+				continue
+			}
+			for name := range affected {
+				if mentions(v.Def, name) {
+					in[v.Name], affected[v.Name], grew = true, true, true
+					break
+				}
+			}
+		}
+	}
+	// Dependents first: repeatedly take a view no remaining view reads.
+	var out []string
+	for len(out) < len(in) {
+		for _, v := range s.Views {
+			if !in[v.Name] || contains(out, v.Name) {
+				continue
+			}
+			read := false
+			for _, w := range s.Views {
+				if w.Name != v.Name && in[w.Name] && !contains(out, w.Name) && mentions(w.Def, v.Name) {
+					read = true
+					break
+				}
+			}
+			if !read {
+				out = append(out, v.Name)
+			}
+		}
+	}
+	return out
+}
+
+// mentions reports whether name appears in sql as a whole identifier.
+func mentions(sql, name string) bool {
+	low, n := strings.ToLower(sql), strings.ToLower(name)
+	for i := 0; ; {
+		j := strings.Index(low[i:], n)
+		if j < 0 {
+			return false
+		}
+		j += i
+		end := j + len(n)
+		if (j == 0 || !isIdentByte(low[j-1])) && (end == len(low) || !isIdentByte(low[end])) {
+			return true
+		}
+		i = j + 1
+	}
+}
+
+func samePK(old, cur *schema.Table, rebuilt map[string]bool) bool {
+	return eq(old.PrimaryKey, cur.PrimaryKey) && !touches(rebuilt, cur.PrimaryKey)
+}
+
+func sameUnique(a, b *schema.Unique) bool { return eq(a.Columns, b.Columns) }
+
+func sameIndex(a, b *schema.Index) bool {
+	// An index the server marked invalid is rebuilt whatever its definition
+	// says: the planner does not use it, and the drop and the build are the
+	// only way back.
+	return !a.Invalid && !b.Invalid && a.Unique == b.Unique && a.Method == b.Method &&
+		canonical(a.Where) == canonical(b.Where) && sameKeys(a.Columns, b.Columns) &&
+		eq(a.Include, b.Include) && a.NullsNotDistinct == b.NullsNotDistinct &&
+		sameParams(a.With, b.With)
+}
+
+func sameExclude(a, b *schema.Exclude) bool {
+	if a.Method != b.Method || canonical(a.Where) != canonical(b.Where) || len(a.Parts) != len(b.Parts) {
+		return false
+	}
+	for i := range a.Parts {
+		x, y := a.Parts[i], b.Parts[i]
+		if canonical(x.Column) != canonical(y.Column) || x.Expr != y.Expr ||
+			strings.TrimSpace(x.Operator) != strings.TrimSpace(y.Operator) {
+			return false
+		}
+	}
+	return true
+}
+
+// touches reports whether any of cols is rebuilt.
+func touches(rebuilt map[string]bool, cols []string) bool {
+	for _, c := range cols {
+		if rebuilt[c] {
+			return true
+		}
+	}
+	return false
+}
+
+// exprTouches reports whether an expression names a rebuilt column.
+func exprTouches(rebuilt map[string]bool, expr string) bool {
+	for c := range rebuilt {
+		if mentions(expr, c) {
+			return true
+		}
+	}
+	return false
+}
+
+func indexTouches(rebuilt map[string]bool, ix *schema.Index) bool {
+	if len(rebuilt) == 0 {
+		return false
+	}
+	for _, k := range ix.Columns {
+		if rebuilt[k.Name] || k.Expr && exprTouches(rebuilt, k.Name) {
+			return true
+		}
+	}
+	return touches(rebuilt, ix.Include) || exprTouches(rebuilt, ix.Where)
+}
+
+func excludeTouches(rebuilt map[string]bool, ex *schema.Exclude) bool {
+	for _, p := range ex.Parts {
+		if rebuilt[p.Column] || p.Expr && exprTouches(rebuilt, p.Column) {
+			return true
+		}
+	}
+	return exprTouches(rebuilt, ex.Where)
+}
+
+// keyIn reports whether cols, in any order, is one of keys.
+func keyIn(keys [][]string, cols []string) bool {
+	for _, k := range keys {
+		if len(k) != len(cols) {
+			continue
+		}
+		all := true
+		for _, c := range cols {
+			if !contains(k, c) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }
 
 // convertColumn changes cur's type with the conversion its ConvertFrom
@@ -555,10 +1066,12 @@ func convertColumn(b *planner, t *schema.Table, old, cur *schema.Column) {
 	}
 }
 
-// diffNamed is the add/drop/replace loop shared by every named constraint kind.
-func diffNamed[T any](b *planner, t *schema.Table, old, cur []T,
+// diffNamed compares one named kind of constraint or index, and returns the
+// drops — of the ones going and the ones being replaced — apart from the adds,
+// because the caller runs the column changes between the two.
+func diffNamed[T any](t *schema.Table, old, cur []T,
 	name func(T) string, add func(T) Change, drop func(T) Change,
-	same func(a, b T) bool, kind string) {
+	same func(a, b T) bool, kind string) (drops, adds []Change) {
 
 	add, drop = objectOf(add, kind), objectOf(drop, kind)
 	byName := map[string]T{}
@@ -570,14 +1083,14 @@ func diffNamed[T any](b *planner, t *schema.Table, old, cur []T,
 		seen[name(c)] = true
 		o, ok := byName[name(c)]
 		if !ok {
-			b.add(add(c))
+			adds = append(adds, add(c))
 			continue
 		}
 		if !same(o, c) {
 			// No back end storm targets can alter these in place; drop and
 			// recreate.
-			b.add(drop(o))
-			b.add(add(c))
+			drops = append(drops, drop(o))
+			adds = append(adds, add(c))
 		}
 	}
 	for _, o := range old {
@@ -585,9 +1098,10 @@ func diffNamed[T any](b *planner, t *schema.Table, old, cur []T,
 			x := drop(o)
 			x.Destructive = true
 			x.Why = kind + " " + name(o) + " on " + t.Name + " is no longer in the model"
-			b.add(x)
+			drops = append(drops, x)
 		}
 	}
+	return drops, adds
 }
 
 // objectOf marks the changes render returns as working on object.
@@ -603,13 +1117,32 @@ func (p *Plan) add(c Change) { p.Changes = append(p.Changes, c) }
 
 func sameFK(a, b *schema.ForeignKey) bool {
 	return eq(a.Columns, b.Columns) && a.RefTable == b.RefTable &&
-		eq(a.RefColumns, b.RefColumns) && a.OnDelete == b.OnDelete && a.OnUpdate == b.OnUpdate
+		eq(a.RefColumns, b.RefColumns) && a.OnDelete == b.OnDelete && a.OnUpdate == b.OnUpdate &&
+		a.Deferrable == b.Deferrable
 }
 
 func findCheck(cs []*schema.Check, name string) *schema.Check {
 	for _, c := range cs {
 		if c.Name == name {
 			return c
+		}
+	}
+	return nil
+}
+
+func findUnique(us []*schema.Unique, name string) *schema.Unique {
+	for _, u := range us {
+		if u.Name == name {
+			return u
+		}
+	}
+	return nil
+}
+
+func findIndex(is []*schema.Index, name string) *schema.Index {
+	for _, i := range is {
+		if i.Name == name {
+			return i
 		}
 	}
 	return nil
@@ -774,4 +1307,183 @@ func partitionDesc(t *schema.Table) string {
 	}
 	return "partitioned by " + t.Partition.Strategy +
 		" (" + strings.Join(t.Partition.Columns, ", ") + ")"
+}
+
+// renames are the table and column renames a plan makes, decided once from
+// the model's RenamedFrom and then applied to everything the plan compares.
+//
+// They are keyed by a table's name in the database the plan starts from. The
+// entry under "" is the table's new name, when the table itself is renamed;
+// every other entry maps one of its columns' old name to the new one.
+type renames map[string]map[string]string
+
+// renamesOf reads the renames `to` declares that `from` still needs: the old
+// name exists, the new one does not yet, and the model does not also declare
+// the old one. A rename the database already has is no rename, which is what
+// lets RenamedFrom stay in a model after every database has moved.
+func renamesOf(from, to *schema.Schema) renames {
+	r := renames{}
+	set := func(table, old, new string) {
+		if r[table] == nil {
+			r[table] = map[string]string{}
+		}
+		r[table][old] = new
+	}
+	for _, t := range to.Tables {
+		ot := from.Table(t.Name)
+		if ot == nil && t.RenamedFrom != "" && to.Table(t.RenamedFrom) == nil {
+			if ot = from.Table(t.RenamedFrom); ot != nil {
+				set(ot.Name, "", t.Name)
+			}
+		}
+		if ot == nil {
+			continue
+		}
+		for _, c := range t.Columns {
+			if c.RenamedFrom == "" || ot.Column(c.Name) != nil || t.Column(c.RenamedFrom) != nil ||
+				ot.Column(c.RenamedFrom) == nil {
+				continue
+			}
+			set(ot.Name, c.RenamedFrom, c.Name)
+		}
+	}
+	return r
+}
+
+// invert is the renames of the plan back.
+func (r renames) invert() renames {
+	out := renames{}
+	for old, m := range r {
+		n := r.table(old)
+		out[n] = map[string]string{}
+		for o, c := range m {
+			if o == "" {
+				out[n][""] = old
+			} else {
+				out[n][c] = o
+			}
+		}
+	}
+	return out
+}
+
+// tableOrder is the renamed tables' old names, sorted, so the plan is
+// deterministic.
+func (r renames) tableOrder() []string {
+	var out []string
+	for old, m := range r {
+		if _, ok := m[""]; ok {
+			out = append(out, old)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// table is the name the table called old will have.
+func (r renames) table(old string) string {
+	if n, ok := r[old][""]; ok {
+		return n
+	}
+	return old
+}
+
+// oldColumn is the name the column now called c, of the table now called
+// table, had before it was renamed.
+func (r renames) oldColumn(table, c string) (string, bool) {
+	for old, m := range r {
+		if r.table(old) != table {
+			continue
+		}
+		for o, n := range m {
+			if o != "" && n == c {
+				return o, true
+			}
+		}
+	}
+	return "", false
+}
+
+// apply is s as it stands once every rename has run: the tables and columns
+// renamed, and every key, index and foreign key naming them following them,
+// as the server makes them follow. Nothing in s is modified.
+func (r renames) apply(s *schema.Schema) *schema.Schema {
+	if len(r) == 0 {
+		return s
+	}
+	out := *s
+	out.Tables = make([]*schema.Table, len(s.Tables))
+	for i, t := range s.Tables {
+		out.Tables[i] = r.applyTable(t)
+	}
+	return &out
+}
+
+// column is the name column c of the table called table will have.
+func (r renames) column(table, c string) string {
+	if n, ok := r[table][c]; ok && c != "" {
+		return n
+	}
+	return c
+}
+
+func (r renames) applyTable(t *schema.Table) *schema.Table {
+	nt := *t
+	nt.Name = r.table(t.Name)
+	cn := func(c string) string { return r.column(t.Name, c) }
+	names := func(cs []string, f func(string) string) []string {
+		if cs == nil {
+			return nil
+		}
+		out := make([]string, len(cs))
+		for i, c := range cs {
+			out[i] = f(c)
+		}
+		return out
+	}
+	nt.Columns = make([]*schema.Column, len(t.Columns))
+	for i, c := range t.Columns {
+		nc := *c
+		nc.Name = cn(c.Name)
+		nt.Columns[i] = &nc
+	}
+	nt.PrimaryKey = names(t.PrimaryKey, cn)
+	nt.Uniques = make([]*schema.Unique, len(t.Uniques))
+	for i, u := range t.Uniques {
+		nu := *u
+		nu.Columns = names(u.Columns, cn)
+		nt.Uniques[i] = &nu
+	}
+	nt.Indexes = make([]*schema.Index, len(t.Indexes))
+	for i, ix := range t.Indexes {
+		ni := *ix
+		ni.Columns = slices.Clone(ix.Columns)
+		for j := range ni.Columns {
+			if !ni.Columns[j].Expr {
+				ni.Columns[j].Name = cn(ni.Columns[j].Name)
+			}
+		}
+		ni.Include = names(ix.Include, cn)
+		nt.Indexes[i] = &ni
+	}
+	nt.ForeignKeys = make([]*schema.ForeignKey, len(t.ForeignKeys))
+	for i, fk := range t.ForeignKeys {
+		nf := *fk
+		nf.Columns = names(fk.Columns, cn)
+		nf.RefTable = r.table(fk.RefTable)
+		nf.RefColumns = names(fk.RefColumns, func(c string) string { return r.column(fk.RefTable, c) })
+		nt.ForeignKeys[i] = &nf
+	}
+	nt.Excludes = make([]*schema.Exclude, len(t.Excludes))
+	for i, ex := range t.Excludes {
+		ne := *ex
+		ne.Parts = slices.Clone(ex.Parts)
+		for j := range ne.Parts {
+			if !ne.Parts[j].Expr {
+				ne.Parts[j].Column = cn(ne.Parts[j].Column)
+			}
+		}
+		nt.Excludes[i] = &ne
+	}
+	return &nt
 }
