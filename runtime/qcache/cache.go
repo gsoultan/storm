@@ -51,7 +51,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // ErrNoScope is reported to Options.OnError when a cacheable call has no

@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Soft delete is opt-in per table (docs/CONCEPT.md), and the reason it is
@@ -60,7 +60,7 @@ func genSoftDelete(t *testing.T) string {
 	t.Helper()
 	s := buildSoftDelete(t)
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: "store", Import: "github.com/gsoultan/storm",
+		Dir: "store", Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +175,7 @@ func TestNonSoftDeleteOutputIsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: "store", Import: "github.com/gsoultan/storm",
+		Dir: "store", Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -210,7 +210,7 @@ func TestSoftDeleteGeneratedPackageCompiles(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestSoftDeleteBehaviourAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -276,7 +276,7 @@ func TestSoftDeleteBehaviourAgainstPostgres(t *testing.T) {
 	}
 	pkg := filepath.Base(pkgDir)
 	src := strings.ReplaceAll(liveTestSrc, "PKG", pkg)
-	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base+"/"+pkg)
+	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base+"/"+pkg)
 	if err := os.WriteFile(filepath.Join(pkgDir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestAContextPackagesUnionExcludesDeletedRows(t *testing.T) {
 	} {
 		t.Run(d.name, func(t *testing.T) {
 			files, err := codegen.Package(s, codegen.PackageOptions{
-				Dir: filepath.Join(t.TempDir(), "store"), Import: "github.com/gsoultan/storm",
+				Dir: filepath.Join(t.TempDir(), "store"), Import: "github.com/gsoultan/storm/v2",
 				Dialect: d.dialect, Package: "store", PackageImport: "example.com/x/store",
 			})
 			if err != nil {

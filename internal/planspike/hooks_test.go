@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/hooks"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/hooks"
 )
 
 // Lifecycle hooks, end to end on a real database: each terminal runs its

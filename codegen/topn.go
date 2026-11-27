@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Greatest-n-per-group emission: "each parent with its first N children",

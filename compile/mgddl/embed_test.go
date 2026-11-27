@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // orders hold their lines.

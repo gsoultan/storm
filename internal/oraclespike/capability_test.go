@@ -36,8 +36,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // oracleCheck is the prototype of compile/oraddl.Check's empty-string rule.

@@ -12,7 +12,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func loadTables(ctx context.Context, c Conn, ns string, s *schema.Schema,

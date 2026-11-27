@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 
 	"example.com/orders/orders"
 )

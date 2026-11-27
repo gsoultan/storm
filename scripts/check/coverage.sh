@@ -10,45 +10,45 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 declare -a FLOORS=(
-  "github.com/gsoultan/storm/runtime 95"
+  "github.com/gsoultan/storm/v2/runtime 95"
   # The only package that knows the PostgreSQL driver (caduceus) exists, and the home of the wire-format
   # guard: a wrong entry in its deny-list is a value decoded as the wrong type,
   # which is precisely the "not observable from outside" failure floors are for.
   # Lower than the others because a driver adapter's remaining statements are
   # error plumbing that needs a broken server to reach.
-  "github.com/gsoultan/storm/runtime/pgdrv 85"
+  "github.com/gsoultan/storm/v2/runtime/pgdrv 85"
   # The shard router. No server is needed to reach any of it — routing is
   # arithmetic and a lookup — so the floor is high, and it should be: a
   # mistake here sends a query to the wrong database, which returns rows
   # rather than an error.
-  "github.com/gsoultan/storm/runtime/shard 95"
+  "github.com/gsoultan/storm/v2/runtime/shard 95"
   # The MySQL/MariaDB adapter, which is a wire protocol written by hand: an
   # off-by-one in a packet offset produces a plausible value, not an error.
   # Needs STORM_MYSQL_ADDR to reach anything, which is the same bargain pgdrv
   # makes with STORM_DSN.
-  "github.com/gsoultan/storm/runtime/mydrv 80"
+  "github.com/gsoultan/storm/v2/runtime/mydrv 80"
   # The query result cache. No server needed for any of it — the Store is an
   # interface and the tests hold a map — and a mistake here is a cached answer
   # handed to the wrong caller, or to the right one after an invalidation.
-  "github.com/gsoultan/storm/runtime/qcache 95"
+  "github.com/gsoultan/storm/v2/runtime/qcache 95"
   # Statement and lifecycle hooks. No server needed: the port is faked. A
   # mistake here is an After that never fires, fires twice, or a value-shaped
   # result that stops being one behind the decorator.
-  "github.com/gsoultan/storm/runtime/hooks 95"
+  "github.com/gsoultan/storm/v2/runtime/hooks 95"
   # The Redis client: a wire protocol, like mydrv. The offline half drives a
   # fake server through every malformed reply; STORM_REDIS_URL adds the live
   # half, which CI's test job has.
-  "github.com/gsoultan/storm/runtime/redisdrv 85"
-  "github.com/gsoultan/storm/compile/mysql 80"
-  "github.com/gsoultan/storm/compile/mariadb 80"
-  "github.com/gsoultan/storm/runtime/mydec 90"
-  "github.com/gsoultan/storm/compile/myddl 85"
+  "github.com/gsoultan/storm/v2/runtime/redisdrv 85"
+  "github.com/gsoultan/storm/v2/compile/mysql 80"
+  "github.com/gsoultan/storm/v2/compile/mariadb 80"
+  "github.com/gsoultan/storm/v2/runtime/mydec 90"
+  "github.com/gsoultan/storm/v2/compile/myddl 85"
   # M10's two, at the level they landed. The SQL Server lowering has a live
   # gate too (scripts/check/mssql.sh), but that one runs in a separate module
   # and needs a server, so it contributes nothing here — which is exactly why
   # these floors matter: they are what holds when the server is not there.
-  "github.com/gsoultan/storm/compile/mssql 85"
-  "github.com/gsoultan/storm/compile/msddl 85"
+  "github.com/gsoultan/storm/v2/compile/mssql 85"
+  "github.com/gsoultan/storm/v2/compile/msddl 85"
   # runtime/msdrv and runtime/msdec are NOT here. Their live half needs a SQL
   # Server, which this run does not have — it would measure a suite that
   # skipped, and a floor met by a package whose tests did not run is a floor
@@ -57,19 +57,19 @@ declare -a FLOORS=(
   # The MongoDB back end's server-free half. runtime/mgdrv is NOT here, for
   # msdrv's reason: its live half needs a replica set, and its floor is in
   # scripts/check/mongo.sh, which has one.
-  "github.com/gsoultan/storm/compile/mongo 95"
-  "github.com/gsoultan/storm/compile/mgddl 95"
-  "github.com/gsoultan/storm/runtime/bsondec 95"
-  "github.com/gsoultan/storm/runtime/mgsplice 95"
-  "github.com/gsoultan/storm/runtime/mgcascade 95"
-  "github.com/gsoultan/storm/compile/mgexpr 95"
-  "github.com/gsoultan/storm/codegen/mongo 85"
-  "github.com/gsoultan/storm/compile/pgsql 80"
-  "github.com/gsoultan/storm/compile/pgddl 90"
-  "github.com/gsoultan/storm/codegen 85"
-  "github.com/gsoultan/storm/migrate 75"
-  "github.com/gsoultan/storm/schema/pg 80"
-  "github.com/gsoultan/storm 65"
+  "github.com/gsoultan/storm/v2/compile/mongo 95"
+  "github.com/gsoultan/storm/v2/compile/mgddl 95"
+  "github.com/gsoultan/storm/v2/runtime/bsondec 95"
+  "github.com/gsoultan/storm/v2/runtime/mgsplice 95"
+  "github.com/gsoultan/storm/v2/runtime/mgcascade 95"
+  "github.com/gsoultan/storm/v2/compile/mgexpr 95"
+  "github.com/gsoultan/storm/v2/codegen/mongo 85"
+  "github.com/gsoultan/storm/v2/compile/pgsql 80"
+  "github.com/gsoultan/storm/v2/compile/pgddl 90"
+  "github.com/gsoultan/storm/v2/codegen 85"
+  "github.com/gsoultan/storm/v2/migrate 75"
+  "github.com/gsoultan/storm/v2/schema/pg 80"
+  "github.com/gsoultan/storm/v2 65"
   # 65, and the number is DRIFTING for a reason the floor does not watch for.
   #
   # The CLI, and only the PostgreSQL half of it. The SQL Server half MOVED, on
@@ -79,7 +79,7 @@ declare -a FLOORS=(
   #
   # If this number starts sliding again, the question to ask is which half of
   # tool the sliding code belongs to — not what the number should be.
-  "github.com/gsoultan/storm/tool 70"
+  "github.com/gsoultan/storm/v2/tool 70"
 )
 
 prof=$(mktemp)

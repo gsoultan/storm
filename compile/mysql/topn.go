@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/myddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/myddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Greatest-n-per-group: "each parent with its first N children".

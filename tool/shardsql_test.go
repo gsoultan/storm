@@ -21,7 +21,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 func TestPlainRawStatementsExcludesTheShardedForms(t *testing.T) {

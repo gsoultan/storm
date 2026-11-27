@@ -15,14 +15,14 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/internal/planspike/store"
-	"github.com/gsoultan/storm/internal/planspike/store/org"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/internal/testmodel"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/internal/planspike/store"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/org"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 const (

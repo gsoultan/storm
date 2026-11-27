@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func portableSchema() *schema.Schema {
@@ -38,7 +38,7 @@ func TestMySQLScannersCallTheMySQLDecoders(t *testing.T) {
 	// a statement — the query side of the seam is still PostgreSQL's — so it
 
 	src, err := codegen.File(portableSchema(), codegen.Options{
-		Package: "user", Import: "github.com/gsoultan/storm",
+		Package: "user", Import: "github.com/gsoultan/storm/v2",
 		Table: "users", Dialect: codegen.DialectMySQL,
 	})
 	if err != nil {
@@ -65,7 +65,7 @@ func TestZeroDialectIsPostgres(t *testing.T) {
 		t.Fatal("the zero Dialect is not PostgreSQL")
 	}
 	src, err := codegen.File(portableSchema(), codegen.Options{
-		Package: "user", Import: "github.com/gsoultan/storm", Table: "users",
+		Package: "user", Import: "github.com/gsoultan/storm/v2", Table: "users",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestMySQLRefusesTypesItCannotDecode(t *testing.T) {
 		s.Tables[0].Columns = append(s.Tables[0].Columns,
 			&schema.Column{Name: "x", Type: ty})
 		_, err := codegen.File(s, codegen.Options{
-			Package: "user", Import: "github.com/gsoultan/storm",
+			Package: "user", Import: "github.com/gsoultan/storm/v2",
 			Table: "users", Dialect: codegen.DialectMySQL,
 		})
 		if err == nil {
@@ -191,7 +191,7 @@ func TestAggregateRowTypeShape(t *testing.T) {
 }
 
 func opts() codegen.Options {
-	return codegen.Options{Package: "user", Import: "github.com/gsoultan/storm", Table: "users"}
+	return codegen.Options{Package: "user", Import: "github.com/gsoultan/storm/v2", Table: "users"}
 }
 
 // regexpField reports whether a struct body declares `name typ`, whatever the
@@ -217,7 +217,7 @@ func TestPostgresScannersRefuseADriftedColumnWidth(t *testing.T) {
 	s.Tables[0].Columns = append(s.Tables[0].Columns,
 		&schema.Column{Name: "age", Type: schema.Type{Name: schema.TypeInt4}})
 	src, err := codegen.File(s, codegen.Options{
-		Package: "user", Import: "github.com/gsoultan/storm", Table: "users",
+		Package: "user", Import: "github.com/gsoultan/storm/v2", Table: "users",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +241,7 @@ func TestPostgresScannersRefuseADriftedColumnWidth(t *testing.T) {
 	}
 
 	my, err := codegen.File(s, codegen.Options{
-		Package: "user", Import: "github.com/gsoultan/storm", Table: "users",
+		Package: "user", Import: "github.com/gsoultan/storm/v2", Table: "users",
 		Dialect: codegen.DialectMySQL,
 	})
 	if err != nil {

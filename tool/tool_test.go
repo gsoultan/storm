@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
 )
 
 // The CLI is the surface every user touches first, and a tool that fails
@@ -284,7 +284,7 @@ func TestCLI_LintPlans(t *testing.T) {
 // This shipped wrong in v0.1.0 and no test caught it, because every
 // generation that ever ran was inside this repository, where storm's own
 // module path happens to be the right answer. A user's first `generate`
-// emitted `github.com/gsoultan/storm/internal/store/user` into their module
+// emitted `github.com/gsoultan/storm/v2/internal/store/user` into their module
 // and produced code that could not compile. So the test generates into a
 // module with a DIFFERENT path, which is the only arrangement that can tell
 // the two apart.
@@ -317,11 +317,11 @@ func TestGenerate_ImportsTheHostModuleNotStorm(t *testing.T) {
 		t.Fatalf("the context package does not import the host module; it says:\n%s",
 			firstImports(string(src)))
 	}
-	if strings.Contains(string(src), `"github.com/gsoultan/storm/internal/store/`) {
+	if strings.Contains(string(src), `"github.com/gsoultan/storm/v2/internal/store/`) {
 		t.Fatal("generated code imports storm's own module path for the user's packages")
 	}
 	// storm's runtime is still imported from storm, which is the other half.
-	if !strings.Contains(string(src), `"github.com/gsoultan/storm/runtime"`) {
+	if !strings.Contains(string(src), `"github.com/gsoultan/storm/v2/runtime"`) {
 		t.Fatal("the runtime import should still point at storm")
 	}
 }

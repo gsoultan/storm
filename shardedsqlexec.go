@@ -12,7 +12,7 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/gsoultan/storm/runtime/shard"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 // ShardedSQLStmt is the no-rows half, against a sharded table.

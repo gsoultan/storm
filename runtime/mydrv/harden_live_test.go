@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime/mydec"
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/runtime/mydec"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 )
 
 // onBoth runs f against each server that is configured.

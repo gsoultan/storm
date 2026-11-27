@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Raw-query scanner generation — the build-time half of storm.SQL[T].
@@ -207,7 +207,7 @@ func rawFieldFor(rt reflect.Type, col string) (reflect.StructField, bool, error)
 // "Null[string]", not "Null" — which is why this matches on the prefix.
 func fieldShape(t reflect.Type) (string, bool) {
 	if t.Kind() == reflect.Struct && strings.HasPrefix(t.Name(), "Null[") &&
-		strings.HasPrefix(t.PkgPath(), "github.com/gsoultan/storm") {
+		strings.HasPrefix(t.PkgPath(), "github.com/gsoultan/storm/v2") {
 		v, _ := t.FieldByName("V")
 		return goTypeName(v.Type), true
 	}

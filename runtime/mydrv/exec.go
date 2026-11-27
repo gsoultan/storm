@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Conn is one connection, and satisfies runtime.Executor.

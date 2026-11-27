@@ -22,10 +22,10 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen/mongo"
-	"github.com/gsoultan/storm/compile/mgddl"
-	"github.com/gsoultan/storm/examples/library/model"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen/mongo"
+	"github.com/gsoultan/storm/v2/compile/mgddl"
+	"github.com/gsoultan/storm/v2/examples/library/model"
 )
 
 func main() {
@@ -41,8 +41,8 @@ func run() error {
 		return err
 	}
 	dir := filepath.Join("examples", "library", "store")
-	files, err := codegenmongo.Package(s, codegenmongo.Options{Import: "github.com/gsoultan/storm",
-		Package: "store", PackageImport: "github.com/gsoultan/storm/examples/library/store"})
+	files, err := codegenmongo.Package(s, codegenmongo.Options{Import: "github.com/gsoultan/storm/v2",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/v2/examples/library/store"})
 	if err != nil {
 		return err
 	}

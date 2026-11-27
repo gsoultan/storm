@@ -4,7 +4,7 @@
 // MySQL dependency for that — every adopter would carry it. A nested module is
 // excluded from the parent's ./... patterns and dependency graph, so this
 // builds only when run from inside this directory.
-module github.com/gsoultan/storm/internal/mysqlspike
+module github.com/gsoultan/storm/v2/internal/mysqlspike
 
 go 1.27.3
 

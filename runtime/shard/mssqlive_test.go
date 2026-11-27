@@ -21,9 +21,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/msdrv"
-	"github.com/gsoultan/storm/runtime/shard"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 func mssqlShards(t *testing.T) (*shard.Set, []*msdrv.Pool) {

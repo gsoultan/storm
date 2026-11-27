@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func TestCreateFunctionReplacesInPlace(t *testing.T) {

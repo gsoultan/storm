@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/internal/planspike/store/event"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/event"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 // A calendar date survives the trip exactly, and compares as one.

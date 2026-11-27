@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Expression rendering for Oracle.

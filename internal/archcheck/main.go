@@ -94,7 +94,7 @@ func main() {
 		// storm's runtime package that needs Go's runtime has to name one of
 		// the two.
 		for _, im := range f.Imports {
-			if im.Name != nil && im.Name.Name != "_" && strings.HasPrefix(im.Path.Value, `"github.com/gsoultan/storm`) {
+			if im.Name != nil && im.Name.Name != "_" && strings.HasPrefix(im.Path.Value, `"github.com/gsoultan/storm/v2`) {
 				fail("%s imports %s as %s: AGENTS.md allows no import aliases of storm's own packages, "+
 					"because every clause is unique and says what it is", path, im.Path.Value, im.Name.Name)
 			}

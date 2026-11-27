@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/mssql"
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/compile/oracle"
-	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/mssql"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/compile/oracle"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
 )
 
 type litrow struct {

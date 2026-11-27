@@ -11,8 +11,8 @@ package storm_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
 )
 
 type serialModel struct {

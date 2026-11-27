@@ -13,7 +13,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Conn is one connection. Not safe for concurrent use: TDS has no request

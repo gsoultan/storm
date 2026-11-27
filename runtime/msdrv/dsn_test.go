@@ -11,7 +11,7 @@ package msdrv_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
 )
 
 // A connection string is what a command line and a secret hold; a Config is

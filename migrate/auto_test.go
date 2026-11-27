@@ -20,9 +20,9 @@ import (
 	"time"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime/pgdrv"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Auto applies DDL to a live database, so its tests need one. Every assertion

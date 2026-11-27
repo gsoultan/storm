@@ -25,8 +25,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
 )
 
 // docEvery exercises the type-mapping table in REFERENCE.md §1.

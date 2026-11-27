@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/migrate"
 )
 
 // The adopter's path, end to end: declare a function, a view and a trigger

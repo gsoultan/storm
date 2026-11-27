@@ -13,7 +13,7 @@ import (
 	"errors"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Tx adapts a caduceus transaction to the Executor port.

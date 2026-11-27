@@ -40,7 +40,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // DB is the slice of database/sql this package needs. *sql.DB, *sql.Tx and

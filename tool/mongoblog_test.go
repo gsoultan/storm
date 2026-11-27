@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/examples/blog/model"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/examples/blog/model"
 )
 
 // The quickstart's model does not port, and the refusal says why in terms an

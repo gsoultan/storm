@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 // Each of storm's value types, sent through the adapter and read back as the

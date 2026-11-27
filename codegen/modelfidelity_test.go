@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // What an imported model must not quietly lose.

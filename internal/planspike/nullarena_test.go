@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/internal/planspike/store/post"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/post"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 // IS NULL and IS NOT NULL bind no argument, so they must not consume an arena

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // A CREATE INDEX CONCURRENTLY that fails — a duplicate under a unique index, a

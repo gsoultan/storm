@@ -34,7 +34,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Create renders the whole schema.

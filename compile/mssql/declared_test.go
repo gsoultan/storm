@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mssql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mssql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func agg(sets *schema.GroupingSets, order []schema.AggOrder) *schema.Aggregate {

@@ -8,7 +8,7 @@
 
 package codegenmongo
 
-import "github.com/gsoultan/storm/schema"
+import "github.com/gsoultan/storm/v2/schema"
 
 // kind is a column's Go representation on this back end: the type a Row field
 // and a predicate take, the decoder that reads it, and the handle type that

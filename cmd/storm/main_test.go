@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/v2/tool/discover"
 )
 
 // The error a developer actually reads. It has to name the line, say what the

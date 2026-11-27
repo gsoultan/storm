@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Errors, and the one rule that governs them: an error NEVER carries a value.

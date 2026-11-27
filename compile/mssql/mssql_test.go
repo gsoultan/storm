@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mssql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mssql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // The four things that could not be expressed through the seam as M9 left it.

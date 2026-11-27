@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/bench/internal/spike"
+	"github.com/gsoultan/storm/v2/bench/internal/spike"
 )
 
 // The GC harness shows cost; this shows the ceiling. With the database removed

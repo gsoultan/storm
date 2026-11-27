@@ -10,12 +10,12 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gsoultan/storm/examples/library/store/author"
-	"github.com/gsoultan/storm/examples/library/store/book"
-	"github.com/gsoultan/storm/examples/library/store/review"
-	"github.com/gsoultan/storm/examples/library/store/volume"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/v2/examples/library/store/author"
+	"github.com/gsoultan/storm/v2/examples/library/store/book"
+	"github.com/gsoultan/storm/v2/examples/library/store/review"
+	"github.com/gsoultan/storm/v2/examples/library/store/volume"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/bsondec"
 )
 
 var _ = time.Time{}

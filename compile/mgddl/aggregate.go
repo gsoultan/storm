@@ -9,8 +9,8 @@
 package mgddl
 
 import (
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // checkAggregate holds a declared aggregation to the subset generated as a

@@ -3,8 +3,8 @@ package mydec_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mydec"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mydec"
 )
 
 // FuzzDecoders: no value a MySQL server sends panics a decoder. The fallible

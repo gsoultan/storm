@@ -21,8 +21,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime/mydec"
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/runtime/mydec"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 )
 
 // seedBench fills the probe table.

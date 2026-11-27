@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // The three things a named-parameter back end needs from the splicer that a

@@ -11,8 +11,8 @@ package migrate
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Diffing the SQL-bodied objects.

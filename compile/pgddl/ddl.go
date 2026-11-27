@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Create renders CREATE statements for a whole schema, enums first.

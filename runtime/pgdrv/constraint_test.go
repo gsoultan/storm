@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 // Every one of these is a 4xx a service has to tell from a 500. Left

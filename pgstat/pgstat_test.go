@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/pgstat"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/pgstat"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 // One session holds a row, another is made to wait for it, and the reader has

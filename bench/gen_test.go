@@ -15,9 +15,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gsoultan/storm/bench/genuser"
-	"github.com/gsoultan/storm/bench/internal/spike"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/bench/genuser"
+	"github.com/gsoultan/storm/v2/bench/internal/spike"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // M2's kill criterion: generated code must reproduce the M0 spike within 5%.

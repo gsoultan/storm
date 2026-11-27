@@ -12,7 +12,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // recorder passes a result through to its reader and keeps a copy, which is

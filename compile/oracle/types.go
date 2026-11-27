@@ -9,8 +9,8 @@
 package oracle
 
 import (
-	"github.com/gsoultan/storm/compile/oraddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/oraddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // ColumnType is the Oracle type of a storm column, for the places a lowering

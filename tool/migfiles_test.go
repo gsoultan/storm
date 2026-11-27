@@ -10,14 +10,14 @@ package tool
 
 import (
 	"context"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/migrate/sum"
+	"github.com/gsoultan/storm/v2/migrate/sum"
 )
 
 // applyFiles runs migration files the way a runner does: one file per call,

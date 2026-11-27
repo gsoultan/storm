@@ -9,7 +9,7 @@
 // Command storm is the tool: install it once, run it in your module, write no
 // bootstrap.
 //
-//	go install github.com/gsoultan/storm/cmd/storm@latest
+//	go install github.com/gsoultan/storm/v2/cmd/storm@latest
 //	storm generate internal/store
 //
 // The commands need your models, and a binary installed from this repository
@@ -37,8 +37,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gsoultan/storm/tool/bootstrap"
-	"github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/v2/tool/bootstrap"
+	"github.com/gsoultan/storm/v2/tool/discover"
 )
 
 func main() {

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 // AnyOf is the shape a filter screen produces and Any cannot say. Any ORs

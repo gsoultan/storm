@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // validateAggregate rejects an aggregation PostgreSQL would refuse.

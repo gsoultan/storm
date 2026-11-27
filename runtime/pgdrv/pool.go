@@ -25,7 +25,7 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/caduceus/wire"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // ErrPoolClosed is returned by a Pool that has been closed.

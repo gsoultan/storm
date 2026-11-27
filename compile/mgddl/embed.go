@@ -9,8 +9,8 @@
 package mgddl
 
 import (
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // checkEmbed holds an embedded table (storm.Embed) to what an array inside

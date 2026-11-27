@@ -29,11 +29,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
-	"github.com/gsoultan/storm/runtime/shard"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 // liveOrder is the model the migration test brings up on every shard.

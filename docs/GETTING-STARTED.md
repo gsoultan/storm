@@ -36,9 +36,9 @@ $ export STORM_DSN='postgres://storm:storm@127.0.0.1:5433/storm'
 ## 1. Install the tool and the library
 
 ```console
-$ go install github.com/gsoultan/storm/cmd/storm@latest
+$ go install github.com/gsoultan/storm/v2/cmd/storm@latest
 $ go mod init example.com/notes
-$ go get github.com/gsoultan/storm/tool      # once per module
+$ go get github.com/gsoultan/storm/v2/tool      # once per module
 ```
 
 The second `go get` matters. `storm` finds your models by parsing your module,
@@ -59,7 +59,7 @@ package model
 import (
     "time"
 
-    "github.com/gsoultan/storm"
+    "github.com/gsoultan/storm/v2"
 )
 
 // User owns notes.
@@ -254,9 +254,9 @@ import (
     "os"
     "time"
 
-    "github.com/gsoultan/storm"
-    "github.com/gsoultan/storm/runtime"
-    "github.com/gsoultan/storm/runtime/pgdrv"
+    "github.com/gsoultan/storm/v2"
+    "github.com/gsoultan/storm/v2/runtime"
+    "github.com/gsoultan/storm/v2/runtime/pgdrv"
 
     "example.com/notes/internal/store"
     "example.com/notes/internal/store/note"

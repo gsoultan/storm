@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 func newID() [16]byte { return uuid.New() }

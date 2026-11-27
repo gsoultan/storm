@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/pglock"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/pglock"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 // Two sessions and one key: whoever holds it keeps the other out, a session

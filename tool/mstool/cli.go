@@ -16,11 +16,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime/msdrv"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/mssql"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/mssql"
 )
 
 // ImportModel is `storm import` against SQL Server.

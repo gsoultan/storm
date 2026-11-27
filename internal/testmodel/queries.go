@@ -9,7 +9,7 @@
 package testmodel
 
 import (
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 // EarnerRow is the M5 gate query's row: user-declared, matched against the

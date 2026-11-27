@@ -11,11 +11,11 @@ package storm_test
 import (
 	"time"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 // Each fixture is standalone. Embedding a shared unexported struct would make

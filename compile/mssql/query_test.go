@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mssql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mssql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // The statement prefixes and the write fragments. They are one line each, which

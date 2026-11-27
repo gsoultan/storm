@@ -23,8 +23,8 @@ package tool
 // learn that a directory could not be read.
 
 import (
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/tool/discover"
 )
 
 // annotate fills in Table.Pos and Column.Pos from the module's source.

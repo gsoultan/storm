@@ -12,8 +12,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gsoultan/storm/runtime/pgdrv"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // AutoPool is Auto against a pool, which is what an application actually holds.

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 // Every one of these is a mistake a real user will make. The test asserts the

@@ -11,7 +11,7 @@ package pgsql
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // AggregateSelect is everything before the WHERE clause of a grouped read.

@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // A relation whose foreign-key column is NOT spelled <field>_id.
@@ -71,9 +71,9 @@ func TestPlanLoaderCompilesWhenTheKeyFieldIsShadowed(t *testing.T) {
 
 	files, err := codegen.Package(shadowedFKSchema(), codegen.PackageOptions{
 		Dir:           dir,
-		Import:        "github.com/gsoultan/storm",
+		Import:        "github.com/gsoultan/storm/v2",
 		Package:       "store",
-		PackageImport: "github.com/gsoultan/storm/" + filepath.ToSlash(rel),
+		PackageImport: "github.com/gsoultan/storm/v2/" + filepath.ToSlash(rel),
 	})
 	if err != nil {
 		t.Fatal(err)

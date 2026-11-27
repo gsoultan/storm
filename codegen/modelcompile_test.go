@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // argusLike is the shape that broke the on-ramp: a jsonb column, an index

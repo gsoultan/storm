@@ -17,8 +17,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 type bgTicket struct {
@@ -42,7 +42,7 @@ func gen(t *testing.T, o codegen.PackageOptions, models ...any) map[string]strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.Import = "github.com/gsoultan/storm"
+	o.Import = "github.com/gsoultan/storm/v2"
 	if o.Dir == "" {
 		o.Dir = "gen"
 	}
@@ -179,8 +179,8 @@ func TestColumnNamedQueryCompiles(t *testing.T) {
 	dir := filepath.Join(root, rel)
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm", Package: "store",
-		PackageImport: "github.com/gsoultan/storm/" + filepath.ToSlash(rel),
+		Dir: dir, Import: "github.com/gsoultan/storm/v2", Package: "store",
+		PackageImport: "github.com/gsoultan/storm/v2/" + filepath.ToSlash(rel),
 	})
 	if err != nil {
 		t.Fatalf("a column named query was refused: %v", err)
@@ -217,7 +217,7 @@ func TestHandleCollisionNamesARealAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = codegen.Package(s, codegen.PackageOptions{Dir: "gen", Import: "github.com/gsoultan/storm"})
+	_, err = codegen.Package(s, codegen.PackageOptions{Dir: "gen", Import: "github.com/gsoultan/storm/v2"})
 	if err == nil {
 		t.Fatal("query and query_col both became QueryCol and nothing said so")
 	}

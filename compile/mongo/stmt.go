@@ -11,7 +11,7 @@ package mongo
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // The command templates. Each read is split around the two places the splicer

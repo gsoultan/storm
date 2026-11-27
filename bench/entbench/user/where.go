@@ -7,7 +7,7 @@ import (
 
 	"entgo.io/ent/dialect/sql"
 	"github.com/google/uuid"
-	"github.com/gsoultan/storm/bench/entbench/predicate"
+	"github.com/gsoultan/storm/v2/bench/entbench/predicate"
 )
 
 // ID filters vertices based on their ID field.

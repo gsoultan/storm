@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // related: an org has users, a user may belong to an org (a nullable key)
@@ -45,8 +45,8 @@ func related() *schema.Schema {
 }
 
 func TestPlansGenerateAndCompile(t *testing.T) {
-	files, err := Package(related(), Options{Import: "github.com/gsoultan/storm", Package: "ctx",
-		PackageImport: "github.com/gsoultan/storm/internal/x"})
+	files, err := Package(related(), Options{Import: "github.com/gsoultan/storm/v2", Package: "ctx",
+		PackageImport: "github.com/gsoultan/storm/v2/internal/x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,8 +73,8 @@ func TestPlansGenerateAndCompile(t *testing.T) {
 	base := "mgplans" + strconv.Itoa(os.Getpid())
 	dir := filepath.Join(root, "internal", base)
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	files, err = Package(related(), Options{Import: "github.com/gsoultan/storm", Package: base,
-		PackageImport: "github.com/gsoultan/storm/internal/" + base})
+	files, err = Package(related(), Options{Import: "github.com/gsoultan/storm/v2", Package: base,
+		PackageImport: "github.com/gsoultan/storm/v2/internal/" + base})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,8 +13,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 // What storm writes must be what PostgreSQL reads.

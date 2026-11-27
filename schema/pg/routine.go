@@ -12,7 +12,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Reading the SQL-bodied objects back out of the catalog.

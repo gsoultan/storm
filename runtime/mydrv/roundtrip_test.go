@@ -24,9 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mydec"
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mydec"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 )
 
 func TestEveryTypeRoundTrips(t *testing.T) {

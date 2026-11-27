@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 )
 
 func TestSoakUnderConcurrentLoadWithCancellations(t *testing.T) {

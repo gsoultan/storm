@@ -3,7 +3,7 @@
 
 package store
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 // Ghost would be discovered as a model if generated files were not skipped,
 // which would make every second `generate` differ from the first.

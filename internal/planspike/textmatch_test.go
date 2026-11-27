@@ -15,9 +15,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // textMatchCases is the one subject every back end's literal-match lowering is

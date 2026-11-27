@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/msddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/msddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // The SQL Server half of the seam.

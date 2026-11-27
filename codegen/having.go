@@ -11,7 +11,7 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Filtered semi-joins, composed in the context package.

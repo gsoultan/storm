@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/migrate"
 )
 
 // Partitioning, and the rule that matters more than the syntax: a partition

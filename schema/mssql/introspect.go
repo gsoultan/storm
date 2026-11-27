@@ -36,9 +36,9 @@ import (
 
 	"strings"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/msdec"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/msdec"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Conn is the slice of a driver this package needs. runtime.Executor satisfies

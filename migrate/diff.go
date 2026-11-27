@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Change is one migration step.

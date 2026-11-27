@@ -10,7 +10,7 @@ package tool
 
 import (
 	"context"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,9 +18,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/internal/testmodel"
-	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
+	"github.com/gsoultan/storm/v2/migrate"
 )
 
 // The database-backed commands, against a real one. Without these the CLI's

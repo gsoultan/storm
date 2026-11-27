@@ -10,11 +10,11 @@ package storm_test
 
 import (
 	"context"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // schema.AggregateResult encodes what PostgreSQL returns for each aggregate.

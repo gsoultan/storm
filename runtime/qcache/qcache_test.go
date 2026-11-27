@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/qcache"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/qcache"
 )
 
 // memStore is a Store in a map, with a switch to make every call fail.

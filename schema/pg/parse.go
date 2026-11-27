@@ -11,7 +11,7 @@ package schemapg
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Postgres hands constraint and index definitions back as normalised SQL text.

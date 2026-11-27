@@ -22,13 +22,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/compile/msddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/msdec"
-	"github.com/gsoultan/storm/runtime/msdrv"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/compile/msddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/msdec"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Validating storm.SQL against SQL Server.

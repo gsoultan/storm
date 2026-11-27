@@ -29,7 +29,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Statements renders a schema as the individual statements Oracle's PROTOCOL

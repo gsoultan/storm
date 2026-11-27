@@ -10,16 +10,16 @@ import (
 
 	"time"
 
-	"github.com/gsoultan/storm/internal/planspike/store/attachment"
-	"github.com/gsoultan/storm/internal/planspike/store/comment"
-	"github.com/gsoultan/storm/internal/planspike/store/membership"
-	"github.com/gsoultan/storm/internal/planspike/store/org"
-	"github.com/gsoultan/storm/internal/planspike/store/post"
-	"github.com/gsoultan/storm/internal/planspike/store/postrelated"
-	"github.com/gsoultan/storm/internal/planspike/store/posttag"
-	"github.com/gsoultan/storm/internal/planspike/store/tag"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/attachment"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/comment"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/membership"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/org"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/post"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/postrelated"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/posttag"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/tag"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // FlushOrder ranks tables so that every table's foreign-key targets rank

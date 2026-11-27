@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/migrate/sum"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/migrate/sum"
 )
 
 // migFile is one file `storm diff` writes: an up migration, or the down that

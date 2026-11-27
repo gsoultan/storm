@@ -11,7 +11,7 @@ package pgsql_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
 )
 
 // An add binds only the amount: the sum is the column's own value plus it, so

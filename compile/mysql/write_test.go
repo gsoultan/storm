@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
 )
 
 // The one MySQL difference that is not a spelling.

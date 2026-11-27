@@ -12,8 +12,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/storm/bench/genuser"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/bench/genuser"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // The claim an aggregation has to earn is the one every other read makes: a

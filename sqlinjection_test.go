@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // The injection corpus.

@@ -15,8 +15,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 func anOrg(t *testing.T) [16]byte {

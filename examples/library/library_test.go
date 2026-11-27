@@ -23,15 +23,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/mgddl"
-	"github.com/gsoultan/storm/examples/library/model"
-	"github.com/gsoultan/storm/examples/library/store/author"
-	"github.com/gsoultan/storm/examples/library/store/book"
-	"github.com/gsoultan/storm/examples/library/store/hold"
-	"github.com/gsoultan/storm/examples/library/store/volume"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mgdrv"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/mgddl"
+	"github.com/gsoultan/storm/v2/examples/library/model"
+	"github.com/gsoultan/storm/v2/examples/library/store/author"
+	"github.com/gsoultan/storm/v2/examples/library/store/book"
+	"github.com/gsoultan/storm/v2/examples/library/store/hold"
+	"github.com/gsoultan/storm/v2/examples/library/store/volume"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mgdrv"
 )
 
 var db *mgdrv.Pool

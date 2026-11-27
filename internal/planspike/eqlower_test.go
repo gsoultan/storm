@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 // EqLower has to find the row whatever case the caller typed.

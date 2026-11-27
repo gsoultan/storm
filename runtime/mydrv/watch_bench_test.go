@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 )
 
 // A request's context has a deadline, so every statement under it arms the

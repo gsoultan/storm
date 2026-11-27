@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // The BYTE shape, pinned the way pgxdrv's is: rows that grew a Values method

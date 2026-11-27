@@ -20,7 +20,7 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/caduceus/wire"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // failing is a session that answers everything with one error.

@@ -12,7 +12,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Pool adapts a *sql.DB to runtime.DB — the four port methods, plus StartTx.

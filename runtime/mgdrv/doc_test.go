@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // mkdoc encodes a one-field command document whose field v is bound from

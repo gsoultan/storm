@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // The M5 gate query: a window function over a CTE with a lateral join — the

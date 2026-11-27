@@ -24,11 +24,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/msddl"
-	"github.com/gsoultan/storm/runtime/msdrv"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/mssql"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/msddl"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/mssql"
 )
 
 type impStatus string

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 // OnDocument is how a reference says what it is on a document target, and it

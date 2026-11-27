@@ -13,7 +13,7 @@ package benchmodel
 import (
 	"time"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 type User struct {

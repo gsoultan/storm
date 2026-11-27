@@ -13,7 +13,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Array decodes a BSON array whose elements dec reads, in order.

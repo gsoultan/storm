@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/internal/aliasrow"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/internal/aliasrow"
 )
 
 // A row-type package whose declared name differs from its directory (package
@@ -43,8 +43,8 @@ func TestRawScanner_PackageNameNotDirectory(t *testing.T) {
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           "gen",
 		Package:       "ctxgen",
-		Import:        "github.com/gsoultan/storm",
-		PackageImport: "github.com/gsoultan/storm/internal/testgen",
+		Import:        "github.com/gsoultan/storm/v2",
+		PackageImport: "github.com/gsoultan/storm/v2/internal/testgen",
 		RawScanners:   []codegen.RawScanner{rs},
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestRawScanner_PackageNameNotDirectory(t *testing.T) {
 	if ctx == "" {
 		t.Fatal("no context package file emitted")
 	}
-	wantImport := `aliasrowx "github.com/gsoultan/storm/internal/aliasrow"`
+	wantImport := `aliasrowx "github.com/gsoultan/storm/v2/internal/aliasrow"`
 	if !strings.Contains(ctx, wantImport) {
 		t.Fatalf("context file lacks aliased import %s", wantImport)
 	}
@@ -91,8 +91,8 @@ func TestRawScanner_SharedRowType(t *testing.T) {
 	opts := codegen.PackageOptions{
 		Dir:           "gen",
 		Package:       "ctxgen",
-		Import:        "github.com/gsoultan/storm",
-		PackageImport: "github.com/gsoultan/storm/internal/testgen",
+		Import:        "github.com/gsoultan/storm/v2",
+		PackageImport: "github.com/gsoultan/storm/v2/internal/testgen",
 		RawScanners:   []codegen.RawScanner{a, b},
 	}
 	files, err := codegen.Package(s, opts)
@@ -145,8 +145,8 @@ func TestRawScanner_AcronymFieldMatchesModelMapping(t *testing.T) {
 	}
 	s := fixtureSchema(t)
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: "gen", Package: "ctxgen", Import: "github.com/gsoultan/storm",
-		PackageImport: "github.com/gsoultan/storm/internal/testgen",
+		Dir: "gen", Package: "ctxgen", Import: "github.com/gsoultan/storm/v2",
+		PackageImport: "github.com/gsoultan/storm/v2/internal/testgen",
 		RawScanners:   []codegen.RawScanner{rs},
 	})
 	if err != nil {

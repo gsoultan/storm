@@ -12,7 +12,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Compiling is not decoding. This release's own lesson twice over, so the new

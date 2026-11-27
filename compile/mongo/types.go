@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // BSONType is the $jsonSchema bsonType a column is stored as, or ok=false for

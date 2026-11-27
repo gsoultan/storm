@@ -10,15 +10,15 @@ package codegen_test
 
 import (
 	"crypto/sha256"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 	"go/parser"
 	"go/token"
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
 )
 
 // The fixture covers enums, typed jsonb, arrays, nullable columns, foreign
@@ -37,7 +37,7 @@ func TestGenerate_EveryFixtureTable(t *testing.T) {
 	for _, tb := range s.Tables {
 		src, err := codegen.File(s, codegen.Options{
 			Package: "gen" + strings.ReplaceAll(tb.Name, "_", ""),
-			Import:  "github.com/gsoultan/storm",
+			Import:  "github.com/gsoultan/storm/v2",
 			Table:   tb.Name,
 		})
 		if err != nil {
@@ -62,7 +62,7 @@ func TestGenerate_Deterministic(t *testing.T) {
 	var want [32]byte
 	for i := 0; i < 10; i++ {
 		src, err := codegen.File(s, codegen.Options{
-			Package: "genusers", Import: "github.com/gsoultan/storm", Table: "users",
+			Package: "genusers", Import: "github.com/gsoultan/storm/v2", Table: "users",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -109,7 +109,7 @@ func TestGenerate_NumericPrecisionBeyondDecimal(t *testing.T) {
 	defer func() { bal.Type.Precision = prev }()
 
 	_, err = codegen.File(s, codegen.Options{
-		Package: "x", Import: "github.com/gsoultan/storm", Table: "users",
+		Package: "x", Import: "github.com/gsoultan/storm/v2", Table: "users",
 	})
 	if err == nil {
 		t.Fatal("numeric(30,4) must be a generation error")

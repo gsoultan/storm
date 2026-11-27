@@ -186,7 +186,7 @@ type Tag struct {
 Do not rewrite your GORM structs by hand. Import the database instead:
 
 ```console
-$ go get github.com/gsoultan/storm/tool
+$ go get github.com/gsoultan/storm/v2/tool
 $ storm import -schema public > model/model.go
 ```
 

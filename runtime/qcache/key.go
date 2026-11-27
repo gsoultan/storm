@@ -17,7 +17,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // keyVersion changes whenever the bytes hashed into a key change meaning, so

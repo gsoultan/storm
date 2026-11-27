@@ -19,7 +19,7 @@ import (
 	"strings"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Conn is the slice of a caduceus connection this package needs: a

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 // Ordering is chosen per query now, so the rows must actually come back in it.

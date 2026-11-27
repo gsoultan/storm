@@ -3,7 +3,7 @@ package runtime_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // A statement is shared by every LIMIT, because the limit is a bound argument.

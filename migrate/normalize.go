@@ -14,9 +14,9 @@ import (
 	"os"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/pg"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/pg"
 )
 
 // PostgreSQL rewrites every expression it stores. The model says

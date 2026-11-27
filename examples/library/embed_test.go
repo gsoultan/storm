@@ -13,11 +13,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/storm/examples/library/store"
-	"github.com/gsoultan/storm/examples/library/store/author"
-	"github.com/gsoultan/storm/examples/library/store/book"
-	"github.com/gsoultan/storm/examples/library/store/review"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/examples/library/store"
+	"github.com/gsoultan/storm/v2/examples/library/store/author"
+	"github.com/gsoultan/storm/v2/examples/library/store/book"
+	"github.com/gsoultan/storm/v2/examples/library/store/review"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Embedded rows: a book's reviews live in the book's document.

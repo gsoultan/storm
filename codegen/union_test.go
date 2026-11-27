@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
 )
 
 // A union's row type, statement and reader are emitted into the CONTEXT
@@ -31,8 +31,8 @@ func buildWithUnion(t *testing.T, decl *storm.UnionDecl) *schema0 {
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           "gen",
 		Package:       "ctxgen",
-		Import:        "github.com/gsoultan/storm",
-		PackageImport: "github.com/gsoultan/storm/internal/testgen",
+		Import:        "github.com/gsoultan/storm/v2",
+		PackageImport: "github.com/gsoultan/storm/v2/internal/testgen",
 	})
 	if err != nil {
 		t.Fatal(err)

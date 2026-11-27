@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 // Rows sees what List sees, in the same order, and breaking out of the loop

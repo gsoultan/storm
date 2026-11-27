@@ -25,15 +25,15 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/examples/tenants/model"
-	"github.com/gsoultan/storm/examples/tenants/store"
-	"github.com/gsoultan/storm/examples/tenants/store/currency"
-	"github.com/gsoultan/storm/examples/tenants/store/order"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
-	"github.com/gsoultan/storm/runtime/shard"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/examples/tenants/model"
+	"github.com/gsoultan/storm/v2/examples/tenants/store"
+	"github.com/gsoultan/storm/v2/examples/tenants/store/currency"
+	"github.com/gsoultan/storm/v2/examples/tenants/store/order"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 const shards = 2

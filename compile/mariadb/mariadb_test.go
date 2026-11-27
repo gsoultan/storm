@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mariadb"
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mariadb"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // MariaDB speaks MySQL's WIRE protocol but not its SQL. These are the five

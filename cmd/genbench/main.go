@@ -13,9 +13,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/internal/benchmodel"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/internal/benchmodel"
 )
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
 	}
 	src, err := codegen.File(s, codegen.Options{
 		Package: "genuser",
-		Import:  "github.com/gsoultan/storm",
+		Import:  "github.com/gsoultan/storm/v2",
 		Table:   "users",
 		// Match the spike's statement exactly, so the comparison is of the
 		// generator and not of two different query plans.

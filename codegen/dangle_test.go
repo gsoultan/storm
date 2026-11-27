@@ -16,9 +16,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // A reference the model declared AcknowledgeNoFK on can name a row that is not
@@ -79,7 +79,7 @@ func planSource(t *testing.T, src, rowType string) string {
 
 func TestAPlanOverAReferenceWithNoForeignKeyLoadsAMissingTargetAsNil(t *testing.T) {
 	files, err := codegen.Package(buildDangle(t), codegen.PackageOptions{
-		Dir: "store", Import: "github.com/gsoultan/storm",
+		Dir: "store", Import: "github.com/gsoultan/storm/v2",
 		Package: "store", PackageImport: "example.com/x/store",
 	})
 	if err != nil {
@@ -131,8 +131,8 @@ func TestAMissingTargetWithNoForeignKeyLoadsAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(buildDangle(t), codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
-		Package: "store", PackageImport: "github.com/gsoultan/storm/internal/" + base,
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/v2/internal/" + base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestAMissingTargetWithNoForeignKeyLoadsAgainstPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	src := strings.ReplaceAll(dangleLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	src := strings.ReplaceAll(dangleLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base)
 	if err := os.WriteFile(filepath.Join(dir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -18,7 +18,7 @@ import (
 // The bootstrap for -dialect oracle blank-imports the database/sql driver, and
 // an adopter without it in go.mod got go's own correct line — "no required
 // module provides package github.com/sijms/go-ora/v2" — followed by storm's
-// translation telling them to `go get github.com/gsoultan/storm/tool`, which
+// translation telling them to `go get github.com/gsoultan/storm/v2/tool`, which
 // they already had and which fixes nothing. Found by generating from the
 // published v1.2.0 in a module that was not storm.
 func TestTheHintNamesTheMissingPackage(t *testing.T) {

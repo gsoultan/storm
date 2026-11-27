@@ -27,11 +27,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/sqldrv"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/sqldrv"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 type migOrg struct {

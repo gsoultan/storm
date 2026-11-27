@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mydec"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mydec"
 )
 
 // The whole reason this package exists. MySQL is little-endian where

@@ -11,7 +11,7 @@ package storm
 import (
 	"fmt"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Soft delete and uniqueness.

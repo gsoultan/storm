@@ -25,8 +25,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/msddl"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/msddl"
 )
 
 func TestGeneratedMSSQLPackageRunsAgainstAServer(t *testing.T) {
@@ -85,7 +85,7 @@ func TestGeneratedMSSQLPackageRunsAgainstAServer(t *testing.T) {
 
 	src := strings.ReplaceAll(mssqlLiveSrc, "PKG", pkg)
 	src = strings.ReplaceAll(src, "IMPORTPATH",
-		"github.com/gsoultan/storm/internal/"+base+"/"+pkg)
+		"github.com/gsoultan/storm/v2/internal/"+base+"/"+pkg)
 	if err := os.WriteFile(filepath.Join(pkgDir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}

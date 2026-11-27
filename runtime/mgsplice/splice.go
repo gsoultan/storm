@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Punctuation is the text a back end writes around groups and sort terms.

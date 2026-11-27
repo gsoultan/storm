@@ -12,7 +12,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/v2/migrate"
 )
 
 // A model that shares its schema with tables something else owns: without

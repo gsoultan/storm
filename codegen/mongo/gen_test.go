@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // every carries one column of every kind this back end generates, nullable
@@ -42,7 +42,7 @@ func every() *schema.Schema {
 }
 
 func TestEveryKindGeneratesAndCompiles(t *testing.T) {
-	files, err := Package(every(), Options{Import: "github.com/gsoultan/storm"})
+	files, err := Package(every(), Options{Import: "github.com/gsoultan/storm/v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestEveryKindGeneratesAndCompiles(t *testing.T) {
 	if strings.Contains(s, "func (m *Mut) SetSeen(") {
 		t.Error("an Immutable column has no update setter")
 	}
-	again, _ := Package(every(), Options{Import: "github.com/gsoultan/storm"})
+	again, _ := Package(every(), Options{Import: "github.com/gsoultan/storm/v2"})
 	if string(again[filepath.Join("thing", "thing.gen.go")]) != s {
 		t.Error("generation is not deterministic")
 	}
@@ -115,7 +115,7 @@ func shaped() *schema.Schema {
 }
 
 func TestRoundOneShapesGenerateAndCompile(t *testing.T) {
-	files, err := Package(shaped(), Options{Import: "github.com/gsoultan/storm"})
+	files, err := Package(shaped(), Options{Import: "github.com/gsoultan/storm/v2"})
 	if err != nil {
 		t.Fatal(err)
 	}

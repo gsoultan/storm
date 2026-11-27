@@ -12,7 +12,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // eachOf stands in for a generated Each: it calls fn per value and reports

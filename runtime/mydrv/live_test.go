@@ -25,9 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 )
 
 func mariaConfig(t testing.TB) mydrv.Config {

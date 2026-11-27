@@ -8,7 +8,7 @@
 
 package mgexpr
 
-import "github.com/gsoultan/storm/schema"
+import "github.com/gsoultan/storm/v2/schema"
 
 // node is one parsed expression, already type-checked.
 type node struct {

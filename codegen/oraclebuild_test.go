@@ -24,8 +24,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 type oraPortable struct {
@@ -47,7 +47,7 @@ func TestOracleGeneratedPackageCarriesOracleSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: t.TempDir(), Import: "github.com/gsoultan/storm", Dialect: codegen.DialectOracle,
+		Dir: t.TempDir(), Import: "github.com/gsoultan/storm/v2", Dialect: codegen.DialectOracle,
 	})
 	if err != nil {
 		t.Fatalf("generating an Oracle package: %v", err)

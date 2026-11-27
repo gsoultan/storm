@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Every column is read as text, so the result is the same whichever format

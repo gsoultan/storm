@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/tool/discover"
-	"github.com/gsoultan/storm/tool/oratool"
+	"github.com/gsoultan/storm/v2/tool/discover"
+	"github.com/gsoultan/storm/v2/tool/oratool"
 )
 
 // Source renders the bootstrap main that used to be written by hand.

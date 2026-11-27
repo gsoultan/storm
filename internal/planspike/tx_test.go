@@ -13,10 +13,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store"
-	"github.com/gsoultan/storm/internal/planspike/store/org"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/internal/planspike/store"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/org"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // THE QUESTION THIS FILE EXISTS TO ANSWER: is a failed Unit flush atomic?

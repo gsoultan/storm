@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // A model with an ARC, generated as a context for every dialect and COMPILED.
@@ -86,10 +86,10 @@ func TestAContextWithAnArcCompilesOnEveryDialect(t *testing.T) {
 
 			files, err := codegen.Package(s, codegen.PackageOptions{
 				Dir:           dir,
-				Import:        "github.com/gsoultan/storm",
+				Import:        "github.com/gsoultan/storm/v2",
 				Dialect:       d,
 				Package:       "store",
-				PackageImport: "github.com/gsoultan/storm/" + filepath.ToSlash(rel),
+				PackageImport: "github.com/gsoultan/storm/v2/" + filepath.ToSlash(rel),
 			})
 			if err != nil {
 				t.Fatal(err)

@@ -11,7 +11,7 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Dialect selects which back end a generated package targets.

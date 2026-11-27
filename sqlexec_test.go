@@ -12,8 +12,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 type execRecorder struct {

@@ -17,7 +17,7 @@ package model
 import (
 	"time"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 // Author writes articles.

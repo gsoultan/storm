@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/bsondec"
 )
 
 // BSON, the subset this driver writes and reads. Append-style over a []byte so

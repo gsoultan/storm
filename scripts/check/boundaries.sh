@@ -57,7 +57,7 @@ echo "== core packages are stdlib-only =="
 # crypto/rand pulls in crypto/internal/entropy/v1.0.0, whose dot is a version
 # rather than a host, and the gate reported the standard library as a
 # third-party dependency.
-outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/storm' | grep -E '^[^/]+\.[^/]+/'; }
+outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/storm/v2' | grep -E '^[^/]+\.[^/]+/'; }
 # The list is DERIVED from the tree, not written down. It used to be a list,
 # with a comment warning that leaving a new back end off it is how the rule
 # quietly stops applying to the half of compile/ that grew after it — and
@@ -80,8 +80,8 @@ echo "== no dialect branch at run time =="
 # handed the result. What makes that a structural fact rather than a habit is
 # that runtime/ cannot reach the code that chooses: it imports nothing of
 # storm's outside itself, so no generated read can ask which dialect it is.
-reach=$(go list -deps ./runtime/... 2>/dev/null | grep '^github.com/gsoultan/storm' \
-  | grep -vE '^github.com/gsoultan/storm/runtime(/|$)' || true)
+reach=$(go list -deps ./runtime/... 2>/dev/null | grep '^github.com/gsoultan/storm/v2' \
+  | grep -vE '^github.com/gsoultan/storm/v2/runtime(/|$)' || true)
 if [ -n "$reach" ]; then
   note "runtime/ reaches build-time packages:"
   printf '%s\n' "$reach" | sed 's/^/    /'
@@ -92,7 +92,7 @@ echo "== the core does not reach the tool =="
 # are the CLI's business. Nothing a generated package links may depend on
 # either, or on cmd/.
 reach=$(go list -deps ./schema/... ./compile/... ./codegen/... ./runtime/... 2>/dev/null \
-  | grep -E '^github.com/gsoultan/storm/(tool|cmd)(/|$)' || true)
+  | grep -E '^github.com/gsoultan/storm/v2/(tool|cmd)(/|$)' || true)
 if [ -n "$reach" ]; then
   note "the core reaches the tool:"
   printf '%s\n' "$reach" | sed 's/^/    /'

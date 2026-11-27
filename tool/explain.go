@@ -16,9 +16,9 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/caduceus/wire"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/pg"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/pg"
 )
 
 // explain plans every statement storm will issue and flags sequential scans

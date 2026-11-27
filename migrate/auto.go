@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Auto is the one path where storm applies DDL, and it is the exception ADR-0001

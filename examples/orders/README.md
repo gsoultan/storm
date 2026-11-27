@@ -19,8 +19,8 @@ It is also the whole adopter path with **nothing to bootstrap**: there is no
 $ make db                                    # or any Postgres
 $ export STORM_DSN='postgres://storm:storm@127.0.0.1:5433/storm'
 
-$ go install github.com/gsoultan/storm/cmd/storm@latest
-$ go get github.com/gsoultan/storm/tool      # once per module
+$ go install github.com/gsoultan/storm/v2/cmd/storm@latest
+$ go get github.com/gsoultan/storm/v2/tool      # once per module
 
 $ storm models                               # what discovery concluded
 $ storm generate store                       # 6 packages from 5 tables

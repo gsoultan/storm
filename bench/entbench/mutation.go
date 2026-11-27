@@ -12,8 +12,8 @@ import (
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
 	"github.com/google/uuid"
-	"github.com/gsoultan/storm/bench/entbench/predicate"
-	"github.com/gsoultan/storm/bench/entbench/user"
+	"github.com/gsoultan/storm/v2/bench/entbench/predicate"
+	"github.com/gsoultan/storm/v2/bench/entbench/user"
 )
 
 const (

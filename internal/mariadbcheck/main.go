@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/mariadb"
-	"github.com/gsoultan/storm/compile/mysql"
+	"github.com/gsoultan/storm/v2/compile/mariadb"
+	"github.com/gsoultan/storm/v2/compile/mysql"
 )
 
 func main() {

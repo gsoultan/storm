@@ -30,8 +30,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 type genUser struct {
@@ -75,9 +75,9 @@ func TestTheGeneratedOraclePackageRuns(t *testing.T) {
 	const pkg = "orauser"
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           filepath.Join(dir, pkg),
-		Import:        "github.com/gsoultan/storm",
+		Import:        "github.com/gsoultan/storm/v2",
 		Package:       pkg,
-		PackageImport: "github.com/gsoultan/storm/internal/oraclespike/" + base + "/" + pkg,
+		PackageImport: "github.com/gsoultan/storm/v2/internal/oraclespike/" + base + "/" + pkg,
 		Dialect:       codegen.DialectOracle,
 	})
 	if err != nil {
@@ -128,7 +128,7 @@ func findTablePkg(t *testing.T, dir, pkg, base string) (string, string) {
 	for _, e := range entries {
 		if e.IsDir() {
 			return filepath.Join(dir, pkg, e.Name()),
-				"github.com/gsoultan/storm/internal/oraclespike/" + base + "/" + pkg + "/" + e.Name()
+				"github.com/gsoultan/storm/v2/internal/oraclespike/" + base + "/" + pkg + "/" + e.Name()
 		}
 	}
 	t.Fatalf("codegen produced no table package under %s", filepath.Join(dir, pkg))

@@ -27,7 +27,7 @@
 //	package main
 //
 //	import (
-//		"github.com/gsoultan/storm/tool"
+//		"github.com/gsoultan/storm/v2/tool"
 //		"example.com/app/model"
 //	)
 //
@@ -51,27 +51,27 @@ import (
 	"time"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/codegen/mongo"
-	"github.com/gsoultan/storm/compile/mgddl"
-	"github.com/gsoultan/storm/compile/msddl"
-	"github.com/gsoultan/storm/compile/myddl"
-	"github.com/gsoultan/storm/compile/oraddl"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/migrate/sum"
-	"github.com/gsoultan/storm/runtime/pgdrv"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/pg"
-	"github.com/gsoultan/storm/tool/mstool"
-	"github.com/gsoultan/storm/tool/oratool"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/codegen/mongo"
+	"github.com/gsoultan/storm/v2/compile/mgddl"
+	"github.com/gsoultan/storm/v2/compile/msddl"
+	"github.com/gsoultan/storm/v2/compile/myddl"
+	"github.com/gsoultan/storm/v2/compile/oraddl"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/migrate/sum"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/pg"
+	"github.com/gsoultan/storm/v2/tool/mstool"
+	"github.com/gsoultan/storm/v2/tool/oratool"
 )
 
 // modulePath is storm's own import path, which generated code imports for the
 // runtime. It is a constant because a generated package that pointed at a fork
 // or a stale vendor copy would compile and be subtly wrong.
-const modulePath = "github.com/gsoultan/storm"
+const modulePath = "github.com/gsoultan/storm/v2"
 
 // hostModule reads the module path of the module being generated INTO — the
 // caller's, not storm's.
@@ -79,7 +79,7 @@ const modulePath = "github.com/gsoultan/storm"
 // Generated packages import each other (the context package imports one
 // package per table), so those imports have to spell the host module's path.
 // This used to be storm's own constant, which meant `generate` emitted
-// `github.com/gsoultan/storm/internal/store/user` into somebody else's
+// `github.com/gsoultan/storm/v2/internal/store/user` into somebody else's
 // module and produced code that could not compile. It went unnoticed because
 // every generation that ever ran was inside this repository, where the wrong
 // answer is the right one — which is exactly the bug a first outside user

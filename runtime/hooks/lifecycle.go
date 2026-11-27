@@ -3,7 +3,7 @@ package hooks
 import (
 	"context"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Lifecycle is a table's lifecycle hooks: the type of the Hooks variable

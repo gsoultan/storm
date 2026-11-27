@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
 )
 
 type unex struct {

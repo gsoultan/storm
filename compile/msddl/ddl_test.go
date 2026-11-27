@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/msddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/msddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func col(name string, t schema.Type, notNull bool) *schema.Column {

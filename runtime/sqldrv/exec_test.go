@@ -26,7 +26,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // ---- a database/sql driver that answers from canned data --------------------

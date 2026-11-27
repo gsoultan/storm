@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/v2/tool/discover"
 )
 
 // A save made after the baseline was taken must still be reported, however

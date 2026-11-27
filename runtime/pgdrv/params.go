@@ -12,7 +12,7 @@ import (
 	"fmt"
 
 	"github.com/gsoultan/caduceus/codec"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Parameters.

@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gsoultan/storm/compile/msddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/msdec"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/msddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/msdec"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Automigrate for SQL Server.

@@ -9,8 +9,8 @@
 package mssql
 
 import (
-	"github.com/gsoultan/storm/compile/msddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/msddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // ColumnType is the SQL Server type of a storm column, for the places a

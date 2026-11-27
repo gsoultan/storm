@@ -10,16 +10,16 @@ package storm_test
 
 import (
 	"context"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 type foVisit struct {

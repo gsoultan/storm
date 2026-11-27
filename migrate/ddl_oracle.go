@@ -12,8 +12,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/oraddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/oraddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // The Oracle half of the seam.

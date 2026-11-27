@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/org"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/org"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // A UNIQUE constraint cannot hold an expression, so t.Unique(storm.Lower(&u.Email))

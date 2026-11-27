@@ -11,7 +11,7 @@ package mydrv
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 	"math"
 	"time"
 )

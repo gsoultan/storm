@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Relation codegen — what internal/planspike hand-wrote in P2, emitted.

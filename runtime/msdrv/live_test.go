@@ -27,8 +27,8 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
 )
 
 func cfg(t *testing.T) msdrv.Config {

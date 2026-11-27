@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gsoultan/storm/bench/genuser"
+	"github.com/gsoultan/storm/v2/bench/genuser"
 )
 
 // Greatest-n-per-group: which lowering is the default is decided here, not in

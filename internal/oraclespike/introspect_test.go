@@ -24,11 +24,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/oraddl"
-	"github.com/gsoultan/storm/runtime/sqldrv"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/oracle"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/oraddl"
+	"github.com/gsoultan/storm/v2/runtime/sqldrv"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/oracle"
 )
 
 type impOrg struct {

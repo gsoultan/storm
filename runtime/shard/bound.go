@@ -11,7 +11,7 @@ package shard
 import (
 	"context"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Bound is an Executor that has been resolved to one shard.

@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gsoultan/storm/tool/bootstrap"
-	"github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/v2/tool/bootstrap"
+	"github.com/gsoultan/storm/v2/tool/discover"
 )
 
 const (

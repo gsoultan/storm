@@ -8,7 +8,7 @@
 
 package storm_test
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 // rnVisit belongs to a person whose table is renamed; see
 // TestForeignKeyFollowsTargetRename.

@@ -3,7 +3,7 @@ package bsondec_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/v2/runtime/bsondec"
 )
 
 // FuzzDecoders: no element a server sends panics a decoder. Each takes the

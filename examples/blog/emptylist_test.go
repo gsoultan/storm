@@ -12,7 +12,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/storm/examples/blog/store/author"
+	"github.com/gsoultan/storm/v2/examples/blog/store/author"
 )
 
 // A list predicate called with no values is the empty set, not NULL: NotIn

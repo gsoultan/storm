@@ -1,13 +1,13 @@
-module github.com/gsoultan/storm/bench
+module github.com/gsoultan/storm/v2/bench
 
 go 1.27.3
 
-replace github.com/gsoultan/storm => ../
+replace github.com/gsoultan/storm/v2 => ../
 
 require (
 	entgo.io/ent v0.14.6
 	github.com/google/uuid v1.6.0
-	github.com/gsoultan/storm v0.0.0-00010101000000-000000000000
+	github.com/gsoultan/storm/v2 v2.0.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/uptrace/bun v1.2.18
 	github.com/uptrace/bun/dialect/pgdialect v1.2.18

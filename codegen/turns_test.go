@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // A queue that takes turns by tenant: each tenant's first rows numbered, and
@@ -64,8 +64,8 @@ func TestTakesTurnsAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
-		Package: "store", PackageImport: "github.com/gsoultan/storm/internal/" + base,
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/v2/internal/" + base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestTakesTurnsAgainstPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	src := strings.ReplaceAll(turnsLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	src := strings.ReplaceAll(turnsLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base)
 	src = strings.ReplaceAll(src, "MODELS", turnsModels)
 	if err := os.WriteFile(filepath.Join(dir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
@@ -153,10 +153,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 
 	"IMPORTPATH/tnjob"
 	"IMPORTPATH/tnorg"

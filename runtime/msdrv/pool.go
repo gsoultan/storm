@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Defaults, matching runtime/mydrv's so a caller configuring two adapters gets

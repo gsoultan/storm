@@ -13,8 +13,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 // A session-scoped advisory lock is the thing Pool cannot do.

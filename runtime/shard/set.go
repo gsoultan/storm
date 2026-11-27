@@ -12,7 +12,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Set is the shard map: a locator, and the databases it places keys onto.

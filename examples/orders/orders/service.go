@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/runtime"
 
 	"example.com/orders/model"
 	"example.com/orders/store"
@@ -30,7 +30,7 @@ import (
 	"example.com/orders/store/product"
 	"example.com/orders/store/stockitem"
 
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 // Business failures, distinct from infrastructure ones. The transport maps

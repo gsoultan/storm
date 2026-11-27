@@ -33,8 +33,8 @@ sqlc.
 
 ## The steps
 
-0. **Install the tool**: `go install github.com/gsoultan/storm/cmd/storm@latest`,
-   then `go get github.com/gsoultan/storm/tool` once in your module. There is
+0. **Install the tool**: `go install github.com/gsoultan/storm/v2/cmd/storm@latest`,
+   then `go get github.com/gsoultan/storm/v2/tool` once in your module. There is
    no `storm.yaml` and no equivalent of sqlc's `queries:`/`schema:` paths —
    storm finds your models by parsing ([ADR-0006](adr/0006-discovery-replaces-the-bootstrap.md)),
    and `storm models` shows you what it found before you generate anything.

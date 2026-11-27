@@ -13,7 +13,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // ErrCrossShard means one unit of work staged writes for two different shards.

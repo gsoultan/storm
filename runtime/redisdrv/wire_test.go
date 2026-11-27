@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime/redisdrv"
+	"github.com/gsoultan/storm/v2/runtime/redisdrv"
 )
 
 // fake is a RESP server whose every reply is written by the test, so the

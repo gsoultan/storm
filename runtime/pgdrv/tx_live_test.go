@@ -23,8 +23,8 @@ import (
 	"testing"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 func livePool(t *testing.T) *pgdrv.Pool {

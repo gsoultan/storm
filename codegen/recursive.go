@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Recursive traversal emission for a self-referencing table.

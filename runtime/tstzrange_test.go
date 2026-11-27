@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 func tt(h int) time.Time { return time.Date(2026, 6, 1, h, 0, 0, 0, time.UTC) }

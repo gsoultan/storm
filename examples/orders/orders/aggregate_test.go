@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 
 	"example.com/orders/orders"
 	"example.com/orders/store/customer"

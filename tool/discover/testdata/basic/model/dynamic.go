@@ -3,7 +3,7 @@ package model
 import (
 	"fmt"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 // ByName is the shape an injection takes: a declaration built inside a

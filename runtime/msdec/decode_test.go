@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/msdec"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/msdec"
 )
 
 // The canonical forms runtime/msdrv produces, decoded. The bytes here are

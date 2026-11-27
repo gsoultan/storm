@@ -13,8 +13,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm/pgstat"
-	"github.com/gsoultan/storm/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/pgstat"
+	"github.com/gsoultan/storm/v2/runtime/pgdrv"
 )
 
 // A table with rows in it takes space, and the database holding it takes at

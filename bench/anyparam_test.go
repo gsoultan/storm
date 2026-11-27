@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gsoultan/storm/bench/genuser"
+	"github.com/gsoultan/storm/v2/bench/genuser"
 )
 
 // The `= ANY($1)` parameter side is where a relation load's cost now lives:

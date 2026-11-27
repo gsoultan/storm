@@ -14,10 +14,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mgexpr"
-	"github.com/gsoultan/storm/examples/library/store/book"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mgexpr"
+	"github.com/gsoultan/storm/v2/examples/library/store/book"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // The model's CHECK, enforced by the collection's validator.

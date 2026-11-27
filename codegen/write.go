@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Write-path emission.

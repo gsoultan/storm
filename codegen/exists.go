@@ -9,7 +9,7 @@
 package codegen
 
 import (
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Relation-existence predicates: the first native join shape.

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // The refusals that happen before a connection is attempted. They are the ones

@@ -1,7 +1,7 @@
 package billing
 
 import (
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 
 	"example.com/basic/shared"
 )

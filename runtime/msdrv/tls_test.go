@@ -29,7 +29,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
 )
 
 func tlsCfg(t *testing.T, mode msdrv.TLSMode) msdrv.Config {

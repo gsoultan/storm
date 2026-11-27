@@ -39,7 +39,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Pool is a bounded set of connections to one server.

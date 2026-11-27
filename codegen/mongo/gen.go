@@ -26,15 +26,15 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/compile/mgddl"
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/compile/mgddl"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Options configures a generation.
 type Options struct {
-	// Import is storm's module path, e.g. "github.com/gsoultan/storm".
+	// Import is storm's module path, e.g. "github.com/gsoultan/storm/v2".
 	Import string
 	// Only restricts generation to these tables; empty means all.
 	Only []string
