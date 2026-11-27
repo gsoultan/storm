@@ -106,6 +106,7 @@ func File(s *schema.Schema, o Options) ([]byte, error) {
 	// no predicates at all for a sixteenth column. The real limit is the width
 	// of Tok's column field, and exceeding it is an error.
 	cols := filterable(t)
+	markFullText(t, cols, o.Dialect)
 	if len(cols) > runtime.MaxCols {
 		return nil, fmt.Errorf(
 			"codegen: table %s has %d filterable columns; a composed statement gives "+
@@ -222,6 +223,13 @@ type colInfo struct {
 	col    *schema.Column
 	kind   kind
 	goBase string
+
+	// fullText marks a text column that a MySQL-family FULLTEXT index covers
+	// on its own, which is what MATCH ... AGAINST needs: InnoDB answers a
+	// MATCH only through an index over EXACTLY its column list, and refuses
+	// any other with error 1191. Such a column gets its own handle type, so
+	// Matches is offered on it and on no other text column.
+	fullText bool
 }
 
 func (c colInfo) Name() string { return c.col.Name }
@@ -243,6 +251,28 @@ func filterable(t *schema.Table) []colInfo {
 		out = append(out, colInfo{col: c, kind: k, goBase: baseGoType(c)})
 	}
 	return out
+}
+
+// markFullText sets fullText on each text column a single-column FULLTEXT
+// index covers, for the MySQL family — the only targets with a FULLTEXT
+// index. A multi-column index answers only a MATCH over all of its columns,
+// which a per-column handle cannot spell, so it marks none of them.
+func markFullText(t *schema.Table, cols []colInfo, d Dialect) {
+	if d != DialectMySQL && d != DialectMariaDB {
+		return
+	}
+	for i := range cols {
+		if cols[i].kind != kindText {
+			continue
+		}
+		for _, ix := range t.Indexes {
+			if ix.Method == "fulltext" && len(ix.Columns) == 1 &&
+				!ix.Columns[0].Expr && ix.Columns[0].Name == cols[i].Name() {
+				cols[i].fullText = true
+				break
+			}
+		}
+	}
 }
 
 // execType is the executor parameter type every generated call takes:
@@ -593,7 +623,7 @@ func (g *gen) chained() {
 	g.p("// Chained predicate sugar. Identical to Where(Col.Op(v)).")
 	for _, c := range g.cols {
 		for _, op := range ops {
-			if !opApplies(op.name, c.kind, c.col) {
+			if !colOpApplies(op.name, c) {
 				continue
 			}
 			m := exportName(c.Name()) + op.m()
@@ -1333,7 +1363,7 @@ func (g *gen) fragTable(name string, ident func(string) string) {
 	for _, c := range g.cols {
 		g.p("\t{ // %s", c.Name())
 		for _, op := range ops {
-			if !opApplies(op.name, c.kind, c.col) {
+			if !colOpApplies(op.name, c) {
 				continue
 			}
 			a, b, ok := g.lw.Frag(op.name, ident(c.Name()), c.col)
