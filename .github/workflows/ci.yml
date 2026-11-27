@@ -196,9 +196,15 @@ jobs:
         # FAILS when it is missing (a gate that skips itself is not a gate), so
         # relying on whatever the runner image happens to ship would make this
         # step's outcome depend on an image update nobody here controls.
+        #
+        # --no-upgrade, because the runner image ships mysql-server too, and the
+        # client and server packages move in lockstep: when Ubuntu published
+        # 8.4.13, installing the client upgraded the image's server with it,
+        # whose postinst fails on a runner that is not running it (dpkg exit
+        # 100, 2026-11-19). The gate needs a `mysql` binary, not the newest one.
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq mysql-client
+          sudo apt-get install -y -qq --no-upgrade mysql-client
           ./scripts/check/mysql.sh
 
       # A separate gate, not a flag on the one above, because the point is that

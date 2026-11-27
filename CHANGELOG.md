@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-11-07
+updated: 2026-11-19
 ---
 
 # Changelog
@@ -29,6 +29,53 @@ lowering turns `*` into a space on the server, which changes no match. Tested
 by executing the generated package against both servers.
 `WebSearch` is not offered, and boolean mode is not exposed: it ORs terms where
 PostgreSQL's ANDs them, and one method should not mean two things.
+
+## v1.12.2 — 2026-11-08
+
+**This release should have been v1.13.0.** It adds API (hooks, `storm.sum`,
+`storm diff -down`, `-replay`, `-dry-run`, online constraints), and
+[docs/STABILITY.md](docs/STABILITY.md) keeps a patch release for bug fixes.
+Nothing is re-tagged, because a published tag is never moved; the next
+release that adds anything is v1.13.0.
+
+### Hardening: wrong literals, a cancelled write that looked done, panics a server could cause
+
+An audit against live PostgreSQL 16, MySQL 8.4, MariaDB 11.4, Redis,
+MongoDB 7 and SQL Server 2022, with new fuzzers over every decoder family and
+wire reader a server's bytes reach. Four fuzzers found panics on their first
+run. Ranked by what a user would see:
+
+- **`Lit(time.Time)` rendered as `NULL`** in every dialect, so a filter such as
+  `Gte(&at, Lit(t))` was never true and a filtered count counted nothing. On
+  MySQL, SQL Server and Oracle, `Lit(Decimal)` and `Lit(bool)` came out in
+  PostgreSQL's spelling, a syntax error there. Each back end now renders
+  literals in its own spelling.
+- **SQL Server: a cancelled `Exec` returned success** with a partial row count,
+  and a late cancel could kill the connection's next statement. Exec now reads
+  the attention reply and returns the caller's context error; a cancelled
+  Batch retires its connection.
+- **MySQL and SQL Server scanners read schema drift as 0.** A NULL in a NOT
+  NULL column, or an INT where the model says BIGINT, now returns
+  `runtime.ErrShape`. A wider integer is still accepted, because MySQL widens
+  computed integers to BIGINT.
+- **PostgreSQL arrays:** an `int4[]` where the model says `int8[]` panicked, and
+  a short `uuid[]` element was zero-padded. Both return `ErrShape`.
+- **A hostile or corrupt server could crash or exhaust the client:** a MySQL
+  length past MaxInt64, a SQL Server declared length that sized the
+  allocation, a 14-byte Redis array header that allocated 1 GiB, and two
+  MongoDB/BSON bounds errors. Each is bounded now and covered by a fuzzer
+  (`FuzzBinaryRow`, `FuzzReadPLP`, `FuzzReadReply`, `FuzzReply`), and CI fuzzes
+  every decoder on every push.
+- **PostgreSQL index names** that collide across tables, or pass 63 bytes, are
+  refused by `pgddl.Check` at build time instead of failing a migration
+  partway.
+- **MySQL:** a backslash in a declared text literal or enum label is refused at
+  build time, because its meaning depends on the server's `sql_mode`.
+
+Cost: the MySQL and SQL Server cancel watchers use `context.AfterFunc` instead
+of a goroutine per statement (MySQL point query with a deadline: ~67 µs,
+4 allocs → ~56 µs, 3 allocs), and redisdrv `Set` no longer copies the value.
+The PostgreSQL hot path did not change.
 
 ### Migrations: integrity, rollbacks, a reproducible base, online constraints
 
@@ -130,6 +177,19 @@ export's arena. Measured on PostgreSQL 16 over loopback, median of six:
 and `ObserveSlab` keep working, so a package generated before this release
 behaves as it did. Regenerate to get the change.
 
+### Other
+
+- `docs/WHY-STORM.md`, a comparison page for teams deciding whether to adopt.
+- Every Go source file carries a copyright and SPDX header.
+
+## v1.12.1 — 2026-11-06
+
+### Docs: getting started, and moving from GORM or sqlc
+
+`docs/GETTING-STARTED.md` takes a new project from an empty module to a
+generated, migrated, tested table. `docs/MIGRATING-FROM-GORM.md` is new, and
+`docs/MIGRATING-FROM-SQLC.md` was brought up to date. No code changed.
+
 ### Go 1.27.3 is the minimum
 
 `go.mod` now says `go 1.27.3`, and CI builds with it. On 1.27.0 and 1.27.1,
@@ -139,6 +199,8 @@ ECH outer extensions in crypto/tls, fixed in 1.27.2) and GO-2026-6809
 (compromised intermediates in crypto/x509, fixed in 1.27.3). On 1.27.3 the
 scan reports none. A module that requires storm on an older 1.27 patch is
 asked to move to 1.27.3.
+
+## v1.12.0 — 2026-11-02
 
 ### MongoDB: joins and unions
 
@@ -307,6 +369,8 @@ err = cached.Invalidate(ctx, "products")
   other client can satisfy the three-method interface instead.
 - An unmarked read through the cache allocates nothing. CI runs the client
   against Redis 7.4. [docs/CACHING.md](docs/CACHING.md) has the contract.
+
+## v1.11.0 — 2026-10-31
 
 ### `storm watch`: no lost saves, and no regenerate for a handler edit
 

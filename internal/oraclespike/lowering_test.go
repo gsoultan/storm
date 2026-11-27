@@ -22,10 +22,12 @@ package orabench
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/gsoultan/storm/compile/oracle"
+	"github.com/gsoultan/storm/schema"
 )
 
 // loweringTables are created once for the whole file and dropped after.
@@ -400,5 +402,76 @@ func TestTextMatchIsLiteral(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s(%q) = %d, want %d", c.op, c.v, got, c.want)
 		}
+	}
+}
+
+// Every declared literal compile/oracle writes, evaluated by Oracle.
+//
+// The 2026-11-07 hardening audit found that every SQL back end wrote
+// PostgreSQL's spelling: `Lit(time.Time)` came out as NULL, so a filter such
+// as `Gte(&at, Lit(t))` was never true, and Oracle got `'1.50'::numeric` and
+// `true`. The fix gave each back end its own spelling, and the Oracle one was
+// pinned only by a unit test that asserts on text — which proves the
+// generator agrees with itself (P6.7) and nothing about what Oracle reads.
+// Here each literal is run, and what the server makes of it is compared with
+// what the model said.
+func TestDeclaredLiteralsMeanWhatTheModelSaid(t *testing.T) {
+	db := open(t)
+	lit := func(l schema.Literal) string {
+		t.Helper()
+		s, err := oracle.Expr(schema.Expr{Kind: schema.ExprLit, Lit: l})
+		if err != nil {
+			t.Fatalf("%s literal: %v", l.Kind, err)
+		}
+		return s
+	}
+	ts := func(v string) schema.Literal { return schema.Literal{Kind: schema.TypeTimestamptz, S: v} }
+	for _, c := range []struct {
+		name  string
+		lit   schema.Literal
+		query string // ?L is the rendered literal; the query returns one VARCHAR2
+		want  string
+	}{
+		{"text with a quote", schema.Literal{Kind: schema.TypeText, S: "it's"},
+			`SELECT ?L FROM dual`, "it's"},
+		{"text with a backslash", schema.Literal{Kind: schema.TypeVarchar, S: `a\b`},
+			`SELECT ?L FROM dual`, `a\b`},
+		{"int8", schema.Literal{Kind: schema.TypeInt8, I: -9007199254740993},
+			`SELECT TO_CHAR(?L) FROM dual`, "-9007199254740993"},
+		{"float8", schema.Literal{Kind: schema.TypeFloat8, F: 1.5},
+			`SELECT CASE WHEN ?L = 1.5D THEN 'ok' ELSE 'no' END FROM dual`, "ok"},
+		{"float8 NaN", schema.Literal{Kind: schema.TypeFloat8, F: math.NaN()},
+			`SELECT CASE WHEN ?L IS NAN THEN 'ok' ELSE 'no' END FROM dual`, "ok"},
+		{"float8 +Inf", schema.Literal{Kind: schema.TypeFloat8, F: math.Inf(1)},
+			`SELECT CASE WHEN ?L IS INFINITE AND ?L > 0 THEN 'ok' ELSE 'no' END FROM dual`, "ok"},
+		{"float8 -Inf", schema.Literal{Kind: schema.TypeFloat8, F: math.Inf(-1)},
+			`SELECT CASE WHEN ?L IS INFINITE AND ?L < 0 THEN 'ok' ELSE 'no' END FROM dual`, "ok"},
+		{"decimal keeps its scale", schema.Literal{Kind: schema.TypeNumeric, S: "1.50"},
+			`SELECT TO_CHAR(?L, 'FM990.00') FROM dual`, "1.50"},
+		{"decimal past float precision", schema.Literal{Kind: schema.TypeNumeric, S: "-12345678901234567890.123456789"},
+			`SELECT TO_CHAR(?L) FROM dual`, "-12345678901234567890.123456789"},
+		{"timestamp is the instant, in UTC", ts("2026-01-02T03:04:05.6+01:00"),
+			`SELECT TO_CHAR(SYS_EXTRACT_UTC(?L), 'YYYY-MM-DD HH24:MI:SS.FF6') FROM dual`,
+			"2026-01-02 02:04:05.600000"},
+		{"timestamp is not NULL", ts("2026-01-02T03:04:05Z"),
+			`SELECT CASE WHEN ?L IS NULL THEN 'null' ELSE 'ok' END FROM dual`, "ok"},
+		// The audit's own symptom: Gte(&at, Lit(t)) with at after t.
+		{"a filter against a timestamp is true", ts("2026-01-02T03:04:05Z"),
+			`SELECT CASE WHEN TIMESTAMP '2026-06-01 00:00:00 +00:00' >= ?L THEN 'ok' ELSE 'no' END FROM dual`, "ok"},
+		{"true", schema.Literal{Kind: schema.TypeBool, B: true},
+			`SELECT CASE WHEN ?L THEN 'true' ELSE 'false' END FROM dual`, "true"},
+		{"false", schema.Literal{Kind: schema.TypeBool, B: false},
+			`SELECT CASE WHEN ?L THEN 'true' ELSE 'false' END FROM dual`, "false"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			q := strings.ReplaceAll(c.query, "?L", lit(c.lit))
+			var got string
+			if err := db.QueryRow(q).Scan(&got); err != nil {
+				t.Fatalf("%v\n  %s", err, q)
+			}
+			if got != c.want {
+				t.Errorf("got %q, want %q\n  %s", got, c.want, q)
+			}
+		})
 	}
 }
