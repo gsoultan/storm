@@ -11,4 +11,4 @@ require (
 	github.com/sijms/go-ora/v2 v2.9.0
 )
 
-require github.com/gsoultan/caduceus v0.1.1-0.20261127084643-d08298f9aa90 // indirect
+require github.com/gsoultan/caduceus v0.1.1 // indirect

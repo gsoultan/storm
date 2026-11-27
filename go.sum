@@ -1,4 +1,4 @@
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/gsoultan/caduceus v0.1.1-0.20261127084643-d08298f9aa90 h1:oLbIJCgsI7xnURIDWAN2XapHsZgm40zQIXgGODvlEbA=
-github.com/gsoultan/caduceus v0.1.1-0.20261127084643-d08298f9aa90/go.mod h1:joA4Xx9UohbKpWFMLg6f8+diy4r7vQj4SJTCVuFDJTw=
+github.com/gsoultan/caduceus v0.1.1 h1:7YgC0zpR2o0XS8fIvzNG32oh/mmW4j7slWibL5MFIS8=
+github.com/gsoultan/caduceus v0.1.1/go.mod h1:joA4Xx9UohbKpWFMLg6f8+diy4r7vQj4SJTCVuFDJTw=
