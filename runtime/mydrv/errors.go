@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Error is a server error packet.
@@ -120,7 +120,7 @@ func parseError(p []byte) error {
 
 // classify turns a server error into one storm's callers can switch on.
 //
-// This is the ONLY place a MySQL error code is read, for the reason pgxdrv's
+// This is the ONLY place a MySQL error code is read, for the reason caduceusdrv's
 // classify gives: the Executor port exists so driver knowledge cannot reach the
 // rest of the tree, and "compare 1062 in a handler" is exactly that knowledge
 // leaking through it. The vocabulary is runtime's, shared with PostgreSQL, so

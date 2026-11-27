@@ -15,10 +15,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gsoultan/storm/compile/msddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/mssql"
+	"github.com/gsoultan/storm/v2/compile/msddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/mssql"
 )
 
 // Normalisation for SQL Server, which is the same idea as normalize.go's and a

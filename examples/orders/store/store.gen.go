@@ -15,10 +15,10 @@ import (
 	"example.com/orders/store/orderline"
 	"example.com/orders/store/product"
 	"example.com/orders/store/stockitem"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 
 	"example.com/orders/model"
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 // FlushOrder ranks tables so that every table's foreign-key targets rank

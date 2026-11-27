@@ -11,7 +11,7 @@ package pgsql
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // JoinSelect is everything before the call-site WHERE of a cross-table read:

@@ -1,6 +1,6 @@
 package hooks
 
-import "github.com/gsoultan/storm/runtime"
+import "github.com/gsoultan/storm/v2/runtime"
 
 // valueRows is rows for a driver that decodes values (runtime.ValueRows), so
 // wrapping a database/sql Executor does not change the shape its generated

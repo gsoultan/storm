@@ -13,8 +13,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gsoultan/storm/bench/genuser"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/v2/bench/genuser"
 )
 
 // The `= ANY($1)` parameter side is where a relation load's cost now lives:
@@ -25,7 +24,7 @@ import (
 // handful of allocations per query — by holding the result set to one row while
 // varying the number of ids bound.
 func BenchmarkAnyParam(b *testing.B) {
-	ex := pgxdrv.Pool{P: pool}
+	ex := stormPool
 	ctx := context.Background()
 
 	for _, n := range []int{1, 50, 500} {

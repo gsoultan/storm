@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // The bounded purge over a semi-join: the parent rows the probes select, at
@@ -66,8 +66,8 @@ func TestDeleteBatchOverASemiJoinAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
-		Package: "store", PackageImport: "github.com/gsoultan/storm/internal/" + base,
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/v2/internal/" + base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestDeleteBatchOverASemiJoinAgainstPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	src := strings.ReplaceAll(deleteBatchProbeLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	src := strings.ReplaceAll(deleteBatchProbeLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base)
 	if err := os.WriteFile(filepath.Join(dir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -113,11 +113,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 
 	store "IMPORTPATH"
 	"IMPORTPATH/dpincident"
@@ -149,7 +148,7 @@ func (i *dpIncident) Schema(t *storm.Table) {
 }
 
 var (
-	pool *pgxpool.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -162,22 +161,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&dpJob{}, &dpIncident{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := caduceusdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_delete_batch_probe_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -218,25 +215,21 @@ func job(t *testing.T, marked bool, incidents ...string) [16]byte {
 
 func clear(t *testing.T) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), "DELETE FROM dp_incidents; DELETE FROM dp_jobs"); err != nil {
+	if _, err := pool.Exec(context.Background(), "DELETE FROM dp_incidents; DELETE FROM dp_jobs", nil); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func left(t *testing.T) map[[16]byte]bool {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), "SELECT id FROM dp_jobs")
+	rows, err := pool.Query(context.Background(), "SELECT id FROM dp_jobs", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
 	out := map[[16]byte]bool{}
 	for rows.Next() {
-		var id [16]byte
-		if err := rows.Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		out[id] = true
+		out[runtime.UUID(rows.RawValues()[0])] = true
 	}
 	return out
 }

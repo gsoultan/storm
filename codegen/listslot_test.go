@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // Fixtures for the list-slot rule: one table with integer columns of all three
@@ -45,7 +45,7 @@ func TestListSlotsAreConditional(t *testing.T) {
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:    "gen",
-		Import: "github.com/gsoultan/storm",
+		Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestListBindReachesEverySlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: "gen", Import: "github.com/gsoultan/storm",
+		Dir: "gen", Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)

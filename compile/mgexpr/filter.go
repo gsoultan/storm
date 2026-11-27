@@ -11,8 +11,8 @@ package mgexpr
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Partial is a partial index's WHERE as a partialFilterExpression document.

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime/mydec"
+	"github.com/gsoultan/storm/v2/runtime/mydec"
 )
 
 // ADR-0007's premise, tested against a server for the first time.

@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // A guarded increment: "claim the job, and count the claim as an attempt
@@ -52,8 +52,8 @@ func TestIncWhenAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
-		Package: "store", PackageImport: "github.com/gsoultan/storm/internal/" + base,
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/v2/internal/" + base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestIncWhenAgainstPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	src := strings.ReplaceAll(incWhenLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	src := strings.ReplaceAll(incWhenLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base)
 	src = strings.ReplaceAll(src, "MODELS", incWhenModels)
 	if err := os.WriteFile(filepath.Join(dir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestIncWhenRefusesWhatItCannotWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := codegen.Package(s, codegen.PackageOptions{
-			Dir: t.TempDir(), Import: "github.com/gsoultan/storm",
+			Dir: t.TempDir(), Import: "github.com/gsoultan/storm/v2",
 			Package: "store", PackageImport: "example.com/store",
 		}); err == nil || !strings.Contains(err.Error(), "IncWhen") {
 			t.Errorf("%T generated: %v", m, err)
@@ -123,7 +123,7 @@ func TestIncWhenOnEveryBackEnd(t *testing.T) {
 		codegen.DialectOracle:   `"retries" = "retries" + CASE WHEN "status" = :`,
 	} {
 		files, err := codegen.Package(s, codegen.PackageOptions{
-			Dir: t.TempDir(), Import: "github.com/gsoultan/storm", Dialect: d,
+			Dir: t.TempDir(), Import: "github.com/gsoultan/storm/v2", Dialect: d,
 		})
 		if err != nil {
 			t.Fatalf("dialect %d: %v", d, err)
@@ -182,11 +182,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 
 	"IMPORTPATH/iwjob"
 )
@@ -194,7 +193,7 @@ import (
 MODELS
 
 var (
-	pool *pgxpool.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -207,22 +206,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&iwJob{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := caduceusdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_inc_when_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }

@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/bench/genuser"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/bench/genuser"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Bound values must not reach an error string or a SQL string. Both land

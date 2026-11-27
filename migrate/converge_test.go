@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Convergence: for each kind of schema change, a database at `from` is
@@ -424,7 +424,7 @@ func TestConvergenceBack(t *testing.T) {
 	}
 }
 
-func inSchema(ctx context.Context, c *pgx.Conn, ns string, f func() error) error {
+func inSchema(ctx context.Context, c *caduceus.Conn, ns string, f func() error) error {
 	if _, err := c.Exec(ctx, "SET search_path TO "+ns); err != nil {
 		return err
 	}
@@ -432,7 +432,7 @@ func inSchema(ctx context.Context, c *pgx.Conn, ns string, f func() error) error
 	return f()
 }
 
-func exec(t *testing.T, ctx context.Context, c *pgx.Conn, ns, sql string) {
+func exec(t *testing.T, ctx context.Context, c *caduceus.Conn, ns, sql string) {
 	t.Helper()
 	if err := inSchema(ctx, c, ns, func() error { _, err := c.Exec(ctx, sql); return err }); err != nil {
 		t.Fatalf("%v\n%s", err, sql)

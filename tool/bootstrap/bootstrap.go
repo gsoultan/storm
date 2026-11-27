@@ -27,10 +27,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/gsoultan/storm/tool/discover"
+	"github.com/gsoultan/storm/v2/tool/discover"
 )
 
-const stormPath = "github.com/gsoultan/storm"
+const stormPath = "github.com/gsoultan/storm/v2"
 
 // Run synthesizes the bootstrap, executes it with args, and removes it.
 //

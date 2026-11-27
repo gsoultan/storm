@@ -20,8 +20,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 )
 
 func startTxPool(t *testing.T) (*mydrv.Pool, context.Context) {

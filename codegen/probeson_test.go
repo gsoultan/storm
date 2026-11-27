@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // A probe on matching columns, and UpdateAll over it: "put back on offer
@@ -77,8 +77,8 @@ func TestProbesOnAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
-		Package: "store", PackageImport: "github.com/gsoultan/storm/internal/" + base,
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/v2/internal/" + base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestProbesOnAgainstPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	src := strings.ReplaceAll(probesOnLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	src := strings.ReplaceAll(probesOnLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base)
 	src = strings.ReplaceAll(src, "MODELS", probesOnModels)
 	if err := os.WriteFile(filepath.Join(dir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
@@ -176,11 +176,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 
 	store "IMPORTPATH"
 	"IMPORTPATH/pofault"
@@ -191,7 +190,7 @@ import (
 MODELS
 
 var (
-	pool *pgxpool.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -204,22 +203,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&poRun{}, &poTask{}, &poFault{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := caduceusdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_probes_on_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -237,7 +234,7 @@ func must(err error) {
 func seed(t *testing.T) (ids map[string][16]byte) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM po_faults; DELETE FROM po_tasks; DELETE FROM po_runs"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM po_faults; DELETE FROM po_tasks; DELETE FROM po_runs", nil); err != nil {
 		t.Fatal(err)
 	}
 	runs := map[string][16]byte{}

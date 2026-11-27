@@ -12,53 +12,43 @@ if grep -rn '"reflect"' runtime/ 2>/dev/null; then
 fi
 
 echo "== driver confined to its adapter =="
-# Only runtime/pgxdrv may name pgx, so driver churn cannot reach the tree.
+# Only runtime/caduceusdrv may name the PostgreSQL driver (caduceus), so driver churn
+# cannot reach the tree.
 #
-# The exemptions were all BUILD-TIME code — the tool, introspection, the
-# migration runner — which talks to a database directly and never hands a pgx
-# type to an application. tool/ is on the list because the commands moved
-# there from cmd/ when they became importable; that changed who can call them,
-# not when they run.
+# The exemptions are BUILD-TIME code — the tool, introspection — which talks to
+# a database directly and never hands a driver type to an application, and
+# migrate/, whose Auto (automigrate) an application calls at startup. The rule
+# that keeps migrate/ honest is narrower and is checked below rather than
+# asserted here: the ROOT package must stay driver-free, so importing storm
+# never pulls in a driver and only an application that reaches for migrate/ on
+# purpose pays for it.
 #
-# migrate/ broke the "build-time only" half of that sentence when it gained
-# Auto (automigrate), which an application calls at startup. The rule that
-# replaces it is narrower and is checked below rather than asserted here: the
-# ROOT package must stay driver-free, so importing storm never pulls in pgx and
-# only an application that reaches for migrate/ on purpose pays for it.
-#
-# examples/ is exempt for a different reason: it is ADOPTER code, and an
-# adopter importing pgx to build a pool is the documented way to get one — not
-# a boundary violation. examples/orders is its own module and does exactly
-# that. The rule is about what STORM links, and a separate module is not that.
+# examples/ is exempt because it is ADOPTER code, and each example is its own
+# module. bench/ is its own module too: the rival ORMs it measures (pgx, gorm,
+# bun, ent) live there and nowhere else.
 for f in $(git ls-files '*.go' 2>/dev/null | grep -v '_test.go' | grep -v '^bench/' | grep -v '^cmd/'); do
   case "$f" in
-    runtime/pgxdrv/*|schema/pg/*|migrate/*|internal/spike/*|tool/*|examples/*) continue ;;
+    runtime/caduceusdrv/*|schema/pg/*|migrate/*|tool/*|examples/*) continue ;;
   esac
-  if grep -q 'jackc/pgx' "$f"; then note "pgx imported outside its adapter: $f"; fi
+  if grep -q 'gsoultan/caduceus' "$f"; then note "caduceus imported outside its adapter: $f"; fi
 done
 
-# The same for caduceus: its adapter, and the package that runs automigrate
-# and introspection over it. Nothing else may import it, so that a project on
-# pgx, and the storm command's bootstrap, never need caduceus in their go.mod.
-for f in $(git ls-files '*.go'); do
-  case "$f" in
-    runtime/caduceusdrv/*|migrate/caduceusmigrate/*|examples/*) continue ;;
-  esac
-  if grep -q '"github.com/gsoultan/caduceus' "$f"; then note "caduceus imported outside its adapter: $f"; fi
+echo "== pgx is not a dependency =="
+# storm v2 dropped pgx: caduceus is the PostgreSQL driver. pgx may appear only
+# in bench/, as one of the rivals being measured.
+for f in $(git ls-files '*.go' go.mod 2>/dev/null | grep -v '^bench/'); do
+  if grep -q 'jackc/pgx' "$f"; then note "pgx named outside bench/: $f"; fi
 done
-if go list -deps ./tool 2>/dev/null | grep -q '^github.com/gsoultan/caduceus'; then
-  note "storm/tool links caduceus, so every adopter's bootstrap would need it in go.mod"
-fi
 
 echo "== importing storm does not import a driver =="
 # The property that survived migrate/ becoming runtime-linked: `import
-# "github.com/gsoultan/storm"` must not drag pgx into an application's binary.
-# migrate.Auto is opt-in precisely because it is a separate import; if pgx ever
-# reaches the root package's closure, that choice has been taken away from
-# every adopter, silently.
-if go list -deps . 2>/dev/null | grep -q 'jackc/pgx'; then
-  note "the root package now depends on pgx:"
-  go list -deps . | grep 'jackc/pgx' | sed 's/^/    /'
+# "github.com/gsoultan/storm/v2"` must not drag a driver into an application's
+# binary. migrate.Auto is opt-in precisely because it is a separate import; if
+# the driver ever reaches the root package's closure, that choice has been
+# taken away from every adopter, silently.
+if go list -deps . 2>/dev/null | grep -q 'gsoultan/caduceus'; then
+  note "the root package now depends on caduceus:"
+  go list -deps . | grep 'gsoultan/caduceus' | sed 's/^/    /'
 fi
 
 echo "== core packages are stdlib-only =="
@@ -67,16 +57,16 @@ echo "== core packages are stdlib-only =="
 # crypto/rand pulls in crypto/internal/entropy/v1.0.0, whose dot is a version
 # rather than a host, and the gate reported the standard library as a
 # third-party dependency.
-outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/storm' | grep -E '^[^/]+\.[^/]+/'; }
+outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/storm/v2' | grep -E '^[^/]+\.[^/]+/'; }
 # The list is DERIVED from the tree, not written down. It used to be a list,
 # with a comment warning that leaving a new back end off it is how the rule
 # quietly stops applying to the half of compile/ that grew after it — and
 # compile/oracle and compile/oraddl were then left off it. The two exemptions
-# are the pgx adapter and the introspection that reads pg_catalog through it,
+# are the PostgreSQL adapter and the introspection that reads pg_catalog through it,
 # the same two the driver check above allows.
 for p in $(go list ./schema/... ./compile/... ./codegen/... ./runtime/... 2>/dev/null); do
   case "$p" in
-    */runtime/pgxdrv|*/runtime/caduceusdrv|*/schema/pg) continue ;;
+    */runtime/caduceusdrv|*/schema/pg) continue ;;
   esac
   if outsiders "$p" | grep -q .; then
     note "$p has a third-party dependency:"
@@ -90,8 +80,8 @@ echo "== no dialect branch at run time =="
 # handed the result. What makes that a structural fact rather than a habit is
 # that runtime/ cannot reach the code that chooses: it imports nothing of
 # storm's outside itself, so no generated read can ask which dialect it is.
-reach=$(go list -deps ./runtime/... 2>/dev/null | grep '^github.com/gsoultan/storm' \
-  | grep -vE '^github.com/gsoultan/storm/runtime(/|$)' || true)
+reach=$(go list -deps ./runtime/... 2>/dev/null | grep '^github.com/gsoultan/storm/v2' \
+  | grep -vE '^github.com/gsoultan/storm/v2/runtime(/|$)' || true)
 if [ -n "$reach" ]; then
   note "runtime/ reaches build-time packages:"
   printf '%s\n' "$reach" | sed 's/^/    /'
@@ -102,7 +92,7 @@ echo "== the core does not reach the tool =="
 # are the CLI's business. Nothing a generated package links may depend on
 # either, or on cmd/.
 reach=$(go list -deps ./schema/... ./compile/... ./codegen/... ./runtime/... 2>/dev/null \
-  | grep -E '^github.com/gsoultan/storm/(tool|cmd)(/|$)' || true)
+  | grep -E '^github.com/gsoultan/storm/v2/(tool|cmd)(/|$)' || true)
 if [ -n "$reach" ]; then
   note "the core reaches the tool:"
   printf '%s\n' "$reach" | sed 's/^/    /'

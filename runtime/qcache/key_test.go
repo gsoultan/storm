@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 type valuer struct {

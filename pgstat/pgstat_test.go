@@ -14,9 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/pgstat"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/v2/pgstat"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // One session holds a row, another is made to wait for it, and the reader has
@@ -28,7 +27,7 @@ func TestSessionsSeeAWaitAndTerminateEndsIt(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,43 +39,43 @@ func TestSessionsSeeAWaitAndTerminateEndsIt(t *testing.T) {
 		"CREATE TABLE " + ns + ".held (id int PRIMARY KEY)",
 		"INSERT INTO " + ns + ".held VALUES (1)",
 	} {
-		if _, err := pool.Exec(ctx, stmt); err != nil {
+		if _, err := pool.Exec(ctx, stmt, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE") })
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil) })
 
-	holder, err := pool.Begin(ctx)
+	holder, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
-	if _, err := holder.Exec(ctx, "SELECT id FROM "+ns+".held WHERE id = 1 FOR UPDATE"); err != nil {
+	if _, err := holder.Exec(ctx, "SELECT id FROM "+ns+".held WHERE id = 1 FOR UPDATE", nil); err != nil {
 		t.Fatal(err)
 	}
-	holderPID, _, err := pgstat.Backend(ctx, pgxdrv.Tx{T: holder})
+	holderPID, _, err := pgstat.Backend(ctx, holder)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	waiter, err := pool.Begin(ctx)
+	waiter, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = waiter.Rollback(context.Background()) }()
-	waiterPID, _, err := pgstat.Backend(ctx, pgxdrv.Tx{T: waiter})
+	waiterPID, _, err := pgstat.Backend(ctx, waiter)
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := waiter.Exec(ctx, "UPDATE "+ns+".held SET id = 1 WHERE id = 1")
+		_, err := waiter.Exec(ctx, "UPDATE "+ns+".held SET id = 1 WHERE id = 1", nil)
 		done <- err
 	}()
 
 	var seen pgstat.Session
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline) && seen.PID == 0; time.Sleep(10 * time.Millisecond) {
-		sessions, err := pgstat.Sessions(ctx, pgxdrv.Pool{P: pool})
+		sessions, err := pgstat.Sessions(ctx, pool)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +95,7 @@ func TestSessionsSeeAWaitAndTerminateEndsIt(t *testing.T) {
 		t.Fatal("LocksOn matched a table the waiter has no lock on")
 	}
 
-	ended, err := pgstat.Terminate(ctx, pgxdrv.Pool{P: pool}, waiterPID)
+	ended, err := pgstat.Terminate(ctx, pool, waiterPID)
 	if err != nil || !ended {
 		t.Fatalf("terminate: %v, %v", ended, err)
 	}
@@ -109,7 +108,7 @@ func TestSessionsSeeAWaitAndTerminateEndsIt(t *testing.T) {
 		t.Fatal("the terminated session's statement never returned")
 	}
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		sessions, err := pgstat.Sessions(ctx, pgxdrv.Pool{P: pool})
+		sessions, err := pgstat.Sessions(ctx, pool)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,7 +135,7 @@ func TestWaitsForSeesAnUngrantedTableLock(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,30 +146,30 @@ func TestWaitsForSeesAnUngrantedTableLock(t *testing.T) {
 		"CREATE SCHEMA " + ns,
 		"CREATE TABLE " + ns + ".held (id int PRIMARY KEY)",
 	} {
-		if _, err := pool.Exec(ctx, stmt); err != nil {
+		if _, err := pool.Exec(ctx, stmt, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE") })
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil) })
 
-	holder, err := pool.Begin(ctx)
+	holder, err := pool.StartTx(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
-	if _, err := holder.Exec(ctx, "LOCK TABLE "+ns+".held IN ACCESS EXCLUSIVE MODE"); err != nil {
+	if _, err := holder.Exec(ctx, "LOCK TABLE "+ns+".held IN ACCESS EXCLUSIVE MODE", nil); err != nil {
 		t.Fatal(err)
 	}
 	waitCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = pool.Exec(waitCtx, "SELECT count(*) FROM "+ns+".held")
+		_, _ = pool.Exec(waitCtx, "SELECT count(*) FROM "+ns+".held", nil)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 
 	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		sessions, err := pgstat.Sessions(ctx, pgxdrv.Pool{P: pool})
+		sessions, err := pgstat.Sessions(ctx, pool)
 		if err != nil {
 			t.Fatal(err)
 		}

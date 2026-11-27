@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Model emission: an introspected database rendered back as Go models.
@@ -41,7 +41,7 @@ func Model(s *schema.Schema, o ModelOptions) ([]byte, error) {
 		o.Package = "model"
 	}
 	if o.Import == "" {
-		o.Import = "github.com/gsoultan/storm"
+		o.Import = "github.com/gsoultan/storm/v2"
 	}
 
 	var g gen

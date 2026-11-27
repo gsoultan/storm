@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 var insParts = runtime.InsertParts{Open: " (", Sep: ", ", Mid: ") VALUES (", Close: ")"}

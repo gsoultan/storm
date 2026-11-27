@@ -14,10 +14,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/pg"
-	"github.com/jackc/pgx/v5"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/caduceus/wire"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/pg"
 )
 
 // explain plans every statement storm will issue and flags sequential scans
@@ -91,21 +92,17 @@ type seqScan struct {
 	rows  float64
 }
 
-func planOne(ctx context.Context, c *pgx.Conn, sql string, maxSeqRows int) ([]seqScan, error) {
+func planOne(ctx context.Context, c *caduceus.Conn, sql string, maxSeqRows int) ([]seqScan, error) {
 	// The raw wire, deliberately. GENERIC_PLAN exists to plan a statement with
-	// placeholders and NO values, but every pgx query mode — extended and
-	// "simple" alike — processes the $n parameters client-side and refuses
-	// zero arguments. PgConn().Exec ships the text untouched and lets the
-	// server do what GENERIC_PLAN is for. Safe here because nothing in the
-	// statement is a runtime value — that is the property being audited.
-	results, err := c.PgConn().Exec(ctx, "EXPLAIN (GENERIC_PLAN, FORMAT JSON) "+sql).ReadAll()
+	// placeholders and NO values, and the extended protocol binds a value to
+	// every $n it parses, so a simple Query message is the only way to send it:
+	// the text goes untouched and the server does what GENERIC_PLAN is for.
+	// Safe here because nothing in the statement is a runtime value — that is
+	// the property being audited.
+	raw, err := simpleFirstValue(ctx, c, "EXPLAIN (GENERIC_PLAN, FORMAT JSON) "+sql)
 	if err != nil {
 		return nil, err
 	}
-	if len(results) == 0 || len(results[0].Rows) == 0 || len(results[0].Rows[0]) == 0 {
-		return nil, fmt.Errorf("EXPLAIN returned no rows")
-	}
-	raw := results[0].Rows[0][0]
 	var doc []struct {
 		Plan json.RawMessage `json:"Plan"`
 	}
@@ -113,6 +110,57 @@ func planOne(ctx context.Context, c *pgx.Conn, sql string, maxSeqRows int) ([]se
 		return nil, fmt.Errorf("unexpected EXPLAIN output: %w", err)
 	}
 	return walkPlan(doc[0].Plan, maxSeqRows), nil
+}
+
+// simpleFirstValue runs sql over the simple query protocol and returns the
+// first column of its first row.
+func simpleFirstValue(ctx context.Context, c *caduceus.Conn, sql string) ([]byte, error) {
+	if c.Busy() {
+		return nil, caduceus.ErrConnBusy
+	}
+	w := c.Wire()
+	guard := w.Watch(ctx)
+	first, err := readSimple(w, sql)
+	return first, guard.Done(err)
+}
+
+// readSimple sends one simple Query and reads its replies to ReadyForQuery.
+func readSimple(w *wire.Conn, sql string) ([]byte, error) {
+	if err := w.Send(wire.AppendQuery(w.Buffer(), sql)); err != nil {
+		return nil, err
+	}
+	var first []byte
+	var failure error
+	for {
+		kind, body, err := w.Receive()
+		if err != nil {
+			return nil, err
+		}
+		switch kind {
+		case wire.MsgDataRow:
+			if first == nil {
+				values, err := wire.SplitDataRow(nil, body)
+				if err != nil {
+					return nil, err
+				}
+				if len(values) > 0 {
+					first = append([]byte{}, values[0]...)
+				}
+			}
+		case wire.MsgErrorResponse:
+			if failure == nil {
+				failure = wire.ParseError(body)
+			}
+		case wire.MsgReadyForQuery:
+			if failure != nil {
+				return nil, failure
+			}
+			if first == nil {
+				return nil, fmt.Errorf("EXPLAIN returned no rows")
+			}
+			return first, nil
+		}
+	}
 }
 
 // walkPlan collects sequential scans whose estimated rows cross the threshold.

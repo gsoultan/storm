@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func col(name string) schema.Expr { return schema.Expr{Kind: schema.ExprCol, Col: name} }

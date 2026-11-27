@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -26,9 +26,13 @@ const (
 )
 
 var (
-	pool *pgxpool.Pool
-	ids  [][16]byte
-	orgs [][16]byte
+	// pool is pgx's, for the rivals that run on pgx; stormPool is storm's own,
+	// on caduceus. Both hold eight connections: a benchmark comparison must
+	// match capacity on both sides.
+	pool      *pgxpool.Pool
+	stormPool *caduceusdrv.Pool
+	ids       [][16]byte
+	orgs      [][16]byte
 )
 
 func TestMain(m *testing.M) {
@@ -51,12 +55,14 @@ func TestMain(m *testing.M) {
 		cfg.ConnConfig.RuntimeParams = map[string]string{}
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = "storm_bench"
-	// Through storm's constructor, so the fast parameter encoders are
-	// installed — otherwise the = ANY numbers below measure pgx's generic
-	// array codec and say nothing about storm.
-	pool, err = pgxdrv.NewPoolConfig(ctx, cfg)
+	pool, err = pgxpool.NewWithConfig(ctx, cfg)
 	must(err)
 	defer pool.Close()
+	stormPool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{
+		DSN: dsn, MaxConns: 8, RuntimeParams: map[string]string{"search_path": "storm_bench"},
+	})
+	must(err)
+	defer stormPool.Close()
 
 	must(seed(ctx))
 	os.Exit(m.Run())

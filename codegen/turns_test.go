@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // A queue that takes turns by tenant: each tenant's first rows numbered, and
@@ -64,8 +64,8 @@ func TestTakesTurnsAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
-		Package: "store", PackageImport: "github.com/gsoultan/storm/internal/" + base,
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/v2/internal/" + base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestTakesTurnsAgainstPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	src := strings.ReplaceAll(turnsLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	src := strings.ReplaceAll(turnsLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base)
 	src = strings.ReplaceAll(src, "MODELS", turnsModels)
 	if err := os.WriteFile(filepath.Join(dir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
@@ -153,11 +153,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 
 	"IMPORTPATH/tnjob"
 	"IMPORTPATH/tnorg"
@@ -166,7 +165,7 @@ import (
 MODELS
 
 var (
-	pool *pgxpool.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -179,22 +178,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&tnOrg{}, &tnJob{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := caduceusdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_takes_turns_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -220,7 +217,7 @@ var (
 func seed(t *testing.T) (names map[[16]byte]string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM tn_jobs; DELETE FROM tn_orgs"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM tn_jobs; DELETE FROM tn_orgs", nil); err != nil {
 		t.Fatal(err)
 	}
 	orgD := [16]byte{4}
@@ -337,7 +334,7 @@ func TestTheGroupsStartFromAndWrap(t *testing.T) {
 func TestTheGroupsAndTheRowsHaveTheirOwnPredicates(t *testing.T) {
 	names := seed(t)
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "UPDATE tn_jobs SET status = 'done' WHERE org_id = $1 AND due_at < $2", orgB, now); err != nil {
+	if _, err := pool.Exec(ctx, "UPDATE tn_jobs SET status = 'done' WHERE org_id = $1 AND due_at < $2", []any{orgB, now}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := due().Limit(10).AllTurns(ctx, ex, pending(), orgB, 1, nil)

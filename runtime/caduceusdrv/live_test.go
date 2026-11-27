@@ -20,9 +20,8 @@ import (
 	"time"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/caduceusdrv"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 func dsn(t *testing.T) string {
@@ -84,18 +83,13 @@ func rawRows(t *testing.T, ex runtime.Executor, sql string, args []any) [][][]by
 	return out
 }
 
-// The same statement over pgxdrv and caduceusdrv hands storm's scanners the
-// same bytes, for every type storm decodes, and the same values written
-// through either adapter read back alike.
-func TestSameBytesAsPgx(t *testing.T) {
+// Values written through caduceusdrv, by INSERT and by COPY, hand storm's
+// scanners the same bytes as the same values written by the server from a
+// SQL literal, for every type storm decodes. The literal row is the server's
+// own reading of the value, so no client codec is trusted on either side.
+func TestSameBytesAsTheServersLiteral(t *testing.T) {
 	ctx := t.Context()
 	cp := livePool(t)
-	pp, err := pgxdrv.NewPool(ctx, dsn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pp.Close)
-	px := pgxdrv.Pool{P: pp}
 
 	tbl := scratch(t, cp, "id int, n numeric, iv interval, tod time, r tstzrange, ids uuid[], big int8[], words text[], ns numeric[], "+
 		"doc jsonb, addr inet, net cidr, ok bool, blob bytea, at timestamptz, day date, u uuid, f float8, s smallint, label text")
@@ -114,8 +108,13 @@ func TestSameBytesAsPgx(t *testing.T) {
 	if _, err := cp.Exec(ctx, insert, row(1)); err != nil {
 		t.Fatalf("insert through caduceus: %v", err)
 	}
-	if _, err := px.Exec(ctx, insert, row(2)); err != nil {
-		t.Fatalf("insert through pgx: %v", err)
+	literal := "INSERT INTO " + tbl + " VALUES (2, -12345.6789, '1 year 2 mons -3 days 01:00:00.000123', '13:05:07.000001', " +
+		"'[\"2026-11-27 08:30:15.123456+00\",\"2026-11-27 09:30:15.123456+00\")', " +
+		"'{01020300-0000-0000-0000-000000000000,04050600-0000-0000-0000-000000000000}', '{1,-2,1099511627776}', " +
+		"'{a,\"b,c\",\"\"}', '{1.5,-0.007}', '{\"a\": [1, 2]}', '10.1.2.3', '10.0.0.0/8', true, '\\x0001ff', " +
+		"'2026-11-27 08:30:15.123456+00', '2026-11-27', '09090000-0000-0000-0000-000000000000', 2.5, -4, 'hello')"
+	if _, err := cp.Exec(ctx, literal, nil); err != nil {
+		t.Fatalf("insert from a literal: %v", err)
 	}
 	// COPY, which a generated package's InsertAll uses, hands over pointers
 	// to the row's fields.
@@ -132,29 +131,20 @@ func TestSameBytesAsPgx(t *testing.T) {
 	if _, err := cp.CopyFrom(ctx, tbl, cols, &rowsSource{rows: copied(3)}); err != nil {
 		t.Fatalf("copy through caduceus: %v", err)
 	}
-	if _, err := px.CopyFrom(ctx, tbl, cols, &rowsSource{rows: copied(4)}); err != nil {
-		t.Fatalf("copy through pgx: %v", err)
-	}
 	all := "SELECT n, iv, tod, r, ids, big, words, ns, doc, addr, net, ok, blob, at, day, u, f, s, label FROM " + tbl + " WHERE id = $1"
-	for _, id := range []int{1, 2, 3, 4} {
+	// Every row, however it was written, holds what the literal wrote.
+	want := rawRows(t, cp, all, []any{2})
+	if len(want) != 1 {
+		t.Fatalf("the literal row: %d rows", len(want))
+	}
+	for _, id := range []int{1, 3} {
 		got := rawRows(t, cp, all, []any{id})
-		want := rawRows(t, px, all, []any{id})
-		if len(got) != 1 || len(want) != 1 {
-			t.Fatalf("id %d: %d and %d rows", id, len(got), len(want))
+		if len(got) != 1 {
+			t.Fatalf("id %d: %d rows", id, len(got))
 		}
 		for i := range want[0] {
 			if !bytes.Equal(got[0][i], want[0][i]) {
-				t.Errorf("id %d column %d: caduceus %x, pgx %x", id, i+1, got[0][i], want[0][i])
-			}
-		}
-	}
-	// Every row, however it was written, holds what pgx's own INSERT wrote.
-	want := rawRows(t, px, all, []any{2})[0]
-	for _, id := range []int{1, 3, 4} {
-		got := rawRows(t, cp, all, []any{id})[0]
-		for i := range want {
-			if !bytes.Equal(got[i], want[i]) {
-				t.Errorf("row %d column %d: %x, pgx's insert wrote %x", id, i+1, got[i], want[i])
+				t.Errorf("row %d column %d: %x, the literal wrote %x", id, i+1, got[0][i], want[0][i])
 			}
 		}
 	}

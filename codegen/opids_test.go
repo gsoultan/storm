@@ -3,7 +3,7 @@ package codegen
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // TestOpIdsMatchRuntime holds codegen's ops table to runtime's operator ids.

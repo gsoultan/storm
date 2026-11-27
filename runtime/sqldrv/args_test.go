@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // THE case. go-ora reads an ARRAY-typed argument as a request for array

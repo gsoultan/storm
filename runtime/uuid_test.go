@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 func TestNewUUIDv7IsVersion7AndVariantRFC4122(t *testing.T) {

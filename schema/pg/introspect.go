@@ -18,14 +18,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
-// Conn is the slice of pgx this package needs.
+// Conn is the slice of a caduceus connection this package needs: a
+// *caduceus.Conn, or a *caduceus.Tx.
 type Conn interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Query(ctx context.Context, sql string, args ...any) (*caduceus.Rows, error)
 }
 
 // Introspect reads one namespace (usually "public") into the IR.
@@ -38,13 +38,6 @@ func Introspect(ctx context.Context, c Conn, namespace string) (_ *schema.Schema
 		scope = func(ns string) (func() error, error) { return setSearchPath(ctx, sp, ns) }
 	}
 	return introspect(ctx, q, scope, namespace)
-}
-
-// IntrospectSession is Introspect through a Session, which is how a driver
-// other than pgx is read: storm's caduceus adapter gives one.
-func IntrospectSession(ctx context.Context, c Session, namespace string) (*schema.Schema, error) {
-	scope := func(ns string) (func() error, error) { return scopeSession(ctx, c, ns) }
-	return introspect(ctx, c.Query, scope, namespace)
 }
 
 // introspect reads namespace through q. scope, when set, points the
@@ -397,8 +390,8 @@ func loadIndexes(ctx context.Context, q query, ns string, s *schema.Schema) erro
 // interface so Introspect keeps working for a Conn that cannot set it — an
 // offline snapshot reader, say — rather than requiring one.
 type searchPather interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (caduceus.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) *caduceus.Row
 }
 
 // setSearchPath scopes the connection to ns and returns a restore function.

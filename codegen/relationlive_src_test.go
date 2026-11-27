@@ -26,10 +26,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/myddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/myddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 
 	ctxpkg "IMPORTPATH"
 	"IMPORTPATH/mdattachment"

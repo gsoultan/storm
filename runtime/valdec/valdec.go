@@ -39,7 +39,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Int8 reads a signed integer.

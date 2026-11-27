@@ -11,7 +11,7 @@ package codegenmongo
 import (
 	"strconv"
 
-	"github.com/gsoultan/storm/compile/mongo"
+	"github.com/gsoultan/storm/v2/compile/mongo"
 )
 
 func (g *gen) query() {

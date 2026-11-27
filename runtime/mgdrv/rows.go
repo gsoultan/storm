@@ -11,7 +11,7 @@ package mgdrv
 import (
 	"context"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // rows walks a cursor's batches, fetching the next with getMore on the same

@@ -9,7 +9,7 @@
 package codegen
 
 import (
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Exclusive-arc emission.

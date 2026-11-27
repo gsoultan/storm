@@ -19,10 +19,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Auto applies DDL to a live database, so its tests need one. Every assertion
@@ -41,10 +41,10 @@ func dsn(t *testing.T) string {
 
 // conn gives a test its own session and its own namespace, so the file can run
 // shuffled and in parallel without one test migrating another's tables.
-func conn(t *testing.T, ns string) (context.Context, *pgx.Conn) {
+func conn(t *testing.T, ns string) (context.Context, *caduceus.Conn) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, dsn(t))
+	c, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func users(extra ...*schema.Column) *schema.Schema {
 }
 
 // tableExists asks the catalog, not the plan.
-func tableExists(t *testing.T, ctx context.Context, c *pgx.Conn, ns, name string) bool {
+func tableExists(t *testing.T, ctx context.Context, c *caduceus.Conn, ns, name string) bool {
 	t.Helper()
 	var n int
 	if err := c.QueryRow(ctx,
@@ -78,7 +78,7 @@ func tableExists(t *testing.T, ctx context.Context, c *pgx.Conn, ns, name string
 	return n == 1
 }
 
-func columnExists(t *testing.T, ctx context.Context, c *pgx.Conn, ns, table, name string) bool {
+func columnExists(t *testing.T, ctx context.Context, c *caduceus.Conn, ns, table, name string) bool {
 	t.Helper()
 	var n int
 	if err := c.QueryRow(ctx,
@@ -230,9 +230,9 @@ func TestAuto_ConcurrentProcessesApplyOnce(t *testing.T) {
 		err   error
 	}
 	out := make([]outcome, racers)
-	conns := make([]*pgx.Conn, racers)
+	conns := make([]*caduceus.Conn, racers)
 	for i := range conns {
-		cc, err := pgx.Connect(context.Background(), dsn(t))
+		cc, err := caduceusdrv.Connect(context.Background(), dsn(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,7 +285,7 @@ func TestAuto_LockBusyIsReportedAndAppliesNothing(t *testing.T) {
 	_, _ = h.Write([]byte("storm:automigrate:" + ns))
 	key := int64(h.Sum64())
 
-	holder, err := pgx.Connect(ctx, dsn(t))
+	holder, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,12 +420,7 @@ func TestAutoPool_LeavesTheBorrowedConnectionAsItFoundIt(t *testing.T) {
 	ctx, c := conn(t, ns)
 	_ = c
 
-	cfg, err := pgxpool.ParseConfig(dsn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.MaxConns = 1 // so the connection Auto borrowed is the one we interrogate
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn(t), MaxConns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +527,7 @@ func TestAuto_CancelledMigrationReleasesTheLock(t *testing.T) {
 
 	// Ask from another session, because pg_advisory_unlock only reports on the
 	// caller's own locks and pg_locks is the only honest witness.
-	other, err := pgx.Connect(ctx, dsn(t))
+	other, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +571,7 @@ func TestAuto_LockTimeoutBoundsABlockedAlter(t *testing.T) {
 
 	// Another session reads the table inside an open transaction: ACCESS SHARE,
 	// held until it ends, which is enough to make ACCESS EXCLUSIVE wait.
-	blocker, err := pgx.Connect(ctx, dsn(t))
+	blocker, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,12 +689,7 @@ func TestAutoPool_RestoresTheSessionEvenWhenAConcurrentStepFails(t *testing.T) {
 	ns := "storm_auto_pool_fail"
 	ctx, c := conn(t, ns)
 
-	cfg, err := pgxpool.ParseConfig(dsn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn(t), MaxConns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +700,7 @@ func TestAutoPool_RestoresTheSessionEvenWhenAConcurrentStepFails(t *testing.T) {
 	}
 
 	// The blocker, on its own connection.
-	blocker, err := pgx.Connect(ctx, dsn(t))
+	blocker, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}

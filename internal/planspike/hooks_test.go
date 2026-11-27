@@ -5,10 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/hooks"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/hooks"
 )
 
 // Lifecycle hooks, end to end on a real database: each terminal runs its
@@ -140,7 +139,7 @@ func TestLifecycleHooks_AfterErrorRollsBackInTx(t *testing.T) {
 	user.Hooks.AfterCreate = func(context.Context, runtime.Executor, *user.Row) error { return boom }
 	org := anOrg(t)
 
-	err := runtime.InTx(ctx, pgxdrv.Pool{P: pool}, func(ex runtime.Executor) error {
+	err := runtime.InTx(ctx, pool, func(ex runtime.Executor) error {
 		n := user.Create()
 		n.SetEmail("rolledback@example.com")
 		n.SetName("x")

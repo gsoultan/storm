@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/bsondec"
 )
 
 // ErrTooDeep is a cascade past MaxDepth levels — a reference cycle in the

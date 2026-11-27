@@ -26,9 +26,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mydrv"
-	"github.com/gsoultan/storm/runtime/shard"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 func mysqlShards(t *testing.T) (*shard.Set, []*mydrv.Pool) {

@@ -9,12 +9,12 @@
 package codegen
 
 import (
-	"github.com/gsoultan/storm/compile/mariadb"
-	"github.com/gsoultan/storm/compile/mssql"
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/compile/oracle"
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mariadb"
+	"github.com/gsoultan/storm/v2/compile/mssql"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/compile/oracle"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // lowering is the seam's query side, dispatched at GENERATE time.

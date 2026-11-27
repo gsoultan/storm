@@ -12,7 +12,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/spike"
+	"github.com/gsoultan/storm/v2/bench/internal/spike"
 )
 
 // captureRaw pulls one row's wire bytes so the decoder can be benchmarked

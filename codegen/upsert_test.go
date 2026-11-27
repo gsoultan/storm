@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // A partial unique index is only inferrable WITH its predicate. Without it
@@ -175,7 +175,7 @@ func TestSetBasedWritesAgainstPostgres(t *testing.T) {
 	base := "wclive" + strconv.Itoa(os.Getpid())
 	dir := filepath.Join(root, "internal", base)
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	files, err := codegen.Package(s, codegen.PackageOptions{Dir: dir, Import: "github.com/gsoultan/storm"})
+	files, err := codegen.Package(s, codegen.PackageOptions{Dir: dir, Import: "github.com/gsoultan/storm/v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestSetBasedWritesAgainstPostgres(t *testing.T) {
 	}
 	pkg := filepath.Base(pkgDir)
 	src := strings.ReplaceAll(setBasedLiveSrc, "PKG", pkg)
-	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base+"/"+pkg)
+	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base+"/"+pkg)
 	if err := os.WriteFile(filepath.Join(pkgDir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -233,12 +233,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	wc "IMPORTPATH"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type wcBucket struct {
@@ -253,7 +252,7 @@ type wcBucket struct {
 func (b *wcBucket) Schema(t *storm.Table) { t.Unique(&b.Host) }
 
 var (
-	pool *pgxpool.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -266,21 +265,19 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&wcBucket{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := caduceusdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_setbased_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }

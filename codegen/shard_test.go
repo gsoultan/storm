@@ -24,9 +24,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Invoice lives on the shard its tenant lives on.
@@ -74,7 +74,7 @@ func generate(t *testing.T, s *schema.Schema) map[string][]byte {
 	t.Helper()
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:    "gen",
-		Import: "github.com/gsoultan/storm",
+		Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatalf("Package: %v", err)
@@ -105,7 +105,7 @@ func TestShardedModelTakesABound(t *testing.T) {
 	if !strings.Contains(src, "ex shard.Bound") {
 		t.Fatal("a sharded model emitted no `ex shard.Bound`")
 	}
-	if !strings.Contains(src, `"github.com/gsoultan/storm/runtime/shard"`) {
+	if !strings.Contains(src, `"github.com/gsoultan/storm/v2/runtime/shard"`) {
 		t.Error("the shard import is missing, so the package names a type it never imported")
 	}
 }
@@ -172,9 +172,9 @@ func TestShardedPackageCompiles(t *testing.T) {
 
 	files, err := codegen.Package(shardedFixture(t), codegen.PackageOptions{
 		Dir:           dir,
-		Import:        "github.com/gsoultan/storm",
+		Import:        "github.com/gsoultan/storm/v2",
 		Package:       "billing",
-		PackageImport: "github.com/gsoultan/storm/" + filepath.ToSlash(rel),
+		PackageImport: "github.com/gsoultan/storm/v2/" + filepath.ToSlash(rel),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,9 +209,9 @@ func TestShardedPackageCompiles(t *testing.T) {
 func TestShardedContextHandsBackACheckingUnit(t *testing.T) {
 	files, err := codegen.Package(shardedFixture(t), codegen.PackageOptions{
 		Dir:           "gen",
-		Import:        "github.com/gsoultan/storm",
+		Import:        "github.com/gsoultan/storm/v2",
 		Package:       "billing",
-		PackageImport: "github.com/gsoultan/storm/gen",
+		PackageImport: "github.com/gsoultan/storm/v2/gen",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func TestShardedContextHandsBackACheckingUnit(t *testing.T) {
 		t.Error("a sharded context hands back a runtime.Unit, which stages a sharded " +
 			"write against whatever Flush was called with")
 	}
-	if !strings.Contains(src, `"github.com/gsoultan/storm/runtime/shard"`) {
+	if !strings.Contains(src, `"github.com/gsoultan/storm/v2/runtime/shard"`) {
 		t.Error("the context names shard.Unit without importing the package")
 	}
 }
@@ -237,9 +237,9 @@ func TestUnshardedContextKeepsThePlainUnit(t *testing.T) {
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           "gen",
-		Import:        "github.com/gsoultan/storm",
+		Import:        "github.com/gsoultan/storm/v2",
 		Package:       "refdata",
-		PackageImport: "github.com/gsoultan/storm/gen",
+		PackageImport: "github.com/gsoultan/storm/v2/gen",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -327,7 +327,7 @@ func TestEveryDialectEmitsTheBound(t *testing.T) {
 		t.Run(fmt.Sprint(d), func(t *testing.T) {
 			files, err := codegen.Package(s, codegen.PackageOptions{
 				Dir:     "gen",
-				Import:  "github.com/gsoultan/storm",
+				Import:  "github.com/gsoultan/storm/v2",
 				Dialect: d,
 			})
 			if err != nil {
@@ -340,7 +340,7 @@ func TestEveryDialectEmitsTheBound(t *testing.T) {
 			if strings.Contains(src, "ex runtime.Executor") {
 				t.Error("a sharded model kept runtime.Executor on this dialect")
 			}
-			if !strings.Contains(src, `"github.com/gsoultan/storm/runtime/shard"`) {
+			if !strings.Contains(src, `"github.com/gsoultan/storm/v2/runtime/shard"`) {
 				t.Error("shard.Bound named without importing the package")
 			}
 		})
@@ -352,9 +352,9 @@ func TestEveryDialectEmitsTheBound(t *testing.T) {
 func TestShardedPlanTakesTheParentsBound(t *testing.T) {
 	files, err := codegen.Package(shardedFixture(t), codegen.PackageOptions{
 		Dir:           "gen",
-		Import:        "github.com/gsoultan/storm",
+		Import:        "github.com/gsoultan/storm/v2",
 		Package:       "billing",
-		PackageImport: "github.com/gsoultan/storm/gen",
+		PackageImport: "github.com/gsoultan/storm/v2/gen",
 	})
 	if err != nil {
 		t.Fatal(err)

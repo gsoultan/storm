@@ -13,9 +13,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/pg"
 )
 
 // PostgreSQL rewrites every expression it stores. The model says
@@ -41,7 +42,7 @@ import (
 // Executor is the slice of pgx that normalisation needs.
 type Executor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconnTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Query(ctx context.Context, sql string, args ...any) (*caduceus.Rows, error)
 }
 
 type pgconnTag = interface{ String() string }
@@ -51,12 +52,7 @@ type pgconnTag = interface{ String() string }
 // as PostgreSQL would store it.
 //
 // The scratch namespace is dropped on every exit path, including failure.
-func Normalize(ctx context.Context, c *pgx.Conn, scratch string, s *schema.Schema) (*schema.Schema, error) {
-	return normalize(ctx, pgxSession(c), scratch, s)
-}
-
-// normalize is Normalize through any driver's session.
-func normalize(ctx context.Context, c Session, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
+func Normalize(ctx context.Context, c *caduceus.Conn, scratch string, s *schema.Schema) (_ *schema.Schema, err error) {
 	if scratch == "" {
 		// Per-process, not a shared literal: two processes normalising against
 		// one database — two test binaries under `go test ./...`, or two CI
@@ -71,26 +67,26 @@ func normalize(ctx context.Context, c Session, scratch string, s *schema.Schema)
 
 	// Preserve the caller's search_path: normalisation must not be observable.
 	var prev string
-	if err := c.Scan(ctx, &prev, "SHOW search_path"); err != nil {
+	if err := c.QueryRow(ctx, "SHOW search_path").Scan(&prev); err != nil {
 		return nil, fmt.Errorf("read search_path: %w", err)
 	}
 	defer func() {
-		_ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE")
-		if e := c.Exec(ctx, "SET search_path TO "+prev); e != nil && err == nil {
+		_, _ = c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE")
+		if _, e := c.Exec(ctx, "SET search_path TO "+prev); e != nil && err == nil {
 			err = fmt.Errorf("restore search_path: %w", e)
 		}
 	}()
 
-	if err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
+	if _, err := c.Exec(ctx, "DROP SCHEMA IF EXISTS "+scratch+" CASCADE; CREATE SCHEMA "+scratch); err != nil {
 		return nil, fmt.Errorf("create scratch schema: %w", err)
 	}
-	if err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
+	if _, err := c.Exec(ctx, "SET search_path TO "+scratch); err != nil {
 		return nil, err
 	}
-	if err := c.Exec(ctx, pgddl.Create(s)); err != nil {
+	if _, err := c.Exec(ctx, pgddl.Create(s)); err != nil {
 		return nil, fmt.Errorf("apply model DDL to scratch schema: %w", err)
 	}
-	norm, err := c.Introspect(ctx, scratch)
+	norm, err := schemapg.Introspect(ctx, c, scratch)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +123,7 @@ func carryConversions(norm, model *schema.Schema) {
 // For computes the plan that takes the live `target` namespace to `want`,
 // normalising the model through a scratch namespace first so expressions are
 // compared in the form PostgreSQL actually stores.
-func For(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema) (Plan, error) {
+func For(ctx context.Context, c *caduceus.Conn, target string, want *schema.Schema) (Plan, error) {
 	return ForWith(ctx, c, target, want, Options{})
 }
 
@@ -149,17 +145,12 @@ type Options struct {
 }
 
 // ForWith is For with Options.
-func ForWith(ctx context.Context, c *pgx.Conn, target string, want *schema.Schema, o Options) (Plan, error) {
-	return forWith(ctx, pgxSession(c), target, want, o)
-}
-
-// forWith is ForWith through any driver's session.
-func forWith(ctx context.Context, c Session, target string, want *schema.Schema, o Options) (Plan, error) {
-	norm, err := normalize(ctx, c, "", want)
+func ForWith(ctx context.Context, c *caduceus.Conn, target string, want *schema.Schema, o Options) (Plan, error) {
+	norm, err := Normalize(ctx, c, "", want)
 	if err != nil {
 		return Plan{}, err
 	}
-	cur, err := c.Introspect(ctx, target)
+	cur, err := schemapg.Introspect(ctx, c, target)
 	if err != nil {
 		return Plan{}, fmt.Errorf("introspect %s: %w", target, err)
 	}

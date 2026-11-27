@@ -12,8 +12,8 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // gen emits one table package.

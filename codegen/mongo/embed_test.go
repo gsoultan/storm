@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // withLines is related() plus lines embedded in orgs, with a server-clock
@@ -51,8 +51,8 @@ func TestEmbeddedGeneratesAndCompiles(t *testing.T) {
 		if key == schema.TypeUUID {
 			s.Tables[3].Columns[0].Default = "uuidv7()"
 		}
-		files, err := Package(s, Options{Import: "github.com/gsoultan/storm", Package: base,
-			PackageImport: "github.com/gsoultan/storm/internal/" + base})
+		files, err := Package(s, Options{Import: "github.com/gsoultan/storm/v2", Package: base,
+			PackageImport: "github.com/gsoultan/storm/v2/internal/" + base})
 		if err != nil {
 			t.Fatal(err)
 		}

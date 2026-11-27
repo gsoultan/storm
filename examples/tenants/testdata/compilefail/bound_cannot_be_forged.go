@@ -9,9 +9,9 @@ package compilefail
 import (
 	"context"
 
-	"github.com/gsoultan/storm/examples/tenants/store/order"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/shard"
+	"github.com/gsoultan/storm/v2/examples/tenants/store/order"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 type forged struct{ runtime.Executor }

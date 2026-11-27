@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // executor is the decorator Wrap returns for an Executor that is neither a

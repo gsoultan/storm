@@ -3,7 +3,7 @@ package hooks
 import (
 	"context"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // tx is a wrapped transaction. Commit and Rollback pass straight through:

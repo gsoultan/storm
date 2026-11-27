@@ -22,9 +22,9 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
 )
 
 func main() {
@@ -42,10 +42,10 @@ func run() error {
 	dir := filepath.Join("internal", "planspike", "store")
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           dir,
-		Import:        "github.com/gsoultan/storm",
+		Import:        "github.com/gsoultan/storm/v2",
 		Only:          []string{"orgs", "users", "posts", "comments", "attachments", "events", "audit_logs", "tags", "post_tags", "post_related", "memberships"},
 		Package:       "store",
-		PackageImport: "github.com/gsoultan/storm/internal/planspike/store",
+		PackageImport: "github.com/gsoultan/storm/v2/internal/planspike/store",
 	})
 	if err != nil {
 		return err

@@ -90,4 +90,4 @@ func _assertStockItemShape(m m0.StockItem) {
 	}
 }
 
-// github.com/gsoultan/storm.UnionDecl: no shape assertion — has unexported field name.
+// github.com/gsoultan/storm/v2.UnionDecl: no shape assertion — has unexported field name.

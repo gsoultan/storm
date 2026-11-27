@@ -1,6 +1,6 @@
 ---
 tags: [storm, releases]
-updated: 2026-11-19
+updated: 2026-11-27
 ---
 
 # Changelog
@@ -12,7 +12,57 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased
+## Unreleased — v2.0.0
+
+### Breaking: caduceus replaces pgx as the PostgreSQL driver
+
+storm's PostgreSQL adapter now runs on
+[caduceus](https://github.com/gsoultan/caduceus), a PostgreSQL driver with no
+dependencies, and pgx is no longer a dependency of storm. This is a major
+release, so the module path is now `github.com/gsoultan/storm/v2`.
+
+To move a v1 application:
+
+- Change the imports from `github.com/gsoultan/storm/...` to
+  `github.com/gsoultan/storm/v2/...` and regenerate. Model declarations, the
+  generated call surface and emitted SQL are unchanged.
+- `runtime/pgxdrv` is gone. Use `runtime/caduceusdrv`:
+  - `pgxdrv.NewPool(ctx, dsn)` plus `pgxdrv.Pool{P: pool}` becomes
+    `caduceusdrv.NewPool(ctx, dsn)`, and the `*caduceusdrv.Pool` is the
+    Executor and the `storm.DB`. `NewPool` reads pgxpool's `pool_max_conns`,
+    `pool_max_conn_lifetime` and `pool_max_conn_idle_time` from the URL, so a
+    URL written for pgxpool works.
+  - `pgxdrv.NewPoolConfig` takes a `caduceusdrv.PoolConfig` (DSN, MaxConns,
+    AcquireTimeout, MaxConnLifetime, MaxConnIdleTime, Database, RuntimeParams,
+    StatementCacheCapacity, Tracer) in place of a `*pgxpool.Config`.
+  - `pgxdrv.Tx{T: tx}` over `pool.Begin` becomes `pool.StartTx(ctx)`, or
+    `pool.BeginTx(ctx, caduceus.TxOptions{…})` for an isolation level.
+  - `pgxdrv.Conn{C: c}` over `pool.Acquire` becomes
+    `pool.Acquire(ctx, func(c *caduceus.Conn) error { … })` with
+    `caduceusdrv.Conn{C: c}` inside. A connection given back with a
+    transaction open is rolled back, and one left mid-result or found dead is
+    closed.
+  - `caduceusdrv.Connect(ctx, dsn)` opens one `*caduceus.Conn` that storm can
+    read from; `caduceusdrv.Options()` is the caduceus option set it uses.
+  - A tracer is a caduceus `QueryTracer` (plus `BatchTracer` and
+    `CopyFromTracer`), set as `PoolConfig.Tracer`.
+  - `RegisterFastArrays` and the pgx exec-mode guard are gone: caduceus has
+    one protocol, and caduceusdrv asks it for every column storm decodes in
+    binary (`caduceusdrv.ResultFormat`), so the generated scanners read the
+    same bytes they read over pgx.
+  - storm's `Decimal`, `Interval`, `TimeOfDay`, `TstzRange` and `[]Decimal`
+    arguments are sent in binary; `JSON` is sent as its bytes.
+  - PgBouncer in transaction pooling mode: set
+    `PoolConfig{StatementCacheCapacity: -1}`.
+- `migrate.Auto` takes a `*caduceus.Conn` and `migrate.AutoPool` a
+  `*caduceusdrv.Pool`. Schema introspection (`schema/pg`) reads through
+  caduceus.
+- MySQL/MariaDB, SQL Server, MongoDB and Redis are unchanged: their adapters
+  were already storm's own wire code.
+
+The benchmarks that compare storm with GORM, Bun, Ent, sqlc and raw pgx moved
+into `bench/`, now a module of its own, so those rivals and pgx are never in
+an adopter's dependency graph.
 
 ### Migrations: every schema change, in an order the server accepts
 
@@ -62,36 +112,6 @@ And orders the steps so each one can run:
 `migrate/converge_test.go` applies each kind of change to a live PostgreSQL,
 plainly and online, and then its reverse, and requires that the next plan be
 empty.
-
-### A second PostgreSQL adapter: caduceus
-
-`runtime/caduceusdrv` runs every generated package over
-[caduceus](https://github.com/gsoultan/caduceus), a PostgreSQL driver with no
-dependencies, as `runtime/pgxdrv` does over pgx. Nothing changes for a project
-on pgx.
-
-- **`caduceusdrv.Pool`** is a pool of caduceus connections and a `runtime.DB`.
-  `NewPool` reads pgxpool's `pool_max_conns`, `pool_max_conn_lifetime` and
-  `pool_max_conn_idle_time` from the URL, so a URL written for pgxpool works.
-  A connection given back with a transaction open is rolled back, and one left
-  mid-result or found dead is closed. `Conn` and `Tx` adapt a connection and a
-  transaction the caller holds.
-- **The same bytes as pgx.** Each connection asks for every column in the
-  format pgx would (`caduceusdrv.ResultFormat`), so the generated scanners
-  read identical bytes over either adapter. `TestSameBytesAsPgx` writes and
-  reads a row of twenty types through both and compares them byte for byte.
-  storm's `Decimal`, `Interval`, `TimeOfDay`, `TstzRange`, `JSON` and
-  `[]Decimal` arguments are sent as the text PostgreSQL reads for each.
-- **Automigrate and introspection over caduceus.** The new package
-  `migrate/caduceusmigrate` has `Auto`, `AutoPool`, `For` and `Introspect`,
-  which are `migrate.Auto`, `migrate.AutoPool`, `migrate.ForWith` and
-  `schemapg.Introspect` on caduceus. It is a package of its own so that
-  `migrate`, `schema/pg` and the `storm` command never link caduceus, and a
-  project on pgx needs nothing new in its go.mod. `migrate.Session`,
-  `migrate.AutoSession`, `migrate.ForSession` and `schemapg.IntrospectSession`
-  take a connection of any other driver the same way. Automigrating
-  `internal/testmodel` through caduceus leaves nothing for pgx to do, and both
-  drivers read back the same schema.
 
 ### Fixed: a primary key column named `key`
 

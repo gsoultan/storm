@@ -18,9 +18,14 @@ import (
 // MaxConnLifetime, and when it was last given back, for MaxConnIdleTime.
 type member struct {
 	conn     *caduceus.Conn
+	pool     *Pool
 	born     time.Time
 	returned time.Time
 }
+
+// end gives the member back to its pool, which is what closing a pool's rows
+// does.
+func (m *member) end() { m.pool.release(m) }
 
 // stale reports whether the member has outlived the pool's limits at now.
 func (m *member) stale(c PoolConfig, now time.Time) bool {

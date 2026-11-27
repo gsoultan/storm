@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/runtime/msdrv"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
 )
 
 // rawUser is the model the scratch database is built from.

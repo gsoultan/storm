@@ -81,7 +81,7 @@ func TestOnlyOracleReadsTheValueShape(t *testing.T) {
 		DialectOracle:   {"[]any", "Values"},
 	}
 	for d, w := range want {
-		dec := decodersFor(d, "github.com/gsoultan/storm")
+		dec := decodersFor(d, "github.com/gsoultan/storm/v2")
 		if got := [2]string{dec.rowsType(), dec.rowsAccessor()}; got != w {
 			t.Errorf("%s reads %v, want %v", d, got, w)
 		}
@@ -109,7 +109,7 @@ func TestOnlyOracleReadsTheValueShape(t *testing.T) {
 // that lost it would emit code that does not compile — which is how it was
 // found.
 func TestTheValueFamilyHasItsOwnUUIDAndTextHooks(t *testing.T) {
-	dec := decodersFor(DialectOracle, "github.com/gsoultan/storm")
+	dec := decodersFor(DialectOracle, "github.com/gsoultan/storm/v2")
 	if dec.uuid == nil {
 		t.Fatal("the value family needs a uuid hook: copy() wants a slice and rv[i] is an any")
 	}

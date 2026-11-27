@@ -3,7 +3,7 @@
 #
 # docs/STABILITY.md names the packages an adopter's own code calls and binds
 # them to semver from v1.0.0. This compares their exported API against the
-# latest v1 tag with apidiff and fails on any INCOMPATIBLE change: additions
+# latest tag of the module's major with apidiff and fails on any INCOMPATIBLE change: additions
 # pass, removals and re-typings do not.
 #
 # It exists because the promise was broken on main and nothing noticed. A fifth
@@ -20,29 +20,40 @@ APIDIFF=golang.org/x/exp/cmd/apidiff@v0.0.0-20260908205506-85c1c2202aba
 # The covered packages, relative to the module root; "." is storm itself. Adding
 # one is a promise and removing one withdraws a promise, which is a major. Keep
 # this list and docs/STABILITY.md's in step.
-COVERED=(. runtime runtime/pgxdrv runtime/mydrv runtime/msdrv migrate)
+COVERED=(. runtime runtime/caduceusdrv runtime/mydrv runtime/msdrv migrate)
 
 # Reviewed exceptions: apidiff lines, exactly as printed, that may be
 # incompatible anyway. Empty is the normal state. An entry here is a decision
 # somebody defends in review, with its reason beside it — which is the point.
 EXCEPTIONS=()
 
+# The module's import path and the major it promises, read from go.mod rather
+# than written here: v2 moved the path, and a baseline from another major is a
+# different module that apidiff would report as removed wholesale.
+MOD=$(go list -m)
+MAJOR=v1
+if [[ $MOD =~ /(v[0-9]+)$ ]]; then MAJOR=${BASH_REMATCH[1]}; fi
+
 # The baseline is a tag, and CI's shallow checkout has none. Fetch only when
 # there are none here, and pass --depth only to a clone that is ALREADY
 # shallow: in a full clone, --depth writes .git/shallow and grafts history off
 # at the tags, so `git log` stops at v1.1.0. The first version of this script
 # did exactly that to the clone it was written in.
-if [ -z "$(git tag --list 'v1.*')" ]; then
+if [ -z "$(git tag --list "$MAJOR.*")" ]; then
   if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-    git fetch -q --depth=1 origin 'refs/tags/v1.*:refs/tags/v1.*'
+    git fetch -q --depth=1 origin "refs/tags/$MAJOR.*:refs/tags/$MAJOR.*" || true
   else
-    git fetch -q origin 'refs/tags/v1.*:refs/tags/v1.*'
+    git fetch -q origin "refs/tags/$MAJOR.*:refs/tags/$MAJOR.*" || true
   fi
 fi
-base=$(git tag --list 'v1.*' --sort=-v:refname | head -1)
+base=$(git tag --list "$MAJOR.*" --sort=-v:refname | head -1)
 if [ -z "$base" ]; then
-  echo "no v1.* tag to compare against" >&2
-  exit 1
+  # The first release of a new major breaks the previous one by definition,
+  # which is what the new import path is for. There is nothing in this major
+  # to be compatible with until its first tag exists.
+  echo "== no $MAJOR.* tag yet: $MOD has no released API to be compatible with =="
+  echo "OK"
+  exit 0
 fi
 
 tmp=$(mktemp -d)
@@ -54,8 +65,8 @@ trap cleanup EXIT
 
 GOBIN="$tmp/bin" go install "$APIDIFF"
 git worktree add -q --detach "$tmp/base" "$base"
-(cd "$tmp/base" && "$tmp/bin/apidiff" -m -w "$tmp/base.api" github.com/gsoultan/storm)
-"$tmp/bin/apidiff" -m -w "$tmp/head.api" github.com/gsoultan/storm
+(cd "$tmp/base" && "$tmp/bin/apidiff" -m -w "$tmp/base.api" "$MOD")
+"$tmp/bin/apidiff" -m -w "$tmp/head.api" "$MOD"
 "$tmp/bin/apidiff" -m -incompatible "$tmp/base.api" "$tmp/head.api" >"$tmp/all.txt" 2>&1
 
 echo "== the covered API is compatible with $base =="

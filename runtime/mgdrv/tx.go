@@ -12,7 +12,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // tx is a transaction on a pinned connection.

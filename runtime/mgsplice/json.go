@@ -14,7 +14,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // The json predicates bind a filter, not a value: MongoDB has no containment

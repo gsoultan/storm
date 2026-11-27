@@ -64,9 +64,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/myddl"
-	"github.com/gsoultan/storm/examples/blog/model"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/myddl"
+	"github.com/gsoultan/storm/v2/examples/blog/model"
 )
 
 func main() {
@@ -117,9 +117,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/myddl"
-	"github.com/gsoultan/storm/internal/testmodel"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/myddl"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
 )
 
 func main() {

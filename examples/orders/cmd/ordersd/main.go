@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 
 	"example.com/orders/orders"
 )
@@ -41,7 +41,7 @@ func main() {
 
 	// storm's constructor, so the fast parameter encoders are installed.
 	// Everything else about the pool is ordinary pgx.
-	pool, err := pgxdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		logger.Log("fatal", err)
 		os.Exit(1)

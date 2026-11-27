@@ -14,13 +14,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/internal/testmodel"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/pg"
-	"github.com/jackc/pgx/v5"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/pg"
 )
 
 func dsn(t testing.TB) string {
@@ -31,9 +32,9 @@ func dsn(t testing.TB) string {
 	return d
 }
 
-func connect(t testing.TB) *pgx.Conn {
+func connect(t testing.TB) *caduceus.Conn {
 	t.Helper()
-	c, err := pgx.Connect(context.Background(), dsn(t))
+	c, err := caduceusdrv.Connect(context.Background(), dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func connect(t testing.TB) *pgx.Conn {
 
 // applyInto creates a scratch namespace, applies ddl inside it, and reads it
 // back into the IR.
-func applyInto(t *testing.T, c *pgx.Conn, ns, ddl string) *schema.Schema {
+func applyInto(t *testing.T, c *caduceus.Conn, ns, ddl string) *schema.Schema {
 	t.Helper()
 	ctx := context.Background()
 	// btree_gist is what lets an exclusion constraint mix `=` on a scalar with

@@ -12,10 +12,10 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/bsondec"
-	"github.com/gsoultan/storm/runtime/hooks"
-	"github.com/gsoultan/storm/runtime/mgsplice"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/bsondec"
+	"github.com/gsoultan/storm/v2/runtime/hooks"
+	"github.com/gsoultan/storm/v2/runtime/mgsplice"
 )
 
 var (

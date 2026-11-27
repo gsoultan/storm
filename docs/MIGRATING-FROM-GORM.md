@@ -143,7 +143,7 @@ What you give up:
 
 | GORM | storm |
 |---|---|
-| `gorm.Open(postgres.Open(dsn))` | `pool, err := pgxdrv.NewPool(ctx, dsn)`, then `ex := pgxdrv.Pool{P: pool}` |
+| `gorm.Open(postgres.Open(dsn))` | `pool, err := caduceusdrv.NewPool(ctx, dsn)`; the pool is the Executor |
 | `db.Transaction(func(tx *gorm.DB) error {…})` | `storm.InTx(ctx, ex, func(tx storm.Executor) error {…})`. It rolls back on an error or a panic and commits otherwise. |
 | `db.Begin()` / `Commit()` / `Rollback()` | `tx, err := ex.StartTx(ctx)`, then `tx.Commit(ctx)` or `tx.Rollback(ctx)` |
 | `db.WithContext(ctx)` | Every call takes `ctx` explicitly. |
@@ -186,7 +186,7 @@ type Tag struct {
 Do not rewrite your GORM structs by hand. Import the database instead:
 
 ```console
-$ go get github.com/gsoultan/storm/tool
+$ go get github.com/gsoultan/storm/v2/tool
 $ storm import -schema public > model/model.go
 ```
 
@@ -348,8 +348,8 @@ loads (`Preload` to `store.XWithY`). Port writes last.
 The code below runs against the tables above:
 
 ```go
-pool, err := pgxdrv.NewPool(ctx, dsn)
-ex := pgxdrv.Pool{P: pool}
+pool, err := caduceusdrv.NewPool(ctx, dsn)
+ex := pool
 
 // Create: an integer id from the sequence, and Status from its default.
 nc := customer.Create()
@@ -372,7 +372,7 @@ n, err := customer.New().Count(ctx, ex)     // the deleted row is not counted
 ```
 
 Both libraries can share one database while you work through this,
-because both speak to it through pgx. Moving one bounded context at a time is
+because both are ordinary clients of the same database. Moving one bounded context at a time is
 the pattern the first adopter used for sqlc, and it applies here unchanged.
 
 ## What to watch

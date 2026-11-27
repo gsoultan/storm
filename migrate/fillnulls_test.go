@@ -14,7 +14,7 @@ import (
 
 	"errors"
 
-	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/v2/migrate"
 )
 
 // A nullable column made NOT NULL with FillNulls is filled first and then

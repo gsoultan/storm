@@ -17,8 +17,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/oracle"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/oracle"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Every expression node the IR has. A node with no case falls through to an

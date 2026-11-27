@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
 )
 
 // The three differences that are not spellings. Each of these was emitted as

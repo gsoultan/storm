@@ -8,8 +8,8 @@
 package compilefail
 
 import (
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 func FilterOnJSONBEquality() user.Query {

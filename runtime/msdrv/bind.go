@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Sending a statement, and the one decision that shapes the whole file:

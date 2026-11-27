@@ -3,8 +3,8 @@ package msdec_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/msdec"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/msdec"
 )
 
 // FuzzDecoders: no value panics a SQL Server decoder, whatever its length.

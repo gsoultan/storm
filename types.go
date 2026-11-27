@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // UUID keeps the core dependency-free. Map it to your preferred package once

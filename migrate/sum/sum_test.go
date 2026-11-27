@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/migrate/sum"
+	"github.com/gsoultan/storm/v2/migrate/sum"
 )
 
 func write(t *testing.T, dir, name, body string) {

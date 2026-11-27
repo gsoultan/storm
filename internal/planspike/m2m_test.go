@@ -12,16 +12,16 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/membership"
-	"github.com/gsoultan/storm/internal/planspike/store/org"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/membership"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/org"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 
-	"github.com/gsoultan/storm/internal/planspike/store"
-	"github.com/gsoultan/storm/internal/planspike/store/post"
-	"github.com/gsoultan/storm/internal/planspike/store/postrelated"
-	"github.com/gsoultan/storm/internal/planspike/store/posttag"
-	"github.com/gsoultan/storm/internal/planspike/store/tag"
+	"github.com/gsoultan/storm/v2/internal/planspike/store"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/post"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/postrelated"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/posttag"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/tag"
 )
 
 // m2mAuthor creates an author in its OWN org.

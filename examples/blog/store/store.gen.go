@@ -10,9 +10,9 @@ import (
 
 	"time"
 
-	"github.com/gsoultan/storm/examples/blog/store/article"
-	"github.com/gsoultan/storm/examples/blog/store/author"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/examples/blog/store/article"
+	"github.com/gsoultan/storm/v2/examples/blog/store/author"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // FlushOrder ranks tables so that every table's foreign-key targets rank

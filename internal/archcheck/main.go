@@ -44,7 +44,6 @@ var maxFiles = map[string]int{
 	"migrate":        11,
 	"runtime":        19,
 	"runtime/msdrv":  12,
-	"runtime/pgxdrv": 11,
 }
 
 // The same ratchet for "one struct per file" and "one interface per file",
@@ -52,7 +51,7 @@ var maxFiles = map[string]int{
 // structs contributes two. A single total catches a new offending file and a
 // third struct added to an old one alike.
 const (
-	maxExtraStructs    = 131
+	maxExtraStructs    = 119
 	maxExtraInterfaces = 5
 )
 
@@ -95,7 +94,7 @@ func main() {
 		// storm's runtime package that needs Go's runtime has to name one of
 		// the two.
 		for _, im := range f.Imports {
-			if im.Name != nil && im.Name.Name != "_" && strings.HasPrefix(im.Path.Value, `"github.com/gsoultan/storm`) {
+			if im.Name != nil && im.Name.Name != "_" && strings.HasPrefix(im.Path.Value, `"github.com/gsoultan/storm/v2`) {
 				fail("%s imports %s as %s: AGENTS.md allows no import aliases of storm's own packages, "+
 					"because every clause is unique and says what it is", path, im.Path.Value, im.Name.Name)
 			}

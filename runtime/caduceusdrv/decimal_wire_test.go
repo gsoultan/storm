@@ -6,22 +6,20 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgxdrv_test
+package caduceusdrv_test
 
 import (
 	"context"
 	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // What storm writes must be what PostgreSQL reads.
 //
-// Byte-equality with pgx is the wrong assertion and was tried first: the binary
+// Byte-equality with pgx was the wrong assertion and was tried first: the binary
 // numeric format has freedom storm and pgx spend differently. pgx keeps leading
 // zero groups where storm is compact, and sets a weight on a value with no
 // digits at all, where weight means nothing. Both are the same number. The only
@@ -41,12 +39,22 @@ func TestNumericWireIsWhatPostgresReads(t *testing.T) {
 		t.Skip("STORM_DSN not set")
 	}
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
-	pgxdrv.RegisterFastArrays(conn.TypeMap()) // installs the decimal codec too
+	defer pool.Close()
+	text := func(sql string, arg any) (string, error) {
+		rows, err := pool.Query(ctx, sql, []any{arg})
+		if err != nil {
+			return "", err
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			return "", rows.Err()
+		}
+		return string(rows.RawValues()[0]), rows.Err()
+	}
 
 	for _, in := range []string{
 		"0", "1", "-1", "0.01", "-0.01", "1000000", "0.000000001",
@@ -61,8 +69,8 @@ func TestNumericWireIsWhatPostgresReads(t *testing.T) {
 		}
 
 		// The scalar path: what an INSERT or a predicate binds.
-		var scalar string
-		if err := conn.QueryRow(ctx, "SELECT $1::numeric::text", d).Scan(&scalar); err != nil {
+		scalar, err := text("SELECT $1::numeric::text", d)
+		if err != nil {
 			t.Errorf("%q: scalar: %v", in, err)
 			continue
 		}
@@ -71,9 +79,8 @@ func TestNumericWireIsWhatPostgresReads(t *testing.T) {
 		}
 
 		// The array path: what `= ANY($1)` binds.
-		var arr string
-		if err := conn.QueryRow(ctx, "SELECT ($1::numeric[])[1]::text",
-			[]runtime.Decimal{d}).Scan(&arr); err != nil {
+		arr, err := text("SELECT ($1::numeric[])[1]::text", []runtime.Decimal{d})
+		if err != nil {
 			t.Errorf("%q: array: %v", in, err)
 			continue
 		}

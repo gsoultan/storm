@@ -11,7 +11,7 @@ package schema_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // The result type of an aggregate is NOT its input type, and the difference is

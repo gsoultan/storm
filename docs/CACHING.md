@@ -21,8 +21,8 @@ keep answers the database already gave, it is the usual tool.
 
 ```go
 import (
-    "github.com/gsoultan/storm/runtime/qcache"
-    "github.com/gsoultan/storm/runtime/redisdrv"
+    "github.com/gsoultan/storm/v2/runtime/qcache"
+    "github.com/gsoultan/storm/v2/runtime/redisdrv"
 )
 
 rc, err := redisdrv.OpenURL("rediss://:password@cache.internal:6380/0")

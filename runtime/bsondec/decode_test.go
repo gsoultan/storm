@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 func i32(t byte, v int32) []byte { return binary.LittleEndian.AppendUint32([]byte{t}, uint32(v)) }

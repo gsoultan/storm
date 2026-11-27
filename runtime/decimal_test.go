@@ -12,7 +12,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Round-tripping through PostgreSQL's own wire format is the only proof that

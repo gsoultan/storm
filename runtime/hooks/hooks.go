@@ -36,7 +36,7 @@ package hooks
 import (
 	"context"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Hooks are the statement callbacks Wrap installs. Either may be nil.

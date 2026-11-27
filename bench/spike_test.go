@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/internal/spike"
+	"github.com/gsoultan/storm/v2/bench/internal/spike"
 )
 
 func exec() spike.PgxExec { return spike.PgxExec{Pool: pool} }

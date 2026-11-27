@@ -16,9 +16,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // member is one relation a plan loads, and what is loaded through it.

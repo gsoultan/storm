@@ -12,14 +12,20 @@ import (
 	"fmt"
 
 	"github.com/gsoultan/caduceus"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
+
+// ender is what a result hands back when it is closed: a pool's connection,
+// which the rows hold until then because they stream off it. An interface
+// rather than a func, because *member satisfies it without a closure to
+// allocate on every query.
+type ender interface{ end() }
 
 // rows adapts caduceus's rows to runtime.Rows. release, when set, gives the
 // pooled connection back once the rows are closed, and runs once.
 type rows struct {
 	r       *caduceus.Rows
-	release func()
+	release ender
 }
 
 var _ runtime.Rows = (*rows)(nil)
@@ -36,7 +42,7 @@ func (r *rows) Close() {
 	if r.release != nil {
 		release := r.release
 		r.release = nil
-		release()
+		release.end()
 	}
 }
 
@@ -44,7 +50,7 @@ func (r *rows) Close() {
 // it. A connection opened without Options asks for numeric, jsonb, inet and
 // cidr in text, which the generated scanners would misread rather than
 // refuse, so such a result is refused here, naming the column.
-func newRows(r *caduceus.Rows, release func()) (*rows, error) {
+func newRows(r *caduceus.Rows, release ender) (*rows, error) {
 	for i, f := range r.Fields() {
 		if f.Format == ResultFormat(f.DataTypeOID) || sameInBoth(f.DataTypeOID) {
 			continue
@@ -52,11 +58,12 @@ func newRows(r *caduceus.Rows, release func()) (*rows, error) {
 		{
 			r.Close()
 			if release != nil {
-				release()
+				release.end()
 			}
 			return nil, fmt.Errorf(
-				"storm: column %d %q (oid %d) arrived in format %d and storm decodes format %d — "+
-					"open the connection with caduceusdrv.Options()", i+1, f.Name, f.DataTypeOID, f.Format, ResultFormat(f.DataTypeOID))
+				"storm: column %d %q (oid %d) arrived in %s format and storm decodes it in %s — "+
+					"open the connection with caduceusdrv.Connect, or with caduceusdrv.Options()",
+				i+1, f.Name, f.DataTypeOID, formatName(f.Format), formatName(ResultFormat(f.DataTypeOID)))
 		}
 	}
 	return &rows{r: r, release: release}, nil
@@ -70,4 +77,12 @@ func sameInBoth(oid uint32) bool {
 		return true
 	}
 	return false
+}
+
+// formatName is a wire format as an error message names it.
+func formatName(format int16) string {
+	if format == 1 {
+		return "binary"
+	}
+	return "text"
 }

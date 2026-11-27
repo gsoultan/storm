@@ -11,8 +11,8 @@ package mssql
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // columnCase is the output-name convention, shared rather than restated: an

@@ -16,9 +16,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gsoultan/storm/compile/oraddl"
-	"github.com/gsoultan/storm/schema"
-	"github.com/gsoultan/storm/schema/oracle"
+	"github.com/gsoultan/storm/v2/compile/oraddl"
+	"github.com/gsoultan/storm/v2/schema"
+	"github.com/gsoultan/storm/v2/schema/oracle"
 )
 
 // Normalisation for Oracle — the same idea as normalize.go's and a THIRD

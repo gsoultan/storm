@@ -1,7 +1,7 @@
 package model
 
 import (
-	st "github.com/gsoultan/storm"
+	st "github.com/gsoultan/storm/v2"
 
 	"example.com/basic/shared"
 )

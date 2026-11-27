@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/examples/library/store"
-	"github.com/gsoultan/storm/examples/library/store/author"
-	"github.com/gsoultan/storm/examples/library/store/book"
-	"github.com/gsoultan/storm/examples/library/store/volume"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/examples/library/store"
+	"github.com/gsoultan/storm/v2/examples/library/store/author"
+	"github.com/gsoultan/storm/v2/examples/library/store/book"
+	"github.com/gsoultan/storm/v2/examples/library/store/volume"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // A declared aggregation is one $group, with SQL's answers: a count of a

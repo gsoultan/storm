@@ -3,7 +3,7 @@ package hooks
 import (
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Kind is which of the Executor's four methods a Statement went through.

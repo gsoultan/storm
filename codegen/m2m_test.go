@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 type lkArticle struct {
@@ -130,7 +130,7 @@ func TestManyToManyNamedPlanGenerates(t *testing.T) {
 		t.Fatal(err)
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: "gen", Import: "github.com/gsoultan/storm",
+		Dir: "gen", Import: "github.com/gsoultan/storm/v2",
 		Package: "gen", PackageImport: "example.com/x/gen",
 	})
 	if err != nil {

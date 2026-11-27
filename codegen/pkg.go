@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // PackageOptions configures a whole-context generation.
@@ -23,7 +23,7 @@ type PackageOptions struct {
 	// Dir is the output root. One directory per table is created under it.
 	Dir string
 
-	// Import is the module path of storm, e.g. "github.com/gsoultan/storm".
+	// Import is the module path of storm, e.g. "github.com/gsoultan/storm/v2".
 	Import string
 
 	// Only restricts generation to these table names. Empty means every table

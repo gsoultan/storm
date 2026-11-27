@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // declared is related() with a join, two aggregations and a union.
@@ -71,8 +71,8 @@ func declared() *schema.Schema {
 }
 
 func TestDeclaredReadsGenerateAndCompile(t *testing.T) {
-	files, err := Package(declared(), Options{Import: "github.com/gsoultan/storm", Package: "ctx",
-		PackageImport: "github.com/gsoultan/storm/internal/x"})
+	files, err := Package(declared(), Options{Import: "github.com/gsoultan/storm/v2", Package: "ctx",
+		PackageImport: "github.com/gsoultan/storm/v2/internal/x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,8 +102,8 @@ func TestDeclaredReadsGenerateAndCompile(t *testing.T) {
 	base := "mgdecl" + strconv.Itoa(os.Getpid())
 	dir := filepath.Join(root, "internal", base)
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	files, err = Package(declared(), Options{Import: "github.com/gsoultan/storm", Package: base,
-		PackageImport: "github.com/gsoultan/storm/internal/" + base})
+	files, err = Package(declared(), Options{Import: "github.com/gsoultan/storm/v2", Package: base,
+		PackageImport: "github.com/gsoultan/storm/v2/internal/" + base})
 	if err != nil {
 		t.Fatal(err)
 	}

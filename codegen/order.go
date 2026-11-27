@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // FlushOrder ranks tables so that every table's foreign-key targets rank

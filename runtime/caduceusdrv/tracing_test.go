@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgxdrv_test
+package caduceusdrv_test
 
 import (
 	"context"
@@ -14,19 +14,18 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // The tracing claim, proved rather than asserted — and the proof corrected
 // the claim.
 //
 // Every round trip storm makes goes through the Executor and therefore
-// through pgx, so pgx's tracers see all of it. But pgx splits tracing across
-// SEPARATE interfaces, and a QueryTracer alone is blind to batches: this test
-// failed on exactly that, which matters because a batch is where a plan's
+// through caduceus, so caduceus's tracers see all of it. But tracing is split
+// across SEPARATE interfaces, and a QueryTracer alone is blind to batches: this
+// test failed on exactly that under pgx, which matters because a batch is where a plan's
 // relation loads live. An adopter who wired only QueryTracer would watch the
 // one query they wrote and never see the four the plan issued, then conclude
 // the ORM hides work.
@@ -41,37 +40,39 @@ type recordingTracer struct {
 	sqls []string
 }
 
-func (r *recordingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+func (r *recordingTracer) TraceQueryStart(ctx context.Context, _ *caduceus.Conn, data caduceus.TraceQueryStartData) context.Context {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sqls = append(r.sqls, data.SQL)
 	return ctx
 }
 
-func (r *recordingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (r *recordingTracer) TraceQueryEnd(context.Context, *caduceus.Conn, caduceus.TraceQueryEndData) {
+}
 
-// Batch: pgx reports the batch boundaries and then each statement inside it.
-func (r *recordingTracer) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+// Batch: caduceus reports the batch with every statement in it.
+func (r *recordingTracer) TraceBatchStart(ctx context.Context, _ *caduceus.Conn, data caduceus.TraceBatchStartData) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, q := range data.Queries {
+		r.sqls = append(r.sqls, q.SQL)
+	}
 	return ctx
 }
 
-func (r *recordingTracer) TraceBatchQuery(_ context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sqls = append(r.sqls, data.SQL)
+func (r *recordingTracer) TraceBatchEnd(context.Context, *caduceus.Conn, caduceus.TraceBatchEndData) {
 }
-
-func (r *recordingTracer) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // CopyFrom carries no SQL, so record it as the operation it is.
-func (r *recordingTracer) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceCopyFromStartData) context.Context {
+func (r *recordingTracer) TraceCopyFromStart(ctx context.Context, _ *caduceus.Conn, data caduceus.TraceCopyFromStartData) context.Context {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sqls = append(r.sqls, "COPY "+data.TableName.Sanitize())
 	return ctx
 }
 
-func (r *recordingTracer) TraceCopyFromEnd(context.Context, *pgx.Conn, pgx.TraceCopyFromEndData) {}
+func (r *recordingTracer) TraceCopyFromEnd(context.Context, *caduceus.Conn, caduceus.TraceCopyFromEndData) {
+}
 
 func (r *recordingTracer) seen() []string {
 	r.mu.Lock()
@@ -81,19 +82,13 @@ func (r *recordingTracer) seen() []string {
 
 func TestTracer_SeesEveryStatementStormIssues(t *testing.T) {
 	ctx := context.Background()
-	cfg, err := pgxpool.ParseConfig(dsn(t))
-	if err != nil {
-		t.Fatal(err)
-	}
 	tr := &recordingTracer{}
-	cfg.ConnConfig.Tracer = tr
-
-	pool, err := pgxdrv.NewPoolConfig(ctx, cfg)
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn(t), Tracer: tr})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	ex := pgxdrv.Pool{P: pool}
+	ex := pool
 
 	rows, err := ex.Query(ctx, `SELECT 1::int8 AS one`, nil)
 	if err != nil {
@@ -134,13 +129,13 @@ func TestTracer_SeesEveryStatementStormIssues(t *testing.T) {
 // are assertable in an adopter's own tests, not just in storm's.
 func TestCountingExecutor_CountsWhatStormSends(t *testing.T) {
 	ctx := context.Background()
-	pool, err := pgxdrv.NewPool(ctx, dsn(t))
+	pool, err := caduceusdrv.NewPool(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
 
-	counting := &runtime.CountingExecutor{Inner: pgxdrv.Pool{P: pool}}
+	counting := &runtime.CountingExecutor{Inner: pool}
 	for i := 0; i < 3; i++ {
 		rows, err := counting.Query(ctx, `SELECT 1::int8`, nil)
 		if err != nil {

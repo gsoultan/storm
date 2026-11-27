@@ -12,7 +12,7 @@ import (
 	"database/sql/driver"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // normalize converts storm's bound values into the types database/sql accepts.

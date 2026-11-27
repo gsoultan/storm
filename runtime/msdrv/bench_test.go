@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
 )
 
 // The measurement this package exists for.

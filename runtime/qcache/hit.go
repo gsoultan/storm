@@ -8,7 +8,7 @@
 
 package qcache
 
-import "github.com/gsoultan/storm/runtime"
+import "github.com/gsoultan/storm/v2/runtime"
 
 // hitRows replays a cached entry as the byte shape of runtime.Rows.
 type hitRows struct {

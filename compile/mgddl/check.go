@@ -26,9 +26,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/mgexpr"
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mgexpr"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Check reports every construct in s that has no MongoDB form, or nil.

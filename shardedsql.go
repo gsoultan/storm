@@ -24,7 +24,7 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/gsoultan/storm/runtime/shard"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 // ShardedSQLQuery is a raw query against a sharded table. Its Query takes a

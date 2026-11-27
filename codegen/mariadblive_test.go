@@ -12,11 +12,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/compile/myddl"
-	"github.com/gsoultan/storm/runtime/mydrv"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/compile/myddl"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
+	"github.com/gsoultan/storm/v2/schema"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,7 +95,7 @@ func runGeneratedLive(t *testing.T, dialect, addrVar string, want []string) {
 	src := strings.ReplaceAll(mysqlLiveSrc, "RETURNINGTEST", returning)
 	src = strings.ReplaceAll(src, "PKG", pkg)
 	src = strings.ReplaceAll(src, "ADDRVAR", addrVar)
-	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base+"/"+pkg)
+	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base+"/"+pkg)
 	if err := os.WriteFile(filepath.Join(pkgDir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func sweepGenerated(t *testing.T, prefix string) {
 func pkgFor(t *testing.T, s *schema.Schema, dir, dialect string) (map[string][]byte, error) {
 	t.Helper()
 	return codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm", Dialect: dialectFor(dialect),
+		Dir: dir, Import: "github.com/gsoultan/storm/v2", Dialect: dialectFor(dialect),
 	})
 }
 
@@ -312,9 +312,9 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 	// spans tables so it lives in neither.
 	pkg := filepath.Base(dir)
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm", Dialect: dialectFor(dialect),
+		Dir: dir, Import: "github.com/gsoultan/storm/v2", Dialect: dialectFor(dialect),
 		Package:       pkg,
-		PackageImport: "github.com/gsoultan/storm/internal/" + base,
+		PackageImport: "github.com/gsoultan/storm/v2/internal/" + base,
 	})
 	if err != nil {
 		t.Fatalf("generating for %s: %v", dialect, err)
@@ -331,7 +331,7 @@ func runRelationsLive(t *testing.T, dialect, addrVar, ddlTarget string) {
 	src := strings.ReplaceAll(relationsLiveSrc, "PKG", pkg)
 	src = strings.ReplaceAll(src, "ADDRVAR", addrVar)
 	src = strings.ReplaceAll(src, "TARGET", ddlTarget)
-	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base)
 	if err := os.WriteFile(filepath.Join(dir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}

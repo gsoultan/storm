@@ -17,11 +17,15 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/caduceus/wire"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // ErrPoolClosed is a Pool used after Close.
 var ErrPoolClosed = errors.New("caduceusdrv: the pool is closed")
+
+// ErrPoolExhausted is a wait for a connection that ran past AcquireTimeout:
+// every connection stayed in use, which is most often rows left unclosed.
+var ErrPoolExhausted = errors.New("caduceusdrv: no connection came free within AcquireTimeout")
 
 // Pool is a pool of caduceus connections, and a runtime.DB: every generated
 // package takes it, and StartTx begins a transaction on a connection of its
@@ -56,8 +60,9 @@ func NewPool(ctx context.Context, dsn string) (*Pool, error) {
 // NewPoolConfig opens a pool and one connection, so a database that is not
 // there is found now rather than by the first query.
 func NewPoolConfig(ctx context.Context, c PoolConfig) (*Pool, error) {
-	if c.Conn == nil {
-		return nil, errors.New("caduceusdrv: PoolConfig.Conn is nil")
+	c, err := c.resolve()
+	if err != nil {
+		return nil, err
 	}
 	c.MaxConns = c.maxConns()
 	p := &Pool{config: c, slots: make(chan struct{}, c.MaxConns)}
@@ -79,10 +84,8 @@ func (p *Pool) MaxConns() int { return p.config.MaxConns }
 // acquire takes a slot and a connection: an idle one that is still sound, or
 // a new one.
 func (p *Pool) acquire(ctx context.Context) (*member, error) {
-	select {
-	case p.slots <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if err := p.slot(ctx); err != nil {
+		return nil, err
 	}
 	now := time.Now()
 	for {
@@ -101,19 +104,51 @@ func (p *Pool) acquire(ctx context.Context) (*member, error) {
 		if m == nil {
 			break
 		}
-		if m.stale(p.config, now) || m.conn.CheckConn() != nil {
+		// CheckConn reads the socket without a round trip; a connection
+		// back from its last statement less than idleProbeAfter ago is
+		// taken on trust, which keeps a busy pool's hot path free of it.
+		if m.stale(p.config, now) || (now.Sub(m.returned) >= idleProbeAfter && m.conn.CheckConn() != nil) {
 			discard(m.conn)
 			continue
 		}
 		return m, nil
 	}
-	conn, err := caduceus.ConnectConfig(ctx, p.config.Conn.Copy(), Options())
+	conn, err := caduceus.ConnectConfig(ctx, p.config.Conn.Copy(), p.config.options())
 	if err != nil {
 		<-p.slots
 		return nil, fmt.Errorf("caduceusdrv: connect: %w", err)
 	}
-	return &member{conn: conn, born: now}, nil
+	return &member{conn: conn, pool: p, born: now}, nil
 }
+
+// slot waits for room for one more connection in use: until ctx is done, or
+// AcquireTimeout passes, which reports a pool that leaks connections rather
+// than hanging on it.
+func (p *Pool) slot(ctx context.Context) error {
+	select {
+	case p.slots <- struct{}{}:
+		return nil
+	default:
+	}
+	var timeout <-chan time.Time
+	if wait := p.config.acquireTimeout(); wait > 0 {
+		t := time.NewTimer(wait)
+		defer t.Stop()
+		timeout = t.C
+	}
+	select {
+	case p.slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timeout:
+		return ErrPoolExhausted
+	}
+}
+
+// idleProbeAfter is how long a connection sits idle before it is checked,
+// without a round trip, for a server that hung up on it.
+const idleProbeAfter = time.Second
 
 // release gives m back: kept if it is sound and idle, closed otherwise.
 func (p *Pool) release(m *member) {
@@ -164,7 +199,7 @@ func (p *Pool) Query(ctx context.Context, sql string, args []any) (runtime.Rows,
 	if err != nil {
 		return nil, err
 	}
-	return query(ctx, m.conn, sql, args, p.once(m))
+	return query(ctx, m.conn, sql, args, m)
 }
 
 func (p *Pool) Exec(ctx context.Context, sql string, args []any) (int64, error) {
@@ -200,11 +235,18 @@ func (p *Pool) Batch(ctx context.Context, ops []runtime.BatchOp, each func(int, 
 // StartTx begins a transaction on a connection that stays the
 // transaction's until Commit or Rollback.
 func (p *Pool) StartTx(ctx context.Context) (runtime.Tx, error) {
+	return p.BeginTx(ctx, caduceus.TxOptions{})
+}
+
+// BeginTx is StartTx with the transaction's characteristics: an isolation
+// level, read-only, deferrable. runtime.DB does not name them, so they live
+// here rather than on the interface every adapter implements.
+func (p *Pool) BeginTx(ctx context.Context, o caduceus.TxOptions) (runtime.Tx, error) {
 	m, err := p.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	t, err := m.conn.Begin(ctx)
+	t, err := m.conn.BeginTx(ctx, o)
 	if err != nil {
 		p.release(m)
 		return nil, classify(err)
@@ -249,4 +291,15 @@ func (p *Pool) Close() {
 	for _, m := range idle {
 		discard(m.conn)
 	}
+}
+
+// QueryRow runs a statement expected to return at most one row, for the ad
+// hoc question no model has words for. The connection goes back to the pool
+// once the row is scanned.
+func (p *Pool) QueryRow(ctx context.Context, sql string, in ...any) *Row {
+	m, err := p.acquire(ctx)
+	if err != nil {
+		return &Row{err: err}
+	}
+	return &Row{r: m.conn.QueryRow(ctx, sql, args(in)...), release: m}
 }

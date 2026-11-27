@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // FuzzFallibleDecoders: no value a PostgreSQL server sends panics one of the

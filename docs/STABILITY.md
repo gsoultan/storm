@@ -1,6 +1,6 @@
 ---
 tags: [storm, stability, semver]
-updated: 2026-09-25
+updated: 2026-11-27
 status: adopted at v0.x — the commitments below bind from v1.0.0
 ---
 
@@ -23,6 +23,15 @@ From **v1.0.0**:
   re-typed.
 - **Major**: anything that makes existing model declarations, generated-code
   call sites, or emitted migrations invalid.
+
+**v2.0.0 is the first major.** It replaced pgx with
+[caduceus](https://github.com/gsoultan/caduceus) as the PostgreSQL driver:
+`runtime/pgxdrv` is gone and `runtime/caduceusdrv` takes its place, and
+`migrate.Auto`, `migrate.AutoPool` and schema introspection take caduceus and
+`caduceusdrv` types where they took pgx's. The import path is
+`github.com/gsoultan/storm/v2`. Model declarations, the generated call surface
+and emitted SQL did not change; regenerate and the generated tree imports the
+new path.
 
 **Regenerate on every upgrade.** `storm verify -stale` in CI makes forgetting
 impossible; mixed-version generated trees are not a supported state.
@@ -72,12 +81,12 @@ impossible; mixed-version generated trees are not a supported state.
 5. The **CLI verbs and their exit semantics**.
 6. The **packages an adopter's own code calls**: `storm`, `runtime` — the
    port, its errors, and every type a generated signature names — the
-   adapters `runtime/pgxdrv`, `runtime/caduceusdrv`, `runtime/mydrv` and
-   `runtime/msdrv`, and `migrate` with `migrate/caduceusmigrate`.
+   adapters `runtime/caduceusdrv`, `runtime/mydrv` and `runtime/msdrv`, and
+   `migrate`.
 
    This one is checked, not just stated. `scripts/check/apicompat.sh` runs on
-   every push: it compares these packages' exported API against the last v1
-   tag with `apidiff` and fails on any incompatible change. It exists because
+   every push: it compares these packages' exported API against the last tag
+   of the module's major with `apidiff` and fails on any incompatible change. It exists because
    the promise was once broken on main without anyone noticing — a fifth
    method on `runtime.Rows`, which every adopter-written `Rows` would have
    stopped compiling without.
@@ -140,7 +149,7 @@ this list is what CI actually starts:
 | MariaDB | **11.4** | The LTS |
 | SQL Server | **2022** | The `2022-latest` image, which floats across cumulative updates the way `postgres:16` floats across minors. Tested since v1.1.0 and listed only now — a supported server the table left out was a promise nobody could find |
 | Oracle | **23.26.3** — 26ai Free, *experimental* | Pinned by digest in `oracle-spike.yml`, because `gvenzl/oracle-free:slim` floats across majors. Experimental; see what is not covered above |
-| pgx | the version in `go.mod` | Minimal version selection resolves an adopter's build to the HIGHEST requirement in the graph, so a storm that requires an older pgx is a storm whose driver adapter runs a pgx its own suite never exercised. That already happened once: storm said 5.10 while its adopter built 5.11 |
+| caduceus | the version in `go.mod` | Minimal version selection resolves an adopter's build to the HIGHEST requirement in the graph, so a storm that requires an older driver is a storm whose adapter runs a driver its own suite never exercised. That already happened once, with pgx: storm said 5.10 while its adopter built 5.11 |
 
 Between the two PostgreSQL versions, the second one is not a formality.
 Introspection reads `pg_catalog` directly, and the catalog is the part of

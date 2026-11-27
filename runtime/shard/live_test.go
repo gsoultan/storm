@@ -29,12 +29,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/gsoultan/storm/runtime/shard"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 // liveOrder is the model the migration test brings up on every shard.
@@ -57,7 +56,7 @@ var tenants = [][16]byte{
 }
 
 // liveShards builds a Set over shardCount freshly created databases.
-func liveShards(t *testing.T) (*shard.Set, []pgxdrv.Pool) {
+func liveShards(t *testing.T) (*shard.Set, []*caduceusdrv.Pool) {
 	t.Helper()
 	dsn := os.Getenv("STORM_DSN")
 	if dsn == "" {
@@ -65,14 +64,14 @@ func liveShards(t *testing.T) (*shard.Set, []pgxdrv.Pool) {
 	}
 	ctx := context.Background()
 
-	admin, err := pgxpool.New(ctx, dsn)
+	admin, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admin.Close()
 
 	names := make([]string, shardCount)
-	pools := make([]pgxdrv.Pool, shardCount)
+	pools := make([]*caduceusdrv.Pool, shardCount)
 	dbs := make([]runtime.DB, shardCount)
 
 	for i := range shardCount {
@@ -81,29 +80,23 @@ func liveShards(t *testing.T) (*shard.Set, []pgxdrv.Pool) {
 		// DROP first: a previous run that failed mid-way leaves a database
 		// behind, and reusing it would let stale rows answer this run's
 		// assertions.
-		if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
+		if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)", nil); err != nil {
 			t.Fatalf("drop %s: %v", name, err)
 		}
-		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name, nil); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
 
-		cfg, err := pgxpool.ParseConfig(dsn)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg.ConnConfig.Database = name
 		// Bounded on purpose. pgxpool defaults to max(4, NumCPU) per pool,
 		// and this suite opens one pool PER SHARD per test, against a server
 		// that `go test ./...` is also running the tool and migrate suites
 		// against in parallel. Nothing here needs concurrency; what it needs
 		// is not to be the reason someone else's test cannot connect.
-		cfg.MaxConns = 2
-		p, err := pgxpool.NewWithConfig(ctx, cfg)
+		p, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, Database: name, MaxConns: 2})
 		if err != nil {
 			t.Fatalf("connect %s: %v", name, err)
 		}
-		pools[i] = pgxdrv.Pool{P: p}
+		pools[i] = p
 		dbs[i] = pools[i]
 
 		if _, err := pools[i].Exec(ctx,
@@ -114,15 +107,15 @@ func liveShards(t *testing.T) (*shard.Set, []pgxdrv.Pool) {
 
 	t.Cleanup(func() {
 		for _, p := range pools {
-			p.P.Close()
+			p.Close()
 		}
-		a, err := pgxpool.New(context.Background(), dsn)
+		a, err := caduceusdrv.NewPool(context.Background(), dsn)
 		if err != nil {
 			return
 		}
 		defer a.Close()
 		for _, n := range names {
-			_, _ = a.Exec(context.Background(), "DROP DATABASE IF EXISTS "+n+" WITH (FORCE)")
+			_, _ = a.Exec(context.Background(), "DROP DATABASE IF EXISTS "+n+" WITH (FORCE)", nil)
 		}
 	})
 
@@ -134,9 +127,9 @@ func liveShards(t *testing.T) (*shard.Set, []pgxdrv.Pool) {
 }
 
 // tenantsOn reads the tenant ids actually present in one shard's database.
-func tenantsOn(t *testing.T, ctx context.Context, p pgxdrv.Pool) map[[16]byte]bool {
+func tenantsOn(t *testing.T, ctx context.Context, p *caduceusdrv.Pool) map[[16]byte]bool {
 	t.Helper()
-	rows, err := p.P.Query(ctx, "SELECT tenant_id FROM orders")
+	rows, err := p.Query(ctx, "SELECT tenant_id FROM orders", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,11 +137,7 @@ func tenantsOn(t *testing.T, ctx context.Context, p pgxdrv.Pool) map[[16]byte]bo
 
 	out := map[[16]byte]bool{}
 	for rows.Next() {
-		var id [16]byte
-		if err := rows.Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		out[id] = true
+		out[runtime.UUID(rows.RawValues()[0])] = true
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
@@ -420,7 +409,7 @@ func TestLiveUnitFlushLandsEveryWriteOnItsShard(t *testing.T) {
 
 	for i, p := range pools {
 		var n int
-		if err := p.P.QueryRow(ctx, "SELECT count(*) FROM orders WHERE tenant_id = $1", tenant).Scan(&n); err != nil {
+		if err := p.QueryRow(ctx, "SELECT count(*) FROM orders WHERE tenant_id = $1", tenant).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		want := 0
@@ -436,7 +425,7 @@ func TestLiveUnitFlushLandsEveryWriteOnItsShard(t *testing.T) {
 // Migrating a shard set: storm does not do it for you, and this is what doing
 // it looks like.
 //
-// A Set holds runtime.DB values and migrate.AutoPool takes a *pgxpool.Pool,
+// A Set holds runtime.DB values and migrate.AutoPool takes a *caduceusdrv.Pool,
 // so there is no Set.Migrate and there should not be: migration happens
 // BEFORE a Set exists, while the caller still holds the pools they are about
 // to hand over. The loop below is the whole story, and the reason it is a
@@ -459,7 +448,7 @@ func TestLiveMigrateEveryShardThenBuildTheSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	admin, err := pgxpool.New(ctx, dsn)
+	admin, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,40 +456,34 @@ func TestLiveMigrateEveryShardThenBuildTheSet(t *testing.T) {
 
 	var (
 		names = make([]string, shardCount)
-		raw   = make([]*pgxpool.Pool, shardCount)
+		raw   = make([]*caduceusdrv.Pool, shardCount)
 		dbs   = make([]runtime.DB, shardCount)
 	)
 	for i := range shardCount {
 		name := "storm_migshard_" + string(rune('0'+i))
 		names[i] = name
-		if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
+		if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)", nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name, nil); err != nil {
 			t.Fatal(err)
 		}
-		cfg, err := pgxpool.ParseConfig(dsn)
-		if err != nil {
+		if raw[i], err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, Database: name, MaxConns: 2}); err != nil {
 			t.Fatal(err)
 		}
-		cfg.ConnConfig.Database = name
-		cfg.MaxConns = 2
-		if raw[i], err = pgxpool.NewWithConfig(ctx, cfg); err != nil {
-			t.Fatal(err)
-		}
-		dbs[i] = pgxdrv.Pool{P: raw[i]}
+		dbs[i] = raw[i]
 	}
 	t.Cleanup(func() {
 		for _, p := range raw {
 			p.Close()
 		}
-		a, err := pgxpool.New(context.Background(), dsn)
+		a, err := caduceusdrv.NewPool(context.Background(), dsn)
 		if err != nil {
 			return
 		}
 		defer a.Close()
 		for _, n := range names {
-			_, _ = a.Exec(context.Background(), "DROP DATABASE IF EXISTS "+n+" WITH (FORCE)")
+			_, _ = a.Exec(context.Background(), "DROP DATABASE IF EXISTS "+n+" WITH (FORCE)", nil)
 		}
 	})
 

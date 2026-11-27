@@ -11,7 +11,7 @@ package storm
 import (
 	"fmt"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Named projections: read less than the whole row, by name.

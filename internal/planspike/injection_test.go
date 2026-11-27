@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/gsoultan/caduceus/wire"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // hostile is the usual corpus plus the ones that get missed: a lone quote, a
@@ -117,7 +117,7 @@ func assertDataError(t *testing.T, payload string, err error) {
 	if err == nil {
 		return
 	}
-	var pg *pgconn.PgError
+	var pg *wire.Error
 	if !errors.As(err, &pg) {
 		t.Fatalf("payload %q: unexpected error: %v", payload, err)
 	}

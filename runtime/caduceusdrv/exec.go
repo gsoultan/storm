@@ -14,16 +14,16 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/caduceus/wire"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // query runs sql on s. release, when set, is run once the rows are closed,
 // or at once if there are none to close.
-func query(ctx context.Context, s session, sql string, in []any, release func()) (runtime.Rows, error) {
+func query(ctx context.Context, s session, sql string, in []any, release ender) (runtime.Rows, error) {
 	r, err := s.Query(ctx, sql, args(in)...)
 	if err != nil {
 		if release != nil {
-			release()
+			release.end()
 		}
 		return nil, classify(err)
 	}

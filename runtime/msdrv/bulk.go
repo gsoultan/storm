@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Bulk load: TDS's own wire path for getting rows in, which is what `bcp` and

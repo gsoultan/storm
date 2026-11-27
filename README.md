@@ -286,8 +286,8 @@ no `main` to keep in step with your models — storm finds them by parsing
 ([ADR-0006](docs/adr/0006-discovery-replaces-the-bootstrap.md)):
 
 ```console
-go install github.com/gsoultan/storm/cmd/storm@latest
-go get github.com/gsoultan/storm/tool     # once per module
+go install github.com/gsoultan/storm/v2/cmd/storm@latest
+go get github.com/gsoultan/storm/v2/tool     # once per module
 
 storm generate [dir]    # one package per table + the context package
       watch <dir>       # regenerate on save; leave it running while you edit

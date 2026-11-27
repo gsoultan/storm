@@ -119,7 +119,7 @@ func TestJoinWithCTE(t *testing.T) {
 	}
 
 	// And it must agree with the same CTE written by hand.
-	rows, err := pool.Query(ctx, `
+	rows, err := rawQuery(t, ctx, `
 		WITH spend AS (SELECT customer_id, count(*) n FROM orders GROUP BY customer_id)
 		SELECT c.email, s.n
 		  FROM orders o JOIN customers c ON o.customer_id = c.id
@@ -168,8 +168,7 @@ func TestJoinDeclaredWhereCannotBeWidened(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx,
-		`UPDATE orders SET status = 'cancelled' WHERE id = $1`,
-		parseUUID(t, placed.OrderID)); err != nil {
+		`UPDATE orders SET status = 'cancelled' WHERE id = $1`, []any{parseUUID(t, placed.OrderID)}); err != nil {
 		t.Fatal(err)
 	}
 

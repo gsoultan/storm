@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/gsoultan/storm/compile/msddl"
+	"github.com/gsoultan/storm/v2/compile/msddl"
 )
 
 // The gate's fixture: the schema applied, and two rows to execute against.

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime/mgdrv"
+	"github.com/gsoultan/storm/v2/runtime/mgdrv"
 )
 
 // SCRAM-SHA-256 against a server with authentication on, named by

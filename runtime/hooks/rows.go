@@ -3,7 +3,7 @@ package hooks
 import (
 	"context"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // rows counts what the caller reads and runs After when the caller closes

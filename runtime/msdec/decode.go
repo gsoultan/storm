@@ -46,7 +46,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // errShort is a value narrower than its type needs. It cannot happen against a

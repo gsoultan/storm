@@ -36,9 +36,9 @@ $ export STORM_DSN='postgres://storm:storm@127.0.0.1:5433/storm'
 ## 1. Install the tool and the library
 
 ```console
-$ go install github.com/gsoultan/storm/cmd/storm@latest
+$ go install github.com/gsoultan/storm/v2/cmd/storm@latest
 $ go mod init example.com/notes
-$ go get github.com/gsoultan/storm/tool      # once per module
+$ go get github.com/gsoultan/storm/v2/tool      # once per module
 ```
 
 The second `go get` matters. `storm` finds your models by parsing your module,
@@ -59,7 +59,7 @@ package model
 import (
     "time"
 
-    "github.com/gsoultan/storm"
+    "github.com/gsoultan/storm/v2"
 )
 
 // User owns notes.
@@ -254,9 +254,9 @@ import (
     "os"
     "time"
 
-    "github.com/gsoultan/storm"
-    "github.com/gsoultan/storm/runtime"
-    "github.com/gsoultan/storm/runtime/pgxdrv"
+    "github.com/gsoultan/storm/v2"
+    "github.com/gsoultan/storm/v2/runtime"
+    "github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 
     "example.com/notes/internal/store"
     "example.com/notes/internal/store/note"
@@ -266,14 +266,14 @@ import (
 func main() {
     ctx := context.Background()
 
-    // Use storm's constructor so its fast parameter encoders are installed.
-    // Otherwise this is an ordinary *pgxpool.Pool.
-    pool, err := pgxdrv.NewPool(ctx, os.Getenv("STORM_DSN"))
+    // A small pool of caduceus connections that asks for binary results on
+    // every column storm decodes.
+    pool, err := caduceusdrv.NewPool(ctx, os.Getenv("STORM_DSN"))
     if err != nil {
         log.Fatal(err)
     }
     defer pool.Close()
-    ex := pgxdrv.Pool{P: pool} // the Executor that every generated call takes
+    ex := pool // the Executor that every generated call takes
 
     // Insert: set the columns you know. The database fills id and timestamps.
     nu := user.Create()
@@ -413,7 +413,7 @@ generate, never at run time:
 
 | Engine | Generate | Connect | Schema |
 |---|---|---|---|
-| PostgreSQL | `storm generate` | `pgxdrv.NewPool` | `storm diff`, `migrate.AutoPool` |
+| PostgreSQL | `storm generate` | `caduceusdrv.NewPool` | `storm diff`, `migrate.AutoPool` |
 | MySQL 8.4 / MariaDB 11.4 | `-dialect mysql` / `-dialect mariadb` | `mydrv.NewPool` | `storm ddl -dialect …`, applied by your own tool |
 | SQL Server 2022 | `-dialect mssql` | `runtime/msdrv` | `storm diff`, `migrate.AutoMSSQL` |
 | Oracle (experimental) | `-dialect oracle` | `runtime/sqldrv` + your `database/sql` driver | `storm diff` |

@@ -8,7 +8,7 @@
 
 package storm
 
-import "github.com/gsoultan/storm/schema"
+import "github.com/gsoultan/storm/v2/schema"
 
 // Declaring the SQL-bodied objects: functions, views and triggers.
 //

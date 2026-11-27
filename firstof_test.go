@@ -10,16 +10,16 @@ package storm_test
 
 import (
 	"context"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
-	"github.com/jackc/pgx/v5"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 type foVisit struct {
@@ -78,7 +78,7 @@ func TestFirstOfAgainstPostgres(t *testing.T) {
 	tbl := s.Tables[0]
 	agg := tbl.Aggregates[0]
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, dsn)
+	c, err := caduceusdrv.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

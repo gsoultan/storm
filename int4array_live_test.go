@@ -12,8 +12,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/jackc/pgx/v5"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Compiling is not decoding. This release's own lesson twice over, so the new
@@ -31,7 +30,7 @@ func TestInt4ArrayDecodesRealWireBytes(t *testing.T) {
 		{`'{}'::int4[]`, []int32{}},
 		{`'{-1,0,2147483647,-2147483648}'::int4[]`, []int32{-1, 0, 2147483647, -2147483648}},
 	} {
-		rows, err := c.Query(ctx, `SELECT `+tc.sql, pgx.QueryResultFormats{pgx.BinaryFormatCode})
+		rows, err := c.Query(ctx, `SELECT `+tc.sql)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.sql, err)
 		}
@@ -58,7 +57,7 @@ func TestInt4ArrayDecodesRealWireBytes(t *testing.T) {
 	// A NULL element is a distinct fact from an empty array, and the array
 	// decoders refuse it rather than inventing a zero — the same rule the
 	// other element types follow.
-	rows, err := c.Query(ctx, `SELECT '{1,NULL,3}'::int4[]`, pgx.QueryResultFormats{pgx.BinaryFormatCode})
+	rows, err := c.Query(ctx, `SELECT '{1,NULL,3}'::int4[]`)
 	if err != nil {
 		t.Fatal(err)
 	}

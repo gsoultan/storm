@@ -155,7 +155,7 @@ func TestWatchSetRelevance(t *testing.T) {
 		"model/user.go": `package model
 
 import (
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 	"example.com/app/shared"
 )
 
@@ -179,7 +179,7 @@ type User struct {
 
 	// A brand-new model package is found by its storm import.
 	writeTree(t, dir, map[string]string{
-		"billing/invoice.go": "package billing\n\nimport \"github.com/gsoultan/storm\"\n\ntype Invoice struct{ storm.Model }\n",
+		"billing/invoice.go": "package billing\n\nimport \"github.com/gsoultan/storm/v2\"\n\ntype Invoice struct{ storm.Model }\n",
 	})
 	for _, tc := range []struct {
 		file string

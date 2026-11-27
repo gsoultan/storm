@@ -11,7 +11,7 @@ package mssql
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Declared cross-table reads.

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func tbl(name string, cols ...*schema.Column) *schema.Table {

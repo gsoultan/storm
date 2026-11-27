@@ -13,7 +13,7 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Tx adapts a *sql.Tx to runtime.Tx.

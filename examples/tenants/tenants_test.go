@@ -25,16 +25,15 @@ import (
 	"os"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/examples/tenants/model"
-	"github.com/gsoultan/storm/examples/tenants/store"
-	"github.com/gsoultan/storm/examples/tenants/store/currency"
-	"github.com/gsoultan/storm/examples/tenants/store/order"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/gsoultan/storm/runtime/shard"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/examples/tenants/model"
+	"github.com/gsoultan/storm/v2/examples/tenants/store"
+	"github.com/gsoultan/storm/v2/examples/tenants/store/currency"
+	"github.com/gsoultan/storm/v2/examples/tenants/store/order"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 const shards = 2
@@ -56,48 +55,42 @@ func setup(t *testing.T) *shard.Set {
 		t.Fatal(err)
 	}
 
-	admin, err := pgxpool.New(ctx, dsn)
+	admin, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admin.Close()
 
 	names := make([]string, shards)
-	raw := make([]*pgxpool.Pool, shards)
+	raw := make([]*caduceusdrv.Pool, shards)
 	dbs := make([]runtime.DB, shards)
 
 	for i := range shards {
 		name := "storm_tenants_" + string(rune('0'+i))
 		names[i] = name
-		if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
+		if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)", nil); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name, nil); err != nil {
 			t.Fatal(err)
 		}
-		cfg, err := pgxpool.ParseConfig(dsn)
-		if err != nil {
+		if raw[i], err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, Database: name, MaxConns: 2}); err != nil {
 			t.Fatal(err)
 		}
-		cfg.ConnConfig.Database = name
-		cfg.MaxConns = 2
-		if raw[i], err = pgxpool.NewWithConfig(ctx, cfg); err != nil {
-			t.Fatal(err)
-		}
-		dbs[i] = pgxdrv.Pool{P: raw[i]}
+		dbs[i] = raw[i]
 	}
 
 	t.Cleanup(func() {
 		for _, p := range raw {
 			p.Close()
 		}
-		a, err := pgxpool.New(context.Background(), dsn)
+		a, err := caduceusdrv.NewPool(context.Background(), dsn)
 		if err != nil {
 			return
 		}
 		defer a.Close()
 		for _, n := range names {
-			_, _ = a.Exec(context.Background(), "DROP DATABASE IF EXISTS "+n+" WITH (FORCE)")
+			_, _ = a.Exec(context.Background(), "DROP DATABASE IF EXISTS "+n+" WITH (FORCE)", nil)
 		}
 	})
 

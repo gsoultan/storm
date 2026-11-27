@@ -8,7 +8,7 @@
 
 package mongo
 
-import "github.com/gsoultan/storm/schema"
+import "github.com/gsoultan/storm/v2/schema"
 
 // Embed is the document form that stores a referring row inside the row it
 // references (storm.Embed).

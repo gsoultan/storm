@@ -183,7 +183,7 @@ lowering pass.
 
 So every back end supports it on the same terms, and the only per-dialect
 requirement is the one ADR-0011 already makes: the adapter's pool must satisfy
-`runtime.DB`, which means `StartTx` returning a `runtime.Tx`. `pgxdrv`, `mydrv`,
+`runtime.DB`, which means `StartTx` returning a `runtime.Tx`. `caduceusdrv`, `mydrv`,
 `msdrv` and `sqldrv` all do, asserted at compile time in each.
 
 **Tested on two.** The routing suite runs against two real PostgreSQL

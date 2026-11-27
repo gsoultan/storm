@@ -7,7 +7,7 @@
 package compilefail
 
 import (
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 func FilterOnArrayEquality() user.Query {

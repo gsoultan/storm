@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 // THE GATE for keyset pagination: page a whole table and land on every row

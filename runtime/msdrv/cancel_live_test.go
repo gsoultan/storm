@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime/msdec"
-	"github.com/gsoultan/storm/runtime/msdrv"
+	"github.com/gsoultan/storm/v2/runtime/msdec"
+	"github.com/gsoultan/storm/v2/runtime/msdrv"
 )
 
 // A cancelled Exec reports the cancellation. Before, the reply loop ignored

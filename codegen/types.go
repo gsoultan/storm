@@ -11,7 +11,7 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // kind is the shape of a column's Go representation, which decides both the

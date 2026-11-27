@@ -11,8 +11,8 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // aggregate emits one declared aggregation: its row type, its scanner, and the

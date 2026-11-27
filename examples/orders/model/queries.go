@@ -8,7 +8,7 @@
 
 package model
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 // DailyRevenueRow is one row of the finance report.
 type DailyRevenueRow struct {

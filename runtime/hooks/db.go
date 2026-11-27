@@ -3,7 +3,7 @@ package hooks
 import (
 	"context"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // db is a wrapped pool. Its transactions are wrapped with the same hooks, so

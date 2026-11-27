@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // Full-text search on the MySQL family.
@@ -53,7 +53,7 @@ func ftSource(t *testing.T, d codegen.Dialect) string {
 		t.Fatal(err)
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: t.TempDir(), Import: "github.com/gsoultan/storm", Dialect: d,
+		Dir: t.TempDir(), Import: "github.com/gsoultan/storm/v2", Dialect: d,
 	})
 	if err != nil {
 		t.Fatalf("generating for %s: %v", d, err)
@@ -169,7 +169,7 @@ func runFullTextLive(t *testing.T, dialect, addrVar string) {
 	pkg := filepath.Base(pkgDir)
 	src := strings.ReplaceAll(fullTextLiveSrc, "PKG", pkg)
 	src = strings.ReplaceAll(src, "ADDRVAR", addrVar)
-	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base+"/"+pkg)
+	src = strings.ReplaceAll(src, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base+"/"+pkg)
 	if err := os.WriteFile(filepath.Join(pkgDir, "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -222,10 +222,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/myddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/myddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 	ft "IMPORTPATH"
 )
 

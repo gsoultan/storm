@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func oraPlan(t *testing.T, from, to *schema.Schema) Plan {

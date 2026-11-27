@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // The hole this closes: joins, aggregates, unions, top-N and recursive reads
@@ -41,7 +41,7 @@ func TestSelfReferentialModelGeneratesForMySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: t.TempDir(), Import: "github.com/gsoultan/storm", Dialect: codegen.DialectMySQL,
+		Dir: t.TempDir(), Import: "github.com/gsoultan/storm/v2", Dialect: codegen.DialectMySQL,
 	})
 	if err != nil {
 		t.Fatalf("a self-referential model was refused for MySQL: %v", err)

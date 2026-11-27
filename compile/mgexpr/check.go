@@ -11,8 +11,8 @@ package mgexpr
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Check is a CHECK constraint's expression as an aggregation expression a

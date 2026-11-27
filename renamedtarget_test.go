@@ -11,7 +11,7 @@ package storm_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 type rnPerson struct {

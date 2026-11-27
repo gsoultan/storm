@@ -11,7 +11,7 @@ package pgsql_test
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
 )
 
 // The document read as its text. COALESCE wraps the identifier so a missing

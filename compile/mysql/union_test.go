@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func union(distinct bool, order []schema.UnionOrder) *schema.Union {

@@ -1,13 +1,13 @@
 // A SEPARATE module on purpose: storm's own go.mod gains no SQL Server
 // dependency for a measurement, exactly as internal/mysqlspike gains it no
 // MySQL one.
-module github.com/gsoultan/storm/internal/mssqlspike
+module github.com/gsoultan/storm/v2/internal/mssqlspike
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/gsoultan/storm v0.0.0
+	github.com/gsoultan/storm/v2 v2.0.0
 	github.com/microsoft/go-mssqldb v1.11.0
 )
 
@@ -19,4 +19,4 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 )
 
-replace github.com/gsoultan/storm => ../..
+replace github.com/gsoultan/storm/v2 => ../..

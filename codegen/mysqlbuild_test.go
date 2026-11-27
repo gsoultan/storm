@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // A MySQL-portable model: no arrays, no inet, no tsvector, no ranges — the
@@ -108,7 +108,7 @@ func TestMySQLGeneratedPackageCompiles(t *testing.T) {
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:     dir,
-		Import:  "github.com/gsoultan/storm",
+		Import:  "github.com/gsoultan/storm/v2",
 		Dialect: codegen.DialectMySQL,
 	})
 	if err != nil {
@@ -149,7 +149,7 @@ func TestMySQLGeneratedPackageCarriesMySQLSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: t.TempDir(), Import: "github.com/gsoultan/storm", Dialect: codegen.DialectMySQL,
+		Dir: t.TempDir(), Import: "github.com/gsoultan/storm/v2", Dialect: codegen.DialectMySQL,
 	})
 	if err != nil {
 		t.Fatalf("generating a MySQL package: %v", err)
@@ -177,7 +177,7 @@ func TestMySQLGeneratedPackageCarriesMySQLSQL(t *testing.T) {
 	}
 	// And PostgreSQL is unaffected.
 	pg, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: t.TempDir(), Import: "github.com/gsoultan/storm",
+		Dir: t.TempDir(), Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)

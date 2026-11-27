@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: true
 
       - name: vet
@@ -114,7 +114,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: true
 
       # Every other gate runs inside this repository and shares its
@@ -220,7 +220,11 @@ jobs:
       - name: benchmarks compile and run
         if: ${{ !cancelled() }}
         run: |
-          go test -run XXX -bench . -benchtime=1x ./bench/
+          # bench/ is its own module: the rival ORMs it measures, pgx among
+          # them, are its dependencies and never storm's. `go test ./...` at
+          # the root no longer reaches its tests, so they run here, with the
+          # benchmarks once each.
+          (cd bench && go vet ./... && go test -bench . -benchtime=1x ./...)
           # The MySQL adapter's allocation budget is a gate, not a doc: it
           # already shipped once at ten allocations per row while claiming one.
           go test -run XXX -bench . -benchtime=1x ./runtime/mydrv/
@@ -317,7 +321,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: true
 
       - name: test
@@ -364,7 +368,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: true
 
       - name: start mongodb
@@ -416,7 +420,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.27.3'
+          go-version: '1.27.4'
           cache: true
 
       # The lowering: every statement compile/mssql can produce, PREPAREd and

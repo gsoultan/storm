@@ -11,8 +11,8 @@ package codegen
 import (
 	"fmt"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // splice picks the runtime splice for a read: the plain one, or the form that

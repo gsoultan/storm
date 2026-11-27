@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gsoultan/storm/bench/entbench"
+	"github.com/gsoultan/storm/v2/bench/entbench"
 )
 
 // The UserFunc type is an adapter to allow the use of ordinary

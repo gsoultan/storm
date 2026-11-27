@@ -8,11 +8,16 @@
 
 package schemapg
 
-// Rows is a result introspection reads, row by row. pgx.Rows is one, and so
-// is any driver's result that scans into Go values.
+import "context"
+
+// Rows is a result introspection reads, row by row: a *caduceus.Rows, or any
+// driver's result that scans into Go values.
 type Rows interface {
 	Next() bool
 	Scan(dest ...any) error
 	Close()
 	Err() error
 }
+
+// query runs one catalog read.
+type query func(ctx context.Context, sql string, args ...any) (Rows, error)

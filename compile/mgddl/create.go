@@ -12,9 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/mgexpr"
-	"github.com/gsoultan/storm/compile/mongo"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/mgexpr"
+	"github.com/gsoultan/storm/v2/compile/mongo"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Commands renders s as MongoDB commands, one JSON document each, in the order

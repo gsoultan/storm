@@ -34,7 +34,7 @@ EOF
 cat > model/model.go <<'EOF'
 package model
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 type Team struct {
 	storm.Model
@@ -79,13 +79,13 @@ package main
 
 import (
 	"example.com/outsider/model"
-	"github.com/gsoultan/storm/tool"
+	"github.com/gsoultan/storm/v2/tool"
 )
 
 func main() { tool.Main(model.All(), nil) }
 EOF
 
-go mod edit -replace "github.com/gsoultan/storm=$REPO"
+go mod edit -replace "github.com/gsoultan/storm/v2=$REPO"
 GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
 
 fail=0
@@ -113,12 +113,12 @@ else
     note "generated code does not import the host module — this is the v0.1.0 bug"
     grep -n 'internal/store/' "$ctx" | head -3 | sed 's/^/    /' >&2
   fi
-  if grep -q '"github.com/gsoultan/storm/internal/store/' "$ctx"; then
+  if grep -q '"github.com/gsoultan/storm/v2/internal/store/' "$ctx"; then
     note "generated code imports STORM's module path for the user's packages"
   fi
   # The runtime import must still point at storm: the two halves are
   # different questions and the fix for one must not break the other.
-  if ! grep -q '"github.com/gsoultan/storm/runtime"' "$ctx"; then
+  if ! grep -q '"github.com/gsoultan/storm/v2/runtime"' "$ctx"; then
     note "the runtime import no longer points at storm"
   fi
 fi
@@ -144,7 +144,7 @@ mkdir -p unportable
 cat > unportable/model.go <<'GOEOF'
 package unportable
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 type Doc struct {
 	storm.Model
@@ -162,7 +162,7 @@ package main
 
 import (
 	"example.com/outsider/unportable"
-	"github.com/gsoultan/storm/tool"
+	"github.com/gsoultan/storm/v2/tool"
 )
 
 func main() { tool.Main(unportable.All(), nil) }
@@ -205,12 +205,12 @@ import (
 	"context"
 	"os"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/gsoultan/caduceus"
 )
 
 func main() {
 	ctx := context.Background()
-	c, err := pgx.Connect(ctx, os.Args[1])
+	c, err := caduceus.Connect(ctx, os.Args[1], caduceus.Options{})
 	if err != nil {
 		panic(err)
 	}
@@ -219,7 +219,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if _, err := c.Exec(ctx, string(sql)); err != nil {
+	// A migration is several statements, which only the simple protocol runs.
+	if _, err := c.Wire().Exec(ctx, string(sql)); err != nil {
 		panic(err)
 	}
 }
@@ -306,7 +307,7 @@ import (
 	os "os"
 
 	imported "example.com/outsider/imported"
-	storm "github.com/gsoultan/storm"
+	storm "github.com/gsoultan/storm/v2"
 )
 
 func main() {
@@ -356,7 +357,7 @@ EOF
 cat > model/model.go <<'EOF'
 package model
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 type Auditable struct {
 	Version int32
@@ -385,11 +386,11 @@ type Member struct {
 func (m *Member) Schema(s *storm.Table) { s.Unique(&m.Email) }
 EOF
 
-go mod edit -replace "github.com/gsoultan/storm=$REPO"
+go mod edit -replace "github.com/gsoultan/storm/v2=$REPO"
 GOFLAGS=-mod=mod go mod tidy >/dev/null 2>&1
 # Nothing in this module imports storm/tool, so `go mod tidy` cannot know about
 # it. storm says so by name on the first run; this is that one-time step.
-GOFLAGS=-mod=mod go get github.com/gsoultan/storm/tool >/dev/null 2>&1
+GOFLAGS=-mod=mod go get github.com/gsoultan/storm/v2/tool >/dev/null 2>&1
 
 if ! "$STORM_BIN" ddl > ddl2.sql 2>ddl2.err; then
   note "ddl failed with no bootstrap:"; sed 's/^/    /' ddl2.err | head -6 >&2
@@ -428,7 +429,7 @@ package main
 
 import (
 	"example.com/nobootstrap/model"
-	"github.com/gsoultan/storm/tool"
+	"github.com/gsoultan/storm/v2/tool"
 )
 
 func main() { tool.Main([]any{&model.Member{}, &model.Team{}}, nil) }
@@ -468,7 +469,7 @@ package mymodel
 import (
 	"time"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 type Shop struct {
@@ -509,7 +510,7 @@ package main
 
 import (
 	"example.com/outsider/mymodel"
-	"github.com/gsoultan/storm/tool"
+	"github.com/gsoultan/storm/v2/tool"
 )
 
 func main() { tool.Main(mymodel.All(), nil) }
@@ -537,7 +538,7 @@ if [ -n "${STORM_MYSQL_ADDR:-}" ]; then
     if ! grep -q '"example.com/outsider/internal/mystore/' "$ctx"; then
       note "the MySQL package does not import the host module"
     fi
-    if ! grep -q '"github.com/gsoultan/storm/runtime/mydec"' internal/mystore/order/order.gen.go; then
+    if ! grep -q '"github.com/gsoultan/storm/v2/runtime/mydec"' internal/mystore/order/order.gen.go; then
       note "the MySQL package does not use the MySQL decoder family"
     fi
   fi
@@ -553,9 +554,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/myddl"
-	"github.com/gsoultan/storm/runtime/mydrv"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/myddl"
+	"github.com/gsoultan/storm/v2/runtime/mydrv"
 
 	"example.com/outsider/mymodel"
 	store "example.com/outsider/internal/mystore"

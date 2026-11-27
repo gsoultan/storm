@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // `storm import` emits a Go MODEL, and a referential action's VALUE is SQL

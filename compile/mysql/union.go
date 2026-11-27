@@ -11,8 +11,8 @@ package mysql
 import (
 	"strings"
 
-	"github.com/gsoultan/storm/compile/pgsql"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // columnCase is pgsql.ColumnCase, called rather than copied.

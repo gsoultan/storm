@@ -27,7 +27,7 @@ package codegen
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // noEqBecause is every kind a caller cannot compare, and why.

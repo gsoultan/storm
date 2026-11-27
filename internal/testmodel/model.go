@@ -13,7 +13,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/gsoultan/storm"
+	"github.com/gsoultan/storm/v2"
 )
 
 // ---- enums ----

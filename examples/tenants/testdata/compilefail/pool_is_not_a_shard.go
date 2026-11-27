@@ -9,8 +9,8 @@ package compilefail
 import (
 	"context"
 
-	"github.com/gsoultan/storm/examples/tenants/store/order"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/examples/tenants/store/order"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 func OpenOrdersFromAPool(ctx context.Context, pool runtime.Executor) error {

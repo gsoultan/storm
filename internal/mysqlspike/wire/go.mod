@@ -1,8 +1,8 @@
 // Separate module: a spike, and nothing in storm should link it.
-module github.com/gsoultan/storm/internal/mysqlspike/wire
+module github.com/gsoultan/storm/v2/internal/mysqlspike/wire
 
-go 1.27.3
+go 1.27.4
 
-require github.com/gsoultan/storm v0.0.0
+require github.com/gsoultan/storm/v2 v2.0.0
 
-replace github.com/gsoultan/storm => ../../..
+replace github.com/gsoultan/storm/v2 => ../../..

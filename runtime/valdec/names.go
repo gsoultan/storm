@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // UUID reads a 16-byte key.

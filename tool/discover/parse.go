@@ -20,7 +20,7 @@ import (
 
 // stormPath is the module whose types mark a struct as a model. Discovery is
 // syntactic, so this is matched against import specs rather than resolved.
-const stormPath = "github.com/gsoultan/storm"
+const stormPath = "github.com/gsoultan/storm/v2"
 
 // pkgScan accumulates one directory's evidence before any of it is judged.
 //

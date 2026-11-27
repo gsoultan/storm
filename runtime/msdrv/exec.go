@@ -13,7 +13,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Conn is one connection. Not safe for concurrent use: TDS has no request
@@ -357,7 +357,7 @@ func (c *Conn) skipReturnValue() error {
 //
 // The values handed back by RawValues point into the connection's packet buffer
 // or into a scratch arena reused per row, so they are valid until the next call
-// to Next. That is the same contract runtime/pgxdrv's RawValues has, and it is
+// to Next. That is the same contract runtime/caduceusdrv's RawValues has, and it is
 // what makes exposing a row cost nothing.
 type Rows struct {
 	c    *Conn

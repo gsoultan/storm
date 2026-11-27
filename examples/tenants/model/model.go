@@ -14,7 +14,7 @@
 // ShardKeyOf, the checking unit of work — is emitted, not written.
 package model
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 // Order belongs to a tenant, and the tenant decides which DATABASE it is in.
 type Order struct {

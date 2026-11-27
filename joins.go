@@ -13,7 +13,7 @@ import (
 	"reflect"
 	"slices"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Named joins: one read that projects across tables.

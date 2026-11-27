@@ -25,8 +25,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // fakeRows is the value shape of runtime.Rows over canned data.

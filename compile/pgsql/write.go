@@ -412,7 +412,7 @@ func LockNotes() []string {
 	return []string{
 		"A lock is held to the end of the TRANSACTION, so one taken outside a",
 		"transaction is released before the next statement runs and protects",
-		"nothing — pass a pgxdrv.Tx, not a pool.",
+		"nothing — pass a caduceusdrv.Tx, not a pool.",
 		"",
 		"Locking is refused on Count and Exists, and on the declared",
 		"aggregations and joins. The server rejects a row lock combined with an",

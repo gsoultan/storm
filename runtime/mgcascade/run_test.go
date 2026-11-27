@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/bsondec"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/bsondec"
 )
 
 // fake answers a find by the collection it names, with rows of raw values in

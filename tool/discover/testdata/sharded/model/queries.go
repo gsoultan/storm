@@ -1,6 +1,6 @@
 package model
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 type CountRow struct{ N int64 }
 

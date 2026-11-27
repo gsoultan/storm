@@ -12,7 +12,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/auditlog"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/auditlog"
 )
 
 // The discriminator pair against a real server.

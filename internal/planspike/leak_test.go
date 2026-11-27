@@ -15,9 +15,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
-	stormrt "github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/internal/planspike/store"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	stormrt "github.com/gsoultan/storm/v2/runtime"
 )
 
 // heapNow forces collection and reports live heap. Two GCs: the first turns

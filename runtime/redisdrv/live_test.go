@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/qcache"
-	"github.com/gsoultan/storm/runtime/redisdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/qcache"
+	"github.com/gsoultan/storm/v2/runtime/redisdrv"
 )
 
 var _ qcache.Store = (*redisdrv.Client)(nil)

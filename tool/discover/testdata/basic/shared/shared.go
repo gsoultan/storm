@@ -1,6 +1,6 @@
 package shared
 
-import "github.com/gsoultan/storm"
+import "github.com/gsoultan/storm/v2"
 
 // Base is a cross-package mixin: exported, has a Schema method, and is not a
 // table. Only the fact that something embeds it says so.

@@ -33,7 +33,7 @@ var versionOnce = sync.OnceValue(func() string {
 	if !ok {
 		return "(unknown)"
 	}
-	const mod = "github.com/gsoultan/storm"
+	const mod = "github.com/gsoultan/storm/v2"
 	// Imported as a dependency: the version is pinned in the consumer's
 	// go.mod, which is exactly what should be stamped.
 	for _, d := range info.Deps {

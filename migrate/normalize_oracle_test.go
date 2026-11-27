@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func oraFixture() *schema.Schema {

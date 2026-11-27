@@ -13,8 +13,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/post"
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/post"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
 )
 
 // aUser inserts one row and removes it afterwards.

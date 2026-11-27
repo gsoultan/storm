@@ -15,7 +15,7 @@ package schemaoracle
 import (
 	"testing"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func TestTypesRoundTripFromTheCatalogue(t *testing.T) {

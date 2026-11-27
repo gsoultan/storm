@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/migrate"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/migrate"
 )
 
 // A composite foreign key is what stops a child in one tenant pointing at a

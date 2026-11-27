@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 // WithDeleted: a read of a soft-delete table that sees the marked rows too,
@@ -57,8 +57,8 @@ func TestWithDeletedAgainstPostgres(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
-		Package: "store", PackageImport: "github.com/gsoultan/storm/internal/" + base,
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
+		Package: "store", PackageImport: "github.com/gsoultan/storm/v2/internal/" + base,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestWithDeletedAgainstPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	src := strings.ReplaceAll(withDeletedLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/internal/"+base)
+	src := strings.ReplaceAll(withDeletedLiveSrc, "IMPORTPATH", "github.com/gsoultan/storm/v2/internal/"+base)
 	if err := os.WriteFile(filepath.Join(dir, "wdentry", "live_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestWithDeletedIsOnlyWhereTheModelSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: t.TempDir(), Import: "github.com/gsoultan/storm",
+		Dir: t.TempDir(), Import: "github.com/gsoultan/storm/v2",
 		Package: "store", PackageImport: "example.com/store",
 	})
 	if err != nil {
@@ -137,11 +137,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/pgxdrv"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 
 	"IMPORTPATH/wdentry"
 )
@@ -162,7 +161,7 @@ func (e *wdEntry) Schema(t *storm.Table) {
 func (e *wdEntry) Projections(p *storm.Projections) { p.Named("Ref", &e.ID) }
 
 var (
-	pool *pgxpool.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -175,22 +174,20 @@ func TestMain(m *testing.M) {
 	ctx := context.Background()
 	s, err := storm.Build(&wdEntry{})
 	must(err)
-	p, err := pgxdrv.NewPool(ctx, dsn)
+	p, err := caduceusdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_with_deleted_live"
-	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns)
+	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
 	must(err)
-	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s))
+	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
-	cfg := p.Config()
-	cfg.ConnConfig.RuntimeParams["search_path"] = ns
 	p.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	pool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
-	ex = pgxdrv.Pool{P: pool}
+	ex = pool
 
 	code := m.Run()
-	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE")
+	_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+ns+" CASCADE", nil)
 	pool.Close()
 	os.Exit(code)
 }
@@ -207,7 +204,7 @@ func must(err error) {
 func seed(t *testing.T) (live, first, last [16]byte) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM wd_entries"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM wd_entries", nil); err != nil {
 		t.Fatal(err)
 	}
 	var ids [3][16]byte
@@ -222,7 +219,7 @@ func seed(t *testing.T) (live, first, last [16]byte) {
 	}
 	at := time.Now().Add(-time.Hour).UTC()
 	for i, id := range ids[1:] {
-		if _, err := pool.Exec(ctx, "UPDATE wd_entries SET deleted_at = $1 WHERE id = $2", at.Add(time.Duration(i)*time.Minute), id); err != nil {
+		if _, err := pool.Exec(ctx, "UPDATE wd_entries SET deleted_at = $1 WHERE id = $2", []any{at.Add(time.Duration(i)*time.Minute), id}); err != nil {
 			t.Fatal(err)
 		}
 	}

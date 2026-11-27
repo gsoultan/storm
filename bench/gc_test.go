@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/internal/spike"
+	"github.com/gsoultan/storm/v2/bench/internal/spike"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 

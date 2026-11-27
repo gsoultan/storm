@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/compile/pgddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Dialect selects the DDL a plan is rendered in.

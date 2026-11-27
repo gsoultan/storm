@@ -10,10 +10,10 @@ import (
 
 	"time"
 
-	"github.com/gsoultan/storm/examples/tenants/store/currency"
-	"github.com/gsoultan/storm/examples/tenants/store/order"
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/shard"
+	"github.com/gsoultan/storm/v2/examples/tenants/store/currency"
+	"github.com/gsoultan/storm/v2/examples/tenants/store/order"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
 var _ = runtime.BatchOp{}

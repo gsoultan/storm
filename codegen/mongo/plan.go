@@ -8,7 +8,7 @@
 
 package codegenmongo
 
-import "github.com/gsoultan/storm/schema"
+import "github.com/gsoultan/storm/v2/schema"
 
 // plan is a row type and the query that fills it: one per relation, and one
 // per plan the model named.

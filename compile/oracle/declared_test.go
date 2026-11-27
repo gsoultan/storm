@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/oracle"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/oracle"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func col(name string) schema.Expr { return schema.Expr{Kind: schema.ExprCol, Col: name} }

@@ -27,7 +27,7 @@ package model
 import (
     "time"
 
-    "github.com/gsoultan/storm"
+    "github.com/gsoultan/storm/v2"
 )
 
 type Author struct {
@@ -251,7 +251,7 @@ four-method port, a transaction satisfies it, and the same generated code runs
 inside one:
 
 ```go
-tx, _ := pgxdrv.Pool{P: pool}.StartTx(ctx)
+tx, _ := pool.StartTx(ctx)
 
 nb := author.Create()
 nb.SetName("Ephemeral")

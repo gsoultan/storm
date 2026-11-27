@@ -12,7 +12,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // loadPartitions fills in both halves of partitioning: what a table is

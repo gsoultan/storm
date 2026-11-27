@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
 )
 
 type portsModel struct {
@@ -59,7 +59,7 @@ func TestInt4ArrayGeneratesAndCompiles(t *testing.T) {
 	}
 	dir := filepath.Join(root, "internal", "int4build"+strconv.Itoa(os.Getpid()))
 	files, err := codegen.Package(s, codegen.PackageOptions{
-		Dir: dir, Import: "github.com/gsoultan/storm",
+		Dir: dir, Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)

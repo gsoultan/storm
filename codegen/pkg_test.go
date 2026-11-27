@@ -17,10 +17,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm"
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/internal/testmodel"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/internal/testmodel"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func fixtureSchema(t *testing.T) *schema.Schema {
@@ -39,7 +39,7 @@ func TestPackage_EveryFixtureTable(t *testing.T) {
 	s := fixtureSchema(t)
 	files, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:    "gen",
-		Import: "github.com/gsoultan/storm",
+		Import: "github.com/gsoultan/storm/v2",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestPackage_Deterministic(t *testing.T) {
 	var want [32]byte
 	for i := range 10 {
 		files, err := codegen.Package(s, codegen.PackageOptions{
-			Dir: "gen", Import: "github.com/gsoultan/storm",
+			Dir: "gen", Import: "github.com/gsoultan/storm/v2",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -146,7 +146,7 @@ func TestPackage_CollidingNamesAreAnError(t *testing.T) {
 	s2.Tables = append(append([]*schema.Table{}, s.Tables...), &clash)
 
 	_, err := codegen.Package(&s2, codegen.PackageOptions{
-		Dir: "gen", Import: "github.com/gsoultan/storm",
+		Dir: "gen", Import: "github.com/gsoultan/storm/v2",
 	})
 	if err == nil {
 		t.Fatal("two tables generating the same package must be an error")
@@ -304,7 +304,7 @@ func TestPackage_DeclaredPlanCollidingWithRelationTier(t *testing.T) {
 
 	_, err := codegen.Package(s, codegen.PackageOptions{
 		Dir:           "gen",
-		Import:        "github.com/gsoultan/storm",
+		Import:        "github.com/gsoultan/storm/v2",
 		Package:       "store",
 		PackageImport: "example.com/app/store",
 	})
@@ -333,7 +333,7 @@ func TestShapesOf(t *testing.T) {
 		byName[s.TypeName] = s
 	}
 	u := byName["User"]
-	if u.ImportPath != "github.com/gsoultan/storm/internal/testmodel" {
+	if u.ImportPath != "github.com/gsoultan/storm/v2/internal/testmodel" {
 		t.Errorf("import path = %q", u.ImportPath)
 	}
 	// Embedded fields appear under their TYPE name, which is also how they are

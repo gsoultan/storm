@@ -13,7 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/internal/planspike/store/user"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2/internal/planspike/store/user"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // EqLower has to find the row whatever case the caller typed.
@@ -79,11 +81,11 @@ func TestEqLower_ReachesTheExpressionIndex(t *testing.T) {
 func plan(t *testing.T, sql string, args ...any) string {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pool.Acquire(ctx)
+	c, err := caduceus.ConnectConfig(ctx, pool.Config().Copy(), caduceusdrv.Options())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Release()
+	defer c.Close(ctx)
 	if _, err := c.Exec(ctx, "SET LOCAL enable_seqscan = off"); err != nil {
 		t.Fatal(err)
 	}

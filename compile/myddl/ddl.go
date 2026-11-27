@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Target names which of the two MySQL-family servers the DDL is for.

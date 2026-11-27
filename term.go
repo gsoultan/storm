@@ -14,7 +14,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 // Exprs is the declaration-time expression vocabulary, reached through the

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mssql"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/compile/mssql"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 // Every statement compile/mssql lowers, PREPAREd and EXECUTEd by a real server.

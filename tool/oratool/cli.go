@@ -28,10 +28,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gsoultan/storm/codegen"
-	"github.com/gsoultan/storm/migrate"
-	"github.com/gsoultan/storm/runtime/sqldrv"
-	"github.com/gsoultan/storm/schema/oracle"
+	"github.com/gsoultan/storm/v2/codegen"
+	"github.com/gsoultan/storm/v2/migrate"
+	"github.com/gsoultan/storm/v2/runtime/sqldrv"
+	"github.com/gsoultan/storm/v2/schema/oracle"
 )
 
 // OracleDriverPath is the database/sql driver storm's Oracle support is

@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/runtime"
-	"github.com/gsoultan/storm/runtime/bsondec"
-	"github.com/gsoultan/storm/runtime/mgdrv"
+	"github.com/gsoultan/storm/v2/runtime"
+	"github.com/gsoultan/storm/v2/runtime/bsondec"
+	"github.com/gsoultan/storm/v2/runtime/mgdrv"
 )
 
 // The live suite. It needs a MongoDB 6.0+ REPLICA SET — transactions refuse a

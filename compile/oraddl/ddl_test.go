@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/oraddl"
-	"github.com/gsoultan/storm/schema"
+	"github.com/gsoultan/storm/v2/compile/oraddl"
+	"github.com/gsoultan/storm/v2/schema"
 )
 
 func col(name, typ string, notNull bool) *schema.Column {

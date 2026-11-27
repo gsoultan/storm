@@ -33,10 +33,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/examples/blog/store"
-	"github.com/gsoultan/storm/examples/blog/store/article"
-	"github.com/gsoultan/storm/examples/blog/store/author"
-	"github.com/gsoultan/storm/runtime"
+	"github.com/gsoultan/storm/v2/examples/blog/store"
+	"github.com/gsoultan/storm/v2/examples/blog/store/article"
+	"github.com/gsoultan/storm/v2/examples/blog/store/author"
+	"github.com/gsoultan/storm/v2/runtime"
 )
 
 func apiDocSamples(ctx context.Context, ex runtime.Executor, id [16]byte, e string, cutoff time.Time) error {

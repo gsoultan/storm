@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/storm/compile/mysql"
-	"github.com/gsoultan/storm/compile/pgsql"
+	"github.com/gsoultan/storm/v2/compile/mysql"
+	"github.com/gsoultan/storm/v2/compile/pgsql"
 )
 
 // The construct M9's exit gate names, and where the dialects genuinely part
