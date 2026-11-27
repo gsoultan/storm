@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv
+package caduceusdrv
 
 // The paths a live test does not reach: every call classifies the driver's
 // error, and an unclassified one is an error a handler cannot tell a 409 from
@@ -122,23 +122,23 @@ func TestBatchWithNoOpsSendsNothing(t *testing.T) {
 	}
 }
 
-// params copies the argument slice only when it has something to wrap, and
+// args copies the argument slice only when it has something to wrap, and
 // never writes into the caller's.
 func TestParamsLeavesPlainArgumentsAlone(t *testing.T) {
 	plain := []any{int64(1), "x", [16]byte{1}}
-	if got := params(plain); &got[0] != &plain[0] {
+	if got := args(plain); &got[0] != &plain[0] {
 		t.Error("a slice with nothing to wrap was copied")
 	}
 	d := runtime.Decimal{}
 	mixed := []any{int64(1), d}
-	got := params(mixed)
+	got := args(mixed)
 	if _, ok := got[1].(decimalParam); !ok {
 		t.Errorf("a Decimal was not wrapped: %T", got[1])
 	}
 	if _, ok := mixed[1].(runtime.Decimal); !ok {
 		t.Error("the caller's slice was written to")
 	}
-	if got := params([]any{(*runtime.Decimal)(nil)}); got[0] != nil {
+	if got := args([]any{(*runtime.Decimal)(nil)}); got[0] != nil {
 		t.Errorf("a nil *Decimal is %v, want nil (NULL)", got[0])
 	}
 }

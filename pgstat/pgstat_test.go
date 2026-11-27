@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/v2/pgstat"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // One session holds a row, another is made to wait for it, and the reader has
@@ -27,7 +27,7 @@ func TestSessionsSeeAWaitAndTerminateEndsIt(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestWaitsForSeesAnUngrantedTableLock(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

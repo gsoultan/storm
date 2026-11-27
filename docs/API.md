@@ -1228,7 +1228,7 @@ transaction returns nil, on every adapter. A second *commit* returns
 `storm.ErrTxDone`, because committing twice is a bug in every shape.
 
 ```go
-db := pool                         // *pgdrv.Pool, mydrv.Pool, msdrv.Pool, sqldrv.NewPool(sqlDB)
+db := pool                         // *caduceusdrv.Pool, mydrv.Pool, msdrv.Pool, sqldrv.NewPool(sqlDB)
 tx, err := db.StartTx(ctx)
 defer tx.Rollback(ctx)
 // ... generated calls against tx ...
@@ -1268,7 +1268,7 @@ err := store.LockTimeout(ctx, tx, 2*time.Second) // a later wait past 2s fails w
 cannot leak onto a pooled connection.
 
 Isolation levels are the driver's. `sqldrv` gives you `BeginTx` with
-`*sql.TxOptions` and `sqldrv.NewTx` to wrap the result; `pgdrv.Pool.BeginTx`
+`*sql.TxOptions` and `sqldrv.NewTx` to wrap the result; `caduceusdrv.Pool.BeginTx`
 takes a `caduceus.TxOptions` and returns a `runtime.Tx`.
 
 ## 8c. Sharding — the shard key is a type, not a convention
@@ -1374,7 +1374,7 @@ API is the better answer wherever it reaches.
 
 ### Migrating a shard set
 
-There is no `Set.Migrate`. `migrate.AutoPool` takes a `*pgdrv.Pool` and a
+There is no `Set.Migrate`. `migrate.AutoPool` takes a `*caduceusdrv.Pool` and a
 `Set` holds `runtime.DB`, so migration happens *before* a `Set` exists — while
 you still hold the pools you are about to hand over:
 
@@ -1657,13 +1657,14 @@ statement. A session lock belongs to the session that took it, so hold one
 connection for the life of the lock:
 
 ```go
-c, release, _ := pool.Acquire(ctx)
-defer release()
-session := pgdrv.Conn{C: c}
-if got, _ := pglock.TryLock(ctx, session, key); got {
-        defer pglock.Unlock(ctx, session, key)
-        // the one owner
-}
+_ = pool.Acquire(ctx, func(c *caduceus.Conn) error {
+        session := caduceusdrv.Conn{C: c}
+        if got, _ := pglock.TryLock(ctx, session, key); got {
+                defer pglock.Unlock(ctx, session, key)
+                // the one owner
+        }
+        return nil
+})
 ```
 
 On a pool, `Unlock` would run on whichever session the pool lends, answer

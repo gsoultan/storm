@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/gsoultan/storm/v2/pgstat"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // A table with rows in it takes space, and the database holding it takes at
@@ -25,7 +25,7 @@ func TestSizesCountWhatATableHolds(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

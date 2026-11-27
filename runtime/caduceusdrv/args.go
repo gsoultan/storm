@@ -6,10 +6,11 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv
+package caduceusdrv
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/gsoultan/caduceus/codec"
 	"github.com/gsoultan/storm/v2/runtime"
@@ -21,8 +22,8 @@ import (
 // EncodeInterval, EncodeTimeOfDay, EncodeTstzRange), and runtime imports the
 // standard library only, so it cannot name the caduceus interface that would
 // let the driver call them. The adapter does: each such argument is wrapped in
-// a type that is a codec.BinaryParam, and sent in binary exactly as pgx's
-// registered codecs sent it.
+// a type that is a codec.BinaryParam, and sent in binary: the same bytes
+// storm's scanners decode, and the ones pgx's registered codecs sent.
 //
 // runtime.JSON is a []byte of its own name, which caduceus would hand to
 // encoding/json as a value to marshal — a base64 string — so it is passed as
@@ -32,24 +33,24 @@ import (
 // The argument slice is copied only when it holds one of these, so a statement
 // of integers, strings and uuids is handed to the driver untouched.
 
-// params returns args ready for caduceus.
-func params(args []any) []any {
-	for i, a := range args {
+// args returns in ready for caduceus.
+func args(in []any) []any {
+	for i, a := range in {
 		if w, ok := wrap(a); ok {
-			out := make([]any, len(args))
-			copy(out, args[:i])
+			out := make([]any, len(in))
+			copy(out, in[:i])
 			out[i] = w
-			for j := i + 1; j < len(args); j++ {
-				if w, ok := wrap(args[j]); ok {
+			for j := i + 1; j < len(in); j++ {
+				if w, ok := wrap(in[j]); ok {
 					out[j] = w
 				} else {
-					out[j] = args[j]
+					out[j] = in[j]
 				}
 			}
 			return out
 		}
 	}
-	return args
+	return in
 }
 
 // wrap returns the BinaryParam for one of storm's value types, and false for
@@ -61,12 +62,12 @@ func wrap(a any) (any, bool) {
 	case *runtime.Decimal:
 		return nullable(v, func(d runtime.Decimal) any { return decimalParam(d) }), true
 	case []runtime.Decimal:
-		return decimalArrayParam(v), true
+		return decimalArray(v), true
 	case *[]runtime.Decimal:
 		if v == nil {
 			return nil, true
 		}
-		return decimalArrayParam(*v), true
+		return decimalArray(*v), true
 	case runtime.Interval:
 		return intervalParam(v), true
 	case *runtime.Interval:
@@ -93,6 +94,15 @@ func wrap(a any) (any, bool) {
 	return nil, false
 }
 
+// decimalArray is a nil slice as NULL, which a text COPY could not otherwise
+// tell from an empty array.
+func decimalArray(v []runtime.Decimal) any {
+	if v == nil {
+		return nil
+	}
+	return decimalArrayParam(v)
+}
+
 // nullable is a pointer's value wrapped, or nil, which is NULL.
 func nullable[T any](p *T, as func(T) any) any {
 	if p == nil {
@@ -108,7 +118,7 @@ func checkOID(name string, want, got uint32) error {
 	if got == want {
 		return nil
 	}
-	return fmt.Errorf("pgdrv: a %s cannot be sent for a parameter of type oid %d", name, got)
+	return fmt.Errorf("caduceusdrv: a %s cannot be sent for a parameter of type oid %d", name, got)
 }
 
 type decimalParam runtime.Decimal
@@ -157,4 +167,54 @@ func (p tstzRangeParam) AppendBinaryParam(dst []byte, oid uint32) ([]byte, bool,
 		return dst, false, err
 	}
 	return runtime.EncodeTstzRange(runtime.TstzRange(p), dst), false, nil
+}
+
+// MarshalText is the range's literal, such as ["2026-01-01 09:00:00Z",), for
+// a COPY that another column has turned to text: caduceus cannot read a
+// tstzrange's binary form back as text, so the range writes its own.
+func (p tstzRangeParam) MarshalText() ([]byte, error) {
+	r := runtime.TstzRange(p)
+	if r.Empty {
+		return []byte("empty"), nil
+	}
+	b := make([]byte, 0, 72)
+	if r.LowerInc && !r.LowerInf {
+		b = append(b, '[')
+	} else {
+		b = append(b, '(')
+	}
+	if !r.LowerInf {
+		b = appendBound(b, r.Lower)
+	}
+	b = append(b, ',')
+	if !r.UpperInf {
+		b = appendBound(b, r.Upper)
+	}
+	if r.UpperInc && !r.UpperInf {
+		b = append(b, ']')
+	} else {
+		b = append(b, ')')
+	}
+	return b, nil
+}
+
+// appendBound writes one bound to the nanosecond, with its offset, which
+// PostgreSQL rounds to the microsecond it keeps.
+func appendBound(b []byte, t time.Time) []byte {
+	b = append(b, '"')
+	b = t.AppendFormat(b, "2006-01-02 15:04:05.999999999Z07:00")
+	return append(b, '"')
+}
+
+// MarshalText is the array's literal, such as {1.5,-0.007}, for a COPY that
+// another column has turned to text.
+func (p decimalArrayParam) MarshalText() ([]byte, error) {
+	b := []byte{'{'}
+	for i, d := range p {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, d.String()...)
+	}
+	return append(b, '}'), nil
 }

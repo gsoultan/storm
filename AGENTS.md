@@ -31,7 +31,7 @@ the part of it that reads declarations rather than text.
 
 - **`schema/`, `compile/`, `codegen/`, `runtime/` import stdlib only.**
   Every driver dependency lives in exactly one adapter package
-  (`github.com/gsoultan/caduceus` in `runtime/pgdrv`, which `schema/pg`'s
+  (`github.com/gsoultan/caduceus` in `runtime/caduceusdrv`, which `schema/pg`'s
   introspection, `migrate` and `tool` also read through) and nowhere else. pgx
   appears only in `bench/`, its own module, as a rival being measured. No driver type crosses that boundary. *boundaries.sh; the
   package list is derived from the tree, so a new back end cannot be left off
@@ -84,7 +84,7 @@ task summary (`Driver: compiler · Challenger: perf`).
 | **dba** | `model/`, `schema/`, `migrate/`, introspection, EXPLAIN gates, `bench/` fixtures | storm applying DDL *implicitly*, *unserialised*, or *in part* (`migrate.Auto` is the sanctioned exception and holds all three); a destructive migration step without an explicit opt-in; a query added to a hot path without `EXPLAIN (ANALYZE, BUFFERS)`; an N+1 shipped; a relation load with unbounded round trips | `storm explain` in CI; round-trip counting decorator; model → DDL → introspect round-trip diff empty; `verify --pending` green |
 | **dx** | public API, generated-code readability, CLI, errors | an error that does not name the query and the shape mask; an API needing a comment to be understood; generated code a human cannot review; a breaking API change without a version | migration guide runs clean; example suite compiles; adopter feedback from M6 |
 | **sec** | injection surface, identifier handling, arg binding | any identifier interpolated from a runtime value; a placeholder count not statically known; bound args logged above debug level; a raw fragment that skips build-time validation | injection corpus green; placeholder arity proven at generation time; fuzz over identifiers |
-| **arch** | package boundaries, `Executor` port, scope line | a core package importing non-stdlib; the driver leaking out of `runtime/pgdrv`; pgx anywhere outside `bench/`; a feature outside the scope line in [[docs/CONCEPT]]; **any dialect branch on the hot path**; a capability sniffed at runtime instead of negotiated at build time | `scripts/check/boundaries.sh` and `internal/archcheck`; `scripts/check/apicompat.sh`; scope line re-read in review |
+| **arch** | package boundaries, `Executor` port, scope line | a core package importing non-stdlib; the driver leaking out of `runtime/caduceusdrv`; pgx anywhere outside `bench/`; a feature outside the scope line in [[docs/CONCEPT]]; **any dialect branch on the hot path**; a capability sniffed at runtime instead of negotiated at build time | `scripts/check/boundaries.sh` and `internal/archcheck`; `scripts/check/apicompat.sh`; scope line re-read in review |
 | **test** | suites, fixtures, corpora, CI gates | a bug fix without a failing-first test; a relation without a round-trip-count assertion; a skipped suite reported as done; an allocation target without an `AllocsPerRun` assertion | `go test -race -shuffle=on` green; the floors in `scripts/check/coverage.sh` — `runtime/` 95%, each `compile/` back end 80–90% |
 
 ## Standing truths (all profiles)

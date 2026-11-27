@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv
+package caduceusdrv
 
 import "testing"
 
@@ -73,4 +73,9 @@ func TestFormatOK_DomainsAreCheckedAsTheirBaseType(t *testing.T) {
 	if formatOK(20, 0) {
 		t.Fatal("int8 in text format must be refused, domain or not")
 	}
+}
+
+// formatOK is newRows's rule for one column.
+func formatOK(oid uint32, format int16) bool {
+	return format == ResultFormat(oid) || sameInBoth(oid)
 }

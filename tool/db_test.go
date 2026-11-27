@@ -10,7 +10,7 @@ package tool
 
 import (
 	"context"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,7 +40,7 @@ func dsn(t *testing.T) string {
 func namespace(t *testing.T, name string) string {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	c, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func namespace(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		c2, err := pgdrv.Connect(context.Background(), dsn(t), pgdrv.Options{})
+		c2, err := caduceusdrv.Connect(context.Background(), dsn(t))
 		if err != nil {
 			return
 		}
@@ -207,7 +207,7 @@ func TestCLI_DiffRefusesDestructiveByDefault(t *testing.T) {
 func applySQL(t *testing.T, ns, sql string) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	c, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestCLI_DiffConcurrentlyWritesEachIndexAlone(t *testing.T) {
 	// one implicit transaction — and PostgreSQL refuses the concurrent build
 	// inside it. A replay written that way reports a correct migration as
 	// broken.
-	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	c, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -777,7 +777,7 @@ func TestCLI_DiffWritesAnEnumLabelAlone(t *testing.T) {
 func applyInTx(t *testing.T, ns, body string) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	c, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}

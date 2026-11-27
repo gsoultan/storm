@@ -123,7 +123,7 @@ func (q Query) Unordered() Query { q.noOrder = true; return q }
 //
 // A lock is held to the end of the TRANSACTION, so one taken outside a
 // transaction is released before the next statement runs and protects
-// nothing — pass a pgdrv.Tx, not a pool.
+// nothing — pass a caduceusdrv.Tx, not a pool.
 //
 // Locking is refused on Count and Exists, and on the declared
 // aggregations and joins. The server rejects a row lock combined with an

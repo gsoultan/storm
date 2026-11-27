@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,7 +30,7 @@ var (
 	// on caduceus. Both hold eight connections: a benchmark comparison must
 	// match capacity on both sides.
 	pool      *pgxpool.Pool
-	stormPool *pgdrv.Pool
+	stormPool *caduceusdrv.Pool
 	ids       [][16]byte
 	orgs      [][16]byte
 )
@@ -58,7 +58,7 @@ func TestMain(m *testing.M) {
 	pool, err = pgxpool.NewWithConfig(ctx, cfg)
 	must(err)
 	defer pool.Close()
-	stormPool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{
+	stormPool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{
 		DSN: dsn, MaxConns: 8, RuntimeParams: map[string]string{"search_path": "storm_bench"},
 	})
 	must(err)

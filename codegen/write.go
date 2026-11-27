@@ -10,6 +10,7 @@ package codegen
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -3186,6 +3187,17 @@ func (g *gen) updateWrapper() {
 	g.p("")
 }
 
+// unusedName is want, or want with underscores added until it is none of
+// taken.
+func unusedName(want string, taken []string) string {
+	for {
+		if !slices.Contains(taken, want) {
+			return want
+		}
+		want += "_"
+	}
+}
+
 // deleteWrapper is Delete (or HardDelete) by key. The hooks get a Row
 // holding only the key, since a delete by key never reads the row.
 func (g *gen) deleteWrapper(name, inner string, pk []colInfo) {
@@ -3202,14 +3214,17 @@ func (g *gen) deleteWrapper(name, inner string, pk []colInfo) {
 	g.p("\tif Hooks.BeforeDelete == nil && Hooks.AfterDelete == nil {")
 	g.p("\t\treturn %s(ctx, ex, %s)", inner, joinStr(call, ", "))
 	g.p("\t}")
-	g.p("\tkey := Row{%s}", joinStr(key, ", "))
-	g.p("\tif err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &key); err != nil {")
+	// The Row's name must not be one of the parameters: a primary key
+	// column called "key" made the parameter and the Row the same variable.
+	row := unusedName("key", call)
+	g.p("\t%s := Row{%s}", row, joinStr(key, ", "))
+	g.p("\tif err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &%s); err != nil {", row)
 	g.p("\t\treturn err")
 	g.p("\t}")
 	g.p("\tif err := %s(ctx, ex, %s); err != nil {", inner, joinStr(call, ", "))
 	g.p("\t\treturn err")
 	g.p("\t}")
-	g.p("\treturn hooks.Apply(ctx, ex, Hooks.AfterDelete, &key)")
+	g.p("\treturn hooks.Apply(ctx, ex, Hooks.AfterDelete, &%s)", row)
 	g.p("}")
 	g.p("")
 }

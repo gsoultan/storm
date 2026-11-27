@@ -6,27 +6,17 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv_test
+package caduceusdrv_test
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
-
-func dsn(t *testing.T) string {
-	t.Helper()
-	d := os.Getenv("STORM_DSN")
-	if d == "" {
-		t.Skip("STORM_DSN not set")
-	}
-	return d
-}
 
 // The hazard this guards: generated scanners decode RAW wire bytes as binary,
 // and a caduceus connection opened without storm's options asks for numeric,
@@ -39,13 +29,13 @@ func TestWireFormat_ExecutorRefusesTextResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer raw.Close(ctx)
-	ex := pgdrv.Conn{C: raw}
+	ex := caduceusdrv.Conn{C: raw}
 
 	_, err = ex.Query(ctx, `SELECT 1.5::numeric AS price`, nil)
 	if err == nil {
 		t.Fatal("a text-format result must be refused, not decoded")
 	}
-	for _, want := range []string{`column 1 "price"`, "text format", "pgdrv.Connect"} {
+	for _, want := range []string{`column 1 "price"`, "text format", "caduceusdrv.Connect"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q, got: %v", want, err)
 		}
@@ -66,8 +56,8 @@ func TestWireFormat_ExecutorRefusesTextResults(t *testing.T) {
 func TestWireFormat_StormConnectionsPass(t *testing.T) {
 	ctx := context.Background()
 	for _, cache := range []int{0, -1} {
-		pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{
-			DSN: dsn(t), Options: pgdrv.Options{StatementCacheCapacity: cache},
+		pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{
+			DSN: dsn(t), StatementCacheCapacity: cache,
 		})
 		if err != nil {
 			t.Fatal(err)

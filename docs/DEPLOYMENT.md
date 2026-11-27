@@ -7,7 +7,7 @@ updated: 2026-11-27
 
 Short, because storm is a library and most of this is the driver's story. The
 PostgreSQL driver is [caduceus](https://github.com/gsoultan/caduceus), reached
-through `runtime/pgdrv`. The part that is storm's own is the first section, and
+through `runtime/caduceusdrv`. The part that is storm's own is the first section, and
 it is the one that will bite.
 
 ## storm requires the binary wire format
@@ -17,12 +17,12 @@ column as **binary** or as **text**, and the two are nothing alike for most
 types: `false` is one zero byte in binary and the byte `'f'` in text; an
 `int8` is eight big-endian bytes or a run of ASCII digits.
 
-caduceus chooses the format per column, from the row description: binary for
-every type its codec reads in binary, text for the rest. storm decodes a few
-types in binary that caduceus reads as text — `numeric`, `inet`, `cidr`,
-`tstzrange` and `numeric[]` — so `pgdrv.Connect` and every `pgdrv.Pool`
-connection pass caduceus an `Options.ResultFormat` that asks for those in
-binary and leaves every other column in the format caduceus would choose.
+caduceus lets a connection choose the format per column. storm's connections
+choose it with `caduceusdrv.ResultFormat`, which asks for binary for each
+built-in type the generated scanners decode in binary — the scalars, `numeric`,
+`inet`, `cidr`, `tstzrange` and the arrays of them — and text for the rest.
+`caduceusdrv.Connect` and every `caduceusdrv.Pool` connection are opened with
+it, and `caduceusdrv.Options()` hands it to a connection you open yourself.
 
 Text for the `text` column is not a problem and never was — the bytes are the
 string either way. The same is true of `jsonb`, whose binary form is the same
@@ -39,7 +39,7 @@ base type's OID in the row description, so a domain over `int8` is checked as
 
 **One case the guard lets through on purpose, and where it lands instead.**
 An *array* of a user-defined type — `my_enum[]` — is sent as text, because
-caduceus has no binary codec for one. The executor cannot tell that OID apart
+`ResultFormat` asks for any type it does not know in text. The executor cannot tell that OID apart
 from a scalar enum's, and refusing every unknown OID would refuse working
 schemas, so the array reaches the decoder and fails there with
 `ErrArrayTextFormat`, which names the two fixes: declare the column `text[]`,
@@ -51,8 +51,9 @@ unaffected: it is sent binary.
 Every result is checked once per statement — before the first row — and a
 column that arrived in an undecodable format is an error naming the column, not
 a value. A `*caduceus.Conn` you opened yourself with `caduceus.Connect` and
-wrapped in `pgdrv.Conn` gets the same check, and fails it on its first
-`numeric` column; open it with `pgdrv.Connect` instead.
+wrapped in `caduceusdrv.Conn` gets the same check, and fails it on its first
+binary column unless it was opened with `caduceusdrv.Options()`; open it with
+`caduceusdrv.Connect` instead.
 
 Before this existed, a `false` from a text-format connection decoded as
 **true**, silently. If you are reading this because you hit the error, that
@@ -143,7 +144,7 @@ State the combinations plainly:
 | pooling mode | works with storm | how |
 |---|---|---|
 | **session** | yes | nothing to do; prepared statements are per-session and stay valid |
-| **transaction** | yes | set `pgdrv.Options{StatementCacheCapacity: -1}`. caduceus then keeps no statement on the server: each one is parsed into the unnamed statement in the same Sync as its Bind, so nothing outlives a Sync and PgBouncer is free to hand the next one a different server connection. Results stay binary |
+| **transaction** | yes | set `caduceusdrv.PoolConfig{StatementCacheCapacity: -1}`. caduceus then keeps no statement on the server: each one is parsed into the unnamed statement in the same Sync as its Bind, so nothing outlives a Sync and PgBouncer is free to hand the next one a different server connection. Results stay binary |
 | **statement** | no | it forbids multi-statement transactions, which every unit of work and `InTx` needs. Use transaction pooling |
 
 The advice you will find elsewhere — "prefer the simple protocol behind
@@ -152,10 +153,15 @@ unnamed-statement mode above is the answer instead.
 
 ## Pools
 
-`pgdrv.NewPool(ctx, dsn)` opens a small pool of caduceus connections, and
-`pgdrv.NewPoolConfig` takes a `pgdrv.Config`: `MaxConns` (default 16),
-`AcquireTimeout` (default 30s), a `Database` and `RuntimeParams` (such as
-`search_path`) that override the DSN's, and the caduceus `Options` above. A
+`caduceusdrv.NewPool(ctx, dsn)` opens a small pool of caduceus connections,
+and `caduceusdrv.NewPoolConfig` takes a `caduceusdrv.PoolConfig`: `MaxConns`
+(default 4, or the number of CPUs if that is more), `MaxConnLifetime` and
+`MaxConnIdleTime`, a `Database` and `RuntimeParams` (such as `search_path`)
+that override the DSN's, and the `StatementCacheCapacity` and `Tracer` above.
+`NewPool` reads pgxpool's `pool_max_conns`, `pool_max_conn_lifetime` and
+`pool_max_conn_idle_time` from the URL. A caller waits for a connection up to
+`AcquireTimeout` (default 30s) and then fails with `ErrPoolExhausted`, which is
+most often rows left unclosed. A
 caduceus connection belongs to one goroutine at a time, so the pool lends each
 statement its own connection and takes it back when its rows are closed. A
 connection goes back only if it is open, idle and outside a transaction, and
@@ -165,18 +171,19 @@ TLS and authentication come from the DSN, as caduceus reads it; storm holds no
 connection state of its own, and a transaction is just an `Executor` you were
 handed.
 
-`*pgdrv.Pool` satisfies `storm.DB` — the four port methods plus `StartTx` — so
+`*caduceusdrv.Pool` satisfies `storm.DB` — the four port methods plus `StartTx` — so
 a repository method can take `storm.DB` and run against any adapter. `StartTx`
 hands back a `storm.Tx`; `pool.BeginTx(ctx, caduceus.TxOptions{…})` is the
 same with an isolation level, read-only or deferrable. For state that lives on
-a session, such as an advisory lock, `pool.Acquire(ctx)` lends one connection
-and a function that gives it back; wrap the connection in `pgdrv.Conn`.
+a session, such as an advisory lock, `pool.Acquire(ctx, fn)` lends one
+connection to `fn` and takes it back when `fn` returns; wrap the connection in
+`caduceusdrv.Conn`.
 
 ## Running a shard set
 
 **Migrate every shard before any of them serves a query, and do it in a loop
 you wrote.** There is no `Set.Migrate`: `migrate.AutoPool` takes a
-`*pgdrv.Pool` while a `shard.Set` holds `runtime.DB`, so migration happens
+`*caduceusdrv.Pool` while a `shard.Set` holds `runtime.DB`, so migration happens
 while you still hold the pools you are about to hand over.
 
 ```go
@@ -205,7 +212,7 @@ per shard DSN in CI and at deploy. A shard that drifted alone is the failure
 this catches, and it is invisible to a check that only looks at shard 0.
 
 **Pool sizing is per shard, and the total is what your server sees.** Four
-shards at `pgdrv`'s default of 16 connections is four times that many
+shards at 16 connections each is four times that many
 connections from one process. If the shards are databases on one server —
 which is how most deployments start — size them against that server's
 `max_connections`, not against each other.
@@ -245,11 +252,11 @@ func (t *tracer) TraceQueryEnd(ctx context.Context, _ *caduceus.Conn, d caduceus
 }
 // ... TraceBatchStart/End and TraceCopyFromStart/End likewise
 
-pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, Options: pgdrv.Options{Tracer: &tracer{}}})
+pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, Tracer: &tracer{}})
 ```
 
 The executable version, asserting the tracer sees a query, an exec and both
-statements inside a batch, is `runtime/pgdrv/tracing_test.go`.
+statements inside a batch, is `runtime/caduceusdrv/tracing_test.go`.
 
 Two storm-side signals are worth exporting as gauges next to it:
 

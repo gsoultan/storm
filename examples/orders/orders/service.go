@@ -30,7 +30,7 @@ import (
 	"example.com/orders/store/product"
 	"example.com/orders/store/stockitem"
 
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // Business failures, distinct from infrastructure ones. The transport maps
@@ -125,12 +125,12 @@ type RevenueDay struct {
 }
 
 type service struct {
-	pool *pgdrv.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 }
 
 // New builds the service over a storm-configured pool.
-func New(pool *pgdrv.Pool) Service {
+func New(pool *caduceusdrv.Pool) Service {
 	return &service{pool: pool, ex: pool}
 }
 

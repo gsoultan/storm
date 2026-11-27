@@ -30,6 +30,20 @@ type Conn interface {
 
 // Introspect reads one namespace (usually "public") into the IR.
 func Introspect(ctx context.Context, c Conn, namespace string) (_ *schema.Schema, err error) {
+	q := func(ctx context.Context, sql string, args ...any) (Rows, error) {
+		return c.Query(ctx, sql, args...)
+	}
+	var scope func(ns string) (func() error, error)
+	if sp, ok := c.(searchPather); ok {
+		scope = func(ns string) (func() error, error) { return setSearchPath(ctx, sp, ns) }
+	}
+	return introspect(ctx, q, scope, namespace)
+}
+
+// introspect reads namespace through q. scope, when set, points the
+// connection's search_path at the namespace for the read and returns what
+// puts it back.
+func introspect(ctx context.Context, q query, scope func(ns string) (func() error, error), namespace string) (_ *schema.Schema, err error) {
 	if namespace == "" {
 		namespace = "public"
 	}
@@ -46,8 +60,8 @@ func Introspect(ctx context.Context, c Conn, namespace string) (_ *schema.Schema
 	// Without this, any enum outside `public` makes `storm verify` report drift
 	// forever and `storm diff` emit a migration that changes nothing. Found by
 	// diffing a namespace that was not public.
-	if sp, ok := c.(searchPather); ok {
-		restore, err := setSearchPath(ctx, sp, namespace)
+	if scope != nil {
+		restore, err := scope(namespace)
 		if err != nil {
 			return nil, err
 		}
@@ -59,39 +73,39 @@ func Introspect(ctx context.Context, c Conn, namespace string) (_ *schema.Schema
 	}
 
 	s := &schema.Schema{}
-	if err := loadEnums(ctx, c, namespace, s); err != nil {
+	if err := loadEnums(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("enums: %w", err)
 	}
-	if err := loadTables(ctx, c, namespace, s); err != nil {
+	if err := loadTables(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("tables: %w", err)
 	}
-	if err := loadColumns(ctx, c, namespace, s); err != nil {
+	if err := loadColumns(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("columns: %w", err)
 	}
-	if err := loadConstraints(ctx, c, namespace, s); err != nil {
+	if err := loadConstraints(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("constraints: %w", err)
 	}
-	if err := loadIndexes(ctx, c, namespace, s); err != nil {
+	if err := loadIndexes(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
-	if err := loadPartitions(ctx, c, namespace, s); err != nil {
+	if err := loadPartitions(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("partitions: %w", err)
 	}
-	if err := loadFunctions(ctx, c, namespace, s); err != nil {
+	if err := loadFunctions(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("functions: %w", err)
 	}
-	if err := loadViews(ctx, c, namespace, s); err != nil {
+	if err := loadViews(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("views: %w", err)
 	}
-	if err := loadTriggers(ctx, c, namespace, s); err != nil {
+	if err := loadTriggers(ctx, q, namespace, s); err != nil {
 		return nil, fmt.Errorf("triggers: %w", err)
 	}
 	s.Normalize()
 	return s, nil
 }
 
-func loadEnums(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadEnums(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT t.typname, e.enumlabel
 		FROM pg_type t
 		JOIN pg_namespace n ON n.oid = t.typnamespace
@@ -119,8 +133,8 @@ func loadEnums(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
 	return rows.Err()
 }
 
-func loadTables(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadTables(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT cl.relname, COALESCE(obj_description(cl.oid, 'pg_class'), '')
 		FROM pg_class cl
 		JOIN pg_namespace n ON n.oid = cl.relnamespace
@@ -148,8 +162,8 @@ func loadTables(ctx context.Context, c Conn, ns string, s *schema.Schema) error 
 	return rows.Err()
 }
 
-func loadColumns(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadColumns(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT cl.relname, a.attname, a.attnum,
 		       t.typname, bt.typname,
 		       a.attnotnull,
@@ -244,8 +258,8 @@ func pgType(name string, elem *string, typmod int32, isEnum bool) schema.Type {
 	return t
 }
 
-func loadConstraints(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
-	rows, err := c.Query(ctx, `
+func loadConstraints(ctx context.Context, q query, ns string, s *schema.Schema) error {
+	rows, err := q(ctx, `
 		SELECT cl.relname, co.conname, co.contype,
 		       pg_get_constraintdef(co.oid),
 		       COALESCE(array_agg(a.attname ORDER BY k.ord) FILTER (WHERE a.attname IS NOT NULL), '{}'),
@@ -333,10 +347,10 @@ func fkAction(c string) schema.Action {
 	}
 }
 
-func loadIndexes(ctx context.Context, c Conn, ns string, s *schema.Schema) error {
+func loadIndexes(ctx context.Context, q query, ns string, s *schema.Schema) error {
 	// Indexes backing a primary key or a unique/exclusion constraint are not
 	// separate objects; skip them so the IR does not double-count.
-	rows, err := c.Query(ctx, `
+	rows, err := q(ctx, `
 		SELECT cl.relname, ic.relname, pg_get_indexdef(i.indexrelid), i.indisunique, am.amname,
 		       NOT i.indisvalid
 		FROM pg_index i

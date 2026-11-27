@@ -10,7 +10,7 @@ package storm_test
 
 import (
 	"context"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"os"
 	"strings"
 	"testing"
@@ -78,7 +78,7 @@ func TestFirstOfAgainstPostgres(t *testing.T) {
 	tbl := s.Tables[0]
 	agg := tbl.Aggregates[0]
 	ctx := context.Background()
-	c, err := pgdrv.Connect(ctx, dsn, pgdrv.Options{})
+	c, err := caduceusdrv.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

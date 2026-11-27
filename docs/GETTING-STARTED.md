@@ -256,7 +256,7 @@ import (
 
     "github.com/gsoultan/storm/v2"
     "github.com/gsoultan/storm/v2/runtime"
-    "github.com/gsoultan/storm/v2/runtime/pgdrv"
+    "github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 
     "example.com/notes/internal/store"
     "example.com/notes/internal/store/note"
@@ -268,7 +268,7 @@ func main() {
 
     // A small pool of caduceus connections that asks for binary results on
     // every column storm decodes.
-    pool, err := pgdrv.NewPool(ctx, os.Getenv("STORM_DSN"))
+    pool, err := caduceusdrv.NewPool(ctx, os.Getenv("STORM_DSN"))
     if err != nil {
         log.Fatal(err)
     }
@@ -413,7 +413,7 @@ generate, never at run time:
 
 | Engine | Generate | Connect | Schema |
 |---|---|---|---|
-| PostgreSQL | `storm generate` | `pgdrv.NewPool` | `storm diff`, `migrate.AutoPool` |
+| PostgreSQL | `storm generate` | `caduceusdrv.NewPool` | `storm diff`, `migrate.AutoPool` |
 | MySQL 8.4 / MariaDB 11.4 | `-dialect mysql` / `-dialect mariadb` | `mydrv.NewPool` | `storm ddl -dialect …`, applied by your own tool |
 | SQL Server 2022 | `-dialect mssql` | `runtime/msdrv` | `storm diff`, `migrate.AutoMSSQL` |
 | Oracle (experimental) | `-dialect oracle` | `runtime/sqldrv` + your `database/sql` driver | `storm diff` |

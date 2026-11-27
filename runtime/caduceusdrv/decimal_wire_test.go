@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv_test
+package caduceusdrv_test
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // What storm writes must be what PostgreSQL reads.
@@ -39,7 +39,7 @@ func TestNumericWireIsWhatPostgresReads(t *testing.T) {
 		t.Skip("STORM_DSN not set")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

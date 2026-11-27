@@ -21,7 +21,7 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/v2/migrate"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/gsoultan/storm/v2/schema"
 )
 
@@ -44,7 +44,7 @@ func dsn(t *testing.T) string {
 func conn(t *testing.T, ns string) (context.Context, *caduceus.Conn) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	c, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestAuto_ConcurrentProcessesApplyOnce(t *testing.T) {
 	out := make([]outcome, racers)
 	conns := make([]*caduceus.Conn, racers)
 	for i := range conns {
-		cc, err := pgdrv.Connect(context.Background(), dsn(t), pgdrv.Options{})
+		cc, err := caduceusdrv.Connect(context.Background(), dsn(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,7 +285,7 @@ func TestAuto_LockBusyIsReportedAndAppliesNothing(t *testing.T) {
 	_, _ = h.Write([]byte("storm:automigrate:" + ns))
 	key := int64(h.Sum64())
 
-	holder, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	holder, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestAutoPool_LeavesTheBorrowedConnectionAsItFoundIt(t *testing.T) {
 	ctx, c := conn(t, ns)
 	_ = c
 
-	pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn(t), MaxConns: 1})
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn(t), MaxConns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +527,7 @@ func TestAuto_CancelledMigrationReleasesTheLock(t *testing.T) {
 
 	// Ask from another session, because pg_advisory_unlock only reports on the
 	// caller's own locks and pg_locks is the only honest witness.
-	other, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	other, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +571,7 @@ func TestAuto_LockTimeoutBoundsABlockedAlter(t *testing.T) {
 
 	// Another session reads the table inside an open transaction: ACCESS SHARE,
 	// held until it ends, which is enough to make ACCESS EXCLUSIVE wait.
-	blocker, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	blocker, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,7 +689,7 @@ func TestAutoPool_RestoresTheSessionEvenWhenAConcurrentStepFails(t *testing.T) {
 	ns := "storm_auto_pool_fail"
 	ctx, c := conn(t, ns)
 
-	pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn(t), MaxConns: 1})
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn(t), MaxConns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +700,7 @@ func TestAutoPool_RestoresTheSessionEvenWhenAConcurrentStepFails(t *testing.T) {
 	}
 
 	// The blocker, on its own connection.
-	blocker, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	blocker, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}

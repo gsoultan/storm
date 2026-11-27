@@ -20,7 +20,7 @@ APIDIFF=golang.org/x/exp/cmd/apidiff@v0.0.0-20260908205506-85c1c2202aba
 # The covered packages, relative to the module root; "." is storm itself. Adding
 # one is a promise and removing one withdraws a promise, which is a major. Keep
 # this list and docs/STABILITY.md's in step.
-COVERED=(. runtime runtime/pgdrv runtime/mydrv runtime/msdrv migrate)
+COVERED=(. runtime runtime/caduceusdrv runtime/mydrv runtime/msdrv migrate)
 
 # Reviewed exceptions: apidiff lines, exactly as printed, that may be
 # incompatible anyway. Empty is the normal state. An entry here is a decision

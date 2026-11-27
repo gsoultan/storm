@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv_test
+package caduceusdrv_test
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // The tracing claim, proved rather than asserted — and the proof corrected
@@ -83,7 +83,7 @@ func (r *recordingTracer) seen() []string {
 func TestTracer_SeesEveryStatementStormIssues(t *testing.T) {
 	ctx := context.Background()
 	tr := &recordingTracer{}
-	pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn(t), Options: pgdrv.Options{Tracer: tr}})
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn(t), Tracer: tr})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestTracer_SeesEveryStatementStormIssues(t *testing.T) {
 // are assertable in an adopter's own tests, not just in storm's.
 func TestCountingExecutor_CountsWhatStormSends(t *testing.T) {
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn(t))
+	pool, err := caduceusdrv.NewPool(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ import (
 	"github.com/gsoultan/storm/v2/compile/pgddl"
 	"github.com/gsoultan/storm/v2/internal/testmodel"
 	"github.com/gsoultan/storm/v2/migrate"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/gsoultan/storm/v2/schema"
 	"github.com/gsoultan/storm/v2/schema/pg"
 )
@@ -34,7 +34,7 @@ func dsn(t testing.TB) string {
 
 func connect(t testing.TB) *caduceus.Conn {
 	t.Helper()
-	c, err := pgdrv.Connect(context.Background(), dsn(t), pgdrv.Options{})
+	c, err := caduceusdrv.Connect(context.Background(), dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}

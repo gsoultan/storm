@@ -143,7 +143,7 @@ What you give up:
 
 | GORM | storm |
 |---|---|
-| `gorm.Open(postgres.Open(dsn))` | `pool, err := pgdrv.NewPool(ctx, dsn)`; the pool is the Executor |
+| `gorm.Open(postgres.Open(dsn))` | `pool, err := caduceusdrv.NewPool(ctx, dsn)`; the pool is the Executor |
 | `db.Transaction(func(tx *gorm.DB) error {…})` | `storm.InTx(ctx, ex, func(tx storm.Executor) error {…})`. It rolls back on an error or a panic and commits otherwise. |
 | `db.Begin()` / `Commit()` / `Rollback()` | `tx, err := ex.StartTx(ctx)`, then `tx.Commit(ctx)` or `tx.Rollback(ctx)` |
 | `db.WithContext(ctx)` | Every call takes `ctx` explicitly. |
@@ -348,7 +348,7 @@ loads (`Preload` to `store.XWithY`). Port writes last.
 The code below runs against the tables above:
 
 ```go
-pool, err := pgdrv.NewPool(ctx, dsn)
+pool, err := caduceusdrv.NewPool(ctx, dsn)
 ex := pool
 
 // Create: an integer id from the sequence, and Status from its default.

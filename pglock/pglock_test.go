@@ -14,8 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/v2/pglock"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // Two sessions and one key: whoever holds it keeps the other out, a session
@@ -27,18 +28,20 @@ func TestTheLockIsTheSessionsThatTookIt(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	session := func() pgdrv.Conn {
-		c, releaseC, err := pool.Acquire(ctx)
+	session := func() caduceusdrv.Conn {
+		// A connection of its own, as a session lock needs, closed when the
+		// test ends.
+		c, err := caduceus.ConnectConfig(ctx, pool.Config().Copy(), caduceusdrv.Options())
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(releaseC)
-		return pgdrv.Conn{C: c}
+		t.Cleanup(func() { _ = c.Close(context.Background()) })
+		return caduceusdrv.Conn{C: c}
 	}
 	owner, rival := session(), session()
 	const key = int64(0x5701_0c4) // storm's own: no other test takes it
@@ -102,7 +105,7 @@ func TestAFailedStatementSaysWhichLock(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

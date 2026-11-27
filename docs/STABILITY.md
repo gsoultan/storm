@@ -26,9 +26,9 @@ From **v1.0.0**:
 
 **v2.0.0 is the first major.** It replaced pgx with
 [caduceus](https://github.com/gsoultan/caduceus) as the PostgreSQL driver:
-`runtime/pgxdrv` is gone and `runtime/pgdrv` takes its place, and
+`runtime/pgxdrv` is gone and `runtime/caduceusdrv` takes its place, and
 `migrate.Auto`, `migrate.AutoPool` and schema introspection take caduceus and
-`pgdrv` types where they took pgx's. The import path is
+`caduceusdrv` types where they took pgx's. The import path is
 `github.com/gsoultan/storm/v2`. Model declarations, the generated call surface
 and emitted SQL did not change; regenerate and the generated tree imports the
 new path.
@@ -81,7 +81,7 @@ impossible; mixed-version generated trees are not a supported state.
 5. The **CLI verbs and their exit semantics**.
 6. The **packages an adopter's own code calls**: `storm`, `runtime` — the
    port, its errors, and every type a generated signature names — the
-   adapters `runtime/pgdrv`, `runtime/mydrv` and `runtime/msdrv`, and
+   adapters `runtime/caduceusdrv`, `runtime/mydrv` and `runtime/msdrv`, and
    `migrate`.
 
    This one is checked, not just stated. `scripts/check/apicompat.sh` runs on

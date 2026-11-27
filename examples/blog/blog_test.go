@@ -25,11 +25,11 @@ import (
 	"github.com/gsoultan/storm/v2/examples/blog/store/article"
 	"github.com/gsoultan/storm/v2/examples/blog/store/author"
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 var (
-	pool *pgdrv.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 	// The pool comes from storm's constructor so the fast parameter encoders
 	// are installed; everything else about it is ordinary pgx.
 	var err error
-	pool, err = pgdrv.NewPool(ctx, dsn)
+	pool, err = caduceusdrv.NewPool(ctx, dsn)
 	must(err)
 	defer pool.Close()
 	ex = pool
@@ -60,7 +60,7 @@ func TestMain(m *testing.M) {
 	must(err)
 	// Scope every pooled connection to the namespace.
 	pool.Close()
-	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": "blog_example"}})
+	pool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, RuntimeParams: map[string]string{"search_path": "blog_example"}})
 	must(err)
 	ex = pool
 

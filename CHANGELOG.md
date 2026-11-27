@@ -17,42 +17,59 @@ a release note that cannot be checked is marketing.
 ### Breaking: caduceus replaces pgx as the PostgreSQL driver
 
 storm's PostgreSQL adapter now runs on
-[caduceus](https://github.com/gsoultan/caduceus), and pgx is no longer a
-dependency of storm. This is a major release, so the module path is now
-`github.com/gsoultan/storm/v2`.
+[caduceus](https://github.com/gsoultan/caduceus), a PostgreSQL driver with no
+dependencies, and pgx is no longer a dependency of storm. This is a major
+release, so the module path is now `github.com/gsoultan/storm/v2`.
 
 To move a v1 application:
 
 - Change the imports from `github.com/gsoultan/storm/...` to
   `github.com/gsoultan/storm/v2/...` and regenerate. Model declarations, the
   generated call surface and emitted SQL are unchanged.
-- `runtime/pgxdrv` is gone. Use `runtime/pgdrv`:
+- `runtime/pgxdrv` is gone. Use `runtime/caduceusdrv`:
   - `pgxdrv.NewPool(ctx, dsn)` plus `pgxdrv.Pool{P: pool}` becomes
-    `pgdrv.NewPool(ctx, dsn)`, and the `*pgdrv.Pool` is the Executor and the
-    `storm.DB`.
-  - `pgxdrv.NewPoolConfig` takes a `pgdrv.Config` (DSN, MaxConns,
-    AcquireTimeout, Database, RuntimeParams, Options) in place of a
-    `*pgxpool.Config`.
+    `caduceusdrv.NewPool(ctx, dsn)`, and the `*caduceusdrv.Pool` is the
+    Executor and the `storm.DB`. `NewPool` reads pgxpool's `pool_max_conns`,
+    `pool_max_conn_lifetime` and `pool_max_conn_idle_time` from the URL, so a
+    URL written for pgxpool works.
+  - `pgxdrv.NewPoolConfig` takes a `caduceusdrv.PoolConfig` (DSN, MaxConns,
+    AcquireTimeout, MaxConnLifetime, MaxConnIdleTime, Database, RuntimeParams,
+    StatementCacheCapacity, Tracer) in place of a `*pgxpool.Config`.
   - `pgxdrv.Tx{T: tx}` over `pool.Begin` becomes `pool.StartTx(ctx)`, or
     `pool.BeginTx(ctx, caduceus.TxOptions{…})` for an isolation level.
-  - `pgxdrv.Conn{C: c}` over `pool.Acquire` becomes `c, release, err :=
-    pool.Acquire(ctx)` and `pgdrv.Conn{C: c}`.
-  - `pgdrv.Connect(ctx, dsn, pgdrv.Options{})` opens one `*caduceus.Conn`
-    that storm can read from.
+  - `pgxdrv.Conn{C: c}` over `pool.Acquire` becomes
+    `pool.Acquire(ctx, func(c *caduceus.Conn) error { … })` with
+    `caduceusdrv.Conn{C: c}` inside. A connection given back with a
+    transaction open is rolled back, and one left mid-result or found dead is
+    closed.
+  - `caduceusdrv.Connect(ctx, dsn)` opens one `*caduceus.Conn` that storm can
+    read from; `caduceusdrv.Options()` is the caduceus option set it uses.
   - A tracer is a caduceus `QueryTracer` (plus `BatchTracer` and
-    `CopyFromTracer`), passed in `pgdrv.Options{Tracer: …}`.
+    `CopyFromTracer`), set as `PoolConfig.Tracer`.
   - `RegisterFastArrays` and the pgx exec-mode guard are gone: caduceus has
-    one protocol, and pgdrv asks it for every column storm decodes in binary.
+    one protocol, and caduceusdrv asks it for every column storm decodes in
+    binary (`caduceusdrv.ResultFormat`), so the generated scanners read the
+    same bytes they read over pgx.
+  - storm's `Decimal`, `Interval`, `TimeOfDay`, `TstzRange` and `[]Decimal`
+    arguments are sent in binary; `JSON` is sent as its bytes.
   - PgBouncer in transaction pooling mode: set
-    `pgdrv.Options{StatementCacheCapacity: -1}`.
+    `PoolConfig{StatementCacheCapacity: -1}`.
 - `migrate.Auto` takes a `*caduceus.Conn` and `migrate.AutoPool` a
-  `*pgdrv.Pool`. Schema introspection (`schema/pg`) reads through caduceus.
+  `*caduceusdrv.Pool`. Schema introspection (`schema/pg`) reads through
+  caduceus.
 - MySQL/MariaDB, SQL Server, MongoDB and Redis are unchanged: their adapters
   were already storm's own wire code.
 
 The benchmarks that compare storm with GORM, Bun, Ent, sqlc and raw pgx moved
 into `bench/`, now a module of its own, so those rivals and pgx are never in
 an adopter's dependency graph.
+
+### Fixed: a primary key column named `key`
+
+`Delete` took the key as a parameter called `key` and built the Row it hands
+the delete hooks in a variable of the same name, so a table whose primary key
+column is `key` generated a package that did not compile. The Row's variable
+now takes a name no parameter has. MongoDB's generator had the same fault.
 
 ### Full-text search on MySQL and MariaDB
 

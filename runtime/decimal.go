@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"strconv"
+	"strings"
 )
 
 // Decimal is an exact fixed-point number: Unscaled × 10⁻ᔆᶜᵃˡᵉ.
@@ -61,6 +62,11 @@ func (d Decimal) String() string {
 	}
 	digits := strconv.FormatInt(u, 10)
 	s := int(d.Scale)
+	if s < 0 && u != 0 {
+		// A negative scale stands for trailing zeros the digits do not carry:
+		// {1464, -1} is 14640, and rendering it as 1464 drops a factor of ten.
+		digits += strings.Repeat("0", -s)
+	}
 	if s <= 0 {
 		if neg {
 			return "-" + digits
@@ -116,6 +122,17 @@ func DecodeNumeric(b []byte) (Decimal, error) {
 
 	if sign == numNaN {
 		return Decimal{}, ErrDecimalNaN
+	}
+	// PostgreSQL sends only these two signs for a finite value (infinities,
+	// 0xD000 and 0xF000, have no Decimal form either), and never a negative
+	// dscale: a numeric declared with a negative scale still displays zero
+	// fraction digits. Anything else is not a numeric, and reading it as one
+	// would invent a value.
+	if sign != 0 && sign != numNeg {
+		return Decimal{}, errors.New("storm: numeric wire value has an unrepresentable sign")
+	}
+	if dscale < 0 {
+		return Decimal{}, errors.New("storm: numeric wire value has a negative display scale")
 	}
 	if ndigits == 0 {
 		return Decimal{Scale: int32(dscale)}, nil

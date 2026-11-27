@@ -28,7 +28,7 @@ import (
 	"github.com/gsoultan/storm/v2"
 	"github.com/gsoultan/storm/v2/compile/pgddl"
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	sd "IMPORTPATH"
 )
 
@@ -45,7 +45,7 @@ func (u *sdUser) Schema(t *storm.Table) {
 }
 
 var (
-	pool *pgdrv.Pool
+	pool *caduceusdrv.Pool
 	ex   runtime.Executor
 )
 
@@ -62,7 +62,7 @@ func TestMain(m *testing.M) {
 	s, err := storm.Build(&sdUser{})
 	must(err)
 
-	p, err := pgdrv.NewPool(ctx, dsn)
+	p, err := caduceusdrv.NewPool(ctx, dsn)
 	must(err)
 	const ns = "storm_softdelete_live"
 	_, err = p.Exec(ctx, "DROP SCHEMA IF EXISTS "+ns+" CASCADE; CREATE SCHEMA "+ns, nil)
@@ -70,7 +70,7 @@ func TestMain(m *testing.M) {
 	_, err = p.Exec(ctx, "SET search_path TO "+ns+"; "+pgddl.Create(s), nil)
 	must(err)
 	p.Close()
-	pool, err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
+	pool, err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, RuntimeParams: map[string]string{"search_path": ns}})
 	must(err)
 	ex = pool
 

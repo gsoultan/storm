@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv
+package caduceusdrv
 
 // The row SHAPE contract, which is a promise a generated package relies on.
 //

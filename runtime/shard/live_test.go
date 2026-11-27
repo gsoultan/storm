@@ -32,7 +32,7 @@ import (
 	"github.com/gsoultan/storm/v2"
 	"github.com/gsoultan/storm/v2/migrate"
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
@@ -56,7 +56,7 @@ var tenants = [][16]byte{
 }
 
 // liveShards builds a Set over shardCount freshly created databases.
-func liveShards(t *testing.T) (*shard.Set, []*pgdrv.Pool) {
+func liveShards(t *testing.T) (*shard.Set, []*caduceusdrv.Pool) {
 	t.Helper()
 	dsn := os.Getenv("STORM_DSN")
 	if dsn == "" {
@@ -64,14 +64,14 @@ func liveShards(t *testing.T) (*shard.Set, []*pgdrv.Pool) {
 	}
 	ctx := context.Background()
 
-	admin, err := pgdrv.NewPool(ctx, dsn)
+	admin, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admin.Close()
 
 	names := make([]string, shardCount)
-	pools := make([]*pgdrv.Pool, shardCount)
+	pools := make([]*caduceusdrv.Pool, shardCount)
 	dbs := make([]runtime.DB, shardCount)
 
 	for i := range shardCount {
@@ -92,7 +92,7 @@ func liveShards(t *testing.T) (*shard.Set, []*pgdrv.Pool) {
 		// that `go test ./...` is also running the tool and migrate suites
 		// against in parallel. Nothing here needs concurrency; what it needs
 		// is not to be the reason someone else's test cannot connect.
-		p, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, Database: name, MaxConns: 2})
+		p, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, Database: name, MaxConns: 2})
 		if err != nil {
 			t.Fatalf("connect %s: %v", name, err)
 		}
@@ -109,7 +109,7 @@ func liveShards(t *testing.T) (*shard.Set, []*pgdrv.Pool) {
 		for _, p := range pools {
 			p.Close()
 		}
-		a, err := pgdrv.NewPool(context.Background(), dsn)
+		a, err := caduceusdrv.NewPool(context.Background(), dsn)
 		if err != nil {
 			return
 		}
@@ -127,7 +127,7 @@ func liveShards(t *testing.T) (*shard.Set, []*pgdrv.Pool) {
 }
 
 // tenantsOn reads the tenant ids actually present in one shard's database.
-func tenantsOn(t *testing.T, ctx context.Context, p *pgdrv.Pool) map[[16]byte]bool {
+func tenantsOn(t *testing.T, ctx context.Context, p *caduceusdrv.Pool) map[[16]byte]bool {
 	t.Helper()
 	rows, err := p.Query(ctx, "SELECT tenant_id FROM orders", nil)
 	if err != nil {
@@ -425,7 +425,7 @@ func TestLiveUnitFlushLandsEveryWriteOnItsShard(t *testing.T) {
 // Migrating a shard set: storm does not do it for you, and this is what doing
 // it looks like.
 //
-// A Set holds runtime.DB values and migrate.AutoPool takes a *pgdrv.Pool,
+// A Set holds runtime.DB values and migrate.AutoPool takes a *caduceusdrv.Pool,
 // so there is no Set.Migrate and there should not be: migration happens
 // BEFORE a Set exists, while the caller still holds the pools they are about
 // to hand over. The loop below is the whole story, and the reason it is a
@@ -448,7 +448,7 @@ func TestLiveMigrateEveryShardThenBuildTheSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	admin, err := pgdrv.NewPool(ctx, dsn)
+	admin, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +456,7 @@ func TestLiveMigrateEveryShardThenBuildTheSet(t *testing.T) {
 
 	var (
 		names = make([]string, shardCount)
-		raw   = make([]*pgdrv.Pool, shardCount)
+		raw   = make([]*caduceusdrv.Pool, shardCount)
 		dbs   = make([]runtime.DB, shardCount)
 	)
 	for i := range shardCount {
@@ -468,7 +468,7 @@ func TestLiveMigrateEveryShardThenBuildTheSet(t *testing.T) {
 		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name, nil); err != nil {
 			t.Fatal(err)
 		}
-		if raw[i], err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, Database: name, MaxConns: 2}); err != nil {
+		if raw[i], err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, Database: name, MaxConns: 2}); err != nil {
 			t.Fatal(err)
 		}
 		dbs[i] = raw[i]
@@ -477,7 +477,7 @@ func TestLiveMigrateEveryShardThenBuildTheSet(t *testing.T) {
 		for _, p := range raw {
 			p.Close()
 		}
-		a, err := pgdrv.NewPool(context.Background(), dsn)
+		a, err := caduceusdrv.NewPool(context.Background(), dsn)
 		if err != nil {
 			return
 		}

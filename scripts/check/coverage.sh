@@ -16,7 +16,7 @@ declare -a FLOORS=(
   # which is precisely the "not observable from outside" failure floors are for.
   # Lower than the others because a driver adapter's remaining statements are
   # error plumbing that needs a broken server to reach.
-  "github.com/gsoultan/storm/v2/runtime/pgdrv 85"
+  "github.com/gsoultan/storm/v2/runtime/caduceusdrv 85"
   # The shard router. No server is needed to reach any of it — routing is
   # arithmetic and a lookup — so the floor is high, and it should be: a
   # mistake here sends a query to the wrong database, which returns rows
@@ -24,7 +24,7 @@ declare -a FLOORS=(
   "github.com/gsoultan/storm/v2/runtime/shard 95"
   # The MySQL/MariaDB adapter, which is a wire protocol written by hand: an
   # off-by-one in a packet offset produces a plausible value, not an error.
-  # Needs STORM_MYSQL_ADDR to reach anything, which is the same bargain pgdrv
+  # Needs STORM_MYSQL_ADDR to reach anything, which is the same bargain caduceusdrv
   # makes with STORM_DSN.
   "github.com/gsoultan/storm/v2/runtime/mydrv 80"
   # The query result cache. No server needed for any of it — the Store is an

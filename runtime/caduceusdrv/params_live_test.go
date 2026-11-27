@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv_test
+package caduceusdrv_test
 
 import (
 	"context"
@@ -14,14 +14,14 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // Each of storm's value types, sent through the adapter and read back as the
 // server's own text, which is the only judge of what the bytes meant.
 func TestStormValueTypesBind(t *testing.T) {
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn(t))
+	pool, err := caduceusdrv.NewPool(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestStormValueTypesBind(t *testing.T) {
 // arena, so the pointer forms must mean what the values do.
 func TestStormValueTypesBindThroughPointers(t *testing.T) {
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn(t))
+	pool, err := caduceusdrv.NewPool(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}

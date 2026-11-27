@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // rawQuery runs hand-written SQL on a connection of its own, for a test that
@@ -20,10 +21,10 @@ import (
 // raw rows, and these want Scan. The connection is held until the test ends.
 func rawQuery(t *testing.T, ctx context.Context, sql string, args ...any) (*caduceus.Rows, error) {
 	t.Helper()
-	c, release, err := pool.Acquire(ctx)
+	c, err := caduceus.ConnectConfig(ctx, pool.Config().Copy(), caduceusdrv.Options())
 	if err != nil {
 		return nil, err
 	}
-	t.Cleanup(release)
+	t.Cleanup(func() { _ = c.Close(context.Background()) })
 	return c.Query(ctx, sql, args...)
 }

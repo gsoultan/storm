@@ -32,7 +32,7 @@ import (
 	"github.com/gsoultan/storm/v2/examples/tenants/store/order"
 	"github.com/gsoultan/storm/v2/migrate"
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/gsoultan/storm/v2/runtime/shard"
 )
 
@@ -55,14 +55,14 @@ func setup(t *testing.T) *shard.Set {
 		t.Fatal(err)
 	}
 
-	admin, err := pgdrv.NewPool(ctx, dsn)
+	admin, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer admin.Close()
 
 	names := make([]string, shards)
-	raw := make([]*pgdrv.Pool, shards)
+	raw := make([]*caduceusdrv.Pool, shards)
 	dbs := make([]runtime.DB, shards)
 
 	for i := range shards {
@@ -74,7 +74,7 @@ func setup(t *testing.T) *shard.Set {
 		if _, err := admin.Exec(ctx, "CREATE DATABASE "+name, nil); err != nil {
 			t.Fatal(err)
 		}
-		if raw[i], err = pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, Database: name, MaxConns: 2}); err != nil {
+		if raw[i], err = caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, Database: name, MaxConns: 2}); err != nil {
 			t.Fatal(err)
 		}
 		dbs[i] = raw[i]
@@ -84,7 +84,7 @@ func setup(t *testing.T) *shard.Set {
 		for _, p := range raw {
 			p.Close()
 		}
-		a, err := pgdrv.NewPool(context.Background(), dsn)
+		a, err := caduceusdrv.NewPool(context.Background(), dsn)
 		if err != nil {
 			return
 		}

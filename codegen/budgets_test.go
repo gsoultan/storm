@@ -230,3 +230,51 @@ func TestHandleCollisionNamesARealAPI(t *testing.T) {
 		t.Errorf("error suggests .As, which ColBuilder does not have: %v", err)
 	}
 }
+
+type bgSetting struct {
+	Key   string
+	Value string
+}
+
+func (s *bgSetting) Schema(t *storm.Table) { t.PrimaryKey(&s.Key) }
+
+// A primary key column named key: Delete's parameter was called key, and so
+// was the Row it builds for the hooks, which redeclared the parameter and did
+// not compile.
+func TestPrimaryKeyNamedKeyCompiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a generated package; -short skips it")
+	}
+	s, err := storm.Build(&bgSetting{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join("internal", "keycol"+strconv.Itoa(os.Getpid()))
+	dir := filepath.Join(root, rel)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	files, err := codegen.Package(s, codegen.PackageOptions{
+		Dir: dir, Import: "github.com/gsoultan/storm/v2", Package: "store",
+		PackageImport: "github.com/gsoultan/storm/v2/" + filepath.ToSlash(rel),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, src := range files {
+		full := filepath.Join(dir, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, src, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("go", "vet", "./"+filepath.ToSlash(rel)+"/...")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("a package whose primary key is a column named key does not build:\n%s", out)
+	}
+}

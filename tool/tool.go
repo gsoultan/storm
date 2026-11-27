@@ -61,7 +61,7 @@ import (
 	"github.com/gsoultan/storm/v2/compile/pgddl"
 	"github.com/gsoultan/storm/v2/migrate"
 	"github.com/gsoultan/storm/v2/migrate/sum"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/gsoultan/storm/v2/schema"
 	"github.com/gsoultan/storm/v2/schema/pg"
 	"github.com/gsoultan/storm/v2/tool/mstool"
@@ -456,7 +456,7 @@ func connect(dsn string) (*caduceus.Conn, context.Context, func(), error) {
 		return nil, nil, nil, errors.New("no -dsn and no $STORM_DSN")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	c, err := pgdrv.Connect(ctx, dsn, pgdrv.Options{})
+	c, err := caduceusdrv.Connect(ctx, dsn)
 	if err != nil {
 		cancel()
 		return nil, nil, nil, err

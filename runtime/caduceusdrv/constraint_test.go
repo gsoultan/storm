@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv_test
+package caduceusdrv_test
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // Every one of these is a 4xx a service has to tell from a 500. Left
@@ -31,7 +31,7 @@ func TestConstraintViolationsAreClassified(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestUnknownErrorsPassThrough(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestRetryable(t *testing.T) {
 	}
 }
 
-func mustExec(t *testing.T, pool *pgdrv.Pool, sql string) {
+func mustExec(t *testing.T, pool *caduceusdrv.Pool, sql string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), sql, nil); err != nil {
 		t.Fatal(err)
@@ -184,7 +184,7 @@ func TestTstzRangeParameterBinds(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestNilRangePointerIsNull(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestBatch_NilCallbackDrainsAndReportsTheFirstError(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

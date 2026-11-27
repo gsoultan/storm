@@ -6,15 +6,18 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv_test
+package caduceusdrv_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
 
 // A session-scoped advisory lock is the thing Pool cannot do.
@@ -30,62 +33,59 @@ func TestConnHoldsSessionState(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer pool.Close()
 
-	held, releaseHeld, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer releaseHeld()
-	probe, releaseProbe, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer releaseProbe()
+	err = pool.Acquire(ctx, func(held *caduceus.Conn) error {
+		return pool.Acquire(ctx, func(probe *caduceus.Conn) error {
+			const key = int64(7_449_001)
+			ex := caduceusdrv.Conn{C: held}
+			other := caduceusdrv.Conn{C: probe}
 
-	const key = int64(7_449_001)
-	ex := pgdrv.Conn{C: held}
-	other := pgdrv.Conn{C: probe}
+			rows, err := ex.Query(ctx, "SELECT pg_try_advisory_lock($1)", []any{key})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !scanBool(t, rows) {
+				t.Fatal("could not take the lock on a free key")
+			}
 
-	rows, err := ex.Query(ctx, "SELECT pg_try_advisory_lock($1)", []any{key})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !scanBool(t, rows) {
-		t.Fatal("could not take the lock on a free key")
-	}
+			// A DIFFERENT session must be refused while it is held.
+			rows, err = other.Query(ctx, "SELECT pg_try_advisory_lock($1)", []any{key})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scanBool(t, rows) {
+				t.Fatal("a second session took a lock that was already held")
+			}
 
-	// A DIFFERENT session must be refused while it is held.
-	rows, err = other.Query(ctx, "SELECT pg_try_advisory_lock($1)", []any{key})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if scanBool(t, rows) {
-		t.Fatal("a second session took a lock that was already held")
-	}
+			rows, err = ex.Query(ctx, "SELECT pg_advisory_unlock($1)", []any{key})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !scanBool(t, rows) {
+				t.Fatal("unlock reported the lock was not held by this session")
+			}
 
-	rows, err = ex.Query(ctx, "SELECT pg_advisory_unlock($1)", []any{key})
+			// And it is genuinely free again, which is what proves the unlock ran on
+			// the same session as the lock.
+			rows, err = other.Query(ctx, "SELECT pg_try_advisory_lock($1)", []any{key})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !scanBool(t, rows) {
+				t.Fatal("the lock was not released")
+			}
+			if _, err := other.Exec(ctx, "SELECT pg_advisory_unlock($1)", []any{key}); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		})
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if !scanBool(t, rows) {
-		t.Fatal("unlock reported the lock was not held by this session")
-	}
-
-	// And it is genuinely free again, which is what proves the unlock ran on
-	// the same session as the lock.
-	rows, err = other.Query(ctx, "SELECT pg_try_advisory_lock($1)", []any{key})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !scanBool(t, rows) {
-		t.Fatal("the lock was not released")
-	}
-	if _, err := other.Exec(ctx, "SELECT pg_advisory_unlock($1)", []any{key}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -109,7 +109,7 @@ func TestPoolDatabaseSize(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPool(ctx, dsn)
+	pool, err := caduceusdrv.NewPool(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestNoStatementCacheStillReadsBinary(t *testing.T) {
 		t.Skip("STORM_DSN unset")
 	}
 	ctx := context.Background()
-	pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, Options: pgdrv.Options{StatementCacheCapacity: -1}})
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, StatementCacheCapacity: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,5 +156,31 @@ func TestNoStatementCacheStillReadsBinary(t *testing.T) {
 			t.Errorf("bool arrived as %q, want the binary zero byte", b)
 		}
 		rows.Close()
+	}
+}
+
+// A pool with every connection in use reports it after AcquireTimeout rather
+// than hanging: rows left open are the usual cause, and the error says so.
+func TestPoolExhaustedAfterAcquireTimeout(t *testing.T) {
+	dsn := os.Getenv("STORM_DSN")
+	if dsn == "" {
+		t.Skip("STORM_DSN unset")
+	}
+	ctx := context.Background()
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, MaxConns: 1, AcquireTimeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	held, err := pool.Query(ctx, "SELECT 1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "SELECT 1", nil); !errors.Is(err, caduceusdrv.ErrPoolExhausted) {
+		t.Fatalf("err = %v, want ErrPoolExhausted", err)
+	}
+	held.Close()
+	if _, err := pool.Exec(ctx, "SELECT 1", nil); err != nil {
+		t.Fatalf("after the rows were closed: %v", err)
 	}
 }

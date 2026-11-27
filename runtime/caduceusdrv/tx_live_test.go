@@ -6,7 +6,7 @@
 // Use of this source code is governed by the MIT License that can be
 // found in the LICENSE file at the root of this repository.
 
-package pgdrv_test
+package caduceusdrv_test
 
 // The transaction contract, against a real server.
 //
@@ -24,26 +24,12 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/v2/runtime"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 )
-
-func livePool(t *testing.T) *pgdrv.Pool {
-	t.Helper()
-	dsn := os.Getenv("STORM_DSN")
-	if dsn == "" {
-		t.Skip("STORM_DSN unset")
-	}
-	pool, err := pgdrv.NewPool(context.Background(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
 
 // A scratch table per test, so a failure leaves nothing behind for the next
 // one to trip over.
-func scratch(t *testing.T, ctx context.Context, ex runtime.Executor, name string) {
+func scratchTable(t *testing.T, ctx context.Context, ex runtime.Executor, name string) {
 	t.Helper()
 	if _, err := ex.Exec(ctx, "drop table if exists "+name, nil); err != nil {
 		t.Fatal(err)
@@ -79,7 +65,7 @@ func count(t *testing.T, ctx context.Context, ex runtime.Executor, name string) 
 func TestPoolStartTxReturnsAWorkingTx(t *testing.T) {
 	ctx := t.Context()
 	db := livePool(t)
-	scratch(t, ctx, db, "storm_tx_begin")
+	scratchTable(t, ctx, db, "storm_tx_begin")
 
 	tx, err := db.StartTx(ctx)
 	if err != nil {
@@ -99,7 +85,7 @@ func TestPoolStartTxReturnsAWorkingTx(t *testing.T) {
 func TestRollbackUndoesTheWrite(t *testing.T) {
 	ctx := t.Context()
 	db := livePool(t)
-	scratch(t, ctx, db, "storm_tx_rollback")
+	scratchTable(t, ctx, db, "storm_tx_rollback")
 
 	tx, err := db.StartTx(ctx)
 	if err != nil {
@@ -159,7 +145,7 @@ func TestSecondCommitIsErrTxDone(t *testing.T) {
 func TestInTxCommitsAndRollsBackForReal(t *testing.T) {
 	ctx := t.Context()
 	db := livePool(t)
-	scratch(t, ctx, db, "storm_intx")
+	scratchTable(t, ctx, db, "storm_intx")
 
 	if err := runtime.InTx(ctx, db, func(ex runtime.Executor) error {
 		_, err := ex.Exec(ctx, "insert into storm_intx values (1)", nil)
@@ -196,7 +182,7 @@ func TestInTxPanicReleasesTheConnection(t *testing.T) {
 	}
 	ctx := t.Context()
 
-	pool, err := pgdrv.NewPoolConfig(ctx, pgdrv.Config{DSN: dsn, MaxConns: 1})
+	pool, err := caduceusdrv.NewPoolConfig(ctx, caduceusdrv.PoolConfig{DSN: dsn, MaxConns: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +214,7 @@ func TestInTxPanicReleasesTheConnection(t *testing.T) {
 	}
 }
 
-var _ runtime.DB = (*pgdrv.Pool)(nil)
+var _ runtime.DB = (*caduceusdrv.Pool)(nil)
 
 // The isolation level pgx's pool.BeginTx used to carry: the transaction must
 // actually run at it, which only the server can say.

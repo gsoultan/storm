@@ -12,7 +12,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/caduceus"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/gsoultan/storm/v2/schema"
 )
 
@@ -31,11 +32,17 @@ import (
 //	}
 //
 // where s came from storm.Build(model.All()...).
-func AutoPool(ctx context.Context, p *pgdrv.Pool, want *schema.Schema, o AutoOptions) (Result, error) {
-	c, release, err := p.Acquire(ctx)
-	if err != nil {
+func AutoPool(ctx context.Context, p *caduceusdrv.Pool, want *schema.Schema, o AutoOptions) (Result, error) {
+	var res Result
+	var ran bool
+	err := p.Acquire(ctx, func(c *caduceus.Conn) error {
+		ran = true
+		var err error
+		res, err = Auto(ctx, c, want, o)
+		return err
+	})
+	if err != nil && !ran {
 		return Result{}, fmt.Errorf("acquire a connection to migrate on: %w", err)
 	}
-	defer release()
-	return Auto(ctx, c, want, o)
+	return res, err
 }

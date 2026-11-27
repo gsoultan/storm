@@ -9,6 +9,7 @@
 package codegenmongo
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -843,17 +844,23 @@ func (g *gen) deleteWrapperSrc(name, inner, sig, call string) string {
 	for _, k := range g.keys {
 		key = append(key, g.field(k)+": "+g.wrap(k, lowerFirst(g.field(k))))
 	}
+	// The Row's name must not be one of the parameters: a key field called
+	// "key" made the parameter and the Row the same variable.
+	row := "key"
+	for slices.Contains(strings.Split(call, ", "), row) {
+		row += "_"
+	}
 	return "func " + name + "(ctx context.Context, ex runtime.Executor, " + sig + ") error {\n" +
 		"\tif Hooks.BeforeDelete == nil && Hooks.AfterDelete == nil {\n" +
 		"\t\treturn " + inner + "(ctx, ex, " + call + ")\n" +
 		"\t}\n" +
-		"\tkey := Row{" + strings.Join(key, ", ") + "}\n" +
-		"\tif err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &key); err != nil {\n" +
+		"\t" + row + " := Row{" + strings.Join(key, ", ") + "}\n" +
+		"\tif err := hooks.Apply(ctx, ex, Hooks.BeforeDelete, &" + row + "); err != nil {\n" +
 		"\t\treturn err\n" +
 		"\t}\n" +
 		"\tif err := " + inner + "(ctx, ex, " + call + "); err != nil {\n" +
 		"\t\treturn err\n" +
 		"\t}\n" +
-		"\treturn hooks.Apply(ctx, ex, Hooks.AfterDelete, &key)\n" +
+		"\treturn hooks.Apply(ctx, ex, Hooks.AfterDelete, &" + row + ")\n" +
 		"}"
 }

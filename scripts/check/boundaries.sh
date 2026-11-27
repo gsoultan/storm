@@ -12,7 +12,7 @@ if grep -rn '"reflect"' runtime/ 2>/dev/null; then
 fi
 
 echo "== driver confined to its adapter =="
-# Only runtime/pgdrv may name the PostgreSQL driver (caduceus), so driver churn
+# Only runtime/caduceusdrv may name the PostgreSQL driver (caduceus), so driver churn
 # cannot reach the tree.
 #
 # The exemptions are BUILD-TIME code — the tool, introspection — which talks to
@@ -28,7 +28,7 @@ echo "== driver confined to its adapter =="
 # bun, ent) live there and nowhere else.
 for f in $(git ls-files '*.go' 2>/dev/null | grep -v '_test.go' | grep -v '^bench/' | grep -v '^cmd/'); do
   case "$f" in
-    runtime/pgdrv/*|schema/pg/*|migrate/*|tool/*|examples/*) continue ;;
+    runtime/caduceusdrv/*|schema/pg/*|migrate/*|tool/*|examples/*) continue ;;
   esac
   if grep -q 'gsoultan/caduceus' "$f"; then note "caduceus imported outside its adapter: $f"; fi
 done
@@ -66,7 +66,7 @@ outsiders() { go list -deps "$1" 2>/dev/null | grep -v '^github.com/gsoultan/sto
 # the same two the driver check above allows.
 for p in $(go list ./schema/... ./compile/... ./codegen/... ./runtime/... 2>/dev/null); do
   case "$p" in
-    */runtime/pgdrv|*/schema/pg) continue ;;
+    */runtime/caduceusdrv|*/schema/pg) continue ;;
   esac
   if outsiders "$p" | grep -q .; then
     note "$p has a third-party dependency:"

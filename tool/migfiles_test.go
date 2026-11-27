@@ -10,7 +10,7 @@ package tool
 
 import (
 	"context"
-	"github.com/gsoultan/storm/v2/runtime/pgdrv"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,7 +26,7 @@ import (
 func applyFiles(t *testing.T, ns string, files ...string) {
 	t.Helper()
 	ctx := context.Background()
-	c, err := pgdrv.Connect(ctx, dsn(t), pgdrv.Options{})
+	c, err := caduceusdrv.Connect(ctx, dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestCLI_DownMigrationsRollBackEveryVersion(t *testing.T) {
 	// And v1's down empties the namespace.
 	applyFiles(t, ns, downs[0])
 	var n int
-	c, err := pgdrv.Connect(context.Background(), dsn(t), pgdrv.Options{})
+	c, err := caduceusdrv.Connect(context.Background(), dsn(t))
 	if err != nil {
 		t.Fatal(err)
 	}
