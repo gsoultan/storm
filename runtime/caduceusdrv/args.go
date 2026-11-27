@@ -42,7 +42,9 @@ func args(in []any) []any {
 	return out
 }
 
-// arg is one argument rewritten, and whether it needed it.
+// arg is one argument rewritten, and whether it needed it. A generated
+// package's COPY hands over pointers to its row's fields, so each type is
+// matched by pointer too.
 func arg(a any) (any, bool) {
 	switch v := a.(type) {
 	case runtime.Decimal:
@@ -87,6 +89,16 @@ func arg(a any) (any, bool) {
 			return nil, true
 		}
 		return json.RawMessage(v), true
+	case *runtime.JSON:
+		if v == nil || *v == nil {
+			return nil, true
+		}
+		return json.RawMessage(*v), true
+	case *[]runtime.Decimal:
+		if v == nil {
+			return nil, true
+		}
+		return arg(*v)
 	}
 	return nil, false
 }

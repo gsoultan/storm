@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"testing"
@@ -111,8 +112,26 @@ func TestSameBytesAsPgx(t *testing.T) {
 	if _, err := px.Exec(ctx, insert, row(2)); err != nil {
 		t.Fatalf("insert through pgx: %v", err)
 	}
+	// COPY, which a generated package's InsertAll uses, hands over pointers
+	// to the row's fields.
+	copied := func(id int) [][]any {
+		vals := row(id)
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			v := reflectPtr(vals[i])
+			ptrs[i] = v
+		}
+		return [][]any{ptrs}
+	}
+	cols := []string{"id", "n", "iv", "tod", "r", "ids", "big", "words", "ns", "doc", "addr", "net", "ok", "blob", "at", "day", "u", "f", "s", "label"}
+	if _, err := cp.CopyFrom(ctx, tbl, cols, &rowsSource{rows: copied(3)}); err != nil {
+		t.Fatalf("copy through caduceus: %v", err)
+	}
+	if _, err := px.CopyFrom(ctx, tbl, cols, &rowsSource{rows: copied(4)}); err != nil {
+		t.Fatalf("copy through pgx: %v", err)
+	}
 	all := "SELECT n, iv, tod, r, ids, big, words, ns, doc, addr, net, ok, blob, at, day, u, f, s, label FROM " + tbl + " WHERE id = $1"
-	for _, id := range []int{1, 2} {
+	for _, id := range []int{1, 2, 3, 4} {
 		got := rawRows(t, cp, all, []any{id})
 		want := rawRows(t, px, all, []any{id})
 		if len(got) != 1 || len(want) != 1 {
@@ -121,6 +140,16 @@ func TestSameBytesAsPgx(t *testing.T) {
 		for i := range want[0] {
 			if !bytes.Equal(got[0][i], want[0][i]) {
 				t.Errorf("id %d column %d: caduceus %x, pgx %x", id, i+1, got[0][i], want[0][i])
+			}
+		}
+	}
+	// Every row, however it was written, holds what pgx's own INSERT wrote.
+	want := rawRows(t, px, all, []any{2})[0]
+	for _, id := range []int{1, 3, 4} {
+		got := rawRows(t, cp, all, []any{id})[0]
+		for i := range want {
+			if !bytes.Equal(got[i], want[i]) {
+				t.Errorf("row %d column %d: %x, pgx's insert wrote %x", id, i+1, got[i], want[i])
 			}
 		}
 	}
@@ -287,3 +316,45 @@ type rowsSource struct {
 func (s *rowsSource) Next() bool    { s.i++; return s.i <= len(s.rows) }
 func (s *rowsSource) Values() []any { return s.rows[s.i-1] }
 func (s *rowsSource) Err() error    { return nil }
+
+// reflectPtr returns a pointer to a copy of v, as a generated rowSource
+// hands COPY a pointer to each field.
+func reflectPtr(v any) any {
+	switch x := v.(type) {
+	case int:
+		return &x
+	case runtime.Decimal:
+		return &x
+	case runtime.Interval:
+		return &x
+	case runtime.TimeOfDay:
+		return &x
+	case runtime.TstzRange:
+		return &x
+	case [][16]byte:
+		return &x
+	case []int64:
+		return &x
+	case []string:
+		return &x
+	case []runtime.Decimal:
+		return &x
+	case runtime.JSON:
+		return &x
+	case string:
+		return &x
+	case bool:
+		return &x
+	case []byte:
+		return &x
+	case time.Time:
+		return &x
+	case [16]byte:
+		return &x
+	case float64:
+		return &x
+	case int16:
+		return &x
+	}
+	panic(fmt.Sprintf("no pointer for %T", v))
+}
