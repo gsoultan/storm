@@ -209,6 +209,18 @@ func TestTheOracleBootstrapBlankImportsTheDriver(t *testing.T) {
 			t.Errorf("%v: no driver import:\n%s", args, src)
 		}
 	}
+	for _, args := range [][]string{
+		{"import", "-dialect", "sqlite"},
+		{"diff", "init", "-dialect=sqlite3"},
+	} {
+		src, err := SourceFor(r, args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !strings.Contains(string(src), `_ "modernc.org/sqlite"`) {
+			t.Errorf("%v: no driver import:\n%s", args, src)
+		}
+	}
 	// And no other target gains one: they are passed a connection directly.
 	for _, args := range [][]string{
 		{"generate"}, {"ddl", "-dialect", "mssql"}, {"import", "-dialect", "postgres"},

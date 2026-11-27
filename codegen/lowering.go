@@ -14,6 +14,7 @@ import (
 	"github.com/gsoultan/storm/v2/compile/mysql"
 	"github.com/gsoultan/storm/v2/compile/oracle"
 	"github.com/gsoultan/storm/v2/compile/pgsql"
+	"github.com/gsoultan/storm/v2/compile/sqlite"
 	"github.com/gsoultan/storm/v2/schema"
 )
 
@@ -86,7 +87,7 @@ type lowering struct {
 	// head and tail around its call-site predicates, then the select and the
 	// count. Nil where the back end has none.
 	JoinPieces func(table string, j *schema.Join, aggFor func(schema.CTE) (string, string),
-		live func(table, alias string) string) (ctes [][2]string, sel, count string)
+		live func(table, alias string) string) (ctes [][2]string, sel, count string, err error)
 	JoinSuffix        func(j *schema.Join) (string, error)
 	JoinDeclaredWhere func(j *schema.Join, driving string) (string, error)
 
@@ -291,6 +292,8 @@ func loweringFor(d Dialect) lowering {
 		return mssqlLowering()
 	case DialectOracle:
 		return oracleLowering()
+	case DialectSQLite:
+		return sqliteLowering()
 	}
 	return postgresLowering()
 }
@@ -371,9 +374,10 @@ func postgresLowering() lowering {
 				func(tb, al string) pgsql.Live { return pgsql.Live(live(tb, al)) }), nil
 		},
 		JoinPieces: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
-			live func(table, alias string) string) ([][2]string, string, string) {
-			return pgsql.JoinPieces(t, j, aggFor,
+			live func(table, alias string) string) ([][2]string, string, string, error) {
+			ctes, sel, count := pgsql.JoinPieces(t, j, aggFor,
 				func(tb, al string) pgsql.Live { return pgsql.Live(live(tb, al)) })
+			return ctes, sel, count, nil
 		},
 		JoinSuffix: func(j *schema.Join) (string, error) { return pgsql.JoinSuffix(j), nil },
 		JoinDeclaredWhere: func(j *schema.Join, driving string) (string, error) {
@@ -946,6 +950,164 @@ func oracleLowering() lowering {
 		// Oracle's RETURNING binds OUTPUT parameters and runtime.Executor
 		// carries none, so keys are client-side. See compile/oracle/write.go.
 		noReturning: true,
+	}
+}
+
+// sqliteLowering is the FIFTH back end, and the closest to PostgreSQL: most of
+// its fields are the pgsql functions' twins, and what differs is listed in
+// compile/sqlite's package comment. The fields it leaves nil are the reads and
+// writes it has no form for — DISTINCT ON, LATERAL, LOCK TABLE, a lock
+// timeout, the round-robin read and the data-modifying step — and the context
+// package simply does not generate them, as it does not for MySQL.
+func sqliteLowering() lowering {
+	live := func(l string) sqlite.Live { return sqlite.Live(l) }
+	return lowering{
+		name:  "sqlite",
+		Ident: sqlite.Ident,
+		Frag: func(op, ident string, c *schema.Column) (string, string, bool) {
+			switch op {
+			case "In", "NotIn":
+				// The json_each element has to be turned back into what the
+				// column stores — a uuid's hex into its 16 bytes — so Frag
+				// takes the column here, as it does for MySQL.
+				if c == nil {
+					return "", "", false
+				}
+				a, b := sqlite.InFrag(ident, sqlite.ColumnType(c), op == "NotIn")
+				return a, b, true
+			}
+			return sqlite.Frag(op, ident)
+		},
+		SelectPrefix:      sqlite.SelectPrefix,
+		CountPrefix:       sqlite.CountPrefix,
+		ExistsPrefix:      sqlite.ExistsPrefix,
+		ExistsSuffix:      sqlite.ExistsSuffix,
+		LimitOffsetSuffix: sqlite.LimitOffsetSuffix,
+		DefaultOrderBy:    sqlite.DefaultOrderBy,
+		OrderTerm:         sqlite.OrderTerm,
+		OrderLead:         sqlite.OrderLead,
+		OrderSep:          sqlite.OrderSep,
+		NDirections:       sqlite.NDirections,
+		TupleOpen:         sqlite.TupleOpen,
+		TupleSep:          sqlite.TupleSep,
+		TupleClose:        sqlite.TupleClose,
+		RowCmpOp:          sqlite.RowCmpOp,
+
+		NumLockModes: sqlite.NumLockModes,
+		LockSuffix:   sqlite.LockSuffix,
+		LockName:     pgsqlLockName,
+		LockDoc:      pgsqlLockDoc,
+		LockNotes:    sqlite.LockNotes,
+
+		LockRefusedCounted: pgsql.LockRefusedCounted,
+		LockRefusedProbed:  pgsql.LockRefusedProbed,
+		LockRefusedGrouped: pgsql.LockRefusedGrouped,
+		LockRefusedJoined:  pgsql.LockRefusedJoined,
+
+		JoinSelect: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+			lv func(table, alias string) string) (string, error) {
+			return sqlite.JoinSelect(t, j, aggFor,
+				func(tb, al string) sqlite.Live { return live(lv(tb, al)) })
+		},
+		JoinPieces: func(t string, j *schema.Join, aggFor func(schema.CTE) (string, string),
+			lv func(table, alias string) string) ([][2]string, string, string, error) {
+			return sqlite.JoinPieces(t, j, aggFor,
+				func(tb, al string) sqlite.Live { return live(lv(tb, al)) })
+		},
+		JoinSuffix: sqlite.JoinSuffix,
+		JoinDeclaredWhere: func(j *schema.Join, driving string) (string, error) {
+			return sqlite.JoinDeclaredWhere(j, live(driving))
+		},
+		UnionSelect: func(u *schema.Union, lv func(string) string) (string, error) {
+			return sqlite.UnionSelect(u, func(t string) sqlite.Live { return live(lv(t)) })
+		},
+		UnionSuffix:     func(u *schema.Union) (string, error) { return sqlite.UnionSuffix(u), nil },
+		AggregateSelect: sqlite.AggregateSelect,
+		AggregateSuffix: sqlite.AggregateSuffix,
+		AggregateWhere:  sqlite.AggregateWhere,
+
+		KeyType: sqlite.ColumnType,
+		// The visited path is text with no declared width, so no depth is
+		// out of the cycle guard's reach.
+		RecursiveMaxDepth: func(string) int64 { return 0 },
+		// SQLite has no uuid function, so the key is storm's to generate —
+		// a version 7, as the model's default asks.
+		KeysAreClientSide: true,
+		Recursive: func(t string, cols []string, key, parent, keyType string, dir int, l string) string {
+			return sqlite.Recursive(t, cols, key, parent, keyType, dir, live(l))
+		},
+		// One form: there is no LATERAL, so the per-parent cap is a window
+		// whichever strategy the caller picks.
+		TopNWindow: func(t string, cols []string, key, keyType, l string) string {
+			return sqlite.TopNWindow(t, cols, key, keyType, live(l))
+		},
+		TopNLateral: func(t string, cols []string, key, keyType, l string) string {
+			return sqlite.TopNWindow(t, cols, key, keyType, live(l))
+		},
+		ExistsFrag: func(ct, fk, pt, pk, l string) string {
+			return sqlite.ExistsFrag(ct, fk, pt, pk, live(l))
+		},
+		NotExistsFrag: func(ct, fk, pt, pk, l string) string {
+			return sqlite.NotExistsFrag(ct, fk, pt, pk, live(l))
+		},
+		ExistsOpen: func(ct, fk, pt, pk, l string) string {
+			return sqlite.ExistsOpen(ct, fk, pt, pk, live(l))
+		},
+		NotExistsOpen: func(ct, fk, pt, pk, l string) string {
+			return sqlite.NotExistsOpen(ct, fk, pt, pk, live(l))
+		},
+		ExistsOnOpen: func(ct string, cc []string, pt string, pc []string, l string) string {
+			return sqlite.ExistsOnOpen(ct, cc, pt, pc, live(l))
+		},
+		NotExistsOnOpen: func(ct string, cc []string, pt string, pc []string, l string) string {
+			return sqlite.NotExistsOnOpen(ct, cc, pt, pc, live(l))
+		},
+
+		SoftDeleteWhere: sqlite.SoftDeleteWhere,
+		SoftDeleteSet:   sqlite.SoftDeleteSet,
+		RestoreSet:      sqlite.RestoreSet,
+		LiveFor:         func(alias, col string) string { return string(sqlite.LiveFor(alias, col)) },
+
+		InsertStmt: func(t string, c, r []string) (string, error) {
+			return sqlite.InsertStmt(t, c, r), nil
+		},
+		InsertPrefix:    sqlite.InsertPrefix,
+		InsertParts:     func([]string) (string, string, string, string) { return sqlite.InsertParts() },
+		ReturningClause: sqlite.ReturningClause,
+		UpdatePrefix:    sqlite.UpdatePrefix,
+		DeletePrefix:    sqlite.DeletePrefix,
+		SetFrag:         sqlite.SetFrag,
+		BumpFrag:        sqlite.BumpFrag,
+		AddFrag:         sqlite.AddFrag,
+		IncWhenFrag:     sqlite.IncWhenFrag,
+		TakeOpen:        sqlite.TakeOpen,
+		TakeClose:       sqlite.TakeClose,
+		TrimOpen:        sqlite.TrimOpen,
+		TrimClose:       sqlite.TrimClose,
+		InsertSelectMid: sqlite.InsertSelectMid,
+		KeyFrom:         sqlite.KeyFrom,
+		NowFrag:         sqlite.NowFrag,
+		SetLead:         sqlite.SetLead,
+		SetSep:          sqlite.SetSep,
+		WhereLead:       sqlite.WhereLead,
+		WhereSep:        sqlite.WhereSep,
+		Placeholder:     sqlite.Placeholder,
+		PlaceholderExpr: "runtime.SQLitePlaceholder",
+
+		// PostgreSQL's own upsert, clause for clause.
+		Upsert: &upsertLowering{
+			Any: sqlite.ConflictAny, DoNothing: sqlite.ConflictDoNothing,
+			DoUpdate: sqlite.ConflictDoUpdate,
+			Spec: func(keys []pgsql.ConflictKey, where string) string {
+				ks := make([]sqlite.ConflictKey, len(keys))
+				for i, k := range keys {
+					ks[i] = sqlite.ConflictKey{Name: k.Name, Expr: k.Expr, Collate: k.Collate, OpClass: k.OpClass}
+				}
+				return sqlite.ConflictSpec(ks, where)
+			},
+			ExcludedAssign: sqlite.ExcludedAssign,
+			ExcludedAdd:    sqlite.ExcludedAdd,
+		},
 	}
 }
 

@@ -19,6 +19,7 @@ package valdec
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/gsoultan/storm/v2/runtime"
@@ -67,6 +68,14 @@ func TimeOfDay(v any) (runtime.TimeOfDay, error) {
 	}
 	return tod, nil
 }
+
+// TimeOfDayErr is TimeOfDay under the name a generated scanner asks for when
+// the decode can fail, which in this family it always can.
+func TimeOfDayErr(v any) (runtime.TimeOfDay, error) { return TimeOfDay(v) }
+
+// JSON is a document's bytes as the row's field type — the conversion every
+// family names, so a generated scanner spells it the same way for all of them.
+func JSON(b []byte) runtime.JSON { return runtime.JSON(b) }
 
 // NumericErr reads an exact number. See Decimal: through its decimal string,
 // never through a float64.
@@ -138,4 +147,34 @@ func NullJSONB(v any, _ *runtime.Slab) runtime.Null[runtime.JSON] {
 		return runtime.Null[runtime.JSON]{}
 	}
 	return runtime.Null[runtime.JSON]{V: runtime.JSON(Bytes(v)), Valid: true}
+}
+
+// NullJSON is NullJSONB under the name a generated scanner asks for a
+// nullable storm.JSON field by.
+func NullJSON(v any, sl *runtime.Slab) runtime.Null[runtime.JSON] { return NullJSONB(v, sl) }
+
+// Real reads an exact numeric from an engine that stores one as a float or an
+// integer — SQLite, whose NUMERIC is a 64-bit float or integer under type
+// affinity. Decimal refuses a float64, because from any other driver one
+// means precision was lost before storm was asked; here it is the storage,
+// and compile/liteddl refuses a numeric wider than the fifteen significant
+// digits a float64 carries exactly. The shortest decimal that reads back as
+// the same float is the value that was stored.
+func Real(v any) (runtime.Decimal, error) {
+	if f, ok := v.(float64); ok {
+		return runtime.ParseDecimal(strconv.FormatFloat(f, 'f', -1, 64))
+	}
+	return Decimal(v)
+}
+
+// NullReal is Real for a column that may be NULL.
+func NullReal(v any) (runtime.Null[runtime.Decimal], error) {
+	if v == nil {
+		return runtime.Null[runtime.Decimal]{}, nil
+	}
+	d, err := Real(v)
+	if err != nil {
+		return runtime.Null[runtime.Decimal]{}, err
+	}
+	return runtime.Null[runtime.Decimal]{V: d, Valid: true}, nil
 }

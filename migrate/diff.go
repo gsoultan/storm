@@ -132,8 +132,17 @@ func (p Plan) SQL() string {
 		}
 		b.WriteString(c.SQL + "\n")
 	}
+	if p.dialect == SQLite && len(p.Changes) > 0 {
+		return sqliteFile(b.String())
+	}
 	return b.String()
 }
+
+// Subset is a plan of some of this plan's changes, rendered in its dialect —
+// what a tool splitting a plan into files builds each file from. A plan built
+// as Plan{Changes: ...} renders as PostgreSQL, which loses what SQL adds for
+// another dialect, such as SQLite's foreign-key preamble.
+func (p Plan) Subset(changes []Change) Plan { return Plan{Changes: changes, dialect: p.dialect} }
 
 // Concurrently rewrites the plan's changes to tables that already exist in
 // `live` into their online forms, which do not block the table's writers while
@@ -469,6 +478,9 @@ func diffFor(from, to *schema.Schema, dialect Dialect, ren renames) (Plan, error
 	// Dropped enums last: a table using one may have just been dropped.
 	if d.DropEnums != nil {
 		d.DropEnums(&b.p, from, to)
+	}
+	if b.err == nil && dialect == SQLite {
+		return rebuildTables(b.p, old, to)
 	}
 	return b.p, b.err
 }

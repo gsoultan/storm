@@ -12,7 +12,42 @@ may change with a minor bump; what is promised, and for how long, is
 Every entry names what changed and — where it matters — what it cost, because
 a release note that cannot be checked is marketing.
 
-## Unreleased — v2.0.0
+## Unreleased
+
+### SQLite: a fifth SQL target
+
+storm now generates for, migrates and imports SQLite 3.45 and later.
+
+- **Runtime.** `runtime/sqlitedrv` is the adapter, over `database/sql`. storm
+  imports no driver; it is written and tested against `modernc.org/sqlite`,
+  which is pure Go, so a build needs no cgo. `sqlitedrv.DSN(path)` turns on
+  foreign keys, case-sensitive `LIKE`, a busy timeout, `BEGIN IMMEDIATE` and,
+  for a file, WAL. Bulk loads are multi-row `INSERT`s, in one transaction
+  when they go through the pool.
+- **Codegen.** `storm generate -dialect sqlite`. Queries, relations,
+  aggregates, unions, recursive loads, soft delete, upserts and bulk inserts
+  are generated. Lists bind as one JSON array unpacked with `json_each`. There
+  are no row locks, `LATERAL`, `DISTINCT ON` or data-modifying `WITH`, so the
+  methods built on the last three are not generated. The lock modes add nothing
+  to the statement.
+- **Introspection.** `schema/sqlite` reads `sqlite_schema` and the pragmas,
+  and `storm import -dialect sqlite -dsn app.db` prints the model a database
+  implies. A storm-made database round-trips exactly.
+- **Migrations.** `migrate.AutoSQLite`, `migrate.AutoSQLiteDB`,
+  `migrate.ForSQLite` and `storm diff`/`storm verify -dialect sqlite`. Every
+  change SQLite has no `ALTER` for is a table rebuild. A table's changes are
+  merged into one rebuild, the destructive guard sees each step, and
+  `PRAGMA foreign_key_check` runs before the commit, which is rolled back if
+  any key points at nothing.
+- **What does not port** is refused by `storm portable sqlite`: arrays,
+  intervals, network addresses, ranges, numerics wider than 15 digits, and
+  index methods other than B-tree.
+- **Fixed for every value-shaped target:** a nullable `storm.JSON` field
+  generated a call to a decoder that did not exist.
+- **CI.** A `sqlite` job runs `internal/sqlitecheck`, the live suite, under
+  `-race`.
+
+## v2.0.0 — 2026-11-27
 
 ### Breaking: caduceus replaces pgx as the PostgreSQL driver
 

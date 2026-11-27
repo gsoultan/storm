@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/gsoultan/storm/v2/tool/discover"
+	"github.com/gsoultan/storm/v2/tool/litetool"
 	"github.com/gsoultan/storm/v2/tool/oratool"
 )
 
@@ -48,18 +49,27 @@ func modelless(args []string) bool {
 // not a different string.
 const oracleDriver = oratool.OracleDriverPath
 
+// sqliteDriver is the one storm's SQLite support is written and tested
+// against: modernc.org/sqlite, pure Go, so the bootstrap needs no C toolchain.
+const sqliteDriver = litetool.DriverPath
+
 // driverFor is the database/sql driver a command's dialect needs, or "".
 func driverFor(args []string) string {
 	for i, a := range args {
+		name := ""
 		switch {
 		case a == "-dialect" && i+1 < len(args):
-			if isOracle(args[i+1]) {
-				return oracleDriver
-			}
+			name = args[i+1]
 		case strings.HasPrefix(a, "-dialect="):
-			if isOracle(strings.TrimPrefix(a, "-dialect=")) {
-				return oracleDriver
-			}
+			name = strings.TrimPrefix(a, "-dialect=")
+		default:
+			continue
+		}
+		switch {
+		case isOracle(name):
+			return oracleDriver
+		case name == "sqlite" || name == "sqlite3":
+			return sqliteDriver
 		}
 	}
 	return ""

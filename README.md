@@ -115,6 +115,17 @@ via `runtime/sqldrv`. It is experimental in the sense
 [docs/DIALECTS.md](docs/DIALECTS.md) lists what each engine does differently
 and why.
 
+**SQLite is a runtime target, with no server and no C toolchain.**
+`storm generate -dialect sqlite` emits the same table API over
+`runtime/sqlitedrv`, through `database/sql` and the pure-Go
+[modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) driver, which the
+adopter imports and storm does not. `storm import`, `storm diff`,
+`storm verify` and `migrate.AutoSQLite` work against a database file. Every
+change SQLite has no `ALTER` for becomes one table rebuild per table, with the
+destructive guard kept step by step and foreign keys checked before the
+commit. [docs/DIALECTS.md](docs/DIALECTS.md#sqlite-what-works-today) lists
+what differs.
+
 **MongoDB is a back end, not a dialect**
 ([ADR-0004](docs/adr/0004-mongodb-as-backend.md)), and unreleased.
 `storm generate -dialect mongo` emits the same table API — the statements are
@@ -394,7 +405,7 @@ Natural-language mode, so the term is words and never operators, and any one
 of them is enough. A multi-column `FULLTEXT` index gives no
 column `Matches` (InnoDB answers `MATCH` only through an index over exactly its
 column list), and there is no `WebSearch` here, because boolean mode ORs its
-terms where `websearch_to_tsquery` ANDs them. SQL Server, Oracle and MongoDB
+terms where `websearch_to_tsquery` ANDs them. SQL Server, Oracle, SQLite and MongoDB
 have no full-text predicate yet; each needs an index storm does not model.
 
 ## Errors you can switch on

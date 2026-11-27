@@ -196,6 +196,8 @@ func ddlFor(d Dialect, enums map[string]*schema.Enum) (ddl, error) {
 		return mssqlDDL(enums), nil
 	case Oracle:
 		return oracleDDL(enums), nil
+	case SQLite:
+		return sqliteDDL(enums), nil
 	default:
 		return ddl{}, fmt.Errorf("migrate: no DDL for dialect %q", d)
 	}

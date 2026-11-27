@@ -1,0 +1,159 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
+package sqlite
+
+import (
+	"strings"
+
+	"github.com/gsoultan/storm/v2/schema"
+)
+
+// JoinSelect is everything before the call-site WHERE of a cross-table read:
+// the WITH clauses, the projection, the FROM and every JOIN.
+//
+// Split at WHERE like every other read, so the call-site predicates stay
+// dynamic and this prefix is fixed at generation time.
+func JoinSelect(table string, j *schema.Join, aggFor func(cte schema.CTE) (prefix, suffix string), live func(table, alias string) Live) (string, error) {
+	var b strings.Builder
+	for i, c := range j.CTEs {
+		prefix, suffix := aggFor(c)
+		head, tail := ctePiece(i, c.Alias, prefix, suffix)
+		b.WriteString(head)
+		b.WriteString(tail)
+	}
+	if len(j.CTEs) > 0 {
+		b.WriteByte(' ')
+	}
+	body, err := joinBody(table, j, live, false)
+	b.WriteString(body)
+	return b.String(), err
+}
+
+// JoinPieces is JoinSelect cut where a narrowed CTE's own predicates go:
+// each CTE's head — WITH or a comma, its name, its aggregation up to the WHERE
+// — and tail — the aggregation's GROUP BY and the closing parenthesis — and
+// then the main select, and the count of the same rows, each with a leading
+// space.
+func JoinPieces(table string, j *schema.Join, aggFor func(cte schema.CTE) (prefix, suffix string), live func(table, alias string) Live) (ctes [][2]string, sel, count string, err error) {
+	for i, c := range j.CTEs {
+		prefix, suffix := aggFor(c)
+		head, tail := ctePiece(i, c.Alias, prefix, suffix)
+		ctes = append(ctes, [2]string{head, tail})
+	}
+	sel, err = joinBody(table, j, live, false)
+	if err != nil {
+		return nil, "", "", err
+	}
+	count, err = joinBody(table, j, live, true)
+	return ctes, " " + sel, " " + count, err
+}
+
+// ctePiece is one CTE around an aggregation's prefix and suffix.
+func ctePiece(i int, alias, prefix, suffix string) (head, tail string) {
+	lead := ", "
+	if i == 0 {
+		lead = "WITH "
+	}
+	return lead + Ident(alias) + " AS (" + prefix, suffix + ")"
+}
+
+// joinBody is the SELECT, the FROM and every JOIN; count selects count(*)
+// instead of the declared outputs.
+func joinBody(table string, j *schema.Join, live func(table, alias string) Live, count bool) (string, error) {
+	var w exprWriter
+	b := &w.b
+	b.WriteString("SELECT ")
+	if count {
+		b.WriteString("count(*)")
+	}
+	for i, c := range j.Select {
+		if count {
+			break
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		w.writeExpr(c.Expr)
+		b.WriteString(" AS ")
+		b.WriteString(Ident(ColumnCase(c.As)))
+	}
+	b.WriteString(" FROM ")
+	b.WriteString(Ident(table))
+
+	for _, t := range j.Tables {
+		switch t.Kind {
+		case schema.JoinLeft:
+			b.WriteString(" LEFT JOIN ")
+		default:
+			b.WriteString(" JOIN ")
+		}
+		if t.Table != "" {
+			b.WriteString(Ident(t.Table))
+		} else {
+			b.WriteString(Ident(t.Alias))
+		}
+		// A CTE is referred to by its alias, which IS its name; a table joined
+		// under a different alias needs the AS.
+		if t.Table != "" && t.Table != t.Alias {
+			b.WriteString(" AS ")
+			b.WriteString(Ident(t.Alias))
+		}
+		b.WriteString(" ON ")
+		w.writeCond(t.On)
+		// ON, not WHERE. For an inner join the two are equivalent; for a LEFT
+		// JOIN they are not, and the difference is the whole behaviour of the
+		// join. In WHERE, a parent whose only child is deleted is DROPPED —
+		// the outer join silently becomes an inner one. In ON, the parent
+		// survives with a NULL-extended child, which is what "left join" was
+		// asked for and what the same parent gets when it has no child at all.
+		if live != nil && t.Table != "" {
+			if p := live(t.Table, t.Alias); !p.Empty() {
+				b.WriteString(" AND ")
+				b.WriteString(string(p))
+			}
+		}
+	}
+	return b.String(), w.err
+}
+
+// JoinSuffix is the declared WHERE and ORDER BY that follow the call-site
+// predicates.
+//
+// The declared WHERE is ANDed after them by the splice, so a declaration that
+// says "only fulfilled orders" cannot be widened by a caller — which is the
+// point of declaring it rather than leaving it to every call site.
+func JoinSuffix(j *schema.Join) (string, error) {
+	var w exprWriter
+	if len(j.OrderBy) > 0 {
+		w.b.WriteString(" ORDER BY ")
+		for i, o := range j.OrderBy {
+			if i > 0 {
+				w.b.WriteString(", ")
+			}
+			w.writeExpr(o.Expr)
+			if o.Desc {
+				w.b.WriteString(" DESC")
+			}
+		}
+	}
+	return w.b.String(), w.err
+}
+
+// JoinDeclaredWhere renders the declared predicate, which the generator folds
+// into the statement's fixed WHERE.
+// driving is the predicate for the table the join reads FROM. That one belongs
+// in the WHERE rather than an ON clause: it has no ON of its own, and excluding
+// its marked rows is exactly what a filter on the driving table should do.
+func JoinDeclaredWhere(j *schema.Join, driving Live) (string, error) {
+	if j.Where == nil {
+		return driving.And(""), nil
+	}
+	c, err := Cond(*j.Where)
+	return driving.And(c), err
+}

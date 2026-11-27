@@ -423,11 +423,11 @@ func TestCLI_DDLPerDialect(t *testing.T) {
 // dangerous.
 func TestCLI_UnknownDialectIsRefused(t *testing.T) {
 	withModels(t, testmodel.All())
-	err := run([]string{"ddl", "-dialect", "sqlite"})
+	err := run([]string{"ddl", "-dialect", "db2"})
 	if err == nil {
 		t.Fatal("an unknown dialect was accepted")
 	}
-	for _, want := range []string{"sqlite", "postgres", "mysql", "mariadb"} {
+	for _, want := range []string{"db2", "postgres", "mysql", "mariadb", "sqlite"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error should mention %q, got: %v", want, err)
 		}
@@ -505,3 +505,51 @@ func TestCLI_RawQueriesRefuseANonPostgresDialect(t *testing.T) {
 		t.Errorf("the refusal does not say what the risk is: %v", err)
 	}
 }
+
+// -dialect sqlite, as far as the CLI goes without a driver: the live half is
+// internal/sqlitecheck, which has one.
+func TestCLI_SQLiteDialect(t *testing.T) {
+	withModels(t, testmodel.All())
+	if err := run([]string{"portable", "sqlite"}); err == nil || !strings.Contains(err.Error(), "SQLite has no array type") {
+		t.Errorf("portable sqlite on a model with arrays: %v", err)
+	}
+	withModels(t, []any{&liteNote{}})
+	if err := run([]string{"portable", "sqlite"}); err != nil {
+		t.Errorf("portable sqlite on a portable model: %v", err)
+	}
+	for _, name := range []string{"sqlite", "sqlite3"} {
+		if tg, err := parseDialect(name); err != nil || tg.dialect.String() != "sqlite" {
+			t.Errorf("%s: %+v %v", name, tg, err)
+		}
+	}
+	for _, cmd := range []string{"explain", "watch"} {
+		err := run([]string{cmd, "-dialect", "sqlite"})
+		if err == nil || !strings.Contains(err.Error(), "no SQLite form") {
+			t.Errorf("%s: want a refusal naming SQLite, got %v", cmd, err)
+		}
+	}
+	missing := filepath.Join(t.TempDir(), "absent.db")
+	for _, cmd := range [][]string{{"import"}, {"verify"}, {"diff", "init"}} {
+		err := run(append(cmd, "-dialect", "sqlite", "-dsn", missing, "-out", t.TempDir()))
+		if err == nil || !strings.Contains(err.Error(), "no database at") {
+			t.Errorf("%s against a missing file: want it refused before SQLite creates one, got %v", cmd, err)
+		}
+	}
+	// The pending check replays into memory, which needs the driver this
+	// module does not import — and says how to add it.
+	out := t.TempDir()
+	if err := os.WriteFile(filepath.Join(out, "0001_init.up.sql"), []byte("SELECT 1;"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := run([]string{"verify", "-pending", "-dialect", "sqlite", "-out", out})
+	if err == nil || !strings.Contains(err.Error(), "modernc.org/sqlite") {
+		t.Errorf("verify -pending without a driver: want the instruction, got %v", err)
+	}
+}
+
+type liteNote struct {
+	ID   int64
+	Body string
+}
+
+func (n *liteNote) Schema(t *storm.Table) { t.PrimaryKey(&n.ID) }

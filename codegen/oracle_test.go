@@ -48,7 +48,7 @@ var optional = map[string]string{
 
 func TestEveryDialectFillsTheSeam(t *testing.T) {
 	for _, d := range []Dialect{
-		DialectPostgres, DialectMySQL, DialectMariaDB, DialectMSSQL, DialectOracle,
+		DialectPostgres, DialectMySQL, DialectMariaDB, DialectMSSQL, DialectOracle, DialectSQLite,
 	} {
 		l := loweringFor(d)
 		v := reflect.ValueOf(l)
@@ -79,6 +79,7 @@ func TestOnlyOracleReadsTheValueShape(t *testing.T) {
 		DialectMariaDB:  {"[][]byte", "RawValues"},
 		DialectMSSQL:    {"[][]byte", "RawValues"},
 		DialectOracle:   {"[]any", "Values"},
+		DialectSQLite:   {"[]any", "Values"},
 	}
 	for d, w := range want {
 		dec := decodersFor(d, "github.com/gsoultan/storm/v2")

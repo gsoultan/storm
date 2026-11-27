@@ -54,6 +54,7 @@ import (
 	"github.com/gsoultan/storm/v2"
 	"github.com/gsoultan/storm/v2/codegen"
 	"github.com/gsoultan/storm/v2/codegen/mongo"
+	"github.com/gsoultan/storm/v2/compile/liteddl"
 	"github.com/gsoultan/storm/v2/compile/mgddl"
 	"github.com/gsoultan/storm/v2/compile/msddl"
 	"github.com/gsoultan/storm/v2/compile/myddl"
@@ -64,6 +65,7 @@ import (
 	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/gsoultan/storm/v2/schema"
 	"github.com/gsoultan/storm/v2/schema/pg"
+	"github.com/gsoultan/storm/v2/tool/litetool"
 	"github.com/gsoultan/storm/v2/tool/mstool"
 	"github.com/gsoultan/storm/v2/tool/oratool"
 )
@@ -135,12 +137,12 @@ usage:
                                   migrations (functions, views the model omits)
   storm watch <dir>               regenerate on save; leave it running while you edit
   storm models                    what discovery found, and which rule matched
-  storm portable <dialect>        fail if the model does not port (mysql, mariadb, mssql, oracle, mongo)
+  storm portable <dialect>        fail if the model does not port (mysql, mariadb, mssql, oracle, sqlite, mongo)
   storm lint                      cost every named plan in round trips; fail over the budget
   storm explain                   plan every statement; flag large seq scans (PostgreSQL 16+)
 
 flags:
-  -dialect    the engine to generate for: postgres (default), mysql, mariadb, mssql, oracle, mongo.
+  -dialect    the engine to generate for: postgres (default), mysql, mariadb, mssql, oracle, sqlite, mongo.
               ddl and generate honour it; diff, verify, explain and import
               read a live PostgreSQL catalogue and have no other form
   -dsn        PostgreSQL connection string (or $STORM_DSN)
@@ -206,7 +208,7 @@ func run(args []string) error {
 	down := fs.Bool("down", false, "diff: write a .down.sql beside each .up.sql that undoes it")
 	dryRun := fs.Bool("dry-run", false, "diff: print the files it would write, and write nothing")
 	dialectName := fs.String("dialect", "postgres",
-		"the engine to generate for: postgres, mysql, mariadb, mssql, oracle or mongo")
+		"the engine to generate for: postgres, mysql, mariadb, mssql, oracle, sqlite or mongo")
 	// Flags may appear ANYWHERE, including after a positional argument.
 	//
 	// Go's flag package stops at the first non-flag, so `storm diff init
@@ -315,6 +317,25 @@ func run(args []string) error {
 					"-dialect oracle", cmd)
 		}
 	}
+	// SQLite has every one of them but explain and watch: schema/sqlite reads
+	// the database file back, and migrate rebuilds tables for what SQLite has
+	// no ALTER for. -dsn is the file's path.
+	if tgt.dialect == codegen.DialectSQLite {
+		switch cmd {
+		case "import":
+			src, err := litetool.ImportModel(context.Background(), *dsn, modulePath)
+			if err != nil {
+				return err
+			}
+			_, err = os.Stdout.Write(src)
+			return err
+		case "explain", "watch":
+			return fmt.Errorf(
+				"storm %s has no SQLite form yet; `storm diff`, `storm verify`, "+
+					"`storm import`, `storm generate` and `storm ddl` all work for "+
+					"-dialect sqlite", cmd)
+		}
+	}
 	if tgt.dialect != codegen.DialectPostgres {
 		refuse := func() error {
 			return fmt.Errorf("storm %s reads a live PostgreSQL catalogue and has no %s form; "+
@@ -327,7 +348,8 @@ func run(args []string) error {
 		case "diff", "verify":
 			// These have a SQL Server form and an Oracle one — migrate's DDL
 			// seam plus each target's introspector — and nothing else does.
-			if tgt.dialect != codegen.DialectMSSQL && tgt.dialect != codegen.DialectOracle {
+			if tgt.dialect != codegen.DialectMSSQL && tgt.dialect != codegen.DialectOracle &&
+				tgt.dialect != codegen.DialectSQLite {
 				return refuse()
 			}
 		}
@@ -1040,6 +1062,9 @@ func replayAndDiff(dialect codegen.Dialect, dsn string, files []string,
 		}
 		return mstool.ReplayAndDiff(context.Background(), dsn, files, model)
 	}
+	if dialect == codegen.DialectSQLite {
+		return litetool.ReplayAndDiff(context.Background(), files, model, o)
+	}
 	if dialect == codegen.DialectOracle {
 		return migrate.Plan{}, errors.New("replaying the migrations directory has no Oracle form yet; " +
 			"diff against a database the migrations have been applied to instead")
@@ -1181,6 +1206,12 @@ func parseDialect(name string) (target, error) {
 			check:   oraddl.Check,
 			ddl:     oraddl.Create,
 		}, nil
+	case "sqlite", "sqlite3":
+		return target{
+			dialect: codegen.DialectSQLite,
+			check:   liteddl.Check,
+			ddl:     liteddl.Create,
+		}, nil
 	case "mongo", "mongodb":
 		// A back end rather than a dialect (ADR-0004): the "DDL" is the
 		// collections' validators and indexes, as commands.
@@ -1191,7 +1222,7 @@ func parseDialect(name string) (target, error) {
 		}, nil
 	}
 	return target{}, fmt.Errorf(
-		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql, oracle and mongo", name)
+		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql, oracle, sqlite and mongo", name)
 }
 
 // rawCheckable reports whether storm.SQL declarations can be validated against
@@ -1245,6 +1276,16 @@ func portable(dialect string, model *schema.Schema) error {
 		}
 		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
 		return nil
+	case "sqlite", "sqlite3":
+		// Short, and mostly about STORAGE: SQLite keeps any value in any
+		// column, so what does not port is a type that needs more than a
+		// float64 or text can hold exactly — an unbounded or wide numeric,
+		// an interval, a range — and the PostgreSQL-only index kinds.
+		if err := liteddl.Check(model); err != nil {
+			return err
+		}
+		fmt.Printf("✓ %d table(s) port to %s\n", len(model.Tables), dialect)
+		return nil
 	case "mongo", "mongodb":
 		// The longest list, and the most honest one: a document store differs
 		// in SHAPE, so most refusals are constructs storm will not pretend to
@@ -1257,7 +1298,7 @@ func portable(dialect string, model *schema.Schema) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql, oracle and mongo", dialect)
+		"unknown dialect %q — storm knows postgres, mysql, mariadb, mssql, oracle, sqlite and mongo", dialect)
 }
 
 // packageFor generates the tree for o.Dialect. MongoDB has a generator of its
@@ -1280,6 +1321,11 @@ func packageFor(model *schema.Schema, o codegen.PackageOptions) (map[string][]by
 func livePlan(dialect codegen.Dialect, dsn, ns string, model *schema.Schema,
 	o migrate.Options) (migrate.Plan, error) {
 
+	if dialect == codegen.DialectSQLite {
+		// -schema means nothing here: a SQLite database is one file, and the
+		// attached ones are storm's own scratch.
+		return litetool.Plan(context.Background(), dsn, model, o)
+	}
 	if dialect == codegen.DialectOracle {
 		db, closeDB, err := oratool.Open(dsn)
 		if err != nil {

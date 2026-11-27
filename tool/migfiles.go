@@ -104,7 +104,7 @@ func migrationFiles(plan migrate.Plan, down *migrate.Plan, name string, seq int)
 	}
 	if len(inTx) > 0 {
 		base := ver("")
-		p := migrate.Plan{Changes: inTx}
+		p := plan.Subset(inTx)
 		note := fmt.Sprintf("%d steps", len(inTx))
 		if p.Destructive() {
 			note += ", DESTRUCTIVE"
@@ -114,7 +114,7 @@ func migrationFiles(plan migrate.Plan, down *migrate.Plan, name string, seq int)
 			body: generatedHeader + fmt.Sprintf("-- %d step(s)\n\n", len(inTx)) + p.SQL(),
 			note: note,
 		})
-		d := migrate.Plan{Changes: downTx}
+		d := plan.Subset(downTx)
 		addDown(base, d.SQL(), d.Destructive())
 		downTx = nil
 		seq++
@@ -127,7 +127,7 @@ func migrationFiles(plan migrate.Plan, down *migrate.Plan, name string, seq int)
 				"-- checks the existing rows against constraints added NOT VALID. Apart from the\n" +
 				"-- ADD on purpose: the scan here blocks no reader and no writer, and inside the\n" +
 				"-- ADD's transaction it would run under the ADD's lock.\n\n" +
-				migrate.Plan{Changes: validate}.SQL(),
+				plan.Subset(validate).SQL(),
 			note: fmt.Sprintf("%d step(s), validation", len(validate)),
 		})
 		// The constraints themselves go in the transactional file's down; a
@@ -152,7 +152,7 @@ func migrationFiles(plan migrate.Plan, down *migrate.Plan, name string, seq int)
 				return nil, fmt.Errorf("storm diff -down: no reverse for %q; write this down migration by hand", ch.SQL)
 			}
 			delete(downAlone, key(ix, !build))
-			addDown(base, migrate.Plan{Changes: []migrate.Change{undo}}.SQL(), undo.Destructive)
+			addDown(base, plan.Subset([]migrate.Change{undo}).SQL(), undo.Destructive)
 		}
 		seq++
 	}
@@ -173,7 +173,7 @@ func migrationFiles(plan migrate.Plan, down *migrate.Plan, name string, seq int)
 	if len(downTx) > 0 {
 		for i := range files {
 			if strings.HasSuffix(files[i].name, ".down.sql") {
-				files[i].body += migrate.Plan{Changes: downTx}.SQL()
+				files[i].body += plan.Subset(downTx).SQL()
 				break
 			}
 		}
