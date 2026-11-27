@@ -165,6 +165,7 @@ feature, the target, and the source line. It never fails on a customer's install
 | Foreign keys | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
 | Multi-stmt tx | ✓ | ✓ | ✓ | ✓ | ✓ | `~` replica set |
 | Index methods | btree, hash, gin, gist, spgist, brin | btree, hash, fulltext | btree, hash, fulltext | clustered/nonclustered, columnstore | btree, bitmap | single, compound, text |
+| Full-text search | ✓ `tsvector`: `Matches`, `WebSearch` | ✓ `FULLTEXT`: `Matches` | ✓ `FULLTEXT`: `Matches` | ✗ | ✗ | ✗ |
 | Partial index | ✓ `WHERE` | ✗ | ✗ | ✓ filtered | ✗ (function-based) | ✓ `partialFilterExpression` |
 | Covering index | ✓ `INCLUDE` | `~` trailing keys | `~` trailing keys | ✓ `INCLUDE` | `~` trailing keys | ✗ |
 | Expression index | ✓ | ✓ 8.0.13+ | ✓ | ✓ computed column | ✓ | ✗ |
