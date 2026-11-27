@@ -63,6 +63,43 @@ And orders the steps so each one can run:
 plainly and online, and then its reverse, and requires that the next plan be
 empty.
 
+### A second PostgreSQL adapter: caduceus
+
+`runtime/caduceusdrv` runs every generated package over
+[caduceus](https://github.com/gsoultan/caduceus), a PostgreSQL driver with no
+dependencies, as `runtime/pgxdrv` does over pgx. Nothing changes for a project
+on pgx.
+
+- **`caduceusdrv.Pool`** is a pool of caduceus connections and a `runtime.DB`.
+  `NewPool` reads pgxpool's `pool_max_conns`, `pool_max_conn_lifetime` and
+  `pool_max_conn_idle_time` from the URL, so a URL written for pgxpool works.
+  A connection given back with a transaction open is rolled back, and one left
+  mid-result or found dead is closed. `Conn` and `Tx` adapt a connection and a
+  transaction the caller holds.
+- **The same bytes as pgx.** Each connection asks for every column in the
+  format pgx would (`caduceusdrv.ResultFormat`), so the generated scanners
+  read identical bytes over either adapter. `TestSameBytesAsPgx` writes and
+  reads a row of twenty types through both and compares them byte for byte.
+  storm's `Decimal`, `Interval`, `TimeOfDay`, `TstzRange`, `JSON` and
+  `[]Decimal` arguments are sent as the text PostgreSQL reads for each.
+- **Automigrate and introspection over caduceus.** The new package
+  `migrate/caduceusmigrate` has `Auto`, `AutoPool`, `For` and `Introspect`,
+  which are `migrate.Auto`, `migrate.AutoPool`, `migrate.ForWith` and
+  `schemapg.Introspect` on caduceus. It is a package of its own so that
+  `migrate`, `schema/pg` and the `storm` command never link caduceus, and a
+  project on pgx needs nothing new in its go.mod. `migrate.Session`,
+  `migrate.AutoSession`, `migrate.ForSession` and `schemapg.IntrospectSession`
+  take a connection of any other driver the same way. Automigrating
+  `internal/testmodel` through caduceus leaves nothing for pgx to do, and both
+  drivers read back the same schema.
+
+### Fixed: a primary key column named `key`
+
+`Delete` took the key as a parameter called `key` and built the Row it hands
+the delete hooks in a variable of the same name, so a table whose primary key
+column is `key` generated a package that did not compile. The Row's variable
+now takes a name no parameter has. MongoDB's generator had the same fault.
+
 ### Full-text search on MySQL and MariaDB
 
 A `FULLTEXT` index could be declared and migrated, but nothing in the

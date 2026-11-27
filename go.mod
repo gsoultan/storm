@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	entgo.io/ent v0.14.6
 	github.com/google/uuid v1.6.0
+	github.com/gsoultan/caduceus v0.1.1-0.20261127080509-21b46160b217
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/uptrace/bun v1.2.18
 	github.com/uptrace/bun/dialect/pgdialect v1.2.18

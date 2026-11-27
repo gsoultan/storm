@@ -20,7 +20,6 @@ import (
 	"github.com/gsoultan/storm/compile/pgddl"
 	"github.com/gsoultan/storm/schema"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Auto is the one path where storm applies DDL, and it is the exception ADR-0001
@@ -205,6 +204,11 @@ func (e *DestructiveError) Destructive() []Change {
 // it stores and only catalog form compares against catalog form. See the
 // commentary in normalize.go.
 func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) (Result, error) {
+	return auto(ctx, pgxSession(c), want, o)
+}
+
+// auto is Auto through any driver's session.
+func auto(ctx context.Context, c Session, want *schema.Schema, o AutoOptions) (Result, error) {
 	ns := o.namespace()
 	if err := validIdent(ns); err != nil {
 		return Result{}, err
@@ -222,10 +226,10 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 	// connection AutoPool borrows goes back to the pool and serves application
 	// queries for the rest of its life; it must go back as it came.
 	var prevPath, prevLock string
-	if err := c.QueryRow(ctx, "SHOW search_path").Scan(&prevPath); err != nil {
+	if err := c.Scan(ctx, &prevPath, "SHOW search_path"); err != nil {
 		return Result{}, fmt.Errorf("read search_path: %w", err)
 	}
-	if err := c.QueryRow(ctx, "SHOW lock_timeout").Scan(&prevLock); err != nil {
+	if err := c.Scan(ctx, &prevLock, "SHOW lock_timeout"); err != nil {
 		return Result{}, fmt.Errorf("read lock_timeout: %w", err)
 	}
 	defer func() {
@@ -236,8 +240,8 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 		// search_path. Cleanup gets its own deadline for the same reason.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
-		_, _ = c.Exec(ctx, "SELECT set_config('search_path', $1, false)", prevPath)
-		_, _ = c.Exec(ctx, "SELECT set_config('lock_timeout', $1, false)", prevLock)
+		_ = c.Exec(ctx, "SELECT set_config('search_path', $1, false)", prevPath)
+		_ = c.Exec(ctx, "SELECT set_config('lock_timeout', $1, false)", prevLock)
 	}()
 
 	waited, err := lock(ctx, c, ns, o)
@@ -259,7 +263,7 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 		// released back into the pool holding the lock.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
-		if _, err := c.Exec(ctx, "SELECT pg_advisory_unlock($1)", advisoryKey(ns)); err != nil {
+		if err := c.Exec(ctx, "SELECT pg_advisory_unlock($1)", advisoryKey(ns)); err != nil {
 			o.logf("storm: releasing the migration lock failed (it is released on disconnect): %v", err)
 		}
 	}()
@@ -275,14 +279,14 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 	// the first run of TestAuto_ConcurrentProcessesApplyOnce. "Idempotent" and
 	// "safe to race" are different properties, and IF NOT EXISTS only claims
 	// the first.
-	if _, err := c.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+ns); err != nil {
+	if err := c.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+ns); err != nil {
 		return res, fmt.Errorf("create schema %s: %w", ns, err)
 	}
 
 	// AFTER the lock. A replica that waited its turn must diff against what the
 	// winner just applied, or it applies the same plan a second time — and
 	// CREATE TABLE is not idempotent.
-	plan, err := ForWith(ctx, c, ns, want, Options{Concurrently: o.Concurrently, DeclaredOnly: o.DeclaredOnly})
+	plan, err := forWith(ctx, c, ns, want, Options{Concurrently: o.Concurrently, DeclaredOnly: o.DeclaredOnly})
 	if err != nil {
 		return res, err
 	}
@@ -358,18 +362,18 @@ func Auto(ctx context.Context, c *pgx.Conn, want *schema.Schema, o AutoOptions) 
 // transactional, so this is all-or-nothing: the schema either moves to the model
 // or does not move at all. The returned changes are the ones that COMMITTED —
 // on failure that is none of them, which is the point.
-func applyTx(ctx context.Context, c *pgx.Conn, ns string, steps []Change, o AutoOptions) ([]Change, error) {
+func applyTx(ctx context.Context, c Session, ns string, steps []Change, o AutoOptions) ([]Change, error) {
 	tx, err := c.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if err := bound(ctx, tx, ns, o, true); err != nil {
+	if err := bound(ctx, tx.Exec, ns, o, true); err != nil {
 		return nil, err
 	}
 	for _, ch := range steps {
-		if _, err := tx.Exec(ctx, ch.SQL); err != nil {
+		if err := tx.Exec(ctx, ch.SQL); err != nil {
 			return nil, fmt.Errorf("%w\n  while applying: %s\n  nothing was applied: the transaction rolled back", err, ch.SQL)
 		}
 		o.logf("storm: %s", ch.SQL)
@@ -383,11 +387,11 @@ func applyTx(ctx context.Context, c *pgx.Conn, ns string, steps []Change, o Auto
 // applyAlone runs one CREATE/DROP INDEX CONCURRENTLY, which refuses to run
 // inside a transaction block. There is no rollback here — that is the trade the
 // Concurrently option makes, and why a failure leaves the earlier steps applied.
-func applyAlone(ctx context.Context, c *pgx.Conn, ns string, ch Change, o AutoOptions) error {
-	if err := bound(ctx, c, ns, o, false); err != nil {
+func applyAlone(ctx context.Context, c Session, ns string, ch Change, o AutoOptions) error {
+	if err := bound(ctx, c.Exec, ns, o, false); err != nil {
 		return err
 	}
-	if _, err := c.Exec(ctx, ch.SQL); err != nil {
+	if err := c.Exec(ctx, ch.SQL); err != nil {
 		return fmt.Errorf("%w\n  while applying (outside a transaction): %s\n  the steps before it are applied and stay applied", err, ch.SQL)
 	}
 	o.logf("storm: %s", ch.SQL)
@@ -396,9 +400,7 @@ func applyAlone(ctx context.Context, c *pgx.Conn, ns string, ch Change, o AutoOp
 
 // execer is the slice of pgx that bound needs, so it can set the bounds on a
 // transaction (SET LOCAL) and on the session (SET) alike.
-type execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
+type execer = func(ctx context.Context, sql string, args ...any) error
 
 // bound sets search_path and lock_timeout for the steps that follow.
 //
@@ -408,7 +410,7 @@ type execer interface {
 // (SET) — the concurrent steps have no transaction to scope a setting to, which
 // is why Auto restores both settings on the way out.
 func bound(ctx context.Context, e execer, ns string, o AutoOptions, local bool) error {
-	if _, err := e.Exec(ctx, "SELECT set_config('search_path', $1, $2)", ns, local); err != nil {
+	if err := e(ctx, "SELECT set_config('search_path', $1, $2)", ns, local); err != nil {
 		return fmt.Errorf("set search_path to %s: %w", ns, err)
 	}
 	if d := o.lockTimeout(); d > 0 {
@@ -416,7 +418,7 @@ func bound(ctx context.Context, e execer, ns string, o AutoOptions, local bool) 
 		if ms == 0 {
 			ms = 1 // a sub-millisecond bound is not "no bound"
 		}
-		if _, err := e.Exec(ctx, "SELECT set_config('lock_timeout', $1, $2)",
+		if err := e(ctx, "SELECT set_config('lock_timeout', $1, $2)",
 			strconv.FormatInt(ms, 10), local); err != nil {
 			return fmt.Errorf("set lock_timeout: %w", err)
 		}
@@ -431,13 +433,13 @@ func bound(ctx context.Context, e execer, ns string, o AutoOptions, local bool) 
 // blocking form has no timeout of its own: lock_timeout does not apply to it,
 // so the only bound available would be cancelling the context, and a caller who
 // passed context.Background() would wait for ever.
-func lock(ctx context.Context, c *pgx.Conn, ns string, o AutoOptions) (time.Duration, error) {
+func lock(ctx context.Context, c Session, ns string, o AutoOptions) (time.Duration, error) {
 	key := advisoryKey(ns)
 	start := time.Now()
 	deadline := start.Add(o.lockWait())
 	for attempt := 0; ; attempt++ {
 		var got bool
-		if err := c.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&got); err != nil {
+		if err := c.Scan(ctx, &got, "SELECT pg_try_advisory_lock($1)", key); err != nil {
 			return time.Since(start), fmt.Errorf("take the migration lock: %w", err)
 		}
 		if got {
