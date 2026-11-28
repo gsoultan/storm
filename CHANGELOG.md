@@ -14,6 +14,33 @@ a release note that cannot be checked is marketing.
 
 ## Unreleased
 
+### Fixed: an existing schema can now be adopted
+
+Found by pointing storm at gateon's databases, which its own hand-written
+migrations build on PostgreSQL and on SQLite.
+
+- **`timestamp` without a time zone is bound and decoded.** It had no Go kind:
+  `storm import` omitted every such column, and a NOT NULL one with no default
+  refused the whole package because no INSERT could fill it. It is a
+  `time.Time`, read by the timestamptz decoder and offered the same
+  operators; `.WithoutTimeZone()` declares one, as `.Date()` declares a date.
+  A UTC value is stored as its UTC wall clock whatever the session zone is,
+  which the live test checks in an Asia/Jakarta session.
+- **The SQLite differ compares what SQLite stores, not its labels.** Integer
+  widths, float widths, and timestamp against timestamptz store identically,
+  so a difference inside one of those groups is no longer a table rebuild. A
+  unique constraint that was written without a name is matched by its columns,
+  and a primary key column is NOT NULL, which SQLite's NULL-in-a-key quirk does
+  not change. Anything that alters an answer still diffs, and a test holds
+  each such case to that. A named constraint keeps its name.
+- **An imported model compiles when a column has to be left out.** An index,
+  unique or key over an omitted column named a field the struct did not have.
+  It now goes to the NOT CARRIED OVER list. Imports also say
+  `.WithoutTimeZone()` and `.Date()`, which a `time.Time` field does not mean by
+  default.
+
+## v2.1.0 — 2026-11-28
+
 ### SQLite: a fifth SQL target
 
 storm now generates for, migrates and imports SQLite 3.45 and later.

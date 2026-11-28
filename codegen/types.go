@@ -93,7 +93,17 @@ func goKind(c *schema.Column) kind {
 		return kindBytes
 	case schema.TypeUUID:
 		return kindUUID
-	case schema.TypeTimestamptz:
+	case schema.TypeTimestamptz, schema.TypeTimestamp:
+		// A timestamp without a time zone is the same Go value, the same
+		// decoder and the same operators. On PostgreSQL both are eight bytes of
+		// microseconds since 2000-01-01, and the driver encodes a parameter by
+		// the type the server PREPAREd it as: the instant for a timestamptz,
+		// the wall clock in the time's own zone for a timestamp. Every other
+		// target already decodes the two through one function (see rawscan's
+		// datetime case). What differs is what the column MEANS, which is the
+		// model's business. Until this case existed a timestamp column was
+		// unsupported, and a NOT NULL one with no default refused the whole
+		// package, because no INSERT could fill it.
 		return kindTimestamptz
 	case schema.TypeNumeric:
 		return kindNumeric

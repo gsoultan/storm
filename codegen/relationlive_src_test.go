@@ -117,6 +117,7 @@ type mdWide struct {
 	Text    string
 	Blob    []byte
 	Stamp   time.Time
+	Wall    time.Time
 	Day     time.Time
 	Clock   storm.TimeOfDay
 	Money   storm.Decimal
@@ -129,6 +130,7 @@ type mdWide struct {
 func (w *mdWide) Schema(t *storm.Table) {
 	t.Col(&w.Text).Size(80)
 	t.Col(&w.Day).Date()
+	t.Col(&w.Wall).WithoutTimeZone()
 	t.Col(&w.Money).Numeric(18, 6)
 }
 
@@ -1251,7 +1253,7 @@ func TestEveryColumnTypeRoundTripsThroughGeneratedCode(t *testing.T) {
 		Single: 0.5, Double: -1.25,
 		Text:  "héllo — ünicode",
 		Blob:  []byte{0, 1, 2, 0xff},
-		Stamp: stamp, Day: day, Clock: clock, Money: money,
+		Stamp: stamp, Wall: stamp, Day: day, Clock: clock, Money: money,
 		Doc:     storm.JSON("{\"a\": 1, \"b\": [2, 3]}"),
 		OptText: runtime.Null[string]{V: optText, Valid: true},
 		OptBig:  runtime.Null[int64]{V: optBig, Valid: true},
@@ -1282,6 +1284,9 @@ func TestEveryColumnTypeRoundTripsThroughGeneratedCode(t *testing.T) {
 	}
 	if !got.Stamp.Equal(stamp) {
 		t.Errorf("timestamp = %v, want %v", got.Stamp, stamp)
+	}
+	if !got.Wall.Equal(stamp) {
+		t.Errorf("timestamp without time zone = %v, want %v", got.Wall, stamp)
 	}
 	if !got.Day.Equal(day) {
 		t.Errorf("date = %v, want %v", got.Day, day)
