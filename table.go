@@ -657,6 +657,25 @@ func (b *ColBuilder) Identity() *ColBuilder {
 	return b
 }
 
+// WithoutTimeZone makes a time.Time column a timestamp rather than a
+// timestamptz: a wall-clock reading with no zone attached.
+//
+// Prefer timestamptz for anything new — it is an instant, and comparing two of
+// them never depends on a session setting. This exists for schemas that
+// already use timestamp, which is what most hand-written PostgreSQL DDL
+// declares. A value is written as its wall clock in the time's own zone and
+// read back in UTC, so a caller that writes UTC reads back exactly what it
+// wrote.
+func (b *ColBuilder) WithoutTimeZone() *ColBuilder {
+	if b.c.sc.Type.Name != schema.TypeTimestamptz {
+		b.t.errs.add(fmt.Errorf("%s: .WithoutTimeZone() applies to a time.Time field, not %s",
+			b.t.out.Name, b.c.sc.Type.Name))
+		return b
+	}
+	b.c.sc.Type.Name = schema.TypeTimestamp
+	return b
+}
+
 // Raw forces a database type storm does not model.
 func (b *ColBuilder) Raw(sqlType string) *ColBuilder {
 	b.c.sc.Type = schema.Type{Name: sqlType}

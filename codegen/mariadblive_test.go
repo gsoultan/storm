@@ -460,6 +460,7 @@ type mdWide struct {
 	Text    string
 	Blob    []byte
 	Stamp   time.Time
+	Wall    time.Time
 	Day     time.Time
 	Clock   storm.TimeOfDay
 	Money   storm.Decimal
@@ -472,6 +473,7 @@ type mdWide struct {
 func (w *mdWide) Schema(t *storm.Table) {
 	t.Col(&w.Text).Size(80)
 	t.Col(&w.Day).Date()
+	t.Col(&w.Wall).WithoutTimeZone()
 	t.Col(&w.Money).Numeric(18, 6)
 }
 
