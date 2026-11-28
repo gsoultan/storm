@@ -321,10 +321,11 @@ func indexes(ctx context.Context, c Conn, ns string, t *schema.Table, def tableD
 					name = u.name
 				}
 			}
-			if name == "" {
+			unnamed := name == ""
+			if unnamed {
 				name = "uq_" + t.Name + "_" + strings.Join(cols, "_")
 			}
-			t.Uniques = append(t.Uniques, &schema.Unique{Name: name, Columns: cols})
+			t.Uniques = append(t.Uniques, &schema.Unique{Name: name, Columns: cols, Unnamed: unnamed})
 		default:
 			exprs, where := parseIndex(l.sql)
 			for i := range keys {

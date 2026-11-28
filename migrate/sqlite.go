@@ -372,7 +372,93 @@ func diffSQLite(ctx context.Context, c Conn, norm *schema.Schema, o Options) (Pl
 	if o.DeclaredOnly {
 		cur = declaredOnly(cur, norm)
 	}
+	foldSQLiteEquivalents(cur, norm)
 	return DiffFor(cur, norm, SQLite)
+}
+
+// foldSQLiteEquivalents makes the live schema agree with the model wherever the
+// two differ only in what SQLite cannot store or enforce differently. It edits
+// cur, which is a fresh introspection nobody else holds.
+//
+// Introspection reads a declared type back exactly (schema/sqlite), which is
+// right for a database storm made and wrong for comparing one it did not: a
+// hand-written INTEGER column is read as int4 and diffs against an int64
+// field as a narrowing, and the plan is a table rebuild that changes no byte.
+// Three groups store identically, so a difference inside a group is a label:
+//
+//   - int2, int4 and int8 are all INTEGER affinity, stored in up to 8 bytes;
+//   - float4 and float8 are both REAL, an 8-byte IEEE double;
+//   - timestamp and timestamptz are both the fixed-width UTC text storm
+//     writes, read through the same decoder.
+//
+// Two constraint properties are folded as well:
+//
+//   - A unique constraint written WITHOUT a name is identified by its
+//     columns. SQLite keeps no name for an inline UNIQUE, so the one
+//     introspection reports is made up, and comparing it with the model's
+//     would plan a rebuild to rename something that has no name. A constraint
+//     the DDL did name keeps its name, and a different one is still a change.
+//   - A PRIMARY KEY column is NOT NULL. SQLite's own documentation calls the
+//     NULL it admits in a non-INTEGER key of a rowid table a long-standing bug
+//     kept for compatibility; every row storm writes has a key, and the model's
+//     NOT NULL is what the key already means.
+//
+// What is NOT folded: any type change across groups, nullability of any
+// column outside the key, defaults, checks, and indexes. Those change answers.
+func foldSQLiteEquivalents(cur, norm *schema.Schema) {
+	for _, ct := range cur.Tables {
+		nt := norm.Table(ct.Name)
+		if nt == nil {
+			continue
+		}
+		key := make(map[string]bool, len(ct.PrimaryKey))
+		for _, k := range ct.PrimaryKey {
+			key[k] = true
+		}
+		for _, cc := range ct.Columns {
+			nc := nt.Column(cc.Name)
+			if nc == nil {
+				continue
+			}
+			if sameSQLiteStorage(cc.Type, nc.Type) {
+				cc.Type = nc.Type
+			}
+			if key[cc.Name] && nc.NotNull {
+				cc.NotNull = true
+			}
+		}
+		for _, cu := range ct.Uniques {
+			if !cu.Unnamed {
+				continue
+			}
+			for _, nu := range nt.Uniques {
+				if eq(cu.Columns, nu.Columns) {
+					cu.Name = nu.Name
+					break
+				}
+			}
+		}
+	}
+}
+
+// sameSQLiteStorage reports two types SQLite stores and compares identically.
+func sameSQLiteStorage(a, b schema.Type) bool {
+	if a.Array || b.Array || a.Enum || b.Enum {
+		return false
+	}
+	group := func(t schema.Type) int {
+		switch t.Name {
+		case schema.TypeInt2, schema.TypeInt4, schema.TypeInt8:
+			return 1
+		case schema.TypeFloat4, schema.TypeFloat8:
+			return 2
+		case schema.TypeTimestamp, schema.TypeTimestamptz:
+			return 3
+		}
+		return 0
+	}
+	g := group(a)
+	return g != 0 && g == group(b)
 }
 
 // AutoSQLiteDB is AutoSQLite on one connection taken from db, and given back.

@@ -411,6 +411,12 @@ const ConvertJSONText = "json-text"
 type Unique struct {
 	Name    string
 	Columns []string // column names or expressions
+
+	// Unnamed is read from a database, never declared: the constraint was
+	// written without a name, so Name is one introspection made up. SQLite
+	// keeps no name for an inline UNIQUE. A differ compares such a constraint
+	// by its columns, since there is no name it could be said to have changed.
+	Unnamed bool
 }
 
 // Index is a secondary index.
