@@ -1,0 +1,149 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: MIT
+//
+// This file is part of storm, a compile-time ORM for PostgreSQL and Go,
+// created and owned by Gembit Soultan Shirazi.
+// Use of this source code is governed by the MIT License that can be
+// found in the LICENSE file at the root of this repository.
+
+package sqlite
+
+import "strings"
+
+// Recursive traversal of a self-reference: a whole subtree or ancestor chain in
+// one query rather than one query per level.
+//
+// SQLite has WITH RECURSIVE, so the shape carries over from PostgreSQL. Two
+// parts do not, for the reason MySQL's do not: there is no array.
+//
+//   - The ROOTS arrive as one bound JSON array, unpacked by json_each, the way
+//     every list is bound on this target (see InFrag). A uuid key travels as
+//     hex inside the document and is unhex()ed back into the 16 bytes stored.
+//   - The CYCLE GUARD is a text path of hex keys, delimited on both sides by
+//     commas and tested with instr(). Hex, because a key may be a BLOB or a
+//     text that itself contains a comma, which would make the guard read one
+//     visited key as two; hex output is [0-9A-F] for every input. And
+//     delimited on both sides, so key 1 is not found inside key 11. SQLite's
+//     text has no declared width, so unlike MySQL's path this one never
+//     overflows, and no depth is out of reach.
+
+// Recursion direction.
+const (
+	Descend = iota // children of the given roots
+	Ascend         // ancestors of the given rows
+)
+
+// Recursive lowers a self-referential traversal.
+//
+// table is the self-referencing table, cols its projected columns, key its
+// primary key and parent the column pointing at that key. Two parameters: the
+// roots as a JSON array, then the maximum depth.
+func Recursive(table string, cols []string, key, parent, keyType string, dir int, live Live) string {
+	var b strings.Builder
+	t := Ident(recursiveAlias)
+	c := Ident(recursiveChild)
+	mark := func(qualified string) string { return "',' || hex(" + qualified + ") || ','" }
+
+	b.WriteString("WITH RECURSIVE ")
+	b.WriteString(t)
+	b.WriteString(" AS (SELECT ")
+	writeIdents(&b, cols)
+	b.WriteString(", 1 AS ")
+	b.WriteString(Ident(depthAlias))
+	b.WriteString(", ")
+	b.WriteString(mark(Ident(key)))
+	b.WriteString(" AS ")
+	b.WriteString(Ident(pathAlias))
+	b.WriteString(" FROM ")
+	b.WriteString(Ident(table))
+	b.WriteString(" WHERE ")
+	b.WriteString(Ident(key))
+	b.WriteString(" IN (SELECT ")
+	b.WriteString(keyValue(keyType))
+	b.WriteString(" FROM json_each(")
+	b.WriteString(Placeholder)
+	b.WriteString("1))")
+	// The anchor: a deleted row must not seed the traversal.
+	live.AndInto(&b, true)
+	b.WriteString(" UNION ALL SELECT ")
+	for i, col := range cols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(c)
+		b.WriteString(".")
+		b.WriteString(Ident(col))
+	}
+	b.WriteString(", ")
+	b.WriteString(t)
+	b.WriteString(".")
+	b.WriteString(Ident(depthAlias))
+	b.WriteString(" + 1, ")
+	b.WriteString(t)
+	b.WriteString(".")
+	b.WriteString(Ident(pathAlias))
+	b.WriteString(" || hex(")
+	b.WriteString(c)
+	b.WriteString(".")
+	b.WriteString(Ident(key))
+	b.WriteString(") || ',' FROM ")
+	b.WriteString(Ident(table))
+	b.WriteString(" ")
+	b.WriteString(c)
+	b.WriteString(" JOIN ")
+	b.WriteString(t)
+	b.WriteString(" ON ")
+	if dir == Ascend {
+		b.WriteString(t + "." + Ident(parent) + " = " + c + "." + Ident(key))
+	} else {
+		b.WriteString(c + "." + Ident(parent) + " = " + t + "." + Ident(key))
+	}
+
+	b.WriteString(" WHERE ")
+	b.WriteString(t)
+	b.WriteString(".")
+	b.WriteString(Ident(depthAlias))
+	b.WriteString(" < ")
+	b.WriteString(Placeholder)
+	b.WriteString("2")
+	// BOTH halves, and qualified to the child: see compile/pgsql.
+	if !live.Empty() {
+		b.WriteString(" AND ")
+		b.WriteString(string(LiveFor(recursiveChild, liveCol(live))))
+	}
+	b.WriteString(" AND instr(")
+	b.WriteString(t)
+	b.WriteString(".")
+	b.WriteString(Ident(pathAlias))
+	b.WriteString(", ")
+	b.WriteString(mark(c + "." + Ident(key)))
+	b.WriteString(") = 0) SELECT ")
+	writeIdents(&b, cols)
+	b.WriteString(" FROM ")
+	b.WriteString(t)
+	return b.String()
+}
+
+const (
+	recursiveAlias = "_storm_r"
+	recursiveChild = "_storm_rc"
+	depthAlias     = "_storm_d"
+	pathAlias      = "_storm_path"
+)
+
+// liveCol recovers the column from a predicate built by LiveFor. The recursive
+// term needs the same column under a different alias, and passing the whole
+// predicate is what every other caller wants — so this unpicks it here rather
+// than widening every signature for the one shape that needs both.
+func liveCol(l Live) string {
+	s := string(l)
+	i := strings.Index(s, " IS NULL")
+	if i < 0 {
+		return ""
+	}
+	s = s[:i]
+	if j := strings.LastIndex(s, "."); j >= 0 {
+		s = s[j+1:]
+	}
+	return strings.Trim(s, `"`)
+}

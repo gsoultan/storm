@@ -19,6 +19,7 @@ import (
 
 	"github.com/gsoultan/caduceus"
 	"github.com/gsoultan/storm/v2/compile/pgddl"
+	"github.com/gsoultan/storm/v2/runtime/caduceusdrv"
 	"github.com/gsoultan/storm/v2/schema"
 )
 
@@ -476,4 +477,34 @@ func advisoryKey(ns string) int64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte("storm:automigrate:" + ns))
 	return int64(h.Sum64())
+}
+
+// AutoPool is Auto against a pool, which is what an application actually holds.
+//
+// It acquires one connection and holds it for the whole migration. That is not
+// an optimisation: the advisory lock serialising migrating processes is
+// SESSION-scoped, so a migration spread across pooled connections would take
+// the lock on one session and apply the DDL on another — which is to say, not
+// hold it at all.
+//
+//	if _, err := migrate.AutoPool(ctx, pool, s, migrate.AutoOptions{
+//		Logf: log.Printf,
+//	}); err != nil {
+//		return err
+//	}
+//
+// where s came from storm.Build(model.All()...).
+func AutoPool(ctx context.Context, p *caduceusdrv.Pool, want *schema.Schema, o AutoOptions) (Result, error) {
+	var res Result
+	var ran bool
+	err := p.Acquire(ctx, func(c *caduceus.Conn) error {
+		ran = true
+		var err error
+		res, err = Auto(ctx, c, want, o)
+		return err
+	})
+	if err != nil && !ran {
+		return Result{}, fmt.Errorf("acquire a connection to migrate on: %w", err)
+	}
+	return res, err
 }

@@ -155,7 +155,7 @@ func (g *gen) projection(name string, columns []string) {
 	g.p("\tdefer rows.Close()")
 	g.p("\tfor rows.Next() {")
 	g.p("\t\tdst = append(dst, %sRow{})", name)
-	g.p("\t\tif err := scan%s(rows.RawValues(), &dst[len(dst)-1], sl); err != nil {", name)
+	g.p("\t\tif err := scan%s(rows.%s(), &dst[len(dst)-1], sl); err != nil {", name, g.dec.rowsAccessor())
 	g.p("\t\t\treturn dst, err")
 	g.p("\t\t}")
 	g.p("\t}")

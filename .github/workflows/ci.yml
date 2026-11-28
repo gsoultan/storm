@@ -394,6 +394,34 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./scripts/check/mongo.sh
 
+  # SQLite. No server: the database is a file, and the driver is pure Go
+  # (modernc.org/sqlite), so this needs nothing but the toolchain. The live
+  # suite is a module of its own because it imports the driver, which storm's
+  # root module does not: generated packages run against a real database,
+  # every kind of migration is applied and re-diffed, and the CLI migrates a
+  # file end to end.
+  sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.4'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            internal/sqlitecheck/go.sum
+
+      - name: vet
+        if: ${{ !cancelled() }}
+        working-directory: internal/sqlitecheck
+        run: go vet ./...
+
+      - name: the sqlite back end, live
+        if: ${{ !cancelled() }}
+        working-directory: internal/sqlitecheck
+        run: go test -race -count=1 ./...
+
   sqlserver:
     runs-on: ubuntu-latest
     services:

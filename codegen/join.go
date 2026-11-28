@@ -406,9 +406,12 @@ func (g *gen) emitNarrowedJoin(lw lowering, s *schema.Schema, nj narrowedJoin) (
 		aggErr = fmt.Errorf("codegen: CTE %s names aggregate %s.%s, which does not exist", c.Alias, c.Table, c.Aggregate)
 		return "", ""
 	}
-	pieces, sel, count := lw.JoinPieces(t.Name, j, aggFor, func(tb, al string) string { return string(liveIn(lw, s, tb, al)) })
+	pieces, sel, count, err := lw.JoinPieces(t.Name, j, aggFor, func(tb, al string) string { return string(liveIn(lw, s, tb, al)) })
 	if aggErr != nil {
 		return nil, aggErr
+	}
+	if err != nil {
+		return nil, fmt.Errorf("codegen: table %s join %s: %w", t.Name, j.Name, err)
 	}
 	for i := range ctes {
 		ctes[i].head, ctes[i].tail = pieces[i][0], pieces[i][1]

@@ -69,6 +69,17 @@ const (
 	// default, which is what every switch here would otherwise fall through
 	// to.
 	DialectMongo
+	// DialectSQLite targets SQLite 3.45 and later, through a database/sql
+	// driver the program brings (storm is tested against modernc.org/sqlite,
+	// which needs no cgo).
+	//
+	// The first target with no server. Its grammar is closer to PostgreSQL's
+	// than any other — RETURNING, ON CONFLICT with a target, FILTER, NULLS
+	// FIRST/LAST — and its differences are about STORAGE: a column's type is
+	// an affinity rather than a contract, there is no array, and there are no
+	// row locks because there is one writer at a time. It reads the value
+	// family's rows, as Oracle does. See compile/sqlite and compile/liteddl.
+	DialectSQLite
 )
 
 func (d Dialect) String() string {
@@ -83,6 +94,8 @@ func (d Dialect) String() string {
 		return "oracle"
 	case DialectMongo:
 		return "mongo"
+	case DialectSQLite:
+		return "sqlite"
 	}
 	return "postgres"
 }
@@ -202,6 +215,20 @@ func (d decoders) batchRows() (param, convert string) {
 }
 
 func decodersFor(d Dialect, runtimeImport string) decoders {
+	if d == DialectSQLite {
+		// Oracle's family, because it is the same row shape: a database/sql
+		// driver has decoded every value before storm sees it. Two renames,
+		// both for the one storage difference that changes a decoder — an
+		// exact numeric is a float64 here (see valdec.Real), which Decimal
+		// rightly refuses from every other driver.
+		dec := decodersFor(DialectOracle, runtimeImport)
+		dec.fn = map[string]string{
+			"Nullable":    "Nullable",
+			"NumericErr":  "Real",
+			"NullNumeric": "NullReal",
+		}
+		return dec
+	}
 	if d == DialectOracle {
 		// The FOURTH family, and the first that reads no bytes at all.
 		//

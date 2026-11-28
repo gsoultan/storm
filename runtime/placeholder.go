@@ -108,3 +108,9 @@ var MSSQLPlaceholder = Placeholder{Sigil: '@', Prefix: "p"}
 // what binds, so reusing an ordinal binds once: the property that lets a
 // declared parameter appear in two union branches and be passed once.
 var OraclePlaceholder = Placeholder{Sigil: ':'}
+
+// SQLitePlaceholder is `?` followed by an ordinal: SQLite's numbered
+// parameter. A repeated number binds once, as PostgreSQL's `$1` does, so a
+// lowering that reuses a declared parameter needs no re-thinking here — the
+// property MySQL's bare `?` lacks.
+var SQLitePlaceholder = Placeholder{Sigil: '?'}

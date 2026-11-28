@@ -1,7 +1,7 @@
 ---
 tags: [storm, dialects, portability]
-updated: 2026-11-02
-status: implemented for PostgreSQL, MySQL 8, MariaDB, SQL Server, Oracle (SQL-only) and MongoDB
+updated: 2026-11-27
+status: implemented for PostgreSQL, MySQL 8, MariaDB, SQL Server, Oracle (SQL-only), SQLite and MongoDB
 ---
 
 # Targets: SQL dialects and document stores
@@ -65,14 +65,14 @@ three of the entries below are capabilities MySQL had to refuse.
 | declared parameter in two union branches | one value | one value | Named, so this crosses unchanged. `compile/mysql` refuses it outright |
 | row cap | `LIMIT n OFFSET m` | `OFFSET m ROWS FETCH NEXT n ROWS ONLY` | A clause OF `ORDER BY`, so a capped read with no ordering is a syntax error — `ORDER BY (SELECT NULL)` is the fallback. The operands are also REVERSED, so the paging arguments bind offset first |
 | existence probe cap | `LIMIT 1` | `SELECT TOP 1` | `TOP` needs no ordering, which is exactly what a probe has none of |
-| `RETURNING` | a trailing clause | `OUTPUT`, **positional** | It sits between the assignments and the predicate. At the end it is a syntax error, so the insert carries it in its punctuation and the update hands it to a splicer that knows where it goes |
+| `RETURNING` | a trailing clause | `OUTPUT`, **positional** | It sits between the assignments and the predicate. At the end it is a syntax error, so the insert carries it in its punctuation and the update hands it to a splicer that knows where it goes  | ✓ |
 | row lock | `FOR UPDATE` suffix | `WITH (UPDLOCK, ROWLOCK)` **table hint** | Attached to the table reference in `FROM`, not the end of the statement. `SKIP LOCKED` is `READPAST`; `FOR SHARE` is `REPEATABLEREAD`, not `HOLDLOCK`, which would be SERIALIZABLE and take range locks nobody asked for |
 | uuid primary key | `DEFAULT gen_random_uuid()` | `DEFAULT NEWID()` | Server-side, and a real v4. **Not** client-side, unlike MySQL — with a default and an `OUTPUT` clause, an insert that names no key comes back carrying one. `uuidv7()` is refused: `NEWID()` is v4 and `NEWSEQUENTIALID()` derives from the server's MAC |
 | partial UNIQUE index | native | **native** | Filtered indexes exist, so soft delete's live-scoped uniqueness ports. This is the refusal MySQL cannot avoid |
 | covering index | `INCLUDE` | `INCLUDE` | Also native. MySQL has no covering clause and rewrites them as trailing keys |
 | nullable UNIQUE | many NULL rows | **translated** to a filtered index | `UNIQUE` treats NULLs as EQUAL here and accepts exactly one. That changes ANSWERS, so `WHERE col IS NOT NULL` is added — which indexes exactly the rows PostgreSQL's index constrained. `NULLS NOT DISTINCT` is therefore the plain form here, and the one MySQL refuses |
 | `GROUPING SETS` / `CUBE` / `GROUPING()` | native | **native** | All three, in the function spelling. MySQL has only `WITH ROLLUP` and refuses the rest |
-| `LATERAL` | `CROSS JOIN LATERAL` | `CROSS APPLY` | Same construct, different keyword. MariaDB has neither |
+| `LATERAL` | `CROSS JOIN LATERAL` | `CROSS APPLY` | Same construct, different keyword. MariaDB has neither  | ✗ → `~` window |
 | bound key list | one array parameter, unnested | one JSON document, `OPENJSON … WITH` | No array parameter. Unlike MySQL there is no hex round trip: a uuid is `UNIQUEIDENTIFIER`, so it travels as its own text and returns as itself, leaving no expression wrapped around the indexed column |
 | recursive cycle guard | an array of visited keys | an `NVARCHAR(MAX)` path with `CHARINDEX` | No array type — but no declared width either, so unlike MySQL there is no depth at which the guard silently stops guarding. The server's own 100-level ceiling is lifted with `OPTION (MAXRECURSION 0)`, because the real bound is the caller's depth parameter |
 | arc exactly-one CHECK | `(…)::int + (…)::int = 1` | `CASE WHEN … THEN 1 ELSE 0 END + … = 1` | A predicate is not a value here, so there is no arithmetic coercion to lean on |
@@ -148,30 +148,30 @@ feature, the target, and the source line. It never fails on a customer's install
 
 `✓` native · `~` emulated by a lowering pass · `✗` generation error
 
-| | Postgres | MySQL 8 | MariaDB 10.6 | SQL Server | Oracle 19 | MongoDB 7 |
-|---|---|---|---|---|---|---|
-| Placeholder | `$1` | `?` | `?` | `@p1` | `:1` | BSON |
-| Ident quote | `"` | `` ` `` | `` ` `` | `[ ]` | `"` | — |
-| Max ident | 63 | 64 | 64 | 128 | 128 (30 pre-12.2) | — |
-| `RETURNING` | ✓ | ✗ → `~` | ✓ insert/delete | ✓ `OUTPUT` | ✓ `RETURNING INTO` | `~` findAndModify |
-| CTE | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
-| Recursive CTE | ✓ | ✓ | ✓ | ✓ | ✓ (+`CONNECT BY`) | `~` `$graphLookup` |
-| Window fns | ✓ | ✓ | ✓ | ✓ | ✓ | `~` `$setWindowFields` |
-| `LATERAL` | ✓ | ✓ 8.0.14+ | ✗ | ✓ `APPLY` | ✓ 12c+ | `~` `$lookup` pipeline |
-| Array bind | ✓ `= ANY($1)` | `~` expand | `~` expand | `~` TVP/expand | `~` expand | ✓ `$in` |
-| Upsert | ✓ `ON CONFLICT` | ✓ `ON DUP KEY` | ✓ | ✓ `MERGE` | ✓ `MERGE` | ✓ `upsert:true` |
-| Bulk load | ✓ `COPY` | `~` emulated | `~` emulated | ✓ **bcp**, implemented | ✓ array DML | ✓ `bulkWrite` |
-| Non-equi join | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
-| Foreign keys | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
-| Multi-stmt tx | ✓ | ✓ | ✓ | ✓ | ✓ | `~` replica set |
-| Index methods | btree, hash, gin, gist, spgist, brin | btree, hash, fulltext | btree, hash, fulltext | clustered/nonclustered, columnstore | btree, bitmap | single, compound, text |
-| Full-text search | ✓ `tsvector`: `Matches`, `WebSearch` | ✓ `FULLTEXT`: `Matches` | ✓ `FULLTEXT`: `Matches` | ✗ | ✗ | ✗ |
-| Partial index | ✓ `WHERE` | ✗ | ✗ | ✓ filtered | ✗ (function-based) | ✓ `partialFilterExpression` |
-| Covering index | ✓ `INCLUDE` | `~` trailing keys | `~` trailing keys | ✓ `INCLUDE` | `~` trailing keys | ✗ |
-| Expression index | ✓ | ✓ 8.0.13+ | ✓ | ✓ computed column | ✓ | ✗ |
-| Operator class / prefix | ✓ opclass, collation | ✓ prefix length | ✓ prefix length | ✗ | ✗ | ✗ |
-| Unique NULLs | distinct, or `NULLS NOT DISTINCT` (15+) | distinct | distinct | one NULL | distinct | `sparse` |
-| Concurrent build | ✓ `CONCURRENTLY` | ✓ online DDL | ✓ | ✓ `ONLINE` | ✓ `ONLINE` | ✓ background |
+| | Postgres | MySQL 8 | MariaDB 10.6 | SQL Server | Oracle 19 | SQLite 3.45 | MongoDB 7 |
+|---|---|---|---|---|---|---|---|
+| Placeholder | `$1` | `?` | `?` | `@p1` | `:1` | `?` | BSON |
+| Ident quote | `"` | `` ` `` | `` ` `` | `[ ]` | `"` | `"` | — |
+| Max ident | 63 | 64 | 64 | 128 | 128 (30 pre-12.2) | none | — |
+| `RETURNING` | ✓ | ✗ → `~` | ✓ insert/delete | ✓ `OUTPUT` | ✓ `RETURNING INTO` | ✓ | `~` findAndModify |
+| CTE | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| Recursive CTE | ✓ | ✓ | ✓ | ✓ | ✓ (+`CONNECT BY`) | ✓ | `~` `$graphLookup` |
+| Window fns | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `~` `$setWindowFields` |
+| `LATERAL` | ✓ | ✓ 8.0.14+ | ✗ | ✓ `APPLY` | ✓ 12c+ | ✗ → `~` window | `~` `$lookup` pipeline |
+| Array bind | ✓ `= ANY($1)` | `~` expand | `~` expand | `~` TVP/expand | `~` expand | `~` `json_each` | ✓ `$in` |
+| Upsert | ✓ `ON CONFLICT` | ✓ `ON DUP KEY` | ✓ | ✓ `MERGE` | ✓ `MERGE` | ✓ `ON CONFLICT` | ✓ `upsert:true` |
+| Bulk load | ✓ `COPY` | `~` emulated | `~` emulated | ✓ **bcp**, implemented | ✓ array DML | `~` multi-row `INSERT` | ✓ `bulkWrite` |
+| Non-equi join | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| Foreign keys | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| Multi-stmt tx | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (one writer) | `~` replica set |
+| Index methods | btree, hash, gin, gist, spgist, brin | btree, hash, fulltext | btree, hash, fulltext | clustered/nonclustered, columnstore | btree, bitmap | btree | single, compound, text |
+| Full-text search | ✓ `tsvector`: `Matches`, `WebSearch` | ✓ `FULLTEXT`: `Matches` | ✓ `FULLTEXT`: `Matches` | ✗ | ✗ | ✗ | ✗ |
+| Partial index | ✓ `WHERE` | ✗ | ✗ | ✓ filtered | ✗ (function-based) | ✓ `WHERE` | ✓ `partialFilterExpression` |
+| Covering index | ✓ `INCLUDE` | `~` trailing keys | `~` trailing keys | ✓ `INCLUDE` | `~` trailing keys | `~` trailing keys | ✗ |
+| Expression index | ✓ | ✓ 8.0.13+ | ✓ | ✓ computed column | ✓ | ✓ | ✗ |
+| Operator class / prefix | ✓ opclass, collation | ✓ prefix length | ✓ prefix length | ✗ | ✗ | collation (`BINARY`, `NOCASE`, `RTRIM`) | ✗ |
+| Unique NULLs | distinct, or `NULLS NOT DISTINCT` (15+) | distinct | distinct | one NULL | distinct | distinct | `sparse` |
+| Concurrent build | ✓ `CONCURRENTLY` | ✓ online DDL | ✓ | ✓ `ONLINE` | ✓ `ONLINE` | ✗ | ✓ background |
 
 ## Sharding is not a dialect concern
 
@@ -360,6 +360,108 @@ CAST, this back end carries nothing.
 insert carrying one with "to activate bulk insert/merge all parameters should be
 arrays". `runtime/sqldrv` converts it to a `[]byte`, which `database/sql`
 required anyway.
+
+## SQLite: what works today
+
+SQLite is the fifth SQL target, and the one that needs no server. It runs
+through `database/sql` like Oracle, so it reads the value side of the port
+(`runtime/valdec`), and storm's root module imports no driver: the adopter
+picks one. Everything is written and tested against
+[modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite), a pure-Go
+translation of SQLite, so a build needs no C toolchain and cross-compiles
+like any Go program. `internal/sqlitecheck` gates the whole stack against it
+on every push: generated packages run their CRUD, relation, soft-delete and
+bulk-load tests against a real database, every kind of schema change is
+migrated and re-diffed, and the CLI migrates a file end to end.
+
+| command | SQLite |
+|---|---|
+| `storm ddl -dialect sqlite` | works |
+| `storm portable sqlite` | works |
+| `storm generate -dialect sqlite` | works |
+| `storm import -dialect sqlite -dsn app.db` | works: `schema/sqlite` reads `sqlite_schema` and the pragmas |
+| `storm diff` / `storm verify` | work: `-dsn` is the database file's path |
+| `storm verify -pending` | works: the migrations replay into an in-memory database |
+| `storm explain` / `storm watch` | refuse: no SQLite plan reader yet |
+
+At run time, open the database with `sqlitedrv.DSN(path)` and hand
+`sqlitedrv.NewPool(db)` to the generated package:
+
+```go
+import (
+    "database/sql"
+
+    "github.com/gsoultan/storm/v2/runtime/sqlitedrv"
+    _ "modernc.org/sqlite"
+)
+
+db, err := sql.Open(sqlitedrv.DriverName, sqlitedrv.DSN("app.db"))
+pool := sqlitedrv.NewPool(db)
+```
+
+The DSN matters. It turns on foreign key enforcement (SQLite's default is
+off), makes `LIKE` case-sensitive as it is on PostgreSQL, sets a busy timeout,
+starts every transaction with `BEGIN IMMEDIATE` so two writers queue instead
+of deadlocking, and puts a file database in WAL mode.
+
+### What differs, and why
+
+- **Lists bind as one JSON array.** SQLite has no array type, so
+  `WHERE id IN (…)` binds the whole list as one argument and unpacks it with
+  `json_each`. One statement serves every list length, as `= ANY($1)` does on
+  PostgreSQL.
+- **Storage is by affinity.** A timestamp is fixed-width UTC text, so it sorts
+  and compares correctly. A uuid is a 16-byte blob. JSON is `TEXT` with a
+  `json_valid` check. An exact numeric is limited to 15 significant digits,
+  because SQLite stores a `NUMERIC` as a 64-bit float or integer. A wider
+  `numeric(p, s)` is refused at generate time instead of being rounded
+  without warning.
+- **JSON containment is exact to depth 3.** `Contains` on a document compares
+  object keys and array members three levels deep in the pattern. Below that,
+  two containers must be equal as minified text. So a query never returns a
+  row PostgreSQL would exclude, but it can return fewer. A scalar is compared
+  as JSON text, so `1` and `1.0` are different values here.
+- **A time of day is in the range 00:00 to 24:00.** MySQL's negative or
+  over-24-hour durations do not port.
+- **No row locks.** SQLite runs one writer at a time. `ForUpdate` and the
+  other lock modes are generated, but they add nothing to the statement: the
+  lock is the database's write lock, held from `BEGIN` to `COMMIT`. The DSN's
+  `BEGIN IMMEDIATE` takes it when the transaction starts.
+- **No `LATERAL`, no `DISTINCT ON`, no data-modifying `WITH`.** The per-parent
+  top-N load uses a window function, and the methods that need the other two
+  are not generated, as on MySQL.
+- **Keys are generated by storm.** SQLite has no uuid function, so storm
+  makes a version 7 uuid on the client. An identity or serial column is an
+  `INTEGER PRIMARY KEY AUTOINCREMENT`, which is SQLite's rowid.
+
+### Migrations rebuild tables
+
+SQLite's `ALTER TABLE` can only rename a table or a column, add a column
+(with limits), and drop a column (with more limits). Indexes are created and
+dropped as usual. Every other change rebuilds the table: create it again under
+a temporary name, copy the rows, drop the old table, rename the new one, and
+recreate its indexes. This includes a column's type, nullability or default,
+and a table's key, uniques, checks or foreign keys. It also includes an
+identity and a generated expression. All changes to one table are merged
+into ONE rebuild. A renamed column is renamed first, and a tightened column's
+NULLs are filled first, so the copy keeps every row.
+
+The destructive guard still works step by step. A dropped column stays in the
+plan as a comment with its reason in front of the rebuild that removes it, so
+`AllowDestructive` and `Accept` see the same steps they would on PostgreSQL.
+
+A rebuild must run with foreign key enforcement OFF. If enforcement is on,
+dropping the old table deletes its children's rows through `ON DELETE
+CASCADE`. So:
+
+- `migrate.AutoSQLite` (or `AutoSQLiteDB`, given a `*sql.DB`) turns
+  enforcement off and takes the write lock with `BEGIN IMMEDIATE`. It then
+  applies the plan and runs `PRAGMA foreign_key_check`. It rolls back if any
+  key points at nothing, and turns enforcement back on after the commit. It
+  needs ONE connection that is not inside a transaction.
+- A migration FILE written by `storm diff` carries the same steps around its
+  body. Run it as one session, OUTSIDE a transaction, because `PRAGMA
+  foreign_keys` does nothing inside one.
 
 ## MongoDB is a back end, not a dialect
 

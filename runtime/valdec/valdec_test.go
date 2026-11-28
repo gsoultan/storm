@@ -231,3 +231,37 @@ func TestTheNarrowDecoders(t *testing.T) {
 		t.Errorf("Bytes(string) = %s", got)
 	}
 }
+
+// The SQLite additions: an exact numeric stored as a float, a time of day
+// stored as text, and the names a generated scanner spells.
+func TestTheSQLiteStorageForms(t *testing.T) {
+	if d, err := valdec.Real(12.5); err != nil || d.String() != "12.5" {
+		t.Errorf("Real(12.5) = %v, %v", d, err)
+	}
+	if d, err := valdec.Real(int64(7)); err != nil || d.String() != "7" {
+		t.Errorf("Real(7) = %v, %v", d, err)
+	}
+	if n, err := valdec.NullReal(nil); err != nil || n.Valid {
+		t.Errorf("NullReal(nil) = %+v, %v", n, err)
+	}
+	if n, err := valdec.NullReal(0.25); err != nil || !n.Valid || n.V.String() != "0.25" {
+		t.Errorf("NullReal = %+v, %v", n, err)
+	}
+	if _, err := valdec.NullReal(true); err == nil {
+		t.Error("NullReal accepted a bool")
+	}
+	if tod, err := valdec.TimeOfDayErr("13:04:05.5"); err != nil ||
+		time.Duration(tod)*time.Microsecond != 13*time.Hour+4*time.Minute+5500*time.Millisecond {
+		t.Errorf("TimeOfDayErr = %v, %v", tod, err)
+	}
+	if string(valdec.JSON([]byte(`{}`))) != `{}` {
+		t.Error("JSON")
+	}
+	var sl runtime.Slab
+	if n := valdec.NullJSON(nil, &sl); n.Valid {
+		t.Error("NullJSON(nil) must be invalid")
+	}
+	if n := valdec.NullJSON([]byte(`[1]`), &sl); !n.Valid || string(n.V) != `[1]` {
+		t.Errorf("NullJSON = %+v", n)
+	}
+}
