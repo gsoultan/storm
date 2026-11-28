@@ -381,6 +381,19 @@ func (g *gen) modelType(s *schema.Schema, t *schema.Table) {
 	g.p("")
 }
 
+// hasField reports whether a column became a field of the imported struct.
+//
+// Not the same as the column existing. A column of a type storm has no Go type
+// for is in the schema and is OMITTED from the struct, so a declaration naming
+// it — an index, a unique, the key — points at a field that is not there, and
+// the model does not compile. audit_logs(action, timestamp) did that while
+// timestamp was unsupported. Such a declaration goes to the NOT CARRIED OVER
+// list instead, where a human sees it.
+func hasField(t *schema.Table, col string) bool {
+	c := t.Column(col)
+	return c != nil && goKind(c) != kindUnsupported
+}
+
 // indexDecl renders one index as the t.Index(...) declaration that would
 // produce it, or reports that it cannot: a key on a column the model omitted
 // has no field pointer to name.
@@ -424,7 +437,7 @@ func indexDecl(s *schema.Schema, t *schema.Table, ix *schema.Index) (string, boo
 	if len(ix.Include) > 0 {
 		inc := make([]string, 0, len(ix.Include))
 		for _, col := range ix.Include {
-			if t.Column(col) == nil {
+			if !hasField(t, col) {
 				return "", false
 			}
 			inc = append(inc, "&m."+modelFieldName(s, t, col))
@@ -450,7 +463,7 @@ func indexKeyDecl(s *schema.Schema, t *schema.Table, c schema.IndexColumn) (stri
 	var k string
 	switch {
 	case !c.Expr:
-		if t.Column(c.Name) == nil {
+		if !hasField(t, c.Name) {
 			return "", false
 		}
 		k = "&m." + modelFieldName(s, t, c.Name)
@@ -502,7 +515,7 @@ func splitExpr(t *schema.Table, expr string) (col, tmpl string, ok bool) {
 			best = c.Name
 		}
 	}
-	if best == "" {
+	if best == "" || !hasField(t, best) {
 		return "", "", false
 	}
 	return best, strings.Replace(expr, best, "%s", 1), true
@@ -555,6 +568,17 @@ func columnFacts(c *schema.Column) string {
 	}
 	if c.Serial {
 		b.WriteString(".Serial()")
+	}
+	// The two time types a time.Time field does not mean by default. Without
+	// these a timestamp column imported as a timestamptz and a date as one too,
+	// and the first diff proposed retyping live data.
+	if !c.Type.Array {
+		switch c.Type.Name {
+		case schema.TypeTimestamp:
+			b.WriteString(".WithoutTimeZone()")
+		case schema.TypeDate:
+			b.WriteString(".Date()")
+		}
 	}
 	if c.Identity {
 		b.WriteString(".Identity()")
@@ -774,7 +798,7 @@ func actionConst(a schema.Action) string {
 func uniqueDecl(s *schema.Schema, t *schema.Table, u *schema.Unique) (string, bool) {
 	cols := make([]string, 0, len(u.Columns))
 	for _, c := range u.Columns {
-		if t.Column(c) == nil {
+		if !hasField(t, c) {
 			return "", false
 		}
 		// modelFieldName, not exportName: a single-column foreign key became a
@@ -842,7 +866,7 @@ func primaryKeyDecl(s *schema.Schema, t *schema.Table, embedded bool) string {
 	}
 	fields := make([]string, 0, len(t.PrimaryKey))
 	for _, col := range t.PrimaryKey {
-		if t.Column(col) == nil {
+		if !hasField(t, col) {
 			return ""
 		}
 		fields = append(fields, "&m."+modelFieldName(s, t, col))
